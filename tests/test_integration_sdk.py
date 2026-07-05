@@ -110,3 +110,17 @@ def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
 
         assert session.client.get_var("renforge_choice") == "good"
         assert session.client.get_state()["current_label"] == "good"
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="autopilot needs a display (set DISPLAY, or run under xvfb)")
+def test_autopilot_covers_all_labels(sdk, demo_copy: Path) -> None:
+    from renforge.autopilot import autopilot
+    from renforge.project import RenpyProject
+
+    report = autopilot(sdk, RenpyProject(demo_copy), max_runs=8, max_steps=30, settle=0.5)
+
+    assert report["ok"] is True
+    assert report["coverage"] == 1.0
+    assert report["labels_unreached"] == []
+    assert report["crashes"] == []
+    assert report["choices_explored"] >= 2  # both branches taken

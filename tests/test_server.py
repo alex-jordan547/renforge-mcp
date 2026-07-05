@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "renforge_get_var",
     "renforge_poll_events",
     "renforge_screenshot",
+    "renforge_autopilot",
 }
 
 

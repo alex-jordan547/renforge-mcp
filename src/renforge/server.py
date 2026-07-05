@@ -109,6 +109,11 @@ def _register_tools(app: Any) -> None:
         return live.poll_events(project_path, since)
 
     @tool_decorator()
+    def renforge_autopilot(project_path: str, max_runs: int = 16, max_steps: int = 60) -> dict:
+        """Auto-play the game across all branches; report label coverage and crashes."""
+        return live.run_autopilot(project_path, max_runs=max_runs, max_steps=max_steps)
+
+    @tool_decorator()
     def renforge_screenshot(project_path: str):
         """Capture the current game frame (returned as an image the model can see)."""
         try:

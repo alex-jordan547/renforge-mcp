@@ -191,9 +191,19 @@ init python:
         if focus is None:
             return {"ok": False, "error": "no choice matching %r/%r" % (text, index)}
 
-        x, y = renpy.test.testfocus.find_position(focus, (None, None))
-        renpy.test.testmouse.click_mouse(1, int(x), int(y))
-        return {"ok": True, "text": chosen, "x": int(x), "y": int(y)}
+        # Click the button's center directly. The focus rect is already in the
+        # click coordinate space, and the center reliably hits the button —
+        # unlike find_position, whose focus_at_point check can fail mid-transition.
+        fx = getattr(focus, "x", None)
+        if fx is not None and getattr(focus, "w", None) and getattr(focus, "h", None):
+            x = int(focus.x + focus.w // 2)
+            y = int(focus.y + focus.h // 2)
+        else:
+            px, py = renpy.test.testfocus.find_position(focus, (None, None))
+            x, y = int(px), int(py)
+
+        renpy.test.testmouse.click_mouse(1, x, y)
+        return {"ok": True, "text": chosen, "x": x, "y": y}
 
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,

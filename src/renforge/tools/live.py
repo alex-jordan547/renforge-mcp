@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
 from ..bridge.launcher import BridgeSession, launch_with_bridge
 from ..project import RenpyProject
@@ -129,6 +130,21 @@ def screenshot_png(project_path: str, width: int = 0, height: int = 0) -> bytes:
     return _client(project_path).screenshot(width, height)
 
 
+def run_autopilot(project_path: str, version: str = "stable", max_runs: int = 16, max_steps: int = 60) -> dict:
+    """Explore the game's branches and return a coverage/crash report."""
+    try:
+        project = RenpyProject(Path(project_path))
+        sdk = get_or_install_sdk(version)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    # Autopilot launches its own throwaway sessions; free any manual one first.
+    stop_game(project_path)
+    try:
+        return _autopilot(sdk, project, max_runs=max_runs, max_steps=max_steps)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 __all__ = [
     "launch_game",
     "stop_game",
@@ -141,4 +157,5 @@ __all__ = [
     "get_var",
     "poll_events",
     "screenshot_png",
+    "run_autopilot",
 ]
