@@ -114,3 +114,14 @@ class BridgeClient:
         if not encoded:
             raise BridgeProtocolError("screenshot reply missing 'base64' data")
         return base64.b64decode(encoded)
+
+    def advance(self) -> dict:
+        """Advance the current dialogue (posts a 'dismiss' event)."""
+        return self._checked("advance")
+
+    def poll_events(self, since: int = 0) -> dict:
+        """Return pushed events with ``seq > since`` plus the current cursor.
+
+        Reply shape: ``{"events": [...], "cursor": <int>}``.
+        """
+        return self._checked("poll_events", {"since": since})

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -75,3 +76,14 @@ def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
 
         png = session.client.screenshot()
         assert png.startswith(b"\x89PNG") and len(png) > 1000
+
+        # Driving: the game starts at label "start" showing its first line;
+        # advancing should let us capture dialogue via pushed events.
+        says = []
+        for _ in range(6):
+            for event in session.client.poll_events().get("events", []):
+                if event["type"] == "say":
+                    says.append(event["what"])
+            session.client.advance()
+            time.sleep(1.0)
+        assert any("Ren'Forge" in s for s in says), says

@@ -20,6 +20,7 @@ init python:
     # so the client can discover them.
 
     import base64
+    import collections
     import json
     import os
     import queue
@@ -48,6 +49,18 @@ init python:
             self.stop = threading.Event()
             self.thread = None
             self.current_label = None
+            # Pushed events buffer (main-thread only): dialogue lines, label
+            # entries and exceptions. Clients retrieve them via `poll_events`.
+            self.events = collections.deque(maxlen=1000)
+            self.event_seq = 0
+            self.last_say = None
+            self.prev_exception_handler = None
+
+        def push_event(self, kind, data):
+            self.event_seq += 1
+            record = {"seq": self.event_seq, "type": kind}
+            record.update(data)
+            self.events.append(record)
 
     def _renforge_jsonable(value):
         """Best-effort conversion of a Python value to something JSON-safe."""
@@ -116,6 +129,21 @@ init python:
         data = renpy.screenshot_to_bytes(size)  # PNG bytes
         return {"format": "png", "base64": base64.b64encode(data).decode("ascii")}
 
+    def _renforge_h_advance(payload):
+        # Post a "dismiss" event (the keymap action that advances dialogue).
+        # queue_event is documented as thread-safe; the interaction loop
+        # consumes it on the next frame.
+        renpy.exports.queue_event("dismiss")
+        return {"ok": True}
+
+    def _renforge_h_poll_events(payload):
+        payload = payload or {}
+        since = int(payload.get("since", 0) or 0)
+        bridge = _RENFORGE_BRIDGE
+        events = [e for e in list(bridge.events) if e["seq"] > since]
+        cursor = bridge.event_seq
+        return {"events": events, "cursor": cursor}
+
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
@@ -123,6 +151,8 @@ init python:
         "get_var": _renforge_h_get_var,
         "set_var": _renforge_h_set_var,
         "screenshot": _renforge_h_screenshot,
+        "advance": _renforge_h_advance,
+        "poll_events": _renforge_h_poll_events,
     }
 
     def renforge_drain_bridge():
@@ -227,8 +257,27 @@ init python:
 
         def _renforge_on_label(name, abnormal):
             bridge.current_label = name
+            bridge.push_event("label", {"label": name})
+
+        def _renforge_on_say(event, **kwargs):
+            # Callbacks fire several times per line ("begin"/"show"/"end"); record
+            # the text once, on the first event that carries it.
+            what = kwargs.get("what")
+            if event in ("begin", "show") and what and what != bridge.last_say:
+                bridge.last_say = what
+                bridge.push_event("say", {"what": what})
+
+        def _renforge_exception_handler(short_msg, full_msg, traceback_fn):
+            bridge.push_event("exception", {"short": short_msg, "full": full_msg})
+            previous = bridge.prev_exception_handler
+            if callable(previous):
+                return previous(short_msg, full_msg, traceback_fn)
+            return False  # not handled: let Ren'Py show its normal error screen
 
         renpy.config.label_callbacks.append(_renforge_on_label)
+        renpy.config.all_character_callbacks.append(_renforge_on_say)
+        bridge.prev_exception_handler = renpy.config.exception_handler
+        renpy.config.exception_handler = _renforge_exception_handler
         renpy.config.periodic_callbacks.append(renforge_drain_bridge)
 
         thread = threading.Thread(

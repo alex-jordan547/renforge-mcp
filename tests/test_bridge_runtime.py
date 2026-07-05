@@ -27,13 +27,23 @@ def _load_bridge_body():
 
 
 def _fake_renpy(store):
-    config = types.SimpleNamespace(basedir="", label_callbacks=[], periodic_callbacks=[])
+    config = types.SimpleNamespace(
+        basedir="",
+        label_callbacks=[],
+        periodic_callbacks=[],
+        all_character_callbacks=[],
+        exception_handler=None,
+    )
     renpy = types.ModuleType("renpy")
     renpy.store = store
     renpy.config = config
     renpy.screenshot_to_bytes = lambda size: b"\x89PNG\r\n_fake_frame_"
     renpy.get_showing_tags = lambda: ["bg", "eileen"]
     renpy.display = types.SimpleNamespace()
+    renpy._queued_events = []
+    renpy.exports = types.SimpleNamespace(
+        queue_event=lambda name, **kw: renpy._queued_events.append(name)
+    )
     return renpy
 
 
@@ -70,20 +80,19 @@ def running_bridge(tmp_path, monkeypatch):
         time.sleep(0.01)
 
     client = BridgeClient.from_project(tmp_path)
-    yield client, store
+    env = types.SimpleNamespace(client=client, store=store, renpy=renpy, globs=globs)
+    yield env
 
     stop.set()
     bridge.stop.set()
 
 
 def test_ping_roundtrips_through_main_thread(running_bridge):
-    client, _ = running_bridge
-    assert client.ping().get("pong") is True
+    assert running_bridge.client.ping().get("pong") is True
 
 
 def test_get_state_reports_variables_and_showing(running_bridge):
-    client, _ = running_bridge
-    state = client.get_state()
+    state = running_bridge.client.get_state()
     assert state["variables"]["score"] == 7
     assert state["variables"]["player_name"] == "Rin"
     assert "_hidden" not in state["variables"]  # private names are filtered
@@ -91,7 +100,7 @@ def test_get_state_reports_variables_and_showing(running_bridge):
 
 
 def test_eval_and_set_var_mutate_real_store(running_bridge):
-    client, store = running_bridge
+    client, store = running_bridge.client, running_bridge.store
     assert client.eval_expr("score * 2") == 14
     client.set_var("score", 99)
     assert store.score == 99
@@ -99,13 +108,35 @@ def test_eval_and_set_var_mutate_real_store(running_bridge):
 
 
 def test_screenshot_returns_decoded_png_bytes(running_bridge):
-    client, _ = running_bridge
-    data = client.screenshot(320, 180)
+    data = running_bridge.client.screenshot(320, 180)
     assert data.startswith(b"\x89PNG")
 
 
 def test_bad_token_is_rejected(running_bridge):
-    client, _ = running_bridge
-    port = client._config.port
+    port = running_bridge.client._config.port
     wrong = BridgeClient(BridgeConfig(port=port, token="WRONG"))
     assert wrong.request("ping").get("error") == "bad_token"
+
+
+def test_advance_posts_dismiss_event(running_bridge):
+    assert running_bridge.client.advance().get("ok") is True
+    assert "dismiss" in running_bridge.renpy._queued_events
+
+
+def test_poll_events_captures_labels_and_say_lines(running_bridge):
+    config = running_bridge.renpy.config
+    # Fire Ren'Py's registered callbacks the way the engine would.
+    for cb in config.label_callbacks:
+        cb("chapter1", False)
+    for cb in config.all_character_callbacks:
+        cb("begin", what="Hello there.")
+        cb("show", what="Hello there.")  # duplicate line must not double-record
+
+    reply = running_bridge.client.poll_events()
+    kinds = [(e["type"], e.get("label") or e.get("what")) for e in reply["events"]]
+    assert ("label", "chapter1") in kinds
+    assert ("say", "Hello there.") in kinds
+    assert sum(1 for e in reply["events"] if e["type"] == "say") == 1
+
+    # `since=cursor` returns only newer events.
+    assert running_bridge.client.poll_events(since=reply["cursor"])["events"] == []
