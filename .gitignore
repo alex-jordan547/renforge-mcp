@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+coverage/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.tmp
+*.log
+logs/
+
+# Ren'Py / RenForge runtime artifacts
+*.rpyc
+*.rpymc
+saves/
+traceback.txt
+errors.txt
+.renforge/
