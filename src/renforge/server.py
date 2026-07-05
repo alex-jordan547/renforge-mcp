@@ -42,7 +42,7 @@ def _register_tools(app: Any) -> None:
     if not callable(tool_decorator):
         return
 
-    from .tools import live
+    from .tools import live, project_ops
     from .tools.static import inspect_project, parse_lint_text, scan_project_index
 
     @tool_decorator()
@@ -112,6 +112,58 @@ def _register_tools(app: Any) -> None:
     def renforge_autopilot(project_path: str, max_runs: int = 16, max_steps: int = 60) -> dict:
         """Auto-play the game across all branches; report label coverage and crashes."""
         return live.run_autopilot(project_path, max_runs=max_runs, max_steps=max_steps)
+
+    # --- assets / translation / build / docs (SDK-backed, static) ---
+
+    @tool_decorator()
+    def renforge_assets(project_path: str) -> dict:
+        """Find orphaned and missing image/audio assets in the project."""
+        return project_ops.assets(project_path)
+
+    @tool_decorator()
+    def renforge_languages(project_path: str) -> dict:
+        """List translation languages present under game/tl/."""
+        return project_ops.languages(project_path)
+
+    @tool_decorator()
+    def renforge_translation_stats(project_path: str, language: str) -> dict:
+        """Report missing dialogue/string translation counts for a language."""
+        return project_ops.translation_stats(project_path, language)
+
+    @tool_decorator()
+    def renforge_generate_translations(project_path: str, language: str) -> dict:
+        """Generate/update translation files for a language (writes game/tl/<language>/)."""
+        return project_ops.generate_translations(project_path, language)
+
+    @tool_decorator()
+    def renforge_export_dialogue(project_path: str, language: str = "None") -> dict:
+        """Export the game's dialogue as plain text."""
+        return project_ops.export_dialogue(project_path, language)
+
+    @tool_decorator()
+    def renforge_web_build(project_path: str, destination: str = "") -> dict:
+        """Package the project as a browser-playable build (needs the web DLC)."""
+        return project_ops.web_build(project_path, destination=destination)
+
+    @tool_decorator()
+    def renforge_distribute(project_path: str, package: str = "", destination: str = "") -> dict:
+        """Build desktop distributions (e.g. package='pc', 'mac', 'linux')."""
+        return project_ops.distribute(project_path, package=package, destination=destination)
+
+    @tool_decorator()
+    def renforge_search_docs(query: str) -> dict:
+        """Search Ren'Py's offline documentation for a keyword."""
+        return project_ops.search_docs(query)
+
+    @tool_decorator()
+    def renforge_get_doc(topic: str) -> dict:
+        """Read a Ren'Py documentation page as plain text (e.g. topic='cli')."""
+        return project_ops.get_doc(topic)
+
+    @tool_decorator()
+    def renforge_list_docs() -> dict:
+        """List available Ren'Py documentation topics."""
+        return project_ops.list_docs()
 
     @tool_decorator()
     def renforge_screenshot(project_path: str):

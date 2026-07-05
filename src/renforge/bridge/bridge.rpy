@@ -97,12 +97,13 @@ init python:
         except Exception:
             showing = []
         try:
-            screens = [s for s in renpy.display.screen.get_all_screen_names()] if hasattr(renpy.display, "screen") else []
+            menu_active = renpy.get_screen("choice") is not None
         except Exception:
-            screens = []
+            menu_active = False
         return {
             "current_label": _RENFORGE_BRIDGE.current_label,
             "showing_tags": showing,
+            "menu": menu_active,
             "variables": _renforge_store_snapshot(),
         }
 
@@ -144,8 +145,19 @@ init python:
         cursor = bridge.event_seq
         return {"events": events, "cursor": cursor}
 
+    def _renforge_screen_name(focus):
+        scr = getattr(focus, "screen", None)
+        name = getattr(scr, "screen_name", None)
+        if not name:
+            return None
+        try:
+            return name[0] if isinstance(name, (list, tuple)) else str(name)
+        except Exception:
+            return None
+
     def _renforge_focusable_choices():
         # On-screen focusables that expose text (menu choices, buttons).
+        # Each entry is (focus, text, screen_name).
         choices = []
         try:
             focus_list = renpy.display.focus.focus_list
@@ -162,12 +174,12 @@ init python:
             except Exception:
                 continue
             if text:
-                choices.append((focus, text))
+                choices.append((focus, text, _renforge_screen_name(focus)))
         return choices
 
     def _renforge_h_list_choices(payload):
         choices = _renforge_focusable_choices()
-        return {"choices": [{"index": i, "text": t} for i, (_f, t) in enumerate(choices)]}
+        return {"choices": [{"index": i, "text": t, "screen": s} for i, (_f, t, s) in enumerate(choices)]}
 
     def _renforge_h_select_choice(payload):
         # Select a menu option by visible text (preferred) or by index, by
@@ -186,7 +198,7 @@ init python:
             choices = _renforge_focusable_choices()
             idx = int(index)
             if 0 <= idx < len(choices):
-                focus, chosen = choices[idx]
+                focus, chosen, _screen = choices[idx]
 
         if focus is None:
             return {"ok": False, "error": "no choice matching %r/%r" % (text, index)}

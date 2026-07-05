@@ -22,6 +22,17 @@ EXPECTED_TOOLS = {
     "renforge_poll_events",
     "renforge_screenshot",
     "renforge_autopilot",
+    # assets / translation / build / docs
+    "renforge_assets",
+    "renforge_languages",
+    "renforge_translation_stats",
+    "renforge_generate_translations",
+    "renforge_export_dialogue",
+    "renforge_web_build",
+    "renforge_distribute",
+    "renforge_search_docs",
+    "renforge_get_doc",
+    "renforge_list_docs",
 }
 
 

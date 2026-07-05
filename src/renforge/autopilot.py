@@ -15,10 +15,11 @@ to the active ``choice`` screen is a future improvement.)
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .bridge.launcher import launch_with_bridge
 from .project import RenpyProject
@@ -32,6 +33,11 @@ def _story_labels(project_path: str | Path) -> set[str]:
     return {label["name"] for label in index.get("labels", []) if not label["name"].startswith("_")}
 
 
+def _menu_choices(client) -> list[dict]:
+    """Choices that belong to the active ``choice`` screen (ignores quick menu)."""
+    return [c for c in client.list_choices() if c.get("screen") == "choice"]
+
+
 def autopilot(
     sdk: RenpySdk,
     project: RenpyProject,
@@ -40,8 +46,14 @@ def autopilot(
     max_steps: int = 60,
     settle: float = 0.4,
     startup_timeout: float = 90.0,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
-    """Explore the game and return a coverage/crash report."""
+    """Explore the game and return a coverage/crash report.
+
+    After each run a partial report is written to
+    ``<project>/.renforge/autopilot.json`` and passed to ``progress_callback``
+    (if given), so long explorations can be followed incrementally.
+    """
     total_labels = _story_labels(project.root)
 
     reached: set[str] = set()
@@ -52,6 +64,37 @@ def autopilot(
     frontier: deque[list[int]] = deque([[]])
     seen_prefixes: set[tuple[int, ...]] = set()
     runs = 0
+
+    progress_path = project.cache_dir / "autopilot.json"
+
+    def _report(done: bool) -> dict[str, Any]:
+        covered = sorted(total_labels & reached)
+        return {
+            "ok": True,
+            "done": done,
+            "runs": runs,
+            "runs_pending": len(frontier),
+            "labels_total": len(total_labels),
+            "labels_reached": sorted(reached),
+            "labels_covered": covered,
+            "labels_unreached": sorted(total_labels - reached),
+            "coverage": round(len(covered) / len(total_labels), 3) if total_labels else 1.0,
+            "dialogue_lines": len(dialogue),
+            "choices_explored": choices_explored,
+            "crashes": crashes,
+        }
+
+    def _emit(done: bool) -> None:
+        report = _report(done)
+        try:
+            progress_path.write_text(json.dumps(report), encoding="utf-8")
+        except OSError:
+            pass
+        if progress_callback is not None:
+            try:
+                progress_callback(report)
+            except Exception:
+                pass
 
     def _drain(client, cursor: int, run_labels: list[str]) -> int:
         events = client.poll_events(since=cursor)
@@ -91,11 +134,12 @@ def autopilot(
                 if len(run_labels) != len(set(run_labels)):
                     break
 
-                choices = session.client.list_choices()
+                choices = _menu_choices(session.client)
                 if choices:
                     # Let the menu's show transition finish so the choice buttons
                     # are at stable positions before we click one.
                     time.sleep(settle)
+                    choices = _menu_choices(session.client) or choices
                     if seq_pos < len(seq):
                         idx = seq[seq_pos]
                     else:
@@ -119,20 +163,9 @@ def autopilot(
         finally:
             session.close()
 
-    unreached = sorted(total_labels - reached)
-    covered = sorted(total_labels & reached)
-    return {
-        "ok": True,
-        "runs": runs,
-        "labels_total": len(total_labels),
-        "labels_reached": sorted(reached),
-        "labels_covered": covered,
-        "labels_unreached": unreached,
-        "coverage": round(len(covered) / len(total_labels), 3) if total_labels else 1.0,
-        "dialogue_lines": len(dialogue),
-        "choices_explored": choices_explored,
-        "crashes": crashes,
-    }
+        _emit(done=not frontier or runs >= max_runs)
+
+    return _report(done=True)
 
 
 __all__ = ["autopilot"]
