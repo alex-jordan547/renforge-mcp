@@ -15,6 +15,9 @@ coverage/
 *.log
 logs/
 
+# Internal working docs (reviews, competitive analysis, plans) — keep private
+docs/
+
 # Ren'Py / RenForge runtime artifacts
 *.rpyc
 *.rpymc
