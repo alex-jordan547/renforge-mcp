@@ -26,6 +26,20 @@ def _load_bridge_body():
     return "\n".join(line[4:] if line.startswith("    ") else line for line in lines[1:])
 
 
+class _FakeWidget:
+    def __init__(self, text):
+        self._text = text
+
+    def _tts_all(self):
+        return self._text
+
+
+class _FakeFocus:
+    def __init__(self, text, x, y, w, h):
+        self.widget = _FakeWidget(text) if text is not None else None
+        self.x, self.y, self.w, self.h = x, y, w, h
+
+
 def _fake_renpy(store):
     config = types.SimpleNamespace(
         basedir="",
@@ -39,10 +53,36 @@ def _fake_renpy(store):
     renpy.config = config
     renpy.screenshot_to_bytes = lambda size: b"\x89PNG\r\n_fake_frame_"
     renpy.get_showing_tags = lambda: ["bg", "eileen"]
-    renpy.display = types.SimpleNamespace()
     renpy._queued_events = []
     renpy.exports = types.SimpleNamespace(
         queue_event=lambda name, **kw: renpy._queued_events.append(name)
+    )
+
+    # Minimal focus + input system mirroring Ren'Py's runtime shape.
+    focus_list = [
+        _FakeFocus(None, None, None, None, None),  # the "default" whole-screen focus
+        _FakeFocus("Alpha choice", 10, 10, 100, 20),
+        _FakeFocus("Beta choice", 10, 40, 100, 20),
+    ]
+    renpy.display = types.SimpleNamespace(focus=types.SimpleNamespace(focus_list=focus_list))
+    renpy._clicks = []
+
+    def _find_focus(pattern):
+        for focus in focus_list:
+            if focus.widget is None:
+                continue
+            if pattern.lower() in focus.widget._tts_all().lower():
+                return focus
+        return None
+
+    def _find_position(focus, _position):
+        return (focus.x + focus.w // 2, focus.y + focus.h // 2)
+
+    renpy.test = types.SimpleNamespace(
+        testfocus=types.SimpleNamespace(find_focus=_find_focus, find_position=_find_position),
+        testmouse=types.SimpleNamespace(
+            click_mouse=lambda button, x, y: renpy._clicks.append((button, x, y))
+        ),
     )
     return renpy
 
@@ -141,3 +181,26 @@ def test_poll_events_captures_labels_and_say_lines(running_bridge):
 
     # `since=cursor` returns only newer events.
     assert running_bridge.client.poll_events(since=reply["cursor"])["events"] == []
+
+
+def test_list_choices_enumerates_focusable_text(running_bridge):
+    texts = [c["text"] for c in running_bridge.client.list_choices()]
+    assert texts == ["Alpha choice", "Beta choice"]  # the default focus is skipped
+
+
+def test_select_choice_by_text_clicks_focus_center(running_bridge):
+    reply = running_bridge.client.select_choice(text="Beta")
+    assert reply["ok"] is True
+    # Beta focus is at (10, 40) sized 100x20 -> center (60, 50).
+    assert running_bridge.renpy._clicks[-1] == (1, 60, 50)
+
+
+def test_select_choice_by_index_resolves_text(running_bridge):
+    reply = running_bridge.client.select_choice(index=0)
+    assert reply["ok"] is True
+    assert reply["text"] == "Alpha choice"
+
+
+def test_select_choice_without_match_returns_error(running_bridge):
+    reply = running_bridge.client.request("select_choice", {"text": "nope", "index": None})
+    assert "error" in reply

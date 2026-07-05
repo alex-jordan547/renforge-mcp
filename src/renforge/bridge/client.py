@@ -125,3 +125,11 @@ class BridgeClient:
         Reply shape: ``{"events": [...], "cursor": <int>}``.
         """
         return self._checked("poll_events", {"since": since})
+
+    def list_choices(self) -> list[dict[str, Any]]:
+        """Return the on-screen focusable choices as ``[{"index", "text"}, ...]``."""
+        return self._checked("list_choices")["choices"]
+
+    def select_choice(self, text: str | None = None, index: int | None = None) -> dict:
+        """Select a menu option by visible text (preferred) or by index."""
+        return self._checked("select_choice", {"text": text, "index": index})

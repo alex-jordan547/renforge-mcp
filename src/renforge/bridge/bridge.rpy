@@ -144,6 +144,57 @@ init python:
         cursor = bridge.event_seq
         return {"events": events, "cursor": cursor}
 
+    def _renforge_focusable_choices():
+        # On-screen focusables that expose text (menu choices, buttons).
+        choices = []
+        try:
+            focus_list = renpy.display.focus.focus_list
+        except Exception:
+            return choices
+        for focus in focus_list:
+            if getattr(focus, "x", None) is None:
+                continue
+            widget = getattr(focus, "widget", None)
+            if widget is None:
+                continue
+            try:
+                text = widget._tts_all()
+            except Exception:
+                continue
+            if text:
+                choices.append((focus, text))
+        return choices
+
+    def _renforge_h_list_choices(payload):
+        choices = _renforge_focusable_choices()
+        return {"choices": [{"index": i, "text": t} for i, (_f, t) in enumerate(choices)]}
+
+    def _renforge_h_select_choice(payload):
+        # Select a menu option by visible text (preferred) or by index, by
+        # resolving the focusable and simulating a mouse click on it — the same
+        # path Ren'Py's own test framework uses.
+        payload = payload or {}
+        text = payload.get("text")
+        index = payload.get("index")
+
+        focus = None
+        chosen = None
+        if text is not None:
+            focus = renpy.test.testfocus.find_focus(text)
+            chosen = text
+        elif index is not None:
+            choices = _renforge_focusable_choices()
+            idx = int(index)
+            if 0 <= idx < len(choices):
+                focus, chosen = choices[idx]
+
+        if focus is None:
+            return {"ok": False, "error": "no choice matching %r/%r" % (text, index)}
+
+        x, y = renpy.test.testfocus.find_position(focus, (None, None))
+        renpy.test.testmouse.click_mouse(1, int(x), int(y))
+        return {"ok": True, "text": chosen, "x": int(x), "y": int(y)}
+
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
@@ -153,6 +204,8 @@ init python:
         "screenshot": _renforge_h_screenshot,
         "advance": _renforge_h_advance,
         "poll_events": _renforge_h_poll_events,
+        "list_choices": _renforge_h_list_choices,
+        "select_choice": _renforge_h_select_choice,
     }
 
     def renforge_drain_bridge():

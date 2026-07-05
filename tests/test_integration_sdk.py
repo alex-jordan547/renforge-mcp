@@ -87,3 +87,26 @@ def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
             session.client.advance()
             time.sleep(1.0)
         assert any("Ren'Forge" in s for s in says), says
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        # Advance until the menu's choices appear on screen.
+        choices = []
+        for _ in range(6):
+            choices = session.client.list_choices()
+            if choices:
+                break
+            session.client.advance()
+            time.sleep(1.0)
+        assert any("lumineuse" in c["text"] for c in choices), choices
+
+        session.client.select_choice(text="lumineuse")
+        time.sleep(1.5)
+
+        assert session.client.get_var("renforge_choice") == "good"
+        assert session.client.get_state()["current_label"] == "good"
