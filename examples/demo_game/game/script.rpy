@@ -2,6 +2,13 @@ define narrator = Character("Narrator")
 define e = Character("Eileen")
 default renforge_choice = ""
 
+# Skip the main menu and drop straight into the story. This overrides Ren'Py's
+# default main menu (see the `main_menu` label hook in 00start.rpy) so the demo
+# — and the RenForge bridge that drives it — starts playing immediately. The
+# save/load/preferences/quit screens are still reachable in-game via Escape.
+label main_menu:
+    jump start
+
 label start:
     $ renforge_choice = ""
     narrator "Ren'Forge démarre. Ton script de démo est prêt."

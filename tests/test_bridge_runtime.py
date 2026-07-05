@@ -73,9 +73,10 @@ def running_bridge(tmp_path, monkeypatch):
     pump_thread = threading.Thread(target=pump, daemon=True)
     pump_thread.start()
 
-    # Wait for the listener to publish its port.
-    for _ in range(200):
-        if getattr(store, "renforge_bridge_port", None):
+    # Wait for the listener to publish bridge.json (as the real launcher does).
+    info_path = tmp_path / ".renforge" / "bridge.json"
+    for _ in range(300):
+        if info_path.exists():
             break
         time.sleep(0.01)
 
