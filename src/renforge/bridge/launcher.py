@@ -48,6 +48,8 @@ class BridgeSession:
             self._injected,
             self._injected.with_suffix(".rpyc"),
             self._project_root / ".renforge" / "bridge.json",
+            self._project_root / "traceback.txt",
+            self._project_root / "errors.txt",
         ):
             try:
                 path.unlink()
