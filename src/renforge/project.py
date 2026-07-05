@@ -47,7 +47,8 @@ class RenpyProject:
 
     def renpy_command(self, sdk: RenpySdk, args: Sequence[str] | tuple[str, ...] | None = None) -> list[str]:
         command_args = tuple(args) if args else ()
-        return sdk.launch_command(self.root, *command_args)
+        # Pass the absolute project root so the command is cwd-independent.
+        return sdk.launch_command(self.abs_root, *command_args)
 
     def lint_command(self, sdk: RenpySdk) -> list[str]:
         return self.renpy_command(sdk, ("lint",))

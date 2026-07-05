@@ -1,0 +1,59 @@
+"""Live Ren'Py SDK integration tests.
+
+Opt-in: these download/use a real Ren'Py SDK and invoke it. Enable with::
+
+    RENFORGE_SDK_TESTS=1 pytest tests/test_integration_sdk.py
+
+Optionally pin the version with ``RENFORGE_SDK_VERSION`` (default: 8.3.7).
+Each test runs against a temp copy of the demo so the committed one is never
+polluted with compiled ``.rpyc``/cache artifacts.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("RENFORGE_SDK_TESTS"),
+    reason="set RENFORGE_SDK_TESTS=1 to run live Ren'Py SDK integration tests",
+)
+
+_DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
+
+
+@pytest.fixture(scope="module")
+def sdk():
+    from renforge.sdk import get_or_install_sdk
+
+    return get_or_install_sdk(os.environ.get("RENFORGE_SDK_VERSION", "8.3.7"))
+
+
+@pytest.fixture
+def demo_copy(tmp_path: Path) -> Path:
+    destination = tmp_path / "demo"
+    shutil.copytree(_DEMO, destination)
+    return destination
+
+
+def test_lint_demo_is_clean(sdk, demo_copy: Path) -> None:
+    from renforge.project import RenpyProject
+    from renforge.util.subprocess import run_command
+
+    project = RenpyProject(demo_copy)
+    result = run_command(project.lint_command(sdk), timeout=180)
+
+    assert "lint report" in result.stdout.lower(), result.stdout + result.stderr
+
+
+def test_native_dump_returns_authoritative_labels(sdk, demo_copy: Path) -> None:
+    from renforge.dump import normalize_definitions, run_native_dump
+    from renforge.project import RenpyProject
+
+    raw = run_native_dump(sdk, RenpyProject(demo_copy), timeout=180)
+    labels = {d["name"] for d in normalize_definitions(raw) if d["kind"] == "label"}
+
+    assert {"start", "choice", "good", "bad"} <= labels

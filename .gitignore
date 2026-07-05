@@ -18,7 +18,10 @@ logs/
 # Ren'Py / RenForge runtime artifacts
 *.rpyc
 *.rpymc
+*.rpyb
+cache/
 saves/
+log.txt
 traceback.txt
 errors.txt
 .renforge/

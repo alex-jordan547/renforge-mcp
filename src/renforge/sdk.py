@@ -74,16 +74,19 @@ def _discover_candidate_roots(version: str) -> list[Path]:
 
 
 def _find_entrypoint(path: Path) -> Path:
+    # Prefer the platform launcher scripts: they bootstrap Ren'Py's *bundled*
+    # Python (which ships every dependency). `renpy.py` run with an arbitrary
+    # system Python fails on missing deps, so it is only a last resort.
     options = [
-        path / "renpy.py",
-        path / "renpy",
-        path / "renpy.exe",
         path / "renpy.sh",
+        path / "renpy.exe",
+        path / "renpy.py",
+        path / "renpy-sdk" / "renpy.sh",
         path / "renpy-sdk" / "renpy.py",
         path / "lib" / "renpy" / "renpy.py",
     ]
     for option in options:
-        if option.exists():
+        if option.is_file():
             return option
     raise FileNotFoundError(f"No Ren'Py launcher found under SDK directory '{path}'.")
 
@@ -142,6 +145,9 @@ def _extract_tar_archive(archive_path: Path, destination: Path) -> None:
             with source:
                 with target.open("wb") as destination_file:
                     shutil.copyfileobj(source, destination_file)
+            # Preserve the executable bit so launchers (renpy.sh) stay runnable.
+            if member.mode & 0o111:
+                os.chmod(target, target.stat().st_mode | 0o111)
 
 
 def _extract_zip_archive(archive_path: Path, destination: Path) -> None:
@@ -155,6 +161,10 @@ def _extract_zip_archive(archive_path: Path, destination: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member) as source, target.open("wb") as destination_file:
                 shutil.copyfileobj(source, destination_file)
+            # Preserve the executable bit encoded in the zip's unix attributes.
+            unix_mode = member.external_attr >> 16
+            if unix_mode & 0o111:
+                os.chmod(target, target.stat().st_mode | 0o111)
 
 
 def _extract_archive(archive_path: Path, destination: Path) -> None:
@@ -219,7 +229,9 @@ class RenpySdk:
         return [*self.launcher_command, *args]
 
     def launch_command(self, project_root: Path, *args: str) -> list[str]:
-        return self.command(*args, str(project_root))
+        # Ren'Py CLI form is: <launcher> <basedir> <command> [args].
+        # The project base directory must come first.
+        return self.command(str(project_root), *args)
 
 
 def get_or_install_sdk(version: str = "stable") -> RenpySdk:
