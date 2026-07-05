@@ -57,3 +57,21 @@ def test_native_dump_returns_authoritative_labels(sdk, demo_copy: Path) -> None:
     labels = {d["name"] for d in normalize_definitions(raw) if d["kind"] == "label"}
 
     assert {"start", "choice", "good", "bad"} <= labels
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        assert session.client.ping().get("pong") is True
+
+        session.client.set_var("renforge_seen", "by-test")
+        assert session.client.get_var("renforge_seen") == "by-test"
+
+        state = session.client.get_state()
+        assert "variables" in state and "current_label" in state
+
+        png = session.client.screenshot()
+        assert png.startswith(b"\x89PNG") and len(png) > 1000

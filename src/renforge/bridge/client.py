@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -29,6 +31,23 @@ class BridgeClient:
 
     def __init__(self, config: BridgeConfig):
         self._config = config
+
+    @classmethod
+    def from_project(cls, project_root: str | Path, *, timeout: float = 5.0) -> "BridgeClient":
+        """Build a client from ``<project_root>/.renforge/bridge.json``.
+
+        The running bridge publishes its host/port/token there on startup.
+        """
+        info_path = Path(project_root) / ".renforge" / "bridge.json"
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+        return cls(
+            BridgeConfig(
+                host=str(data.get("host", "127.0.0.1")),
+                port=int(data["port"]),
+                token=str(data.get("token", "")),
+                timeout=timeout,
+            )
+        )
 
     def request(self, command: str, payload: dict[str, Any] | None = None) -> dict:
         body = {
@@ -67,5 +86,31 @@ class BridgeClient:
 
         return response
 
+    def _checked(self, command: str, payload: dict[str, Any] | None = None) -> dict:
+        reply = self.request(command, payload)
+        if reply.get("error") is not None:
+            raise BridgeError(f"bridge error on '{command}': {reply['error']}")
+        return reply
+
     def ping(self) -> dict:
         return self.request("ping")
+
+    def get_state(self) -> dict:
+        return self._checked("get_state")
+
+    def eval_expr(self, expr: str) -> Any:
+        return self._checked("eval", {"expr": expr})["value"]
+
+    def get_var(self, name: str) -> Any:
+        return self._checked("get_var", {"name": name})["value"]
+
+    def set_var(self, name: str, value: Any) -> dict:
+        return self._checked("set_var", {"name": name, "value": value})
+
+    def screenshot(self, width: int = 0, height: int = 0) -> bytes:
+        """Return the current game frame as PNG bytes."""
+        reply = self._checked("screenshot", {"width": width, "height": height})
+        encoded = reply.get("base64")
+        if not encoded:
+            raise BridgeProtocolError("screenshot reply missing 'base64' data")
+        return base64.b64decode(encoded)

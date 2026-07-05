@@ -38,4 +38,7 @@ This is an **alpha** foundation focused on:
 - Minimal MCP app loader with graceful fallback when optional MCP dependencies are
   missing
 
-Dashboard and bridge features are out of scope for V1.
+The in-game bridge is live: it injects into a running project, publishes its
+port/token, and lets a client inspect state, eval expressions, read/write
+variables, and capture screenshots (the AI can literally see the game). The web
+dashboard remains a V2 goal.
