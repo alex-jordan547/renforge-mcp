@@ -7,6 +7,7 @@ interface TranslationRow {
   status: string;
   ratio: string;
   files: string;
+  percent: number | null;
 }
 
 function toNumber(value: unknown): number | null {
@@ -37,6 +38,7 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
       status: error || "Stats indisponibles",
       ratio: "—",
       files: "—",
+      percent: null,
     };
   }
 
@@ -50,9 +52,16 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
   const missing = readValue(stats, ["missing_lines", "missing", "missing_files", "missing_translations"]);
   const percent = toNumber((stats as Record<string, unknown>).percent);
 
-  const ratio =
+  const calculatedPercent =
     percent !== null
-      ? `${percent.toFixed(0)}%`
+      ? percent
+      : translated !== null && total !== null && total > 0
+        ? (translated / total) * 100
+        : null;
+
+  const ratio =
+    calculatedPercent !== null
+      ? `${calculatedPercent.toFixed(0)}%`
       : translated !== null && total !== null
         ? `${translated}/${total}`
         : "—";
@@ -67,13 +76,14 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
   return {
     language,
     status:
-      percent !== null
-        ? "OK"
-        : translated !== null && total !== null
+      calculatedPercent !== null && calculatedPercent >= 100
+        ? "Complet"
+        : calculatedPercent !== null && calculatedPercent > 0
           ? "Partiel"
           : "Partiel",
     ratio,
     files,
+    percent: calculatedPercent,
   };
 }
 
@@ -161,16 +171,29 @@ export function TranslationPage() {
               <tr>
                 <th>Langue</th>
                 <th>État</th>
-                <th>Ratio</th>
+                <th>Ratio / Progression</th>
                 <th>Fichiers / manquants</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.language}>
-                  <td>{row.language}</td>
-                  <td>{row.status}</td>
-                  <td>{row.ratio}</td>
+                  <td style={{ fontWeight: 600 }}>{row.language}</td>
+                  <td>
+                    <span className={`diagBadge ${row.status === "Complet" ? "diagInfo" : "diagWarn"}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="progressContainer">
+                      <span style={{ minWidth: "48px", fontWeight: "bold" }}>{row.ratio}</span>
+                      {row.percent !== null && (
+                        <div className="progressBar">
+                          <div className="progressFill" style={{ width: `${row.percent}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  </td>
                   <td>{row.files}</td>
                 </tr>
               ))}

@@ -89,6 +89,69 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       setScreenshot(frame);
     });
 
+  const onRollback = async () => {
+    try {
+      await api.evaluate("renpy.roll_back()");
+      setStatus("rollback ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "rollback failed");
+    }
+  };
+
+  const onToggleSkip = async () => {
+    try {
+      await api.evaluate("renpy.game.interface.keymap['toggle_skip']()");
+      setStatus("toggle skip ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "skip failed");
+    }
+  };
+
+  const onToggleAuto = async () => {
+    try {
+      await api.evaluate("renpy.game.interface.keymap['toggle_auto']()");
+      setStatus("toggle auto ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "auto failed");
+    }
+  };
+
+  const onQuickSave = async () => {
+    try {
+      await api.evaluate("renpy.save('quick-1', 'Sauvegarde auto dashboard')");
+      setStatus("save ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "save failed");
+    }
+  };
+
+  const onQuickLoad = async () => {
+    try {
+      await api.evaluate("renpy.load('quick-1')");
+      setStatus("load ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "load failed");
+    }
+  };
+
+  const onMainMenu = async () => {
+    try {
+      await api.evaluate("renpy.utter_restart()");
+      setStatus("main menu ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "menu failed");
+    }
+  };
+
+  const onToggleUI = async () => {
+    try {
+      await api.evaluate("renpy.toggle_interface()");
+      setStatus("toggle ui ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "toggle failed");
+    }
+  };
+
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
     if (!expr.trim()) {
@@ -132,9 +195,9 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       </div>
 
       <div className="liveGrid">
-        <div className="card">
-          <h3>Preview</h3>
-          <div className="screenshotWrap">
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <h3 style={{ padding: "20px 20px 0 20px" }}>Preview</h3>
+          <div className="screenshotWrap" style={{ margin: "12px 20px 0 20px", borderBottom: "none", borderRadius: "var(--radius) var(--radius) 0 0" }}>
             {displayedFrame ? (
               <img
                 src={`data:image/${displayedFrame.format};base64,${displayedFrame.base64}`}
@@ -143,6 +206,32 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
             ) : (
               <div className="emptyBox">Aucune image</div>
             )}
+          </div>
+          <div className="remote-control-deck">
+            <button className="remote-btn" type="button" onClick={onRollback} title="Retourner en arrière (Rollback)">
+              ◀ Retour
+            </button>
+            <button className="remote-btn" type="button" onClick={onAdvance} title="Avancer dans l'histoire">
+              ▶ Avancer
+            </button>
+            <button className="remote-btn" type="button" onClick={onToggleSkip} title="Passer les dialogues rapidement (Skip)">
+              ⏩ Skip
+            </button>
+            <button className="remote-btn" type="button" onClick={onToggleAuto} title="Lecture automatique (Auto)">
+              🔄 Auto
+            </button>
+            <button className="remote-btn" type="button" onClick={onQuickSave} title="Sauvegarde rapide">
+              💾 Sauver
+            </button>
+            <button className="remote-btn" type="button" onClick={onQuickLoad} title="Charger la sauvegarde rapide">
+              📂 Charger
+            </button>
+            <button className="remote-btn" type="button" onClick={onToggleUI} title="Afficher/Masquer l'interface de dialogue (UI)">
+              👁️ Afficher UI
+            </button>
+            <button className="remote-btn" type="button" onClick={onMainMenu} title="Retourner au menu principal">
+              🏠 Menu
+            </button>
           </div>
         </div>
 
@@ -185,7 +274,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       </div>
 
       <div className="actionsRow">
-        <button className="btn" type="button" onClick={onAdvance}>
+        <button className="btn primary" type="button" onClick={onAdvance}>
           Advance
         </button>
         <button className="btn" type="button" onClick={onScreenshot}>
@@ -205,7 +294,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 placeholder="store.persistent.score + 1"
               />
             </label>
-            <button className="btn" type="submit">
+            <button className="btn primary" type="submit">
               Eval
             </button>
           </form>
@@ -219,7 +308,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               Variable
               <input
                 value={setVarName}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setSetVarName(event.target.value)}
+                onChange={(event) => setSetVarName(event.target.value)}
                 placeholder="money"
               />
             </label>
@@ -227,11 +316,11 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               Valeur
               <input
                 value={setVarValue}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setSetVarValue(event.target.value)}
+                onChange={(event) => setSetVarValue(event.target.value)}
                 placeholder='"bonjour" or 42'
               />
             </label>
-            <button className="btn" type="submit">
+            <button className="btn primary" type="submit">
               Set
             </button>
           </form>
@@ -244,7 +333,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               {choices.map((choice) => (
                 <li key={`${choice.text}-${choice.index}`}>
                   <span>{choice.text}</span>
-                  <button className="btn small" onClick={() => onSelectChoice(choice.index)}>
+                  <button className="btn small primary" onClick={() => onSelectChoice(choice.index)}>
                     Choisir
                   </button>
                 </li>
