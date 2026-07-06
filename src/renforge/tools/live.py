@@ -12,12 +12,16 @@ PNG from :func:`screenshot_png` into an MCP image.
 
 from __future__ import annotations
 
+import json
+import os
+import signal
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
-from ..bridge.launcher import BridgeSession, launch_with_bridge
+from ..bridge.launcher import BridgeSession, launch_with_bridge, remove_bridge_artifacts
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
 
@@ -57,14 +61,20 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
-    if existing is not None and existing.process.poll() is None:
-        try:
-            if warp is None:
+    if existing is not None:
+        # Reuse a live session only when no warp is requested and it still
+        # answers; otherwise tear it down (a warp needs a fresh --warp launch,
+        # and a dead process must be reaped so it does not linger as a zombie).
+        if warp is None and existing.process.poll() is None:
+            try:
                 state = existing.client.get_state()
                 return {"ok": True, "already_running": True, "current_label": state.get("current_label")}
+            except Exception:
+                pass  # unreachable session; fall through and relaunch
+        try:
             existing.close()
         except Exception:
-            existing.close()
+            pass
         _SESSIONS.pop(key, None)
 
     try:
@@ -87,10 +97,76 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
 
 def stop_game(project_path: str) -> dict:
     session = _SESSIONS.pop(_key(project_path), None)
-    if session is None:
+    if session is not None:
+        session.close()
+        return {"ok": True, "was_running": True}
+    # No in-process session: the game may have been launched elsewhere (e.g. the
+    # dashboard server). Stop it through the published bridge.json instead.
+    return _stop_external(project_path)
+
+
+def _stop_external(project_path: str) -> dict:
+    """Stop a game launched by another process, using ``bridge.json``.
+
+    Kills the game only after the bridge answers a ``ping`` with the token from
+    ``bridge.json`` — that proves the recorded PID is really our game and not a
+    recycled/unrelated process. A stale ``bridge.json`` (no live bridge) is just
+    cleaned up.
+    """
+    try:
+        project = RenpyProject(Path(project_path))
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    info_path = project.root / ".renforge" / "bridge.json"
+    if not info_path.exists():
         return {"ok": True, "was_running": False}
-    session.close()
-    return {"ok": True, "was_running": True}
+
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        info = {}
+
+    alive = False
+    try:
+        BridgeClient.from_project(project.root, timeout=1.0).ping()
+        alive = True
+    except Exception:
+        alive = False
+
+    was_running = False
+    pid = info.get("pid")
+    if alive and isinstance(pid, int):
+        was_running = _terminate_pid(pid)
+
+    remove_bridge_artifacts(project.root)
+    return {"ok": True, "was_running": was_running}
+
+
+def _terminate_pid(pid: int, timeout: float = 10.0) -> bool:
+    """SIGTERM ``pid`` (then SIGKILL if it lingers). Returns whether it existed."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)  # probe liveness without signalling
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return True
+        time.sleep(0.2)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return True
 
 
 def stop_all() -> None:

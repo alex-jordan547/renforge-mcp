@@ -1,5 +1,5 @@
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -18,7 +18,7 @@ interface StoryMapPageProps {
   data: StoryMapResponse;
   loading: boolean;
   error: string | null;
-  onJump: (target: string) => void;
+  onJump: (target: string) => void | Promise<void>;
 }
 
 function mapNodeClass(type: string) {
@@ -38,6 +38,8 @@ function mapNodeClass(type: string) {
 
 export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps) {
   const [layoutBusy, setLayoutBusy] = useState(false);
+  const [warpBusy, setWarpBusy] = useState(false);
+  const [warpTarget, setWarpTarget] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -168,10 +170,26 @@ export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps
     };
   }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes]);
 
-  const onNodeClick: NodeMouseHandler = (_event, node) => {
-    const target = String(node.data.name ?? node.id);
-    onJump(target.replace(/^label:/, ""));
-  };
+  const onNodeClick: NodeMouseHandler = useCallback(
+    async (_event, node) => {
+      // A warp relaunches the game at the target label, so ignore stray or
+      // repeat clicks while one is already in flight — otherwise a mis-click
+      // stacks several silent relaunches.
+      if (warpBusy) {
+        return;
+      }
+      const target = String(node.data.name ?? node.id).replace(/^label:/, "");
+      setWarpBusy(true);
+      setWarpTarget(target);
+      try {
+        await onJump(target);
+      } finally {
+        setWarpBusy(false);
+        setWarpTarget(null);
+      }
+    },
+    [warpBusy, onJump],
+  );
 
   if (loading) {
     return <section className="panel empty">Chargement de la Story Map…</section>;
@@ -194,11 +212,13 @@ export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps
     <section className="panel storyMapPanel">
       <div className="panelHeader">
         <h2>Story Map</h2>
-        <span>{data.nodes.length} labels • {data.edges.length} transitions</span>
+        <span>
+          {data.nodes.length} labels • {data.edges.length} transitions • cliquez un nœud pour relancer le jeu à ce label
+        </span>
       </div>
-      <div className="storyCanvas">
+      <div className="storyCanvas" aria-busy={warpBusy}>
         <ReactFlow
-          onNodeClick={onNodeClick}
+          onNodeClick={warpBusy ? undefined : onNodeClick}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
@@ -208,12 +228,24 @@ export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps
           zoomOnScroll={true}
           onlyRenderVisibleElements={true}
         >
-          <Background />
-          <MiniMap pannable />
+          <Background color="#2f3a49" gap={20} />
+          <MiniMap
+            pannable
+            zoomable
+            bgColor="#171b20"
+            maskColor="rgba(17, 19, 23, 0.65)"
+            nodeColor="#33485d"
+            nodeStrokeColor="#5a73f5"
+            nodeStrokeWidth={2}
+          />
           <Controls />
         </ReactFlow>
       </div>
-      {layoutBusy ? <div className="statusLine">Ajustement du graphe…</div> : null}
+      {warpBusy ? (
+        <div className="statusLine">Redémarrage du jeu sur « {warpTarget} »…</div>
+      ) : layoutBusy ? (
+        <div className="statusLine">Ajustement du graphe…</div>
+      ) : null}
     </section>
   );
 }

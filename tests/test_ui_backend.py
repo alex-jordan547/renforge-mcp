@@ -199,13 +199,10 @@ def test_story_map_signature_changes_on_script_or_autopilot_change(tmp_path: Pat
 
 class _FakePollerClient:
     def get_state(self):
-        return {}
+        return {"current_label": "start"}
 
     def poll_events(self, _cursor: int):
-        return {"events": [{"type": "tool"}], "cursor": 1}
-
-    def screenshot(self, _width: int, _height: int) -> bytes:
-        return b"\x89PNG\r\n\x1a\n"
+        return {"events": [{"type": "label", "label": "start"}], "cursor": 1}
 
 
 def test_poll_bridge_cycle_tracks_change_only_for_state_payload() -> None:
@@ -213,3 +210,40 @@ def test_poll_bridge_cycle_tracks_change_only_for_state_payload() -> None:
     assert poller._cycle_changed({}, {"x": 1}, []) is True
     assert poller._cycle_changed({}, {}, []) is False
     assert poller._cycle_changed({}, {}, [{}]) is True
+
+
+def test_run_in_thread_forwards_keyword_arguments() -> None:
+    # Regression: the poller connects with ``from_project(root, timeout=1.0)``.
+    # A ``_run_in_thread(fn, *args)`` signature raises TypeError on the keyword,
+    # which the poller swallows — silently killing the whole live WS channel.
+    def probe(first: int, *, second: int) -> tuple[int, int]:
+        return (first, second)
+
+    assert asyncio.run(poller._run_in_thread(probe, 1, second=2)) == (1, 2)
+
+
+def test_poll_bridge_connects_with_timeout_kwarg_and_broadcasts(tmp_path: Path, monkeypatch) -> None:
+    hub = _RecordingHub()
+    stop_event = asyncio.Event()
+    captured: dict[str, object] = {}
+
+    def fake_from_project(root, *, timeout):
+        captured["root"] = root
+        captured["timeout"] = timeout
+        return _FakePollerClient()
+
+    monkeypatch.setattr(poller.BridgeClient, "from_project", staticmethod(fake_from_project))
+
+    async def _stop_sleep(_delay: float) -> None:
+        stop_event.set()
+
+    monkeypatch.setattr(poller.asyncio, "sleep", _stop_sleep)
+
+    asyncio.run(poller.poll_bridge(tmp_path, hub, stop_event, poll_interval=0.0))
+
+    assert captured["timeout"] == 1.0
+    broadcast_types = [message["type"] for message in hub.messages]
+    assert "state" in broadcast_types
+    assert "event" in broadcast_types
+    # Screenshots are served over HTTP, never streamed on the socket.
+    assert "screenshot" not in broadcast_types

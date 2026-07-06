@@ -195,6 +195,43 @@ nav {
   font-size: 0.85rem;
 }
 
+/* ReactFlow ships light-theme controls and minimap; align them with the dark UI. */
+.storyCanvas .react-flow__controls {
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.storyCanvas .react-flow__controls-button {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  width: 26px;
+  height: 26px;
+}
+
+.storyCanvas .react-flow__controls-button:hover {
+  background: var(--card-soft);
+}
+
+.storyCanvas .react-flow__controls-button svg {
+  fill: var(--text);
+}
+
+.storyCanvas .react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.storyCanvas .react-flow__attribution {
+  background: transparent;
+  color: var(--muted);
+}
+
+.storyCanvas .react-flow__attribution a {
+  color: var(--muted);
+}
+
 .node-label {
   background: var(--card-soft);
   border: 1px solid #33485d;

@@ -25,6 +25,8 @@ examples/demo_game/game/saves/
 examples/demo_game/.renforge/
 examples/demo_game/log.txt
 examples/demo_game/game/renforge_bridge.rpyc.bak
+# Bridge source injected at runtime by the launcher (the .rpyc is caught by *.rpyc)
+renforge_bridge.rpy
 examples/demo_game/game/gui/*.png
 examples/demo_game/game/gui/**/*.png
 !examples/demo_game/game/gui/bubble.png

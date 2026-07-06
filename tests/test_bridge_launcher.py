@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from renforge.bridge.launcher import launch_with_bridge
+from renforge.bridge.launcher import launch_with_bridge, remove_bridge_artifacts
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
 
@@ -66,3 +66,27 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
     else:
         assert command[2:5] == ["run", "--warp", warp]
     session.close(timeout=0.1)
+
+
+def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    game.mkdir()
+    injected = game / "renforge_bridge.rpy"
+    injected.write_text("# injected\n", encoding="utf-8")
+    (game / "renforge_bridge.rpyc").write_bytes(b"\x00")
+    (game / "renforge_bridge.rpyc.bak").write_bytes(b"\x00")
+    renforge = tmp_path / ".renforge"
+    renforge.mkdir()
+    (renforge / "bridge.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "traceback.txt").write_text("boom", encoding="utf-8")
+
+    remove_bridge_artifacts(tmp_path)
+
+    assert not injected.exists()
+    assert not (game / "renforge_bridge.rpyc").exists()
+    assert not (game / "renforge_bridge.rpyc.bak").exists()
+    assert not (renforge / "bridge.json").exists()
+    assert not (tmp_path / "traceback.txt").exists()
+
+    # Idempotent: a second call on an already-clean tree does not raise.
+    remove_bridge_artifacts(tmp_path)
