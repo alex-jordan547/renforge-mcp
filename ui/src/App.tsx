@@ -1,7 +1,7 @@
 import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api, getToken } from "./api";
-import type { SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
+import type { LiveScreenshot, LiveState, SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { AssetsPage } from "./pages/AssetsPage";
 import { DebuggerPage } from "./pages/DebuggerPage";
@@ -105,6 +105,11 @@ function socketMessageToTimeline(message: SocketEnvelope, fallbackAt: string): T
   }
 
   const eventType = String(event.type ?? messageType ?? "event");
+  // State snapshots and screenshot frames drive the Live view, not the
+  // Timeline — keeping them out avoids flooding it with base64 blobs.
+  if (eventType === "state" || eventType === "screenshot") {
+    return null;
+  }
   if (eventType === "label") {
     return {
       id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${String(event.label ?? "")}`,
@@ -173,9 +178,17 @@ export function App() {
   const [storyMapLoading, setStoryMapLoading] = useState(true);
   const [storyMapError, setStoryMapError] = useState<string | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<TimelineItem[]>([]);
+  const [liveState, setLiveState] = useState<LiveState | null>(null);
+  const [liveFrame, setLiveFrame] = useState<LiveScreenshot | null>(null);
   const token = getToken();
 
   const handleSocketMessage = useCallback((message: SocketEnvelope) => {
+    // Route live frames to the Live view and narrative events to the Timeline.
+    if (message.type === "state" && message.payload) {
+      setLiveState(message.payload as unknown as LiveState);
+    } else if (message.type === "screenshot" && message.payload) {
+      setLiveFrame(message.payload as unknown as LiveScreenshot);
+    }
     const next = socketMessageToTimeline(message, new Date().toISOString());
     if (!next) {
       return;
@@ -267,7 +280,7 @@ export function App() {
           />
         );
       case "live":
-        return <LivePage />;
+        return <LivePage liveState={liveState} liveFrame={liveFrame} />;
       case "timeline":
         return <TimelinePage items={timelineEvents} />;
       case "assets":
@@ -283,7 +296,7 @@ export function App() {
       default:
         return <StoryMapPage data={storyMap} loading={storyMapLoading} error={storyMapError} onJump={handleJump} />;
     }
-  }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents]);
+  }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents, liveState, liveFrame]);
 
   return (
     <div className="dashboard">

@@ -263,7 +263,10 @@ init python:
             tmp = os.path.join(out_dir, "bridge.json.tmp")
             final = os.path.join(out_dir, "bridge.json")
             with open(tmp, "w") as fp:
-                json.dump({"host": bridge.host, "port": port, "token": bridge.token}, fp)
+                json.dump(
+                    {"host": bridge.host, "port": port, "token": bridge.token, "pid": os.getpid()},
+                    fp,
+                )
             os.replace(tmp, final)
         except Exception:
             pass

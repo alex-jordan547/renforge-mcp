@@ -22,7 +22,12 @@ const formatUnknown = (value: unknown) => {
   return String(value);
 };
 
-export function LivePage() {
+interface LivePageProps {
+  liveState?: LiveState | null;
+  liveFrame?: LiveScreenshot | null;
+}
+
+export function LivePage({ liveState = null, liveFrame = null }: LivePageProps = {}) {
   const [state, setState] = useState<LiveState | null>(null);
   const [screenshot, setScreenshot] = useState<LiveScreenshot | null>(null);
   const [choices, setChoices] = useState<LiveChoice[]>([]);
@@ -112,8 +117,12 @@ export function LivePage() {
     await refresh();
   };
 
-  const tags = state?.showing_tags ?? [];
-  const variables = state?.variables ?? {};
+  // Live WS frames (pushed by the poller) take priority; HTTP polling remains
+  // the fallback that also drives choices and actions.
+  const displayedState = liveState ?? state;
+  const displayedFrame = liveFrame ?? screenshot;
+  const tags = displayedState?.showing_tags ?? [];
+  const variables = displayedState?.variables ?? {};
 
   return (
     <section className="panel">
@@ -126,9 +135,9 @@ export function LivePage() {
         <div className="card">
           <h3>Preview</h3>
           <div className="screenshotWrap">
-            {screenshot ? (
+            {displayedFrame ? (
               <img
-                src={`data:image/${screenshot.format};base64,${screenshot.base64}`}
+                src={`data:image/${displayedFrame.format};base64,${displayedFrame.base64}`}
                 alt="Live screenshot"
               />
             ) : (
@@ -139,15 +148,15 @@ export function LivePage() {
 
         <div className="card">
           <h3>État courant</h3>
-          {state ? (
+          {displayedState ? (
             <dl className="kv">
               <div>
                 <dt>Label</dt>
-                <dd>{state.current_label || "—"}</dd>
+                <dd>{displayedState.current_label || "—"}</dd>
               </div>
               <div>
                 <dt>Menu</dt>
-                <dd>{state.menu ? "actif" : "inactif"}</dd>
+                <dd>{displayedState.menu ? "actif" : "inactif"}</dd>
               </div>
               <div>
                 <dt>Tags</dt>

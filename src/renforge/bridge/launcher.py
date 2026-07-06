@@ -22,13 +22,35 @@ _BRIDGE_RESOURCE: Path = Path(__file__).parent / "bridge.rpy"
 _INJECTED_NAME: str = "renforge_bridge.rpy"
 
 
+def remove_bridge_artifacts(project_root: Path) -> None:
+    """Delete every file the bridge injects or leaves behind on ``project_root``.
+
+    Safe to call more than once and whether or not the game is running; missing
+    files are ignored. Shared by :meth:`BridgeSession.close` and the
+    cross-process stop path so a session torn down from another process cleans
+    up the same set of files.
+    """
+    game_dir = project_root / "game"
+    for path in (
+        game_dir / _INJECTED_NAME,          # renforge_bridge.rpy
+        game_dir / (_INJECTED_NAME + "c"),  # renforge_bridge.rpyc
+        game_dir / (_INJECTED_NAME + "c.bak"),  # renforge_bridge.rpyc.bak
+        project_root / ".renforge" / "bridge.json",
+        project_root / "traceback.txt",
+        project_root / "errors.txt",
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 class BridgeSession:
     """A running game plus a connected bridge client. Use as a context manager."""
 
-    def __init__(self, process: subprocess.Popen, client: BridgeClient, injected: Path, project_root: Path):
+    def __init__(self, process: subprocess.Popen, client: BridgeClient, project_root: Path):
         self.process = process
         self.client = client
-        self._injected = injected
         self._project_root = project_root
 
     def __enter__(self) -> "BridgeSession":
@@ -44,17 +66,11 @@ class BridgeSession:
                 self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-        for path in (
-            self._injected,
-            self._injected.with_suffix(".rpyc"),
-            self._project_root / ".renforge" / "bridge.json",
-            self._project_root / "traceback.txt",
-            self._project_root / "errors.txt",
-        ):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+                self.process.wait()
+        else:
+            # Already exited: reap it so it does not linger as a zombie.
+            self.process.wait()
+        remove_bridge_artifacts(self._project_root)
 
 
 def launch_with_bridge(
@@ -99,7 +115,7 @@ def launch_with_bridge(
                 try:
                     client = BridgeClient.from_project(project.root)
                     client.ping()
-                    return BridgeSession(process, client, injected, project.root)
+                    return BridgeSession(process, client, project.root)
                 except Exception:
                     pass  # bridge.json not fully written yet, retry
             time.sleep(0.3)
@@ -113,4 +129,4 @@ def launch_with_bridge(
     raise TimeoutError(f"Bridge did not come up within {startup_timeout}s")
 
 
-__all__ = ["BridgeSession", "launch_with_bridge"]
+__all__ = ["BridgeSession", "launch_with_bridge", "remove_bridge_artifacts"]
