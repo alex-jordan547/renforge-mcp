@@ -182,12 +182,12 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         if not await _check_token(request):
             return _unauthorized()
         payload = _as_dict(await _read_json(request))
-        width = int(payload.get("width", 0) or 0)
-        height = int(payload.get("height", 0) or 0)
         try:
+            width = int(payload.get("width", 0) or 0)
+            height = int(payload.get("height", 0) or 0)
             png = live.screenshot_png(str(project_root), width=width, height=height)
         except Exception as exc:
-            return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status_code=500)
+            return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status_code=200)
         return JSONResponse(
             {
                 "ok": True,

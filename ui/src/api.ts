@@ -38,6 +38,133 @@ function withToken(path: string): string {
   return `${API_BASE}${url.pathname}${url.search}`;
 }
 
+type BackendFailure = {
+  ok: boolean;
+  error?: string;
+};
+
+type LiveScreenshotPayload = {
+  format?: string;
+  base64?: string;
+  width?: number;
+  height?: number;
+};
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isBackendFailure(payload: unknown): payload is BackendFailure {
+  return (
+    isObject(payload) &&
+    payload.ok === false &&
+    (typeof payload.error === "undefined" || typeof payload.error === "string")
+  );
+}
+
+function extractError(payload: BackendFailure): string {
+  return payload.error ?? "Unexpected response";
+}
+
+function parseLiveStatePayload(payload: unknown): LiveState {
+  if (isBackendFailure(payload)) {
+    throw new Error(extractError(payload));
+  }
+  if (!isObject(payload)) {
+    return { current_label: "", menu: false, showing_tags: [], variables: {} };
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  const tags = Array.isArray(candidate.showing_tags)
+    ? candidate.showing_tags.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const variables = isObject(candidate.variables) ? (candidate.variables as Record<string, unknown>) : {};
+
+  return {
+    current_label: typeof candidate.current_label === "string" ? candidate.current_label : "",
+    menu: candidate.menu === true,
+    showing_tags: tags,
+    variables,
+  };
+}
+
+function parseLiveChoicesPayload(payload: unknown): { choices: LiveChoice[] } {
+  if (isBackendFailure(payload)) {
+    throw new Error(extractError(payload));
+  }
+  if (!isObject(payload)) {
+    return { choices: [] };
+  }
+
+  const fromObject = isObject(payload.choices)
+    ? (payload as { choices?: unknown }).choices
+    : undefined;
+  const source = Array.isArray(fromObject) ? fromObject : Array.isArray(payload) ? payload : [];
+
+  return {
+    choices: source
+      .map((entry): LiveChoice | null => {
+        if (!isObject(entry)) {
+          return null;
+        }
+        const candidate = entry as {
+          index?: unknown;
+          text?: unknown;
+          screen?: unknown;
+        };
+        if (typeof candidate.text !== "string") {
+          return null;
+        }
+        const index =
+          typeof candidate.index === "number"
+            ? candidate.index
+            : typeof candidate.index === "string" && /^\d+$/.test(candidate.index)
+              ? Number.parseInt(candidate.index, 10)
+              : 0;
+        const parsed: LiveChoice = {
+          index,
+          text: candidate.text,
+        };
+        if (typeof candidate.screen === "string") {
+          parsed.screen = candidate.screen;
+        }
+        return parsed;
+      })
+      .filter((entry): entry is LiveChoice => entry !== null),
+  };
+}
+
+function parseScreenshotPayload(payload: unknown): LiveScreenshot {
+  if (isBackendFailure(payload)) {
+    throw new Error(extractError(payload));
+  }
+  if (!isObject(payload)) {
+    throw new Error("Invalid screenshot payload");
+  }
+
+  const rawPayload = isObject(payload) ? (payload as Record<string, unknown>) : {};
+  const candidate = (isObject(rawPayload.screenshot) ? rawPayload.screenshot : rawPayload) as LiveScreenshotPayload;
+  if (typeof candidate.format !== "string" || typeof candidate.base64 !== "string") {
+    throw new Error("Invalid screenshot payload");
+  }
+
+  return {
+    format: candidate.format === "jpeg" ? "jpeg" : "png",
+    base64: candidate.base64,
+    width: typeof candidate.width === "number" ? candidate.width : undefined,
+    height: typeof candidate.height === "number" ? candidate.height : undefined,
+  };
+}
+
+function checkBooleanResponse(payload: unknown, action: string): void {
+  if (!isObject(payload) || typeof payload.ok !== "boolean") {
+    return;
+  }
+  if (payload.ok === false) {
+    throw new Error((payload as { error?: string }).error ?? `${action} failed`);
+  }
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.text();
@@ -148,13 +275,20 @@ function parseFileResponse(path: string, payload: unknown): FileContent {
   const filePayload = payload as {
     path?: unknown;
     content?: unknown;
+    text?: unknown;
     size?: unknown;
     [key: string]: unknown;
   };
 
+  const content = typeof filePayload.text === "string" && filePayload.text.length > 0
+    ? filePayload.text
+    : typeof filePayload.content === "string"
+      ? filePayload.content
+      : "";
+
   return {
     path: typeof filePayload.path === "string" ? filePayload.path : path,
-    content: typeof filePayload.content === "string" ? filePayload.content : "",
+    content,
     size: typeof filePayload.size === "number" ? filePayload.size : undefined,
   };
 }
@@ -165,19 +299,24 @@ export const api = {
   },
 
   async fetchLiveState(): Promise<LiveState> {
-    return apiGet<LiveState>("/api/live/state");
+    const response = await apiGet<unknown>("/api/live/state");
+    return parseLiveStatePayload(response);
   },
 
   async fetchLiveScreenshot(width = 680, height = 380): Promise<LiveScreenshot> {
-    return apiPost<LiveScreenshot>("/api/screenshot", { width, height });
+    const response = await apiPost<unknown>("/api/screenshot", { width, height });
+    return parseScreenshotPayload(response);
   },
 
   async fetchLiveChoices(): Promise<{ choices: LiveChoice[] }> {
-    return apiGet<{ choices: LiveChoice[] }>("/api/live/choices");
+    const response = await apiGet<unknown>("/api/live/choices");
+    return parseLiveChoicesPayload(response);
   },
 
   async jumpToLabel(target: string): Promise<{ ok: boolean; error?: string }> {
-    return apiPost<{ ok: boolean; error?: string }>("/api/warp", { target });
+    const response = await apiPost<unknown>("/api/warp", { target });
+    checkBooleanResponse(response, "Jump");
+    return response as { ok: boolean; error?: string };
   },
 
   async advance(): Promise<{ ok: boolean }> {
@@ -200,7 +339,15 @@ export const api = {
   },
 
   async selectChoice(index: number): Promise<{ ok: boolean; text: string }> {
-    return apiPost<{ ok: boolean; text: string }>("/api/select-choice", { index });
+    const response = await apiPost<unknown>("/api/select-choice", { index });
+    checkBooleanResponse(response, "Choice");
+    if (isObject(response)) {
+      return {
+        ok: true,
+        text: typeof response.text === "string" ? response.text : "",
+      };
+    }
+    return { ok: true, text: "" };
   },
 
   async fetchCoverage(): Promise<CoverageResponse> {

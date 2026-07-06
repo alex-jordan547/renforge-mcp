@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Set
 
 from starlette.websockets import WebSocket
@@ -34,3 +35,16 @@ class WebSocketHub:
                 await socket.send_text(text)
             except Exception:
                 await self.disconnect(socket)
+
+
+def build_ws_envelope(
+    *,
+    kind: str,
+    type: str,
+    payload: dict[str, Any],
+    timestamp: int | None = None,
+) -> dict[str, Any]:
+    value = timestamp
+    if value is None:
+        value = int(time.time() * 1000)
+    return {"kind": kind, "type": type, "timestamp": value, "payload": payload}

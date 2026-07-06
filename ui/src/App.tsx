@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { api, getToken } from "./api";
 import type { SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -24,21 +25,72 @@ const SECTIONS = [
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
-function socketMessageToTimeline(message: SocketEnvelope, fallbackAt: string): TimelineItem | null {
-  if (message.kind === "activity") {
-    const payload = message.payload;
-    const event = message.event ?? payload;
-    if (typeof event !== "object" || event === null) {
-      return null;
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: string | null;
+}
+
+class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return {
+      hasError: true,
+      error: error instanceof Error ? error.message : "Une erreur est survenue",
+    };
+  }
+
+  componentDidCatch(_error: unknown, _info: unknown) {
+    // Keep section-level errors from collapsing the whole dashboard.
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="errorBoundaryPanel">
+          <h3>Erreur de section</h3>
+          <p className="muted">{this.state.error}</p>
+          <p className="muted">Cette section a été isolée pour préserver l’application.</p>
+        </div>
+      );
     }
-    const activity = event as Record<string, unknown>;
+    return this.props.children;
+  }
+}
+
+function safeRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function socketMessageToTimeline(message: SocketEnvelope, fallbackAt: string): TimelineItem | null {
+  const kind = message.kind;
+  const messageType = message.type;
+  const event =
+    safeRecord(message.payload) ??
+    safeRecord(message.event) ??
+    null;
+  const messageTimestamp = toSafe(message.timestamp, fallbackAt);
+
+  const isActivity = kind === "activity" || messageType === "activity";
+  if (isActivity && event) {
+    const activity = event.type === "activity" && safeRecord(event.payload) ? (event.payload as Record<string, unknown>) : event;
+    const activityTs =
+      safeRecord(activity)?.["ts"] ??
+      safeRecord(activity)?.timestamp ??
+      messageTimestamp;
+    const normalizedTimestamp = toSafe(activityTs, messageTimestamp);
+
     const tool = String(activity.tool ?? activity.name ?? "activity");
     const category = String(activity.category ?? "tool");
     const details = `Tool: ${tool} • Duration: ${String(activity.duration_ms ?? "n/a")}ms`;
     return {
-      id: `${message.timestamp ?? fallbackAt}-${tool}`,
+      id: `${normalizedTimestamp}-${tool}`,
       source: "activity",
-      timestamp: message.timestamp ?? fallbackAt,
+      timestamp: normalizedTimestamp,
       type: category,
       title: String(activity.name ?? "Tool call"),
       details,
@@ -47,62 +99,72 @@ function socketMessageToTimeline(message: SocketEnvelope, fallbackAt: string): T
     };
   }
 
-  const event = (message.payload ?? message.event) as Record<string, unknown> | undefined;
-  if (!event) {
+  const isBridge = kind === "bridge" || messageType === "state" || messageType === "event" || messageType === "screenshot";
+  if (!isBridge || !event) {
     return null;
   }
 
-  if (message.type === "bridge" || typeof event.type === "string") {
-    const eventType = String(event.type ?? message.type ?? "event");
-    if (eventType === "label") {
-      return {
-        id: `${message.timestamp ?? fallbackAt}-${eventType}-${String(event.label ?? "")}`,
-        source: "bridge",
-        timestamp: String(event.timestamp ?? fallbackAt),
-        type: eventType,
-        title: "Label",
-        details: `Entered ${String(event.label ?? "unknown")}`,
-        payload: event,
-        level: "info",
-      };
-    }
-    if (eventType === "say") {
-      return {
-        id: `${message.timestamp ?? fallbackAt}-${eventType}-${String(event.what ?? "")}`,
-        source: "bridge",
-        timestamp: String(event.timestamp ?? fallbackAt),
-        type: eventType,
-        title: "Say",
-        details: String(event.what ?? ""),
-        payload: event,
-        level: "info",
-      };
-    }
-    if (eventType === "exception") {
-      return {
-        id: `${message.timestamp ?? fallbackAt}-${eventType}`,
-        source: "bridge",
-        timestamp: String(event.timestamp ?? fallbackAt),
-        type: eventType,
-        title: "Exception",
-        details: String(event.full ?? event.short ?? "Runtime error"),
-        payload: event,
-        level: "error",
-      };
-    }
+  const eventType = String(event.type ?? messageType ?? "event");
+  if (eventType === "label") {
     return {
-      id: `${message.timestamp ?? fallbackAt}-${eventType}-${String(eventType)}-${Math.random().toString(16).slice(2, 6)}`,
+      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${String(event.label ?? "")}`,
       source: "bridge",
-      timestamp: String(event.timestamp ?? fallbackAt),
+      timestamp: toSafe(event.timestamp, messageTimestamp),
       type: eventType,
-      title: String(event.type ?? "Bridge event"),
-      details: JSON.stringify(event),
+      title: "Label",
+      details: `Entered ${String(event.label ?? "unknown")}`,
       payload: event,
       level: "info",
     };
   }
+  if (eventType === "say") {
+    return {
+      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${String(event.what ?? "")}`,
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: "Say",
+      details: String(event.what ?? ""),
+      payload: event,
+      level: "info",
+    };
+  }
+  if (eventType === "exception") {
+    return {
+      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}`,
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: "Exception",
+      details: String(event.full ?? event.short ?? "Runtime error"),
+      payload: event,
+      level: "error",
+    };
+  }
 
-  return null;
+  return {
+    id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${Math.random().toString(16).slice(2, 6)}`,
+    source: "bridge",
+    timestamp: toSafe(event.timestamp, messageTimestamp),
+    type: eventType,
+    title: String(event.type ?? "Bridge event"),
+    details: JSON.stringify(event),
+    payload: event,
+    level: "info",
+  };
+}
+
+function toSafe(value: string | number | unknown, fallback: string = new Date().toISOString()): string {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return fallback;
 }
 
 export function App() {
@@ -257,7 +319,9 @@ export function App() {
           <h1>RenForge Dashboard</h1>
           <p className="topbarSub">Vue opérationnelle des données live, carte narrative et activité IA.</p>
         </header>
-        {dashboard}
+        <DashboardErrorBoundary key={activeSection}>
+          {dashboard}
+        </DashboardErrorBoundary>
       </main>
     </div>
   );

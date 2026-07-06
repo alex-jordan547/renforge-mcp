@@ -28,6 +28,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const reconnectAttemptsRef = useRef(0);
+  const connectTokenRef = useRef(0);
 
   const handleMessage = useCallback(
     (message: SocketEnvelope) => {
@@ -37,11 +39,28 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     [onMessage],
   );
 
+  const disconnectSocket = useCallback(() => {
+    if (reconnectRef.current) {
+      clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+    }
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch (_error) {
+        // Ignore close errors; next connect cycle will replace this socket.
+      }
+      wsRef.current = null;
+    }
+  }, []);
+
   const connect = useCallback(() => {
     if (!enabled || !mountedRef.current) {
       return;
     }
 
+    const connectToken = ++connectTokenRef.current;
+    disconnectSocket();
     setConnecting(true);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}${path}`;
@@ -49,9 +68,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     wsRef.current = socket;
 
     socket.onopen = () => {
+      if (connectToken !== connectTokenRef.current) {
+        return;
+      }
       setConnected(true);
       setConnecting(false);
       setError(null);
+      reconnectAttemptsRef.current = 0;
       setReconnectAttempts(0);
     };
 
@@ -69,6 +92,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     };
 
     socket.onclose = () => {
+      if (connectToken !== connectTokenRef.current) {
+        return;
+      }
       setConnected(false);
       setConnecting(false);
 
@@ -76,26 +102,23 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
         return;
       }
 
-      const attempt = reconnectAttempts + 1;
+      const attempt = reconnectAttemptsRef.current + 1;
+      reconnectAttemptsRef.current = attempt;
       setReconnectAttempts(attempt);
       const delay = Math.min(1200, 150 * attempt);
       reconnectRef.current = setTimeout(() => {
         connect();
       }, delay);
     };
-  }, [enabled, handleMessage, path, reconnectAttempts]);
+  }, [enabled, disconnectSocket, handleMessage, path]);
 
   useEffect(() => {
     mountedRef.current = true;
     connect();
     return () => {
       mountedRef.current = false;
-      if (reconnectRef.current) {
-        clearTimeout(reconnectRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      connectTokenRef.current += 1;
+      disconnectSocket();
     };
   }, [connect]);
 

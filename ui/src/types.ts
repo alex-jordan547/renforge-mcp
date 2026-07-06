@@ -74,7 +74,7 @@ export interface SocketBridgeMessage {
   data?: Record<string, unknown>;
   payload?: Record<string, unknown>;
   source?: string;
-  timestamp?: string;
+  timestamp?: string | number;
 }
 
 export interface SocketActivityMessage {
@@ -85,7 +85,7 @@ export interface SocketActivityMessage {
   params?: Record<string, unknown>;
   result?: unknown;
   files?: string[];
-  timestamp?: string;
+  timestamp?: string | number;
 }
 
 export interface SocketEnvelope {
@@ -94,7 +94,7 @@ export interface SocketEnvelope {
   type?: string;
   event?: SocketBridgeMessage | SocketActivityMessage;
   payload?: SocketBridgeMessage | SocketActivityMessage;
-  timestamp?: string;
+  timestamp?: string | number;
 }
 
 export interface CoverageResponse {

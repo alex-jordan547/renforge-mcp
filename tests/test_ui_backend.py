@@ -1,8 +1,12 @@
+import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
+from renforge.ui import activity as activity_module
 from renforge.ui import graph
+from renforge.ui import poller
 
 try:
     from starlette.testclient import TestClient
@@ -88,3 +92,124 @@ def test_api_file_is_restricted_to_game_directory(tmp_path: Path) -> None:
     data = response.json()
     assert data["ok"] is False
     assert "inside game" in str(data["error"]).lower()
+
+
+def test_api_screenshot_handles_missing_bridge_as_json_error(tmp_path: Path, monkeypatch) -> None:
+    if TestClient is None:
+        pytest.skip("starlette not installed")
+
+    import renforge.ui.server as server
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("bridge unavailable")
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(server.live, "screenshot_png", fail)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/screenshot?token=token",
+        json={"width": 32, "height": 32},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "RuntimeError" in payload["error"]
+
+
+class _RecordingHub:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    async def broadcast(self, payload: dict) -> None:
+        self.messages.append(payload)
+
+
+def test_tail_activity_broadcasts_stable_activity_envelope(tmp_path: Path, monkeypatch) -> None:
+    project_root = _project_root(tmp_path)
+    path = project_root / ".renforge" / "activity.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    activity = {"ts": 1234567890, "name": "tool-call"}
+    path.write_text(json.dumps(activity) + "\n", encoding="utf-8")
+
+    stop_event = asyncio.Event()
+    hub = _RecordingHub()
+
+    async def _stop_sleep(_delay: float) -> None:
+        stop_event.set()
+
+    monkeypatch.setattr(activity_module.asyncio, "sleep", _stop_sleep)
+    asyncio.run(activity_module.tail_activity(project_root, hub, stop_event))
+
+    assert hub.messages == [
+        {
+            "kind": "activity",
+            "type": "activity",
+            "timestamp": 1234567890,
+            "payload": activity,
+        }
+    ]
+
+
+def test_story_map_caches_after_first_build(tmp_path: Path, monkeypatch) -> None:
+    project = _project_root(tmp_path)
+    calls = {"scan": 0, "native": 0, "normalize": 0}
+
+    def fake_scan(root: str):
+        calls["scan"] += 1
+        return {"labels": [], "graph": {"edges": []}}
+
+    def fake_run_native(_sdk, _project):
+        calls["native"] += 1
+        return []
+
+    def fake_normalize(_raw):
+        calls["normalize"] += 1
+        return []
+
+    monkeypatch.setattr(graph, "scan_project", fake_scan)
+    monkeypatch.setattr(graph, "run_native_dump", fake_run_native)
+    monkeypatch.setattr(graph, "normalize_definitions", fake_normalize)
+    monkeypatch.setattr(graph, "RenpyProject", lambda _root: object())
+    monkeypatch.setattr(graph, "get_or_install_sdk", lambda: "sdk")
+
+    first = graph.build_story_map(project)
+    second = graph.build_story_map(project)
+
+    assert first == second
+    assert calls["scan"] == 1
+    assert calls["native"] == 1
+    assert calls["normalize"] == 1
+
+
+def test_story_map_signature_changes_on_script_or_autopilot_change(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    root_sig = graph._story_map_signature(project)
+    script = project / "game" / "script.rpy"
+    script.write_text("label start:\n    pass\n", encoding="utf-8")
+    changed_script_sig = graph._story_map_signature(project)
+    assert root_sig != changed_script_sig
+
+    autopilot_dir = project / ".renforge"
+    autopilot_dir.mkdir(exist_ok=True)
+    (autopilot_dir / "autopilot.json").write_text("{}", encoding="utf-8")
+    with_autopilot_sig = graph._story_map_signature(project)
+    assert changed_script_sig != with_autopilot_sig
+
+
+class _FakePollerClient:
+    def get_state(self):
+        return {}
+
+    def poll_events(self, _cursor: int):
+        return {"events": [{"type": "tool"}], "cursor": 1}
+
+    def screenshot(self, _width: int, _height: int) -> bytes:
+        return b"\x89PNG\r\n\x1a\n"
+
+
+def test_poll_bridge_cycle_tracks_change_only_for_state_payload() -> None:
+    assert poller._cycle_changed({"x": 1}, {}, []) is True
+    assert poller._cycle_changed({}, {"x": 1}, []) is True
+    assert poller._cycle_changed({}, {}, []) is False
+    assert poller._cycle_changed({}, {}, [{}]) is True

@@ -16,6 +16,19 @@ node_modules/
 *.tmp
 *.log
 logs/
+examples/demo_game/.cache/
+examples/demo_game/saves/
+examples/demo_game/error.log
+examples/demo_game/*.rpyc.bak
+examples/demo_game/game/cache/
+examples/demo_game/game/saves/
+examples/demo_game/.renforge/
+examples/demo_game/log.txt
+examples/demo_game/game/renforge_bridge.rpyc.bak
+examples/demo_game/game/gui/*.png
+examples/demo_game/game/gui/**/*.png
+!examples/demo_game/game/gui/bubble.png
+!examples/demo_game/game/gui/thoughtbubble.png
 
 # Internal working docs (reviews, competitive analysis, plans) — keep private
 docs/

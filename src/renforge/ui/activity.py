@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from .ws import WebSocketHub
+from .ws import WebSocketHub, build_ws_envelope
 
 
 async def tail_activity(project_root: Path, hub: WebSocketHub, stop_event: asyncio.Event) -> None:
@@ -33,9 +33,20 @@ async def tail_activity(project_root: Path, hub: WebSocketHub, stop_event: async
             if not line:
                 continue
             try:
-                payload = json.loads(line)
+                raw_payload = json.loads(line)
+                if not isinstance(raw_payload, dict):
+                    continue
+                payload = dict(raw_payload)
             except Exception:
                 continue
-            await hub.broadcast({"type": "activity", "payload": payload})
+            timestamp = int(payload.get("ts", 0) or 0)
+            await hub.broadcast(
+                build_ws_envelope(
+                    kind="activity",
+                    type="activity",
+                    timestamp=timestamp if timestamp else None,
+                    payload=payload,
+                )
+            )
 
         await asyncio.sleep(0.4)

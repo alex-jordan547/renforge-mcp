@@ -133,6 +133,18 @@ nav {
   color: var(--danger);
 }
 
+.errorBoundaryPanel {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--card);
+  color: var(--text);
+}
+
+.errorBoundaryPanel h3 {
+  color: var(--danger);
+}
+
 .content {
   padding: 18px;
   overflow: hidden;

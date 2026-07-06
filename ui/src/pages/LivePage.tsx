@@ -35,19 +35,24 @@ export function LivePage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [liveState, liveChoices, frame] = await Promise.all([
+      const [liveState, liveChoices] = await Promise.all([
         api.fetchLiveState(),
         api.fetchLiveChoices(),
-        api.fetchLiveScreenshot().catch(() => null),
       ]);
+      const frame = await api.fetchLiveScreenshot().catch(() => null);
       setState(liveState);
       setChoices(liveChoices.choices);
       if (frame) {
         setScreenshot(frame);
+      } else {
+        setScreenshot(null);
       }
       setStatus("connected");
     } catch (_error) {
-      setStatus("disconnected");
+      setStatus("indisponible");
+      setState(null);
+      setChoices([]);
+      setScreenshot(null);
     } finally {
       setLoading(false);
     }
@@ -61,7 +66,11 @@ export function LivePage() {
 
   const runAction = async (action: () => Promise<unknown>) => {
     try {
-      await action();
+      const result = await action();
+      if (result && typeof result === "object" && "ok" in result && (result as { ok?: unknown }).ok === false) {
+        const error = (result as { error?: string }).error;
+        throw new Error(error || "action failed");
+      }
       setStatus("action sent");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "action failed");
@@ -103,6 +112,9 @@ export function LivePage() {
     await refresh();
   };
 
+  const tags = state?.showing_tags ?? [];
+  const variables = state?.variables ?? {};
+
   return (
     <section className="panel">
       <div className="panelHeader">
@@ -131,7 +143,7 @@ export function LivePage() {
             <dl className="kv">
               <div>
                 <dt>Label</dt>
-                <dd>{state.current_label}</dd>
+                <dd>{state.current_label || "—"}</dd>
               </div>
               <div>
                 <dt>Menu</dt>
@@ -139,13 +151,13 @@ export function LivePage() {
               </div>
               <div>
                 <dt>Tags</dt>
-                <dd>{state.showing_tags.length ? state.showing_tags.join(", ") : "—"}</dd>
+                <dd>{tags.length ? tags.join(", ") : "—"}</dd>
               </div>
               <div>
                 <dt>Variables</dt>
                 <dd>
                   <ul>
-                    {Object.entries(state.variables)
+                    {Object.entries(variables)
                       .slice(0, 12)
                       .map(([key, value]) => (
                         <li key={key}>

@@ -64,5 +64,5 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
     if warp is None:
         assert command[2:] == ["run"]
     else:
-        assert command[2:5] == ["--warp", warp, "run"]
+        assert command[2:5] == ["run", "--warp", warp]
     session.close(timeout=0.1)
