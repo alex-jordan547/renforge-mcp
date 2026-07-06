@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from ..dump import run_native_dump, normalize_definitions
+from ..project import RenpyProject
+from ..sdk import get_or_install_sdk
+from ..scanner import scan_project
+
+
+def _normalize_autopilot(project_root: Path) -> dict:
+    path = project_root / ".renforge" / "autopilot.json"
+    if not path.exists():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def _label_node_id(name: str) -> str:
+    return f"label:{name}"
+
+
+def resolve_game_file_path(
+    project_root: str | Path,
+    requested_path: str,
+    *,
+    max_bytes: int = 200_000,
+) -> dict[str, Any]:
+    root = Path(project_root).expanduser().resolve()
+    game_root = root / "game"
+
+    if not isinstance(requested_path, str) or not requested_path.strip():
+        return {"ok": False, "error": "path is required"}
+
+    original = Path(requested_path)
+    if original.is_absolute():
+        return {"ok": False, "error": "path must be relative to game/"}
+
+    normalized = requested_path.replace("\\", "/").lstrip("/")
+    if normalized.startswith("game/"):
+        normalized = normalized[len("game/") :]
+    elif normalized == "game":
+        return {"ok": False, "error": "path is required to point to a file inside game/"}
+
+    candidate = game_root / normalized
+    try:
+        target = candidate.resolve()
+    except OSError as exc:
+        return {"ok": False, "error": f"invalid path: {type(exc).__name__}: {exc}"}
+
+    try:
+        if not target.is_relative_to(game_root):
+            return {"ok": False, "error": "path must be inside game/"}
+    except Exception:
+        if str(target).startswith(str(game_root)):
+            pass
+        else:
+            return {"ok": False, "error": "path must be inside game/"}
+
+    if not target.is_file():
+        return {"ok": False, "error": f"path does not point to a file: {target}"}
+
+    try:
+        size = target.stat().st_size
+    except Exception as exc:
+        return {"ok": False, "error": f"cannot stat file: {type(exc).__name__}: {exc}"}
+
+    if size > max_bytes:
+        return {"ok": False, "error": f"file is too large ({size} bytes > {max_bytes})"}
+
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"ok": False, "error": f"cannot read file: {type(exc).__name__}: {exc}"}
+
+    return {
+        "ok": True,
+        "path": f"game/{normalized}",
+        "text": text,
+    }
+
+
+def resolve_warp_target(project_root: str, target: str) -> dict[str, Any]:
+    value = (target or "").strip()
+    if not value:
+        return {"ok": False, "error": "target is required"}
+
+    if ":" in value:
+        file_part, _, line_part = value.rpartition(":")
+        if not file_part or not line_part.strip().isdigit():
+            return {"ok": False, "error": "invalid warp target; expected file:line"}
+        return {"ok": True, "target": f"{file_part}:{int(line_part.strip())}"}
+
+    story_map = build_story_map(project_root)
+    if not story_map.get("ok"):
+        return {"ok": False, "error": story_map.get("error") or "failed to build story map"}
+
+    for node in story_map.get("nodes", []):
+        if node.get("label") != value and node.get("id") != value:
+            continue
+        data = node.get("data", {})
+        file = data.get("file")
+        line = data.get("line")
+        if not file or not line:
+            return {
+                "ok": False,
+                "error": f"target '{value}' does not expose file and line",
+            }
+        try:
+            line_no = int(line)
+        except Exception:
+            return {"ok": False, "error": f"target '{value}' has non-numeric line: {line}"}
+        return {"ok": True, "target": f"{file}:{line_no}"}
+
+    return {"ok": False, "error": f"target '{value}' not found in story map"}
+
+
+def build_story_map(project_root: str) -> dict:
+    root = Path(project_root).expanduser().resolve()
+    if not root.is_dir():
+        return {"ok": False, "error": f"Project root does not exist: {root}", "nodes": [], "edges": []}
+
+    index = scan_project(str(root))
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    labels = {label["name"]: label for label in index.get("labels", []) if label.get("name")}
+    discovered = set(labels.keys())
+    autopilot = _normalize_autopilot(root)
+    covered = set(autopilot.get("labels_covered", []))
+
+    native_locations: dict[str, dict] = {}
+    try:
+        project = RenpyProject(root)
+        sdk = get_or_install_sdk()
+        raw_dump = run_native_dump(sdk, project)
+        for definition in normalize_definitions(raw_dump):
+            if definition.get("kind") == "label" and definition.get("name"):
+                native_locations[definition["name"]] = definition
+    except Exception:
+        native_locations = {}
+
+    for name, item in labels.items():
+        node_data = {
+            "label": name,
+            "type": "label",
+            "covered": name in covered,
+            "name": name,
+        }
+        if item.get("file"):
+            node_data["file"] = item.get("file")
+        if item.get("line"):
+            node_data["line"] = item.get("line")
+
+        node = {
+            "id": _label_node_id(name),
+            "label": name,
+            "data": node_data,
+        }
+        native = native_locations.get(name)
+        if native:
+            if native.get("file"):
+                node["data"]["file"] = native.get("file")
+            if native.get("line"):
+                node["data"]["line"] = native.get("line")
+        nodes.append(node)
+
+    for edge in index.get("graph", {}).get("edges", []):
+        source = edge.get("source") or "_entry"
+        target = edge.get("target")
+
+        if target and target not in discovered and edge.get("kind") in {"jump", "call"}:
+            discovered.add(target)
+            edge_type = edge.get("kind") or "jump"
+            discovered_data = {
+                "label": target,
+                "type": edge_type,
+                "covered": False,
+                "name": target,
+            }
+            nodes.append(
+                {
+                    "id": _label_node_id(target),
+                    "label": target,
+                    "data": discovered_data,
+                }
+            )
+
+        edge_type = edge.get("kind") or "jump"
+        edges.append(
+            {
+                "id": f"{source}:{edge.get('kind')}:{target}:{edge.get('line', 0)}",
+                "source": _label_node_id(source) if source else _label_node_id("_entry"),
+                "target": _label_node_id(target) if target else _label_node_id("_entry"),
+                "label": str(edge_type),
+                "type": edge_type,
+            }
+        )
+
+    return {
+        "ok": True,
+        "project": str(root),
+        "nodes": nodes,
+        "edges": edges,
+        "autopilot": autopilot,
+        "coverage": {"covered": sorted(covered), "total": len(nodes)},
+    }

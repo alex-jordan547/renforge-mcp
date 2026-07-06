@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Any, Dict, List
+
+from .project import RenpyProject
+from .sdk import get_or_install_sdk
+from .util.subprocess import run_command
 
 
 def parse_lint_output(text: str) -> List[Dict[str, Any]]:
@@ -89,3 +94,36 @@ def parse_lint_output(text: str) -> List[Dict[str, Any]]:
             )
 
     return results
+
+
+def run_lint(project_root: str | Path, *, version: str = "stable", timeout: int = 180) -> dict[str, Any]:
+    try:
+        project = RenpyProject(Path(project_root).expanduser().resolve())
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        sdk = get_or_install_sdk(version)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        command = project.lint_command(sdk)
+        result = run_command(command, timeout=timeout)
+        raw = result.stdout or ""
+        if result.stderr:
+            raw = f"{raw}\n{result.stderr}" if raw else result.stderr
+        diagnostics = parse_lint_output(raw)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "ok": result.returncode == 0,
+        "returncode": result.returncode,
+        "timed_out": result.timed_out,
+        "diagnostics": diagnostics,
+        "raw": raw,
+    }
+
+
+__all__ = ["parse_lint_output", "run_lint"]

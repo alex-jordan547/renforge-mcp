@@ -17,12 +17,13 @@ dependencies = [
 [project.optional-dependencies]
 fastmcp = ["fastmcp>=2.0.0"]
 test = ["pytest>=8"]
+ui = ["starlette>=0.31", "uvicorn[standard]>=0.30", "watchfiles>=0.22"]
 
 [project.scripts]
 renforge = "renforge.cli:main"
 
 [tool.hatch.build]
-include = ["src/renforge", "src/renforge/**/*.rpy"]
+include = ["src/renforge", "src/renforge/**/*.rpy", "src/renforge/ui/static/**"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/renforge"]

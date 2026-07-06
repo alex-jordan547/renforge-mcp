@@ -13,6 +13,7 @@ features.
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[fastmcp]"  # optional: installs fastmcp for full MCP runtime
+pip install -e ".[ui]"  # optional: installs UI extras
 ```
 
 ## Usage
@@ -21,6 +22,7 @@ pip install -e ".[fastmcp]"  # optional: installs fastmcp for full MCP runtime
 renforge --version
 renforge inspect <project>
 renforge serve [--project <project>]
+renforge ui --project <project> [--port 8765]
 ```
 
 `renforge --version` prints the package version.

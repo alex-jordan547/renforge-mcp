@@ -48,7 +48,7 @@ def _with_client(project_path: str | Path, fn: Callable[[BridgeClient], dict]) -
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def launch_game(project_path: str, version: str = "stable") -> dict:
+def launch_game(project_path: str, version: str = "stable", warp: str | None = None) -> dict:
     """Launch the project with the bridge injected, or reuse a live session."""
     try:
         project = RenpyProject(Path(project_path))
@@ -59,15 +59,20 @@ def launch_game(project_path: str, version: str = "stable") -> dict:
     existing = _SESSIONS.get(key)
     if existing is not None and existing.process.poll() is None:
         try:
-            state = existing.client.get_state()
-            return {"ok": True, "already_running": True, "current_label": state.get("current_label")}
+            if warp is None:
+                state = existing.client.get_state()
+                return {"ok": True, "already_running": True, "current_label": state.get("current_label")}
+            existing.close()
         except Exception:
             existing.close()
-            _SESSIONS.pop(key, None)
+        _SESSIONS.pop(key, None)
 
     try:
         sdk = get_or_install_sdk(version)
-        session = launch_with_bridge(sdk, project)
+        launch_kwargs: dict[str, object] = {}
+        if warp is not None:
+            launch_kwargs["warp"] = warp
+        session = launch_with_bridge(sdk, project, **launch_kwargs)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -121,6 +126,10 @@ def get_var(project_path: str, name: str) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, "value": c.get_var(name)})
 
 
+def set_var(project_path: str, name: str, value: Any) -> dict:
+    return _with_client(project_path, lambda c: c.set_var(name, value))
+
+
 def poll_events(project_path: str, since: int = 0) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, **c.poll_events(since)})
 
@@ -155,6 +164,7 @@ __all__ = [
     "select_choice",
     "eval_expr",
     "get_var",
+    "set_var",
     "poll_events",
     "screenshot_png",
     "run_autopilot",

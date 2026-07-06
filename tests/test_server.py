@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "renforge_select_choice",
     "renforge_eval",
     "renforge_get_var",
+    "renforge_set_var",
     "renforge_poll_events",
     "renforge_screenshot",
     "renforge_autopilot",

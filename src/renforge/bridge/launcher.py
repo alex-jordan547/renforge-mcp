@@ -63,6 +63,7 @@ def launch_with_bridge(
     *,
     token: str | None = None,
     port: int = 0,
+    warp: str | None = None,
     startup_timeout: float = 60.0,
     extra_env: dict[str, str] | None = None,
 ) -> BridgeSession:
@@ -80,7 +81,7 @@ def launch_with_bridge(
     env["RENFORGE_BRIDGE_TOKEN"] = token
     env["RENFORGE_BRIDGE_PORT"] = str(port)
 
-    command = project.renpy_command(sdk, ("run",))
+    command = project.renpy_command(sdk, ("--warp", warp, "run") if warp is not None else ("run",))
     process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     info_path = project.root / ".renforge" / "bridge.json"
