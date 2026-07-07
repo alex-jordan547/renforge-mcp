@@ -159,11 +159,18 @@ export function TranslationPage() {
         <span>Progression par langue via <code>/api/languages</code> et <code>/api/translation-stats</code></span>
       </div>
       {loading ? (
-        <p className="muted">Chargement des statistiques de traduction...</p>
+        <div className="spinner">Chargement des statistiques de traduction…</div>
       ) : error ? (
         <p className="errorText">{error}</p>
       ) : languages.length === 0 ? (
-        <p className="muted">Aucune langue détectée.</p>
+        <div className="emptyState">
+          <div className="emptyState-icon">🌐</div>
+          <h3>Aucune langue détectée</h3>
+          <p>
+            Configurez les langues dans votre projet Ren'Py pour voir les statistiques de traduction ici.
+            Les langues sont détectées automatiquement via <code>/api/languages</code>.
+          </p>
+        </div>
       ) : (
         <div className="tableWrap">
           <table>

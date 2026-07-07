@@ -123,10 +123,10 @@ export function AssetsPage() {
   const undefinedImages = useMemo(() => toArray(assets?.undefined_images), [assets?.undefined_images]);
 
   const collections: Array<{ key: AssetCollectionKey; title: string; values: string[] }> = [
-    { key: "asset_files", title: "asset_files", values: assetFiles },
-    { key: "orphans", title: "orphans", values: orphans },
-    { key: "missing_files", title: "missing_files", values: missingFiles },
-    { key: "undefined_images", title: "undefined_images", values: undefinedImages },
+    { key: "asset_files", title: "Fichiers projet", values: assetFiles },
+    { key: "orphans", title: "Orphelins", values: orphans },
+    { key: "missing_files", title: "Fichiers manquants", values: missingFiles },
+    { key: "undefined_images", title: "Images non définies", values: undefinedImages },
   ];
 
   if (loading) {
@@ -136,7 +136,7 @@ export function AssetsPage() {
           <h2>Assets</h2>
           <span>Chargement des assets</span>
         </div>
-        <p className="muted">Connexion API ...</p>
+        <div className="spinner">Chargement de l'inventaire…</div>
       </section>
     );
   }

@@ -19,6 +19,7 @@ interface StoryMapPageProps {
   loading: boolean;
   error: string | null;
   onJump: (target: string) => void | Promise<void>;
+  currentLabel?: string | null;
 }
 
 function mapNodeClass(type: string) {
@@ -36,7 +37,7 @@ function mapNodeClass(type: string) {
   }
 }
 
-export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps) {
+export function StoryMapPage({ data, loading, error, onJump, currentLabel }: StoryMapPageProps) {
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [warpBusy, setWarpBusy] = useState(false);
   const [warpTarget, setWarpTarget] = useState<string | null>(null);
@@ -216,6 +217,12 @@ export function StoryMapPage({ data, loading, error, onJump }: StoryMapPageProps
           {data.nodes.length} labels • {data.edges.length} transitions • cliquez un nœud pour relancer le jeu à ce label
         </span>
       </div>
+      {currentLabel && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: "0.82rem", color: "var(--muted)" }}>Position actuelle :</span>
+          <span className="activeNodeBadge">{currentLabel}</span>
+        </div>
+      )}
       <div className="storyCanvas" aria-busy={warpBusy}>
         <ReactFlow
           onNodeClick={warpBusy ? undefined : onNodeClick}
