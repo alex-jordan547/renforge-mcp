@@ -65,7 +65,7 @@ export function EditorPage() {
             type="text"
           />
         </label>
-        <button type="submit" className="btn">
+        <button type="submit" className="btn primary">
           Charger
         </button>
       </form>
@@ -74,12 +74,14 @@ export function EditorPage() {
       </p>
 
       {loading ? (
-        <p className="muted">Chargement de <code>{activePath}</code>...</p>
+        <div className="spinner">Chargement de <code>{activePath}</code>…</div>
       ) : error ? (
         <p className="errorText">Impossible de charger <code>{activePath}</code> : {error}</p>
       ) : (
-        <pre className="codeBlock">
-          <code>{file?.content ?? "Contenu indisponible."}</code>
+        <pre className="codeBlock numbered">
+          <code>{(file?.content ?? "Contenu indisponible.").split("\n").map((line, i) => (
+            <span key={i} className="codeLine">{line}</span>
+          ))}</code>
         </pre>
       )}
     </section>

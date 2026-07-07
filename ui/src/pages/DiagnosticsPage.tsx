@@ -57,7 +57,7 @@ export function DiagnosticsPage() {
           <h2>Diagnostics</h2>
           <span>Analyse des diagnostics <code>/api/lint</code></span>
         </div>
-        <p className="muted">Chargement...</p>
+        <div className="spinner">Analyse des diagnostics en cours…</div>
       </section>
     );
   }

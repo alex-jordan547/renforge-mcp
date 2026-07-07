@@ -1226,3 +1226,224 @@ tr:hover td {
   height: 18px;
   fill: currentColor;
 }
+
+/* ── Animated Spinner ── */
+.spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 40px 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.spinner::before {
+  content: "";
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Empty State Illustration ── */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.emptyState-icon {
+  font-size: 2.4rem;
+  opacity: 0.5;
+  line-height: 1;
+}
+
+.emptyState h3 {
+  font-size: 1.05rem;
+  color: var(--text);
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.emptyState p {
+  max-width: 420px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ── Timeline Source Badges (colored) ── */
+.sourceBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid transparent;
+}
+
+.sourceBadge.source-bridge {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.sourceBadge.source-activity {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+  color: #4338ca;
+}
+
+.sourceBadge.source-error {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.sourceBadge.source-ui {
+  background: #f3e8ff;
+  border-color: #c4b5fd;
+  color: #6b21a8;
+}
+
+[data-theme="dark"] .sourceBadge.source-bridge {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
+[data-theme="dark"] .sourceBadge.source-activity {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #a5b4fc;
+}
+
+/* ── Inline button modifier (for Console/Set forms) ── */
+.btn.inline {
+  width: auto;
+  align-self: flex-end;
+}
+
+/* ── Debugger inactive card ── */
+.card.inactive {
+  opacity: 0.55;
+}
+
+.card.inactive:hover {
+  opacity: 0.8;
+}
+
+.debugStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.debugStatus .statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.debugStatus .statusDot.off   { background: var(--danger); }
+.debugStatus .statusDot.wait  { background: var(--warn); }
+.debugStatus .statusDot.on    { background: var(--ok); }
+.debugStatus .statusDot.read  { background: var(--brand-light); }
+
+/* ── Code Block with line numbers ── */
+.codeBlock.numbered {
+  counter-reset: line;
+  padding: 16px 0;
+}
+
+.codeBlock.numbered .codeLine {
+  display: block;
+  padding: 0 20px;
+  counter-increment: line;
+  min-height: 1.5em;
+}
+
+.codeBlock.numbered .codeLine::before {
+  content: counter(line);
+  display: inline-block;
+  width: 3ch;
+  margin-right: 16px;
+  text-align: right;
+  color: #475569;
+  font-size: 0.78rem;
+  user-select: none;
+}
+
+.codeBlock.numbered .codeLine:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── Relative timestamp ── */
+.timeAgo {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+/* ── Story Map active label badge ── */
+.activeNodeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e0e7ff;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #4338ca;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.activeNodeBadge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--brand);
+  border-radius: 50%;
+  animation: pulse 1.6s infinite ease-in-out;
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .activeNodeBadge {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #a5b4fc;
+}
+
+[data-theme="dark"] .sourceBadge.source-error {
+  background: rgba(220, 38, 38, 0.15);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .sourceBadge.source-ui {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+  color: #c4b5fd;
+}

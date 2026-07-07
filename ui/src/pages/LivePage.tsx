@@ -152,6 +152,33 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     }
   };
 
+  const onQuit = async () => {
+    try {
+      await api.evaluate("renpy.quit()");
+      setStatus("quit ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "quit failed");
+    }
+  };
+
+  const onPreferences = async () => {
+    try {
+      await api.evaluate("renpy.call_in_new_context('_game_menu', _game_menu_screen='preferences')");
+      setStatus("preferences ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "preferences failed");
+    }
+  };
+
+  const onReloadGame = async () => {
+    try {
+      await api.evaluate("renpy.reload_script()");
+      setStatus("reload ok");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "reload failed");
+    }
+  };
+
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
     submitEvent.preventDefault();
     if (!expr.trim()) {
@@ -229,8 +256,17 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
             <button className="remote-btn" type="button" onClick={onToggleUI} title="Afficher/Masquer l'interface de dialogue (UI)">
               👁️ Afficher UI
             </button>
+            <button className="remote-btn" type="button" onClick={onPreferences} title="Ouvrir le menu des préférences">
+              ⚙️ Préférences
+            </button>
             <button className="remote-btn" type="button" onClick={onMainMenu} title="Retourner au menu principal">
               🏠 Menu
+            </button>
+            <button className="remote-btn" type="button" onClick={onReloadGame} title="Recharger les scripts du jeu">
+              🔃 Recharger
+            </button>
+            <button className="remote-btn" type="button" onClick={onQuit} title="Quitter le jeu" style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>
+              ❌ Quitter
             </button>
           </div>
         </div>
@@ -256,6 +292,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 <dd>
                   <ul>
                     {Object.entries(variables)
+                      .filter(([key]) => !key.startsWith("_") && !key.startsWith("IMG_"))
                       .slice(0, 12)
                       .map(([key, value]) => (
                         <li key={key}>
@@ -273,14 +310,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
         </div>
       </div>
 
-      <div className="actionsRow">
-        <button className="btn primary" type="button" onClick={onAdvance}>
-          Advance
-        </button>
-        <button className="btn" type="button" onClick={onScreenshot}>
-          Capture screenshot
-        </button>
-      </div>
+
 
       <div className="panelGrid">
         <div className="card">
@@ -294,7 +324,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 placeholder="store.persistent.score + 1"
               />
             </label>
-            <button className="btn primary" type="submit">
+            <button className="btn primary inline" type="submit">
               Eval
             </button>
           </form>
@@ -320,7 +350,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 placeholder='"bonjour" or 42'
               />
             </label>
-            <button className="btn primary" type="submit">
+            <button className="btn primary inline" type="submit">
               Set
             </button>
           </form>

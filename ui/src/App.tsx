@@ -334,6 +334,7 @@ export function App() {
             loading={storyMapLoading}
             error={storyMapError}
             onJump={handleJump}
+            currentLabel={liveState?.current_label ?? null}
           />
         );
       case "live":
@@ -351,7 +352,7 @@ export function App() {
       case "debugger":
         return <DebuggerPage />;
       default:
-        return <StoryMapPage data={storyMap} loading={storyMapLoading} error={storyMapError} onJump={handleJump} />;
+        return <StoryMapPage data={storyMap} loading={storyMapLoading} error={storyMapError} onJump={handleJump} currentLabel={liveState?.current_label ?? null} />;
     }
   }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents, liveState, liveFrame]);
 
