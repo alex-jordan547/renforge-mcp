@@ -1,6 +1,8 @@
 import type {
   AssetsResponse,
   CoverageResponse,
+  DebugBridgeEvent,
+  DebugEventsResponse,
   FileContent,
   LintDiagnostic,
   LintResponse,
@@ -226,6 +228,25 @@ function parseLiveChoicesPayload(payload: unknown): { choices: LiveChoice[] } {
         return parsed;
       })
       .filter((entry): entry is LiveChoice => entry !== null),
+  };
+}
+
+function parseDebugEventsPayload(payload: unknown): DebugEventsResponse {
+  if (isBackendFailure(payload)) {
+    throw new Error(extractError(payload));
+  }
+  if (!isObject(payload)) {
+    return { ok: true, events: [] };
+  }
+
+  const events = Array.isArray(payload.events)
+    ? payload.events.filter((entry): entry is DebugBridgeEvent => isObject(entry))
+    : [];
+  return {
+    ok: payload.ok !== false,
+    cursor: typeof payload.cursor === "number" ? payload.cursor : undefined,
+    events,
+    error: typeof payload.error === "string" ? payload.error : undefined,
   };
 }
 
@@ -502,6 +523,11 @@ export const api = {
     return parseLiveChoicesPayload(response);
   },
 
+  async fetchDebugEvents(since = 0): Promise<DebugEventsResponse> {
+    const response = await apiGet<unknown>(`/api/debug/events?since=${encodeURIComponent(String(since))}`);
+    return parseDebugEventsPayload(response);
+  },
+
   async fetchRecentTimeline(): Promise<SocketEnvelope[]> {
     const response = await apiGet<unknown>(TIMELINE_RECENT_PATH);
     return parseTimelineSeedPayload(response);
@@ -528,7 +554,7 @@ export const api = {
     return { expr: response.expr ?? expr, value: response.value };
   },
 
-  async setVariable(name: string, value: string): Promise<{ ok: boolean }> {
+  async setVariable(name: string, value: unknown): Promise<{ ok: boolean }> {
     return apiPost<{ ok: boolean }>("/api/set-var", { name, value });
   },
 
@@ -559,6 +585,10 @@ export const api = {
 
   async fetchTranslationStats(language: string): Promise<TranslationStats> {
     return apiGet<TranslationStats>(`/api/translation-stats?language=${encodeURIComponent(language)}`);
+  },
+
+  async fetchTranslationStrings(language: string): Promise<{ ok: boolean; strings: any[] }> {
+    return apiGet<{ ok: boolean; strings: any[] }>(`/api/translation-strings?language=${encodeURIComponent(language)}`);
   },
 
   async fetchLint(): Promise<LintResponse> {

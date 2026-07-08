@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { AssetsResponse } from "../types";
 
-type AssetCollectionKey = "asset_files" | "orphans" | "missing_files" | "undefined_images";
-
 function toArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -11,82 +9,19 @@ function toArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-function SummaryList({
-  title,
-  values,
-  type,
-}: {
-  title: string;
-  values: string[];
-  type: string;
-}) {
-  const [isCollapsed, setIsCollapsed] = useState(type === "asset_files");
-
-  const getClassName = () => {
-    if (type === "orphans") return "assetPill orphan";
-    if (type === "missing_files" || type === "undefined_images") return "assetPill missing";
-    return "assetPill";
-  };
-
-  return (
-    <div className="card">
-      <div
-        onClick={() => setIsCollapsed(!isCollapsed)}
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          cursor: "pointer",
-          userSelect: "none",
-        }}
-      >
-        <h3 style={{ margin: 0 }}>
-          {title} <span style={{ fontSize: "0.85rem", color: "var(--muted)", fontWeight: "normal" }}>({values.length})</span>
-        </h3>
-        <span
-          style={{
-            transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
-            transition: "transform 150ms ease",
-            fontSize: "0.8rem",
-            color: "var(--muted)",
-          }}
-        >
-          ▼
-        </span>
-      </div>
-      {!isCollapsed && (
-        <div style={{ marginTop: 12 }}>
-          {values.length === 0 ? (
-            <p className="muted">Aucun élément.</p>
-          ) : (
-            <div className="assetPills">
-              {values.map((value) => (
-                <span key={value} className={getClassName()}>{value}</span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function formatSummary(summary: AssetsResponse["summary"]): string {
-  if (summary === undefined) {
-    return "Aucun résumé disponible.";
-  }
-  if (typeof summary === "string") {
-    return summary;
-  }
-  return Object.entries(summary)
-    .map(([key, value]) => `${key}: ${String(value)}`)
-    .join(" • ");
+function getFileType(path: string): "image" | "audio" | "other" {
+  const ext = path.toLowerCase().split('.').pop() || '';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return "image";
+  if (['ogg', 'wav', 'mp3', 'm4a', 'opus'].includes(ext)) return "audio";
+  return "other";
 }
 
 export function AssetsPage() {
   const [assets, setAssets] = useState<AssetsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedStat, setSelectedStat] = useState<"files" | "orphans" | "missing" | "undef">("files");
+  const [fileFilter, setFileFilter] = useState<"all" | "image" | "audio">("all");
 
   useEffect(() => {
     let mounted = true;
@@ -122,74 +57,228 @@ export function AssetsPage() {
   const missingFiles = useMemo(() => toArray(assets?.missing_files), [assets?.missing_files]);
   const undefinedImages = useMemo(() => toArray(assets?.undefined_images), [assets?.undefined_images]);
 
-  const collections: Array<{ key: AssetCollectionKey; title: string; values: string[] }> = [
-    { key: "asset_files", title: "Fichiers projet", values: assetFiles },
-    { key: "orphans", title: "Orphelins", values: orphans },
-    { key: "missing_files", title: "Fichiers manquants", values: missingFiles },
-    { key: "undefined_images", title: "Images non définies", values: undefinedImages },
-  ];
+  const filteredFiles = useMemo(() => {
+    return assetFiles.filter((file) => {
+      if (fileFilter === "all") return true;
+      return getFileType(file) === fileFilter;
+    });
+  }, [assetFiles, fileFilter]);
 
   if (loading) {
     return (
-      <section className="panel">
-        <div className="panelHeader">
+      <div className="wrap">
+        <div className="page-head reveal in">
           <h2>Assets</h2>
-          <span>Chargement des assets</span>
+          <span className="hint">inventaire · /api/assets</span>
         </div>
-        <div className="spinner">Chargement de l'inventaire…</div>
-      </section>
+        <div className="statusLine">Chargement de l'inventaire…</div>
+      </div>
     );
   }
 
   if (error) {
     return (
-      <section className="panel">
-        <div className="panelHeader">
+      <div className="wrap">
+        <div className="page-head reveal in">
           <h2>Assets</h2>
-          <span>Erreur API assets</span>
+          <span className="hint">inventaire · /api/assets</span>
         </div>
         <p className="errorText">Impossible de charger les assets: {error}</p>
-      </section>
+      </div>
     );
   }
 
-  const hasData = collections.some((item) => item.values.length > 0);
-
   return (
-    <section className="panel">
-      <div className="panelHeader">
+    <div className="wrap">
+      <div className="page-head reveal in">
         <h2>Assets</h2>
-        <span>Inventaire projet depuis <code>/api/assets</code></span>
+        <span className="hint">inventaire · /api/assets</span>
       </div>
 
-      <div className="panelGrid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
-        <div className="card">
-          <h3>Asset Files</h3>
-          <p style={{ fontSize: "1.8rem", fontWeight: "bold", margin: 0, color: "var(--brand)" }}>{assetFiles.length}</p>
+      <div className="stat-grid reveal in" style={{ animationDelay: ".05s" }}>
+        <div
+          className={`stat accent ${selectedStat === "files" ? "sel" : ""}`}
+          onClick={() => setSelectedStat("files")}
+        >
+          <div className="lbl">Fichiers projet</div>
+          <div className="num">{assetFiles.length}</div>
         </div>
-        <div className="card" style={{ borderColor: orphans.length > 0 ? "rgba(245, 158, 11, 0.4)" : undefined }}>
-          <h3>Orphans</h3>
-          <p style={{ fontSize: "1.8rem", fontWeight: "bold", margin: 0, color: orphans.length > 0 ? "var(--accent)" : "var(--muted)" }}>{orphans.length}</p>
+        <div
+          className={`stat warn ${selectedStat === "orphans" ? "sel" : ""}`}
+          onClick={() => setSelectedStat("orphans")}
+        >
+          <div className="lbl">Orphelins</div>
+          <div className="num">{orphans.length}</div>
         </div>
-        <div className="card" style={{ borderColor: missingFiles.length > 0 ? "rgba(239, 68, 68, 0.4)" : undefined }}>
-          <h3>Missing Files</h3>
-          <p style={{ fontSize: "1.8rem", fontWeight: "bold", margin: 0, color: missingFiles.length > 0 ? "var(--danger)" : "var(--muted)" }}>{missingFiles.length}</p>
+        <div
+          className={`stat danger ${selectedStat === "missing" ? "sel" : ""}`}
+          onClick={() => setSelectedStat("missing")}
+        >
+          <div className="lbl">Fichiers manquants</div>
+          <div className="num">{missingFiles.length}</div>
         </div>
-        <div className="card" style={{ borderColor: undefinedImages.length > 0 ? "rgba(239, 68, 68, 0.4)" : undefined }}>
-          <h3>Undefined Images</h3>
-          <p style={{ fontSize: "1.8rem", fontWeight: "bold", margin: 0, color: undefinedImages.length > 0 ? "var(--danger)" : "var(--muted)" }}>{undefinedImages.length}</p>
+        <div
+          className={`stat ${selectedStat === "undef" ? "sel" : ""}`}
+          onClick={() => setSelectedStat("undef")}
+        >
+          <div className="lbl">Images non définies</div>
+          <div className="num">{undefinedImages.length}</div>
         </div>
       </div>
 
-      {hasData ? (
-        <div className="panelGrid" style={{ marginTop: 8 }}>
-          {collections.map((collection) => (
-            <SummaryList key={collection.key} title={collection.title} values={collection.values} type={collection.key} />
-          ))}
+      <div className="cols">
+        <section className="card reveal in" style={{ animationDelay: ".10s" }}>
+          <div className="card-head">
+            <h3>Fichiers projet</h3>
+            <span className="badge info">{assetFiles.length}</span>
+          </div>
+          <div className="card-body">
+            <div className="toolbar-row">
+              <div className="seg">
+                <button
+                  className={fileFilter === "all" ? "on" : ""}
+                  onClick={() => setFileFilter("all")}
+                >
+                  Tout
+                </button>
+                <button
+                  className={fileFilter === "image" ? "on" : ""}
+                  onClick={() => setFileFilter("image")}
+                >
+                  Images
+                </button>
+                <button
+                  className={fileFilter === "audio" ? "on" : ""}
+                  onClick={() => setFileFilter("audio")}
+                >
+                  Audio
+                </button>
+              </div>
+            </div>
+
+            <div className="asset-list">
+              {filteredFiles.map((file) => {
+                const type = getFileType(file);
+                const extLabel = file.split(".").pop()?.toUpperCase() || "FILE";
+                
+                return (
+                  <div key={file} className={`asset-row ${type}`}>
+                    <span className="ic">
+                      {type === "image" ? (
+                        <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
+                          <rect x="3" y="4" width="18" height="16" rx="2" />
+                          <path d="m3 15 5-4 4 3 3-2 6 5" />
+                          <circle cx="8.5" cy="9" r="1.4" />
+                        </svg>
+                      ) : type === "audio" ? (
+                        <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
+                          <path d="M9 18V6l10-2v12" />
+                          <circle cx="6" cy="18" r="3" />
+                          <circle cx="16" cy="16" r="3" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="path" title={file}>{file}</span>
+                    <span className="size">{extLabel}</span>
+                  </div>
+                );
+              })}
+              {filteredFiles.length === 0 && (
+                <p className="empty">Aucun fichier ne correspond à ce filtre.</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+          <section className="card reveal in" style={{ animationDelay: ".15s" }}>
+            <div className="card-head">
+              <h3>Orphelins</h3>
+              <span className="badge warn">{orphans.length}</span>
+            </div>
+            <div className="card-body">
+              <p className="empty" style={{ marginBottom: "12px" }}>
+                Assets présents sur disque mais jamais référencés dans le script.
+              </p>
+              <div className="orphans">
+                {orphans.map((orphan) => (
+                  <span key={orphan} className="orphan">{orphan}</span>
+                ))}
+                {orphans.length === 0 && (
+                  <p className="empty">Aucun asset orphelin.</p>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {missingFiles.length > 0 && (
+            <section className="card reveal in" style={{ animationDelay: ".20s" }}>
+              <div className="card-head">
+                <h3>Fichiers manquants</h3>
+                <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
+                  {missingFiles.length}
+                </span>
+              </div>
+              <div className="card-body">
+                <p className="empty" style={{ marginBottom: "12px" }}>
+                  Fichiers référencés dans le script mais introuvables sur le disque.
+                </p>
+                <div className="orphans">
+                  {missingFiles.map((file) => (
+                    <span
+                      key={file}
+                      className="orphan"
+                      style={{
+                        background: "var(--danger-soft)",
+                        color: "var(--danger)",
+                        borderColor: "color-mix(in oklab, var(--danger) 22%, transparent)",
+                      }}
+                    >
+                      {file}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {undefinedImages.length > 0 && (
+            <section className="card reveal in" style={{ animationDelay: ".25s" }}>
+              <div className="card-head">
+                <h3>Images non définies</h3>
+                <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
+                  {undefinedImages.length}
+                </span>
+              </div>
+              <div className="card-body">
+                <p className="empty" style={{ marginBottom: "12px" }}>
+                  Images utilisées dans le script de dialogue mais jamais déclarées avec une instruction image.
+                </p>
+                <div className="orphans">
+                  {undefinedImages.map((img) => (
+                    <span
+                      key={img}
+                      className="orphan"
+                      style={{
+                        background: "var(--danger-soft)",
+                        color: "var(--danger)",
+                        borderColor: "color-mix(in oklab, var(--danger) 22%, transparent)",
+                      }}
+                    >
+                      {img}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
         </div>
-      ) : (
-        <p className="muted">Aucune donnée listable reçue depuis <code>/api/assets</code>.</p>
-      )}
-    </section>
+      </div>
+    </div>
   );
 }

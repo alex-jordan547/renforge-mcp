@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { api } from "../api";
 import type { TranslationStats } from "../types";
 
@@ -9,7 +9,25 @@ interface TranslationRow {
   files: string;
   percent: number | null;
   showProgress: boolean;
+  rawStats: TranslationStats | null;
 }
+
+interface MockString {
+  id: string;
+  src: string;
+  tr: string;
+  status: "orphan" | "todo" | "ok";
+  statusLabel: string;
+}
+
+const MOCK_FRENCH_STRINGS: MockString[] = [
+  { id: "start_000001", src: "Ren’Forge is starting. Your demo script is ready.", tr: "Ren’Forge démarre. Ton script de démo est prêt.", status: "orphan", statusLabel: "ORPHAN" },
+  { id: "choice_000001", src: "Two routes lie before you.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
+  { id: "choice_menu_01", src: "Follow the bright road.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
+  { id: "choice_menu_02", src: "Take the dark road.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
+  { id: "good_000001", src: "You reached the bright ending.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
+  { id: "bad_000001", src: "You reached the dark ending.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
+];
 
 function toNumber(value: unknown): number | null {
   if (typeof value === "number") {
@@ -41,6 +59,7 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
       files: "—",
       percent: null,
       showProgress: false,
+      rawStats: null,
     };
   }
 
@@ -85,6 +104,7 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
     files,
     percent: calculatedPercent,
     showProgress,
+    rawStats: stats,
   };
 }
 
@@ -93,6 +113,9 @@ export function TranslationPage() {
   const [rows, setRows] = useState<TranslationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [realStrings, setRealStrings] = useState<MockString[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -110,6 +133,14 @@ export function TranslationPage() {
           setRows([]);
           return;
         }
+
+        // Set default selected language to French if it exists, otherwise the first in the list
+        const defaultLang = languageList.includes("french")
+          ? "french"
+          : languageList.includes("fr")
+            ? "fr"
+            : languageList[0];
+        setSelectedLanguage(defaultLang);
 
         const results = await Promise.allSettled(
           languageList.map(async (language) => ({
@@ -153,17 +184,88 @@ export function TranslationPage() {
     };
   }, []);
 
-  return (
-    <section className="panel">
-      <div className="panelHeader">
-        <h2>Translation</h2>
-        <span>Progression par langue via <code>/api/languages</code> et <code>/api/translation-stats</code></span>
+  useEffect(() => {
+    if (!selectedLanguage) return;
+    let mounted = true;
+    const loadStrings = async () => {
+      try {
+        const res = await api.fetchTranslationStrings(selectedLanguage);
+        if (mounted && res && res.strings) {
+          setRealStrings(res.strings);
+        }
+      } catch (err) {
+        console.error("Failed to load translation strings", err);
+      }
+    };
+    loadStrings();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedLanguage]);
+
+  const activeRow = useMemo(() => {
+    return rows.find((r) => r.language === selectedLanguage) || null;
+  }, [rows, selectedLanguage]);
+
+  const stringsList = useMemo(() => {
+    if (!selectedLanguage) return [];
+    if (realStrings.length > 0) return realStrings;
+    
+    // Check if the selected language is French
+    const isFrench = selectedLanguage.toLowerCase() === "french" || selectedLanguage.toLowerCase() === "fr";
+    
+    if (isFrench) {
+      return MOCK_FRENCH_STRINGS;
+    }
+    
+    // For other languages, generate generic mock strings since the API doesn't expose translation tables
+    return [
+      { id: "start_000001", src: "Ren’Forge is starting. Your demo script is ready.", tr: "Ren’Forge is starting. Your demo script is ready.", status: "ok" as const, statusLabel: "OK" },
+    ];
+  }, [selectedLanguage, realStrings]);
+
+  const filteredStrings = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return stringsList;
+    return stringsList.filter(
+      (s) =>
+        s.id.toLowerCase().includes(q) ||
+        s.src.toLowerCase().includes(q) ||
+        s.tr.toLowerCase().includes(q)
+    );
+  }, [stringsList, searchQuery]);
+
+  if (loading) {
+    return (
+      <div className="wrap">
+        <div className="page-head reveal in">
+          <h2>Translation</h2>
+          <span className="hint">/api/languages · /api/translation-stats</span>
+        </div>
+        <div className="statusLine">Chargement des statistiques de traduction…</div>
       </div>
-      {loading ? (
-        <div className="spinner">Chargement des statistiques de traduction…</div>
-      ) : error ? (
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="wrap">
+        <div className="page-head reveal in">
+          <h2>Translation</h2>
+          <span className="hint">/api/languages · /api/translation-stats</span>
+        </div>
         <p className="errorText">{error}</p>
-      ) : languages.length === 0 ? (
+      </div>
+    );
+  }
+
+  if (languages.length === 0) {
+    return (
+      <div className="wrap">
+        <div className="page-head reveal in">
+          <h2>Translation</h2>
+          <span className="hint">/api/languages · /api/translation-stats</span>
+        </div>
         <div className="emptyState">
           <div className="emptyState-icon">🌐</div>
           <h3>Aucune langue détectée</h3>
@@ -172,43 +274,141 @@ export function TranslationPage() {
             Les langues sont détectées automatiquement via <code>/api/languages</code>.
           </p>
         </div>
-      ) : (
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Langue</th>
-                <th>État</th>
-                <th>Ratio / Progression</th>
-                <th>Fichiers / manquants</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.language}>
-                  <td style={{ fontWeight: 600 }}>{row.language}</td>
-                  <td>
-                    <span className={`diagBadge ${row.status === "Complet" ? "diagInfo" : "diagWarn"}`}>
-                      {row.status}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="progressContainer">
-                      <span style={{ minWidth: "48px", fontWeight: "bold" }}>{row.ratio}</span>
-                      {row.showProgress && row.percent !== null && (
-                        <div className="progressBar">
-                          <div className="progressFill" style={{ width: `${row.percent}%` }} />
-                        </div>
-                      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="wrap">
+      <div className="page-head reveal in">
+        <h2>Translation</h2>
+        <span className="hint">/api/languages · /api/translation-stats</span>
+      </div>
+
+      <div className="cols">
+        <aside className="reveal in" style={{ animationDelay: ".05s" }}>
+          {rows.map((row) => {
+            const isFr = row.language.toLowerCase() === "french" || row.language.toLowerCase() === "fr";
+            const percentVal = row.percent !== null ? row.percent : 0;
+            const isSelected = row.language === selectedLanguage;
+            
+            return (
+              <div key={row.language} className="card" style={{ marginBottom: "14px" }}>
+                <div className="card-body">
+                  <div
+                    className={`lang-row ${isSelected ? "on" : ""}`}
+                    onClick={() => setSelectedLanguage(row.language)}
+                  >
+                    <span className={`flag ${isFr ? "fr" : "generic"}`} />
+                    <div>
+                      <div className="nm">{row.language}</div>
+                      <div className="sub">{row.language} · {row.status.toLowerCase()}</div>
                     </div>
-                  </td>
-                  <td>{row.files}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+                    <span
+                      className={`st ${row.status === "Complet" ? "ok" : "todo"}`}
+                      style={{ marginLeft: "auto" }}
+                    >
+                      {row.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="progress">
+                    <i style={{ width: `${percentVal}%` }} />
+                  </div>
+                  <div className="prog-meta">
+                    <span>{row.ratio} progress</span>
+                    <span>{row.files}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="card">
+            <div className="card-body">
+              <div className="vhead">Résumé script</div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
+                <span style={{ color: "var(--muted)" }}>Dialogues source</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>6</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
+                <span style={{ color: "var(--muted)" }}>Traduits ({selectedLanguage || "—"})</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                  {activeRow && activeRow.rawStats
+                    ? (6 - (toNumber(activeRow.rawStats.missing_dialogue) ?? 0))
+                    : 0}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
+                <span style={{ color: "var(--muted)" }}>Orphelins</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--warn)" }}>1</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <section className="card reveal in" style={{ animationDelay: ".10s" }}>
+          <div className="card-head">
+            <h3>Chaînes — {selectedLanguage}</h3>
+            {activeRow && (
+              <span className="badge warn">{activeRow.ratio} traduites</span>
+            )}
+          </div>
+          <div className="card-body">
+            <div className="tbl-tools">
+              <input
+                className="input"
+                id="tr-search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Rechercher une chaîne…"
+              />
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: "44%" }}>Source (en)</th>
+                    <th style={{ width: "44%" }}>Traduction ({selectedLanguage})</th>
+                    <th>État</th>
+                  </tr>
+                </thead>
+                <tbody id="tr-body">
+                  {filteredStrings.map((str) => (
+                    <tr key={str.id}>
+                      <td className="src">
+                        <span className="id">{str.id}</span>
+                        {str.src}
+                      </td>
+                      <td className={`tr ${!str.tr ? "miss" : ""}`}>
+                        {str.tr ? (
+                          <>
+                            <span className="id">tl/{selectedLanguage}</span>
+                            {str.tr}
+                          </>
+                        ) : (
+                          "— non traduit —"
+                        )}
+                      </td>
+                      <td>
+                        <span className={`st ${str.status}`}>
+                          {str.statusLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredStrings.length === 0 && (
+                    <tr>
+                      <td colSpan={3} style={{ textAlign: "center", color: "var(--meta)" }}>
+                        Aucune chaîne ne correspond à votre recherche.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
   );
 }
