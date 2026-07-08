@@ -213,6 +213,9 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const displayedFrame = liveFrame ?? screenshot;
   const tags = displayedState?.showing_tags ?? [];
   const variables = displayedState?.variables ?? {};
+  const narrativeChoices = displayedState?.menu
+    ? choices.filter((choice) => !choice.screen || choice.screen === "choice")
+    : [];
 
   return (
     <section className="panel">
@@ -358,9 +361,9 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
 
         <div className="card">
           <h3>Choix</h3>
-          {choices.length ? (
+          {narrativeChoices.length ? (
             <ul className="choiceList">
-              {choices.map((choice) => (
+              {narrativeChoices.map((choice) => (
                 <li key={`${choice.text}-${choice.index}`}>
                   <span>{choice.text}</span>
                   <button className="btn small primary" onClick={() => onSelectChoice(choice.index)}>
@@ -370,7 +373,9 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               ))}
             </ul>
           ) : (
-            <p className="muted">Aucun choix actif.</p>
+            <p className="muted">
+              {displayedState?.menu ? "Aucun choix narratif détecté." : "Aucun menu de choix actif."}
+            </p>
           )}
         </div>
       </div>

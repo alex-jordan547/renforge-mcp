@@ -18,6 +18,7 @@ function severityClass(severity?: string): string {
 
 export function DiagnosticsPage() {
   const [diagnostics, setDiagnostics] = useState<LintDiagnostic[]>([]);
+  const [rawReport, setRawReport] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,11 +33,13 @@ export function DiagnosticsPage() {
           return;
         }
         setDiagnostics(response.diagnostics);
+        setRawReport(response.raw ?? "");
       } catch (err) {
         if (!mounted) {
           return;
         }
         setError(err instanceof Error ? err.message : "Failed to load diagnostics");
+        setRawReport("");
       } finally {
         if (mounted) {
           setLoading(false);
@@ -81,7 +84,18 @@ export function DiagnosticsPage() {
         <span>Liste <code>file:line</code> / <code>severity</code> / <code>message</code></span>
       </div>
       {diagnostics.length === 0 ? (
-        <p className="muted">Aucun diagnostic retourné.</p>
+        rawReport ? (
+          <div className="stack">
+            <p className="muted">
+              Aucun diagnostic structuré retourné. Le rapport lint brut est disponible ci-dessous.
+            </p>
+            <pre className="codeBlock lintRaw">
+              <code>{rawReport}</code>
+            </pre>
+          </div>
+        ) : (
+          <p className="muted">Aucun diagnostic retourné.</p>
+        )
       ) : (
         <div className="tableWrap">
           <table>

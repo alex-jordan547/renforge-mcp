@@ -20,7 +20,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..tools import live
 from ..tools import project_ops
 from ..lint import run_lint
-from .activity import tail_activity
+from .activity import read_recent_activity, tail_activity
 from .graph import build_story_map, resolve_game_file_path, resolve_warp_target
 from .poller import poll_bridge
 from .ws import WebSocketHub
@@ -89,6 +89,20 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         if not await _check_token(request):
             return _unauthorized()
         return JSONResponse(_read_autopilot(project_root))
+
+    async def activity_recent(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+
+        raw_limit = request.query_params.get("n", "20")
+        try:
+            limit = int(raw_limit)
+            if limit < 0:
+                limit = 0
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "n must be a non-negative integer"}, status_code=400)
+
+        return JSONResponse({"ok": True, "events": read_recent_activity(project_root, limit=limit)})
 
     async def assets(request: Request):
         if not await _check_token(request):
@@ -227,6 +241,8 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/project", project, methods=["GET"]),
         Route("/api/story-map", story_map, methods=["GET"]),
         Route("/api/coverage", coverage, methods=["GET"]),
+        Route("/api/timeline/recent", activity_recent, methods=["GET"]),
+        Route("/api/activity/recent", activity_recent, methods=["GET"]),
         Route("/api/assets", assets, methods=["GET"]),
         Route("/api/languages", languages, methods=["GET"]),
         Route("/api/translation-stats", translation_stats, methods=["GET"]),

@@ -186,8 +186,30 @@ def advance(project_path: str) -> dict:
     return _with_client(project_path, lambda c: c.advance())
 
 
+def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only choices that come from the active narrative choice screen."""
+
+    choices: list[dict[str, Any]] = []
+    for choice in raw_choices:
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("screen") == "choice":
+            choices.append(choice)
+    return choices
+
+
 def list_choices(project_path: str) -> dict:
-    return _with_client(project_path, lambda c: {"ok": True, "choices": c.list_choices()})
+    def _handler(client: BridgeClient) -> dict:
+        state = client.get_state()
+        if not bool(state.get("menu")):
+            return {"ok": True, "choices": []}
+
+        raw_choices = client.list_choices()
+        if not isinstance(raw_choices, list):
+            raw_choices = []
+        return {"ok": True, "choices": _filter_narrative_choices(raw_choices)}
+
+    return _with_client(project_path, _handler)
 
 
 def select_choice(project_path: str, text: str | None = None, index: int | None = None) -> dict:

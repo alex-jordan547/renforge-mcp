@@ -8,6 +8,7 @@ interface TranslationRow {
   ratio: string;
   files: string;
   percent: number | null;
+  showProgress: boolean;
 }
 
 function toNumber(value: unknown): number | null {
@@ -39,51 +40,51 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
       ratio: "—",
       files: "—",
       percent: null,
+      showProgress: false,
     };
   }
 
-  const translated = readValue(stats, [
-    "translated_lines",
-    "translated",
-    "done",
-    "translated_files",
-  ]);
-  const total = readValue(stats, ["total_lines", "total", "total_files", "files"]);
+  const done = readValue(stats, ["done", "translated"]);
+  const total = readValue(stats, ["total"]);
   const missing = readValue(stats, ["missing_lines", "missing", "missing_files", "missing_translations"]);
+  const missingDialogue = readValue(stats, ["missing_dialogue", "missing_dialogues"]);
+  const missingStrings = readValue(stats, ["missing_strings"]);
   const percent = toNumber((stats as Record<string, unknown>).percent);
 
+  const showProgress = percent !== null || (done !== null && total !== null && total > 0);
   const calculatedPercent =
-    percent !== null
-      ? percent
-      : translated !== null && total !== null && total > 0
-        ? (translated / total) * 100
-        : null;
+    percent !== null ? percent : done !== null && total !== null && total > 0 ? (done / total) * 100 : null;
 
   const ratio =
     calculatedPercent !== null
       ? `${calculatedPercent.toFixed(0)}%`
-      : translated !== null && total !== null
-        ? `${translated}/${total}`
+      : done !== null && total !== null
+        ? `${done}/${total}`
         : "—";
 
-  const files =
-    total !== null
-      ? `${total} fichiers`
-      : missing !== null
-        ? `${missing} manquants`
-        : "—";
+  const fileParts = [
+    missingDialogue !== null ? `${missingDialogue} dialogues manquants` : null,
+    missingStrings !== null ? `${missingStrings} strings manquants` : null,
+    missing !== null && missingDialogue === null && missingStrings === null ? `${missing} manquants` : null,
+    total !== null && missingDialogue === null && missingStrings === null && missing === null ? `${total} fichiers` : null,
+  ].filter((entry): entry is string => entry !== null);
+
+  const files = fileParts.length > 0 ? fileParts.join(" / ") : "—";
 
   return {
     language,
     status:
       calculatedPercent !== null && calculatedPercent >= 100
         ? "Complet"
-        : calculatedPercent !== null && calculatedPercent > 0
+        : showProgress
           ? "Partiel"
-          : "Partiel",
+          : missingDialogue !== null || missingStrings !== null || missing !== null
+            ? "Incomplet"
+            : "Partiel",
     ratio,
     files,
     percent: calculatedPercent,
+    showProgress,
   };
 }
 
@@ -194,7 +195,7 @@ export function TranslationPage() {
                   <td>
                     <div className="progressContainer">
                       <span style={{ minWidth: "48px", fontWeight: "bold" }}>{row.ratio}</span>
-                      {row.percent !== null && (
+                      {row.showProgress && row.percent !== null && (
                         <div className="progressBar">
                           <div className="progressFill" style={{ width: `${row.percent}%` }} />
                         </div>

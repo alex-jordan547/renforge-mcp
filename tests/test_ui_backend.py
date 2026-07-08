@@ -7,10 +7,13 @@ import pytest
 from renforge.ui import activity as activity_module
 from renforge.ui import graph
 from renforge.ui import poller
+from renforge.tools import live as live_module
 
 try:
     from starlette.testclient import TestClient
-except Exception:  # optional dependency
+except ModuleNotFoundError as exc:  # optional dependency
+    if exc.name != "starlette" and not str(exc.name).startswith("starlette."):
+        raise
     TestClient = None
 
 
@@ -115,6 +118,98 @@ def test_api_screenshot_handles_missing_bridge_as_json_error(tmp_path: Path, mon
     payload = response.json()
     assert payload["ok"] is False
     assert "RuntimeError" in payload["error"]
+
+
+def test_list_choices_filters_out_non_choice_screen_controls(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        def get_state(self):
+            return {"menu": True}
+
+        def list_choices(self):
+            return [
+                {"index": 0, "text": "history", "screen": "quick_menu"},
+                {"index": 10, "text": "Continue", "screen": "choice"},
+                {"index": 11, "text": "Retry", "screen": "choice"},
+                {"index": 12, "text": "Auto", "screen": None},
+            ]
+
+    monkeypatch.setattr(live_module, "_client", lambda _path: FakeClient())
+    result = live_module.list_choices(str(tmp_path))
+    assert result == {
+        "ok": True,
+        "choices": [
+            {"index": 10, "text": "Continue", "screen": "choice"},
+            {"index": 11, "text": "Retry", "screen": "choice"},
+        ],
+    }
+
+
+def test_list_choices_returns_empty_when_no_active_menu(monkeypatch, tmp_path) -> None:
+    class FakeClient:
+        def get_state(self):
+            return {"menu": False}
+
+        def list_choices(self):
+            return [{"index": 0, "text": "should not see", "screen": "choice"}]
+
+    monkeypatch.setattr(live_module, "_client", lambda _path: FakeClient())
+    result = live_module.list_choices(str(tmp_path))
+    assert result == {"ok": True, "choices": []}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_activity_recent_endpoint_returns_tail_events_and_skips_invalid_lines(tmp_path: Path) -> None:
+    project_root = _project_root(tmp_path)
+    activity_path = project_root / ".renforge" / "activity.jsonl"
+    activity_path.parent.mkdir(parents=True, exist_ok=True)
+    activity_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"ts": 1000, "name": "ignored"}),
+                "{broken json",
+                json.dumps({"ts": 2000, "name": "alive"}),
+                json.dumps({"ts": 3000, "name": "newest"}),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    app = create_ui_app(project_root, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/api/timeline/recent?token=token&n=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "ok": True,
+        "events": [
+            {
+                "kind": "activity",
+                "type": "activity",
+                "timestamp": 2000,
+                "payload": {"ts": 2000, "name": "alive"},
+            },
+            {
+                "kind": "activity",
+                "type": "activity",
+                "timestamp": 3000,
+                "payload": {"ts": 3000, "name": "newest"},
+            },
+        ],
+    }
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_activity_recent_endpoint_returns_empty_when_activity_file_missing(tmp_path: Path) -> None:
+    project_root = _project_root(tmp_path)
+    app = create_ui_app(project_root, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/api/activity/recent?token=token")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {"ok": True, "events": []}
 
 
 class _RecordingHub:

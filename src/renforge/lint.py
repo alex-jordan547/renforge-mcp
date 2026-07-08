@@ -24,30 +24,27 @@ def parse_lint_output(text: str) -> List[Dict[str, Any]]:
 
     patterns = (
         re.compile(
-            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*(?P<severity>warning|error|info|critical)\b\s*:?\s*(?P<message>.+?)\s*$",
+            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*(?P<severity>warning|error|info|critical)\b\s*:?\s*(?P<message>.*?)\s*$",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*\[(?P<severity>[^\]]+)\]\s*(?P<message>.+?)\s*$",
+            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*\[(?P<severity>[^\]]+)\]\s*(?P<message>.*?)\s*$",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*(?P<message>.+?)\s*$",
+            r"^\s*(?P<file>[^:\n]+):(?P<line>\d+):\s*(?P<message>.*?)\s*$",
             re.IGNORECASE,
         ),
     )
+    file_section_re = re.compile(r"^\s*(?P<file>[^:\n]+\.rpy):\s*$", re.IGNORECASE)
+    section_line_re = re.compile(r"^\s*(?P<title>[^:\n][^:\n]{1,120}):\s*$")
+    bullet_line_re = re.compile(r"^\s*\*\s*line\s+(?P<line>\d+)\s*(?P<message>.*?)\s*$", re.IGNORECASE)
 
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-
-        matched = False
+    def _as_diagnostic(raw: str) -> Dict[str, Any] | None:
         for pat in patterns:
-            m = pat.match(line)
+            m = pat.match(raw)
             if not m:
                 continue
-            matched = True
 
             file_name = (m.group("file") or "").strip()
             severity = (m.groupdict().get("severity") or "warning").strip().lower()
@@ -60,20 +57,78 @@ def parse_lint_output(text: str) -> List[Dict[str, Any]]:
                 line_no = 0
 
             message = (m.group("message") or "").strip()
-            if not message:
-                continue
+            payload: Dict[str, Any] = {
+                "file": file_name,
+                "line": line_no,
+                "severity": severity,
+            }
+            if message:
+                payload["message"] = message
+            return payload
 
+        return None
+
+    def _flush_pending(payload: Dict[str, Any] | None, section: str | None) -> None:
+        if payload is None:
+            return
+        detail_message = payload.pop("_details", [])
+        if detail_message:
+            payload["message"] = "; ".join(detail_message).strip()
+            results.append(payload)
+            return
+        if section:
+            payload["message"] = section
+            results.append(payload)
+
+    pending: Dict[str, Any] | None = None
+    current_section: str | None = None
+    current_file: str | None = None
+
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+
+        if not stripped:
+            _flush_pending(pending, current_section)
+            pending = None
+            continue
+
+        parsed = _as_diagnostic(line)
+        if pending is not None and parsed is None and len(line) > len(stripped):
+            if stripped:
+                pending.setdefault("_details", []).append(stripped)
+            continue
+
+        if pending is not None:
+            _flush_pending(pending, current_section)
+            pending = None
+
+        file_match = file_section_re.match(line)
+        if parsed is None and file_match:
+            current_file = file_match.group("file").strip()
+            continue
+
+        bullet_match = bullet_line_re.match(line)
+        if parsed is None and current_file and bullet_match:
+            message = bullet_match.group("message").strip()
+            section = current_section or "Ren'Py lint"
             results.append(
                 {
-                    "file": file_name,
-                    "line": line_no,
-                    "severity": severity,
-                    "message": message,
+                    "file": current_file,
+                    "line": int(bullet_match.group("line")),
+                    "severity": "warning",
+                    "message": f"{section} {message}".strip(),
                 }
             )
-            break
+            continue
 
-        if not matched:
+        section_match = section_line_re.match(line)
+        if parsed is None and section_match and len(line) == len(stripped):
+            current_section = section_match.group("title").strip()
+            current_file = None
+            continue
+
+        if parsed is None:
             # Dernier filet: lignes déjà préfixées d'un niveau de sévérité.
             lowered = line.lower()
             if "error" in lowered:
@@ -92,6 +147,16 @@ def parse_lint_output(text: str) -> List[Dict[str, Any]]:
                     "message": line,
                 }
             )
+            continue
+
+        if "message" in parsed:
+            results.append(parsed)
+            continue
+
+        pending = parsed
+
+    if pending is not None:
+        _flush_pending(pending, current_section)
 
     return results
 
