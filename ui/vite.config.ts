@@ -10,7 +10,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8765",
+        changeOrigin: true,
+      },
+      "/ws": {
+        target: "ws://localhost:8765",
+        ws: true,
+      }
+    }
   },
   build: {
     outDir: "../src/renforge/ui/static",

@@ -43,6 +43,23 @@ export interface LiveChoice {
   screen?: string;
 }
 
+export interface DebugBridgeEvent {
+  seq?: number;
+  type?: string;
+  label?: string;
+  what?: string;
+  short?: string;
+  full?: string;
+  [key: string]: unknown;
+}
+
+export interface DebugEventsResponse {
+  ok: boolean;
+  cursor?: number;
+  events: DebugBridgeEvent[];
+  error?: string;
+}
+
 export interface LiveScreenshot {
   format: "png" | "jpeg";
   base64: string;
