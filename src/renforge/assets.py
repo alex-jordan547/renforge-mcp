@@ -14,9 +14,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
-AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".flac", ".m4a"}
-ASSET_EXTS = IMAGE_EXTS | AUDIO_EXTS
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".tga", ".bmp"}
+AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".flac", ".m4a", ".aac", ".mp2", ".wma"}
+VIDEO_EXTS = {".webm", ".mp4", ".ogv", ".avi", ".mkv", ".mov", ".mpg", ".mpeg", ".flv"}
+ASSET_EXTS = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS
 
 _QUOTED_RE = re.compile(r"""["']([^"'\n]+?)["']""")
 _IMAGE_DEF_RE = re.compile(r"^\s*image\s+([^\n=:]+?)\s*(?:=|:)")
