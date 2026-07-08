@@ -207,18 +207,18 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
   );
 
   if (loading) {
-    return <section className="panel empty">Chargement de la Story Map…</section>;
+    return <section className="panel empty">Loading Story Map…</section>;
   }
 
   if (error) {
-    return <section className="panel empty">Impossible de charger la Story Map: {error}</section>;
+    return <section className="panel empty">Could not load Story Map: {error}</section>;
   }
 
   if (!data.nodes.length) {
     return (
       <section className="panel empty">
-        <h2>Story Map vide</h2>
-        <p>Le backend n’a pas encore exposé les données.</p>
+        <h2>Empty Story Map</h2>
+        <p>The backend has not exposed data yet.</p>
       </section>
     );
   }
@@ -228,13 +228,13 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
       <div className="page-head reveal in">
         <h2>Story Map</h2>
         <span className="hint">
-          {data.nodes.length} labels · {data.edges.length} transitions · clique un nœud pour relancer
+          {data.nodes.length} labels · {data.edges.length} transitions · click a node to replay
         </span>
       </div>
 
       <div className="map-wrap reveal in" style={{ animationDelay: ".06s" }}>
         <div className="map-meta">
-          <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Position actuelle</span>
+          <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Current position</span>
           <span className="pill-label">
             <span className="dot" />
             {currentLabel || "—"}
@@ -260,13 +260,13 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
           <div className="zoom">
             <button id="zin" onClick={() => zoomIn()}>+</button>
             <button id="zout" onClick={() => zoomOut()}>−</button>
-            <button id="zfit" title="Ajuster" onClick={() => fitView()}>⊡</button>
+            <button id="zfit" title="Fit" onClick={() => fitView()}>⊡</button>
           </div>
         </div>
       </div>
 
       {warpBusy ? (
-        <div className="statusLine">Redémarrage du jeu sur « {warpTarget} »…</div>
+        <div className="statusLine">Restarting game on "{warpTarget}"…</div>
       ) : layoutBusy ? (
         <div className="statusLine">Ajustement du graphe…</div>
       ) : null}

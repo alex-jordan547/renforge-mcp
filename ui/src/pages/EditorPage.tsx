@@ -139,7 +139,7 @@ export function EditorPage() {
     setActivePath(path);
   };
 
-  const codeLines = file?.content ? file.content.split("\n") : ["Contenu indisponible."];
+  const codeLines = file?.content ? file.content.split("\n") : ["Content unavailable."];
 
   const handleScrollbarPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     const code = codeRef.current;
@@ -172,12 +172,12 @@ export function EditorPage() {
     <div className="wrap">
       <div className="page-head reveal in">
         <h2>Editor</h2>
-        <span className="hint">lecture seule · scope projet backend</span>
+        <span className="hint">read-only · backend project scope</span>
       </div>
 
       <form className="path-row reveal in" style={{ animationDelay: ".05s" }} onSubmit={handleLoad}>
         <div className="field">
-          <label className="field-label" htmlFor="fpath">Chemin du fichier</label>
+          <label className="field-label" htmlFor="fpath">File path</label>
           <input
             className="input"
             id="fpath"
@@ -185,7 +185,7 @@ export function EditorPage() {
             onChange={(e) => setPathInput(e.target.value)}
           />
         </div>
-        <button type="submit" className="btn btn-primary btn-pill">Charger</button>
+        <button type="submit" className="btn btn-primary btn-pill">Load</button>
       </form>
 
       <div className="ed-note reveal in" style={{ animationDelay: ".08s" }}>
@@ -193,7 +193,7 @@ export function EditorPage() {
           <rect x="5" y="11" width="14" height="9" rx="2" />
           <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </svg>
-        Le backend limite l’accès aux fichiers projet. Le chemin courant est lu en lecture seule.
+        The backend limits access to project files. The current path is read-only.
       </div>
 
       <div className="ed-cols">
@@ -253,11 +253,11 @@ export function EditorPage() {
 
           {loading ? (
             <div className="code" style={{ padding: "20px", color: "var(--muted)" }}>
-              Chargement de {activePath}…
+              Loading {activePath}…
             </div>
           ) : error ? (
             <div className="code" style={{ padding: "20px", color: "var(--danger)" }}>
-              Impossible de charger {activePath} : {error}
+              Could not load {activePath}: {error}
             </div>
           ) : (
             <div className="code-shell">

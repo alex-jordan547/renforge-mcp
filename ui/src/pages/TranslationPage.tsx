@@ -45,7 +45,7 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
   if (!stats) {
     return {
       language,
-      status: error || "Stats indisponibles",
+      status: error || "Stats unavailable",
       ratio: "—",
       files: "—",
       percent: null,
@@ -73,10 +73,10 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
         : "—";
 
   const fileParts = [
-    missingDialogue !== null ? `${missingDialogue} dialogues manquants` : null,
-    missingStrings !== null ? `${missingStrings} strings manquants` : null,
-    missing !== null && missingDialogue === null && missingStrings === null ? `${missing} manquants` : null,
-    total !== null && missingDialogue === null && missingStrings === null && missing === null ? `${total} fichiers` : null,
+    missingDialogue !== null ? `${missingDialogue} missing dialogues` : null,
+    missingStrings !== null ? `${missingStrings} missing strings` : null,
+    missing !== null && missingDialogue === null && missingStrings === null ? `${missing} missing` : null,
+    total !== null && missingDialogue === null && missingStrings === null && missing === null ? `${total} files` : null,
   ].filter((entry): entry is string => entry !== null);
 
   const files = fileParts.length > 0 ? fileParts.join(" / ") : "—";
@@ -85,12 +85,12 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
     language,
     status:
       calculatedPercent !== null && calculatedPercent >= 100
-        ? "Complet"
+        ? "Complete"
         : showProgress
-          ? "Partiel"
+          ? "Partial"
           : missingDialogue !== null || missingStrings !== null || missing !== null
-            ? "Incomplet"
-            : "Partiel",
+            ? "Incomplete"
+            : "Partial",
     ratio,
     files,
     percent: calculatedPercent,
@@ -151,7 +151,7 @@ export function TranslationPage() {
               : formatRow(
                   languageList[index],
                   null,
-                  result.reason instanceof Error ? result.reason.message : "Erreur endpoint",
+                   result.reason instanceof Error ? result.reason.message : "Endpoint error",
                 ),
           ),
         );
@@ -221,7 +221,7 @@ export function TranslationPage() {
           <h2>Translation</h2>
           <span className="hint">/api/languages · /api/translation-stats</span>
         </div>
-        <div className="statusLine">Chargement des statistiques de traduction…</div>
+        <div className="statusLine">Loading translation statistics…</div>
       </div>
     );
   }
@@ -247,10 +247,10 @@ export function TranslationPage() {
         </div>
         <div className="emptyState">
           <div className="emptyState-icon">🌐</div>
-          <h3>Aucune langue détectée</h3>
+          <h3>No language detected</h3>
           <p>
-            Configurez les langues dans votre projet Ren'Py pour voir les statistiques de traduction ici.
-            Les langues sont détectées automatiquement via <code>/api/languages</code>.
+            Configure languages in your Ren'Py project to see translation statistics here.
+            Languages are detected automatically via <code>/api/languages</code>.
           </p>
         </div>
       </div>
@@ -284,7 +284,7 @@ export function TranslationPage() {
                       <div className="sub">{row.language} · {row.status.toLowerCase()}</div>
                     </div>
                     <span
-                      className={`st ${row.status === "Complet" ? "ok" : "todo"}`}
+                      className={`st ${row.status === "Complete" ? "ok" : "todo"}`}
                       style={{ marginLeft: "auto" }}
                     >
                       {row.status.toUpperCase()}
@@ -304,13 +304,13 @@ export function TranslationPage() {
 
           <div className="card">
             <div className="card-body">
-              <div className="vhead">Résumé script</div>
+              <div className="vhead">Script summary</div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Dialogues source</span>
+                <span style={{ color: "var(--muted)" }}>Source dialogues</span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>6</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Traduits ({selectedLanguage || "—"})</span>
+                <span style={{ color: "var(--muted)" }}>Translated ({selectedLanguage || "—"})</span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                   {activeRow && activeRow.rawStats
                     ? (6 - (toNumber(activeRow.rawStats.missing_dialogue) ?? 0))
@@ -318,7 +318,7 @@ export function TranslationPage() {
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Orphelins</span>
+                <span style={{ color: "var(--muted)" }}>Orphans</span>
                 <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--warn)" }}>1</span>
               </div>
             </div>
@@ -327,7 +327,7 @@ export function TranslationPage() {
 
         <section className="card reveal in" style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>Chaînes — {selectedLanguage}</h3>
+            <h3>Strings — {selectedLanguage}</h3>
             {activeRow && (
               <span className="badge warn">{activeRow.ratio} traduites</span>
             )}
@@ -339,7 +339,7 @@ export function TranslationPage() {
                 id="tr-search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Rechercher une chaîne…"
+                placeholder="Search a string…"
               />
             </div>
             <div style={{ overflowX: "auto" }}>
@@ -347,8 +347,8 @@ export function TranslationPage() {
                 <thead>
                   <tr>
                     <th style={{ width: "44%" }}>Source (en)</th>
-                    <th style={{ width: "44%" }}>Traduction ({selectedLanguage})</th>
-                    <th>État</th>
+                    <th style={{ width: "44%" }}>Translation ({selectedLanguage})</th>
+                    <th>State</th>
                   </tr>
                 </thead>
                 <tbody id="tr-body">
@@ -365,7 +365,7 @@ export function TranslationPage() {
                             {str.tr}
                           </>
                         ) : (
-                          "— non traduit —"
+                          "— untranslated —"
                         )}
                       </td>
                       <td>
@@ -378,7 +378,7 @@ export function TranslationPage() {
                   {filteredStrings.length === 0 && (
                     <tr>
                       <td colSpan={3} style={{ textAlign: "center", color: "var(--meta)" }}>
-                        Aucune chaîne ne correspond à votre recherche.
+                         No string matches your search.
                       </td>
                     </tr>
                   )}

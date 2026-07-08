@@ -87,7 +87,7 @@ export function AssetsPage() {
           <h2>Assets</h2>
           <span className="hint">inventaire · /api/assets</span>
         </div>
-        <div className="statusLine">Chargement de l'inventaire…</div>
+        <div className="statusLine">Loading inventory…</div>
       </div>
     );
   }
@@ -99,7 +99,7 @@ export function AssetsPage() {
           <h2>Assets</h2>
           <span className="hint">inventaire · /api/assets</span>
         </div>
-        <p className="errorText">Impossible de charger les assets: {error}</p>
+        <p className="errorText">Unable to load assets: {error}</p>
       </div>
     );
   }
@@ -116,28 +116,28 @@ export function AssetsPage() {
           className={`stat accent ${selectedStat === "files" ? "sel" : ""}`}
           onClick={() => setSelectedStat("files")}
         >
-          <div className="lbl">Fichiers projet</div>
+          <div className="lbl">Project files</div>
           <div className="num">{assetFiles.length}</div>
         </div>
         <div
           className={`stat warn ${selectedStat === "orphans" ? "sel" : ""}`}
           onClick={() => setSelectedStat("orphans")}
         >
-          <div className="lbl">Orphelins</div>
+          <div className="lbl">Orphans</div>
           <div className="num">{orphans.length}</div>
         </div>
         <div
           className={`stat danger ${selectedStat === "missing" ? "sel" : ""}`}
           onClick={() => setSelectedStat("missing")}
         >
-          <div className="lbl">Fichiers manquants</div>
+          <div className="lbl">Missing files</div>
           <div className="num">{missingFiles.length}</div>
         </div>
         <div
           className={`stat ${selectedStat === "undef" ? "sel" : ""}`}
           onClick={() => setSelectedStat("undef")}
         >
-          <div className="lbl">Images non définies</div>
+          <div className="lbl">Undefined images</div>
           <div className="num">{undefinedImages.length}</div>
         </div>
       </div>
@@ -145,7 +145,7 @@ export function AssetsPage() {
       <div className="cols">
         <section className="card reveal in" style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>Fichiers projet</h3>
+            <h3>Project files</h3>
             <span className="badge info">{assetFiles.length}</span>
           </div>
           <div className="card-body">
@@ -155,7 +155,7 @@ export function AssetsPage() {
                   className={fileFilter === "all" ? "on" : ""}
                   onClick={() => setFileFilter("all")}
                 >
-                  Tout
+                  All
                 </button>
                 <button
                   className={fileFilter === "image" ? "on" : ""}
@@ -173,7 +173,7 @@ export function AssetsPage() {
                   className={fileFilter === "video" ? "on" : ""}
                   onClick={() => setFileFilter("video")}
                 >
-                  Vidéos
+                  Videos
                 </button>
               </div>
             </div>
@@ -216,7 +216,7 @@ export function AssetsPage() {
                 );
               })}
               {filteredFiles.length === 0 && (
-                <p className="empty">Aucun fichier ne correspond à ce filtre.</p>
+                <p className="empty">No file matches this filter.</p>
               )}
             </div>
           </div>
@@ -225,19 +225,19 @@ export function AssetsPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <section className="card reveal in" style={{ animationDelay: ".15s" }}>
             <div className="card-head">
-              <h3>Orphelins</h3>
+              <h3>Orphans</h3>
               <span className="badge warn">{orphans.length}</span>
             </div>
              <div className="card-body">
                <p className="empty" style={{ marginBottom: "12px" }}>
-                 Assets présents sur disque mais jamais référencés dans le script.
+                  Assets on disk never referenced in the script.
                </p>
                <div className="orphans" style={{ maxHeight: orphansMaxHeight }}>
                 {orphans.map((orphan) => (
                   <span key={orphan} className="orphan">{orphan}</span>
                 ))}
                 {orphans.length === 0 && (
-                  <p className="empty">Aucun asset orphelin.</p>
+                  <p className="empty">No orphaned asset.</p>
                 )}
               </div>
             </div>
@@ -246,14 +246,14 @@ export function AssetsPage() {
           {missingFiles.length > 0 && (
             <section className="card reveal in" style={{ animationDelay: ".20s" }}>
               <div className="card-head">
-                <h3>Fichiers manquants</h3>
+                <h3>Missing files</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
                   {missingFiles.length}
                 </span>
               </div>
               <div className="card-body">
                 <p className="empty" style={{ marginBottom: "12px" }}>
-                  Fichiers référencés dans le script mais introuvables sur le disque.
+                  Files referenced in the script but missing on disk.
                 </p>
                 <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {missingFiles.map((file) => (
@@ -277,14 +277,14 @@ export function AssetsPage() {
           {undefinedImages.length > 0 && (
             <section className="card reveal in" style={{ animationDelay: ".25s" }}>
               <div className="card-head">
-                <h3>Images non définies</h3>
+                <h3>Undefined images</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
                   {undefinedImages.length}
                 </span>
               </div>
               <div className="card-body">
                 <p className="empty" style={{ marginBottom: "12px" }}>
-                  Images utilisées dans le script de dialogue mais jamais déclarées avec une instruction image.
+                  Images used in dialogue scripts but never declared with an image statement.
                 </p>
                 <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {undefinedImages.map((img) => (

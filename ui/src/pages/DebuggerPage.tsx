@@ -54,7 +54,7 @@ export function DebuggerPage() {
   const [evalResult, setEvalResult] = useState("");
   const [varName, setVarName] = useState("");
   const [varValue, setVarValue] = useState("");
-  const [status, setStatus] = useState("synchronisation...");
+  const [status, setStatus] = useState("syncing...");
   const [refreshing, setRefreshing] = useState(true);
   const cursorRef = useRef(0);
 
@@ -74,11 +74,11 @@ export function DebuggerPage() {
       if (nextEvents.events.length > 0) {
         setEvents((prev) => [...prev, ...nextEvents.events].slice(-80));
       }
-      setStatus("connecté au bridge");
+      setStatus("connected to bridge");
     } catch (error) {
       setState(null);
       setChoices([]);
-      setStatus(error instanceof Error ? error.message : "bridge indisponible");
+      setStatus(error instanceof Error ? error.message : "bridge unavailable");
     } finally {
       setRefreshing(false);
     }
@@ -117,7 +117,7 @@ export function DebuggerPage() {
       const response = await api.evaluate(expression);
       setEvalResult(formatUnknown(response.value));
       return response;
-    }, "évaluation exécutée");
+    }, "evaluation executed");
   };
 
   const handleSetVariable = async (event: FormEvent<HTMLFormElement>) => {
@@ -128,7 +128,7 @@ export function DebuggerPage() {
     }
     await runAction(
       () => api.setVariable(name, parseVariableValue(varValue)),
-      `variable ${name} mise à jour`,
+      `variable ${name} updated`,
     );
   };
 
@@ -144,7 +144,7 @@ export function DebuggerPage() {
     <div className="wrap">
       <div className="page-head reveal in">
         <h2>Debugger</h2>
-        <span className="hint">contrôle runtime via bridge</span>
+        <span className="hint">runtime control via bridge</span>
       </div>
 
       <div className="debugger-grid">
@@ -152,11 +152,11 @@ export function DebuggerPage() {
           <div className="debug-panel-head">
             <div>
               <h3>Session</h3>
-              <p>{state ? "Bridge actif et état runtime synchronisé." : "Aucun état bridge disponible."}</p>
+              <p>{state ? "Bridge active and runtime state synced." : "No bridge state available."}</p>
             </div>
             <span className={`status ${state ? "ro" : "off"}`}>
               <span className="dot" />
-              {refreshing ? "sync" : state ? "actif" : "offline"}
+              {refreshing ? "sync" : state ? "active" : "offline"}
             </span>
           </div>
           <div className="debug-metrics">
@@ -166,7 +166,7 @@ export function DebuggerPage() {
             </div>
             <div>
               <span>Menu</span>
-              <b>{state?.menu ? "actif" : "inactif"}</b>
+              <b>{state?.menu ? "active" : "inactive"}</b>
             </div>
             <div>
               <span>Tags</span>
@@ -178,18 +178,18 @@ export function DebuggerPage() {
             </div>
           </div>
           <div className="debug-actions">
-            <button className="btn btn-primary" type="button" onClick={() => runAction(() => api.control("advance"), "avancé")}>
-              Avancer
-            </button>
-            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("rollback"), "rollback exécuté")}>
-              Rollback
-            </button>
-            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("restart_interaction"), "interaction relancée")}>
-              Restart UI
-            </button>
-            <button className="btn btn-ghost" type="button" onClick={refresh}>
-              Rafraîchir
-            </button>
+            <button className="btn btn-primary" type="button" onClick={() => runAction(() => api.control("advance"), "advanced")}>
+               Advance
+             </button>
+             <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("rollback"), "rollback executed")}>
+               Rollback
+             </button>
+             <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("restart_interaction"), "interaction replayed")}>
+               Restart UI
+             </button>
+             <button className="btn btn-ghost" type="button" onClick={refresh}>
+               Refresh
+             </button>
           </div>
           <p className="debug-status">{status}</p>
         </section>
@@ -209,13 +209,13 @@ export function DebuggerPage() {
               <button className="btn btn-primary" type="submit">Eval</button>
             </div>
           </form>
-          <pre className="debug-output">{evalResult || "Le résultat s'affiche ici."}</pre>
+           <pre className="debug-output">{evalResult || "The result appears here."}</pre>
         </section>
 
         <section className="debug-panel reveal in" style={{ animationDelay: ".08s" }}>
           <h3>Variable</h3>
           <form onSubmit={handleSetVariable}>
-            <label className="field-label" htmlFor="debug-var-name">Nom</label>
+            <label className="field-label" htmlFor="debug-var-name">Name</label>
             <input
               className="input"
               id="debug-var-name"
@@ -223,7 +223,7 @@ export function DebuggerPage() {
               onChange={(event) => setVarName(event.target.value)}
               placeholder="score"
             />
-            <label className="field-label" htmlFor="debug-var-value">Valeur JSON ou texte</label>
+            <label className="field-label" htmlFor="debug-var-value">JSON or text value</label>
             <input
               className="input"
               id="debug-var-value"
@@ -232,13 +232,13 @@ export function DebuggerPage() {
               placeholder='42, true, "Alex"'
             />
             <div className="debug-form-actions">
-              <button className="btn btn-primary" type="submit">Définir</button>
+              <button className="btn btn-primary" type="submit">Set</button>
             </div>
           </form>
         </section>
 
         <section className="debug-panel reveal in" style={{ animationDelay: ".11s" }}>
-          <h3>Variables du store</h3>
+          <h3>Store variables</h3>
           <div className="debug-list">
             {visibleVariables.length > 0 ? visibleVariables.map(([key, value]) => (
               <div className="debug-row" key={key}>
@@ -246,13 +246,13 @@ export function DebuggerPage() {
                 <b>{formatUnknown(value)}</b>
               </div>
             )) : (
-              <p className="muted">Aucune variable exposée par le bridge.</p>
+              <p className="muted">No variable exposed by the bridge.</p>
             )}
           </div>
         </section>
 
         <section className="debug-panel reveal in" style={{ animationDelay: ".14s" }}>
-          <h3>Choix actifs</h3>
+          <h3>Active choices</h3>
           <div className="debug-list">
             {narrativeChoices.length > 0 ? narrativeChoices.map((choice) => (
               <div className="debug-choice" key={`${choice.index}-${choice.text}`}>
@@ -260,13 +260,13 @@ export function DebuggerPage() {
                 <button
                   className="btn btn-primary"
                   type="button"
-                  onClick={() => runAction(() => api.selectChoice(choice.index), "choix sélectionné")}
+                  onClick={() => runAction(() => api.selectChoice(choice.index), "choice selected")}
                 >
-                  Choisir
+                  Choose
                 </button>
               </div>
             )) : (
-              <p className="muted">Aucun choix narratif actif.</p>
+              <p className="muted">No active narrative choice.</p>
             )}
           </div>
         </section>
@@ -281,7 +281,7 @@ export function DebuggerPage() {
                 <p>{describeEvent(event)}</p>
               </div>
             )) : (
-              <p className="muted">Aucun événement reçu. Lance ou avance le jeu pour alimenter le flux.</p>
+              <p className="muted">No event received. Launch or advance the game to feed the stream.</p>
             )}
           </div>
         </section>
