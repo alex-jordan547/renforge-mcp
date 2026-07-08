@@ -13,7 +13,7 @@ const TREE_FILES = [
 
 function highlightCode(code: string): ReactNode[] {
   const tokens: ReactNode[] = [];
-  const regex = /("[^"]*"|'[^']*'|\b(?:define|default|label|jump|menu|show|scene|play|stop|pass|return|init|python|if|else|elif)\b|\b[A-Z][a-zA-Z0-9_]*(?=\()|\b[a-zA-Z0-9_]+\b)/g;
+  const regex = /(#[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(?:define|default|label|jump|menu|show|scene|play|stop|pass|return|init|python|if|else|elif)\b|\b[A-Z][a-zA-Z0-9_]*(?=\()|\b[a-zA-Z0-9_]+\b)/g;
   
   let match;
   let lastIdx = 0;
@@ -25,7 +25,9 @@ function highlightCode(code: string): ReactNode[] {
       tokens.push(code.substring(lastIdx, matchIdx));
     }
     
-    if (matchText.startsWith('"') || matchText.startsWith("'")) {
+    if (matchText.startsWith("#")) {
+      tokens.push(<span key={matchIdx} className="cm">{matchText}</span>);
+    } else if (matchText.startsWith('"') || matchText.startsWith("'")) {
       tokens.push(<span key={matchIdx} className="str">{matchText}</span>);
     } else if (["define", "default", "label", "jump", "menu", "show", "scene", "play", "stop", "pass", "return", "init", "python", "if", "else", "elif"].includes(matchText)) {
       tokens.push(<span key={matchIdx} className="kw">{matchText}</span>);
@@ -47,17 +49,6 @@ function highlightCode(code: string): ReactNode[] {
 }
 
 function highlightLine(line: string) {
-  if (line.includes("#")) {
-    const idx = line.indexOf("#");
-    const codePart = line.substring(0, idx);
-    const commentPart = line.substring(idx);
-    return (
-      <>
-        {highlightCode(codePart)}
-        <span className="cm">{commentPart}</span>
-      </>
-    );
-  }
   return highlightCode(line);
 }
 

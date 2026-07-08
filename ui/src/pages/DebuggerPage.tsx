@@ -98,7 +98,9 @@ export function DebuggerPage() {
         throw new Error((result as { error?: string }).error ?? "action failed");
       }
       setStatus(success);
-      await refresh();
+      window.setTimeout(() => {
+        void refresh();
+      }, 250);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "action failed");
       setRefreshing(false);
@@ -168,7 +170,7 @@ export function DebuggerPage() {
             </div>
             <div>
               <span>Tags</span>
-              <b>{state?.showing_tags.length ? state.showing_tags.join(", ") : "—"}</b>
+              <b>{state?.showing_tags?.length ? state.showing_tags.join(", ") : "—"}</b>
             </div>
             <div>
               <span>Events</span>
