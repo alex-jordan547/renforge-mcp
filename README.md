@@ -27,6 +27,37 @@ translations, find orphaned assets, run builds, and search Ren'Py's docs.
 - **Web dashboard** — Starlette + WebSocket UI with a live story map, activity
   log, autopilot coverage, lint view, and game-state controls.
 
+## Quick start
+
+Requires Python 3.11+. With [uv](https://docs.astral.sh/uv/) installed, no
+setup is needed:
+
+```bash
+# Start the web dashboard on your project
+uvx --from "renforge[ui]" renforge ui --project /path/to/your/game
+
+# Or add the MCP server to Claude Code
+claude mcp add renforge -- uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
+```
+
+For Claude Desktop (or any MCP client using JSON config):
+
+```json
+{
+  "mcpServers": {
+    "renforge": {
+      "command": "uvx",
+      "args": [
+        "--from", "renforge[fastmcp]", "renforge",
+        "serve", "--project", "/path/to/your/game"
+      ]
+    }
+  }
+}
+```
+
+Prefer pip? `pip install "renforge[fastmcp,ui]"` gives you the `renforge` CLI.
+
 ## Install (dev)
 
 ```bash
