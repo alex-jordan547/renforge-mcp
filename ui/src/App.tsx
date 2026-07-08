@@ -434,14 +434,24 @@ export function App() {
           </div>
           <div className="pilot">
             <div className="label-chip">
-              <span
-                className="thumb"
-                style={
-                  liveFrame
-                    ? { backgroundImage: `url(data:image/${liveFrame.format};base64,${liveFrame.base64})` }
-                    : undefined
-                }
-              />
+              <div className="thumb-container">
+                <span
+                  className="thumb"
+                  style={
+                    liveFrame
+                      ? { backgroundImage: `url(data:image/${liveFrame.format};base64,${liveFrame.base64})` }
+                      : undefined
+                  }
+                />
+                {liveFrame && (
+                  <div className="thumb-popover">
+                    <img
+                      src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
+                      alt="Aperçu live grand"
+                    />
+                  </div>
+                )}
+              </div>
               <span>
                 <span className="k">Label courant</span>
                 <br />

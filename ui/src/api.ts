@@ -543,6 +543,12 @@ export const api = {
     return apiPost<{ ok: boolean }>("/api/advance", {});
   },
 
+  async control(action: string): Promise<{ ok: boolean; action?: string; event?: string; error?: string }> {
+    const response = await apiPost<unknown>("/api/live/control", { action });
+    checkBooleanResponse(response, "Control");
+    return response as { ok: boolean; action?: string; event?: string; error?: string };
+  },
+
   async screenshot(width = 680, height = 380): Promise<LiveScreenshot> {
     return apiPost<LiveScreenshot>("/api/screenshot", { width, height });
   },

@@ -75,51 +75,42 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
         throw new Error(error || "action failed");
       }
       setStatus(successMsg);
+      window.setTimeout(() => {
+        void refresh();
+      }, 250);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "action failed");
     }
   };
 
-  const onAdvance = async () => runAction(() => api.advance(), "avancé");
+  const onAdvance = async () => runAction(() => api.control("advance"), "avancé");
   
   const onRollback = async () => {
-    runAction(() => api.evaluate("renpy.roll_back()"), "retour ok");
+    runAction(() => api.control("rollback"), "retour ok");
   };
 
   const onToggleSkip = async () => {
-    runAction(() => api.evaluate("renpy.game.interface.keymap['toggle_skip']()"), "skip ok");
+    runAction(() => api.control("toggle_skip"), "skip ok");
   };
 
   const onToggleAuto = async () => {
-    runAction(() => api.evaluate("renpy.game.interface.keymap['toggle_auto']()"), "auto ok");
+    runAction(() => api.control("toggle_auto"), "auto ok");
   };
 
   const onQuickSave = async () => {
-    runAction(() => api.evaluate("renpy.save('quick-1', 'Sauvegarde auto dashboard')"), "sauvegarde ok");
+    runAction(() => api.control("quick_save"), "sauvegarde ok");
   };
 
   const onQuickLoad = async () => {
-    runAction(() => api.evaluate("renpy.load('quick-1')"), "chargement ok");
-  };
-
-  const onMainMenu = async () => {
-    runAction(() => api.evaluate("renpy.utter_restart()"), "menu principal ok");
-  };
-
-  const onToggleUI = async () => {
-    runAction(() => api.evaluate("renpy.toggle_interface()"), "toggle interface ok");
+    runAction(() => api.control("quick_load"), "chargement ok");
   };
 
   const onQuit = async () => {
-    runAction(() => api.evaluate("renpy.quit()"), "quitté");
-  };
-
-  const onPreferences = async () => {
-    runAction(() => api.evaluate("renpy.call_in_new_context('_game_menu', _game_menu_screen='preferences')"), "préférences ok");
+    runAction(() => api.control("quit"), "quitté");
   };
 
   const onReloadGame = async () => {
-    runAction(() => api.evaluate("renpy.reload_script()"), "rechargement ok");
+    runAction(() => api.control("reload_script"), "rechargement ok");
   };
 
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
