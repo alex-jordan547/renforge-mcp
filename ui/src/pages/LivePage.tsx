@@ -50,9 +50,9 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       } else {
         setScreenshot(null);
       }
-      setStatus("en direct");
+      setStatus("live");
     } catch (_error) {
-      setStatus("indisponible");
+      setStatus("unavailable");
       setState(null);
       setChoices([]);
       setScreenshot(null);
@@ -83,10 +83,10 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     }
   };
 
-  const onAdvance = async () => runAction(() => api.control("advance"), "avancé");
+  const onAdvance = async () => runAction(() => api.control("advance"), "advanced");
   
   const onRollback = async () => {
-    runAction(() => api.control("rollback"), "retour ok");
+    runAction(() => api.control("rollback"), "rollback ok");
   };
 
   const onToggleSkip = async () => {
@@ -98,19 +98,19 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   };
 
   const onQuickSave = async () => {
-    runAction(() => api.control("quick_save"), "sauvegarde ok");
+    runAction(() => api.control("quick_save"), "save ok");
   };
 
   const onQuickLoad = async () => {
-    runAction(() => api.control("quick_load"), "chargement ok");
+    runAction(() => api.control("quick_load"), "load ok");
   };
 
   const onQuit = async () => {
-    runAction(() => api.control("quit"), "quitté");
+    runAction(() => api.control("quit"), "quit");
   };
 
   const onReloadGame = async () => {
-    runAction(() => api.control("reload_script"), "rechargement ok");
+    runAction(() => api.control("reload_script"), "reload ok");
   };
 
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
@@ -121,10 +121,10 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     try {
       const response = await api.evaluate(expr);
       setEvalResult(`${expr}  =  ${formatUnknown(response.value)}`);
-      setStatus("évaluation ok");
+      setStatus("evaluation ok");
     } catch (error) {
       setEvalResult("");
-      setStatus(error instanceof Error ? error.message : "évaluation failed");
+      setStatus(error instanceof Error ? error.message : "evaluation failed");
     }
   };
 
@@ -133,11 +133,11 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     if (!setVarName.trim()) {
       return;
     }
-    await runAction(() => api.setVariable(setVarName, setVarValue), `déini: ${setVarName}`);
+      await runAction(() => api.setVariable(setVarName, setVarValue), `defined: ${setVarName}`);
   };
 
   const onSelectChoice = async (index: number) => {
-    await runAction(() => api.selectChoice(index), "choix sélectionné");
+    await runAction(() => api.selectChoice(index), "choice selected");
     await refresh();
   };
 
@@ -159,10 +159,10 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       <div className="live-grid">
         <section className="card preview-card reveal in" style={{ animationDelay: ".02s" }}>
           <div className="card-head">
-            <h3>Aperçu</h3>
+            <h3>Preview</h3>
             <span className="badge ok">
               <span className="dot" style={{ width: "6px", height: "6px" }} />
-              {loading ? "synchronisation..." : status || "en direct"}
+              {loading ? "syncing..." : status || "live"}
             </span>
           </div>
           <div className="card-body">
@@ -173,7 +173,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   alt="Live preview"
                 />
               ) : (
-                <div className="empty-box">Aucune image — en attente du bridge</div>
+                <div className="empty-box">No image — waiting for bridge</div>
               )}
             </div>
             <div className="transport">
@@ -181,13 +181,13 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M15 6 9 12l6 6" />
                 </svg>
-                Retour
+                Back
               </button>
               <button className="tctl primary" type="button" onClick={onAdvance}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
-                Avancer
+                Advance
               </button>
               <button className="tctl" type="button" onClick={onToggleSkip}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
@@ -207,40 +207,40 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   <path d="M5 3h11l3 3v15H5z" />
                   <path d="M8 3v5h7M8 14h8v7H8z" />
                 </svg>
-                Sauver
+                Save
               </button>
               <button className="tctl" type="button" onClick={onQuickLoad}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M3 7h6l2 2h10v10H3z" />
                 </svg>
-                Charger
+                Load
               </button>
               <button className="tctl" type="button" onClick={onReloadGame}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
                   <path d="M21 12a9 9 0 1 1-2.6-6.3" />
                   <path d="M21 4v4h-4" />
                 </svg>
-                Recharger
+                Reload
               </button>
               <button className="tctl warn" type="button" onClick={onQuit}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M6 6l12 12M18 6 6 18" />
                 </svg>
-                Quitter
+                Quit
               </button>
             </div>
             {narrativeChoices.length > 0 && (
               <div className="live-choices">
                 <div className="live-choices-head">
-                  <h4>Choix narratif</h4>
-                  <span className="badge warn">interactif</span>
+                  <h4>Narrative choice</h4>
+                  <span className="badge warn">interactive</span>
                 </div>
                 <div className="choice-list">
                   {narrativeChoices.map((choice) => (
                     <div key={`${choice.text}-${choice.index}`} className="choice-item">
                       <span>{choice.text}</span>
                       <button className="btn btn-primary" onClick={() => onSelectChoice(choice.index)}>
-                        Choisir
+                        Choose
                       </button>
                     </div>
                   ))}
@@ -252,7 +252,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
 
         <section className="card reveal in" style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>État courant</h3>
+            <h3>Current state</h3>
             <span className="badge info">runtime</span>
           </div>
           <div className="card-body">
@@ -262,7 +262,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
             </div>
             <div className="state-row">
               <span className="k">Menu</span>
-              <span className="v">{displayedState?.menu ? "actif" : "inactif"}</span>
+              <span className="v">{displayedState?.menu ? "active" : "inactive"}</span>
             </div>
             <div className="state-row">
               <span className="k">Tags</span>
@@ -273,7 +273,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               <span className="v">42547</span>
             </div>
             <div className="vars">
-              <div className="vhead">Variables du store</div>
+              <div className="vhead">Store variables</div>
               {Object.entries(variables)
                 .filter(([key]) => !key.startsWith("_") && !key.startsWith("IMG_"))
                 .slice(0, 12)
@@ -292,7 +292,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   );
                 })}
               {Object.keys(variables).length === 0 && (
-                <div className="var"><span className="name" style={{ color: "var(--meta)" }}>Aucune variable</span></div>
+                <div className="var"><span className="name" style={{ color: "var(--meta)" }}>No variables</span></div>
               )}
             </div>
           </div>
@@ -305,7 +305,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
           </div>
           <div className="card-body">
             <form onSubmit={onEval}>
-              <label className="field-label" htmlFor="expr">Expression Python</label>
+              <label className="field-label" htmlFor="expr">Python expression</label>
               <div className="console-row">
                 <input
                   className="input"
@@ -324,7 +324,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   <span className="rs">{evalResult}</span>
                 </>
               ) : (
-                "→ Le résultat de l’évaluation s’affiche ici."
+                "→ The evaluation result appears here."
               )}
             </div>
 
@@ -342,18 +342,18 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   />
                 </div>
                 <div>
-                  <label className="field-label" htmlFor="wval">Valeur</label>
+                  <label className="field-label" htmlFor="wval">Value</label>
                   <input
                     className="input"
                     id="wval"
                     value={setVarValue}
                     onChange={(e) => setSetVarValue(e.target.value)}
-                    placeholder='"bonjour" ou 42'
+                    placeholder='"hello" or 42'
                   />
                 </div>
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "11px" }}>
-                <button type="submit" className="btn btn-ghost">Définir</button>
+                <button type="submit" className="btn btn-ghost">Set</button>
               </div>
             </form>
           </div>

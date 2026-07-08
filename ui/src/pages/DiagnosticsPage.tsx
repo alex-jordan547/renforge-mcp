@@ -133,7 +133,7 @@ export function DiagnosticsPage() {
           <h2>Diagnostics</h2>
           <span className="hint">file:line / severity / message</span>
         </div>
-        <div className="statusLine">Analyse des diagnostics en cours…</div>
+        <div className="statusLine">Analyzing diagnostics…</div>
       </div>
     );
   }
@@ -145,7 +145,7 @@ export function DiagnosticsPage() {
           <h2>Diagnostics</h2>
           <span className="hint">file:line / severity / message</span>
         </div>
-        <p className="errorText">Impossible de charger /api/lint : {error}</p>
+        <p className="errorText">Unable to load /api/lint: {error}</p>
       </div>
     );
   }
@@ -167,7 +167,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.errors}</div>
-            <div className="lbl">Erreurs</div>
+            <div className="lbl">Errors</div>
           </div>
         </div>
 
@@ -180,7 +180,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.warnings}</div>
-            <div className="lbl">Avertissements</div>
+            <div className="lbl">Warnings</div>
           </div>
         </div>
 
@@ -193,7 +193,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.screens}</div>
-            <div className="lbl">Écrans analysés</div>
+            <div className="lbl">Screens analyzed</div>
           </div>
         </div>
       </div>
@@ -203,22 +203,22 @@ export function DiagnosticsPage() {
           <svg viewBox="0 0 24 24" width="18" fill="none" stroke="currentColor" strokeWidth="2.2">
             <path d="M20 6 9 17l-5-5" />
           </svg>
-          Aucun diagnostic structuré bloquant. Le rapport lint brut est disponible ci-dessous.
+          No blocking structured diagnostic. The raw lint report is available below.
         </div>
       )}
 
       {diagnostics.length > 0 && (
         <section className="card reveal in" style={{ animationDelay: ".08s", marginBottom: "20px" }}>
           <div className="card-head">
-            <h3>Diagnostics structurés</h3>
+            <h3>Structured diagnostics</h3>
             <span className="badge info">{diagnostics.length}</span>
           </div>
           <div className="card-body" style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
-                  <th>Fichier:Ligne</th>
-                  <th>Sévérité</th>
+                  <th>File:Line</th>
+                  <th>Severity</th>
                   <th>Message</th>
                 </tr>
               </thead>
@@ -246,7 +246,7 @@ export function DiagnosticsPage() {
       {rawReport && (
         <section className="card reveal in" style={{ animationDelay: ".12s" }}>
           <div className="card-head">
-            <h3>Rapport lint Ren’Py</h3>
+            <h3>Ren’Py lint report</h3>
             <span className="badge off">brut</span>
           </div>
           <div className="card-body">

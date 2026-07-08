@@ -10,13 +10,13 @@ function timeAgo(timestamp: string): string {
     const diff = Date.now() - new Date(timestamp).getTime();
     if (diff < 0) return "";
     const sec = Math.floor(diff / 1000);
-    if (sec < 5) return "à l'instant";
-    if (sec < 60) return `il y a ${sec}s`;
+    if (sec < 5) return "just now";
+    if (sec < 60) return `${sec}s ago`;
     const min = Math.floor(sec / 60);
-    if (min < 60) return `il y a ${min}min`;
+    if (min < 60) return `${min}min ago`;
     const hrs = Math.floor(min / 60);
-    if (hrs < 24) return `il y a ${hrs}h`;
-    return `il y a ${Math.floor(hrs / 24)}j`;
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
   } catch {
     return "";
   }
@@ -56,7 +56,7 @@ export function TimelinePage({ items }: TimelinePageProps) {
     <div className="wrap">
       <div className="page-head reveal in">
         <h2>Timeline</h2>
-        <span className="hint">flux d’événements du bridge</span>
+        <span className="hint">bridge event stream</span>
       </div>
 
       <div className="tl-controls reveal in" style={{ animationDelay: ".05s" }}>
@@ -64,7 +64,7 @@ export function TimelinePage({ items }: TimelinePageProps) {
           className="input"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Rechercher un événement…"
+          placeholder="Search an event…"
         />
         <div className="filters">
           <button
@@ -84,7 +84,7 @@ export function TimelinePage({ items }: TimelinePageProps) {
             Activity <span className="n">{sources.activity}</span>
           </button>
         </div>
-        <span className="count">{filtered.length} / {items.length} événements</span>
+        <span className="count">{filtered.length} / {items.length} events</span>
       </div>
 
       {filtered.length ? (
@@ -131,8 +131,8 @@ export function TimelinePage({ items }: TimelinePageProps) {
       ) : (
         <div className="emptyState">
           <div className="emptyState-icon">📭</div>
-          <h3>Aucun événement</h3>
-          <p>Les événements du bridge et de l'activité Ren'Py apparaîtront ici en temps réel.</p>
+          <h3>No events</h3>
+          <p>Bridge and Ren'Py activity events will appear here in real time.</p>
         </div>
       )}
     </div>

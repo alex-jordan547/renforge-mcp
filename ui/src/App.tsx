@@ -57,7 +57,7 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
   static getDerivedStateFromError(error: unknown) {
     return {
       hasError: true,
-      error: error instanceof Error ? error.message : "Une erreur est survenue",
+      error: error instanceof Error ? error.message : "An error occurred",
     };
   }
 
@@ -69,9 +69,9 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
     if (this.state.hasError) {
       return (
         <div className="errorBoundaryPanel">
-          <h3>Erreur de section</h3>
+          <h3>Section error</h3>
           <p className="muted">{this.state.error}</p>
-          <p className="muted">Cette section a été isolée pour préserver l’application.</p>
+          <p className="muted">This section was isolated to keep the app responsive.</p>
         </div>
       );
     }
@@ -287,14 +287,14 @@ export function App() {
   };
 
   const SECTION_TITLES: Record<SectionId, [string, string]> = {
-    "story-map": ["Story Map", "Graphe des labels et transitions"],
-    live: ["Live", "Console opérationnelle — exécution en direct"],
-    timeline: ["Timeline", "Historique des événements runtime"],
-    assets: ["Assets", "Inventaire du projet Ren’Py"],
-    translation: ["Translation", "Progression de traduction par langue"],
-    diagnostics: ["Diagnostics", "Rapport lint et contrôles statiques"],
-    editor: ["Editor", "Lecture du script, scope projet"],
-    debugger: ["Debugger", "Contrôle runtime via bridge"],
+    "story-map": ["Story Map", "Graph of labels and transitions"],
+    live: ["Live", "Operational console — live execution"],
+    timeline: ["Timeline", "Runtime event history"],
+    assets: ["Assets", "Inventory of the Ren'Py project"],
+    translation: ["Translation", "Translation progress per language"],
+    diagnostics: ["Diagnostics", "Lint report and static checks"],
+    editor: ["Editor", "Script reading, project scope"],
+    debugger: ["Debugger", "Runtime control via bridge"],
   };
 
   const SECTION_ICONS: Record<SectionId, ReactNode> = {
@@ -369,7 +369,7 @@ export function App() {
         </div>
 
         <nav className="nav">
-          <div className="nav-label">Atelier</div>
+          <div className="nav-label">Workspace</div>
           {SECTIONS.slice(0, 5).map((item) => (
             <button
               key={item.id}
@@ -383,7 +383,7 @@ export function App() {
             </button>
           ))}
 
-          <div className="nav-label">Contrôle</div>
+          <div className="nav-label">Control</div>
           {SECTIONS.slice(5).map((item) => (
             <button
               key={item.id}
@@ -442,13 +442,13 @@ export function App() {
                   <div className="thumb-popover">
                     <img
                       src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
-                      alt="Aperçu live grand"
+                      alt="Large live preview"
                     />
                   </div>
                 )}
               </div>
               <span>
-                <span className="k">Label courant</span>
+                <span className="k">Current label</span>
                 <br />
                 <span className="v">{liveState?.current_label || "—"}</span>
               </span>
@@ -468,8 +468,8 @@ export function App() {
             >
               <input
                 name="warpTarget"
-                placeholder="Sauter au label…"
-                aria-label="Sauter au label"
+                placeholder="Jump to label…"
+                aria-label="Jump to label"
                 type="text"
               />
               <button type="submit">Warp</button>
@@ -486,8 +486,8 @@ export function App() {
               className="theme-toggle"
               type="button"
               onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
-              aria-label="Basculer clair / sombre"
-              title="Basculer clair / sombre"
+              aria-label="Toggle light / dark"
+              title="Toggle light / dark"
             >
               <svg className="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
