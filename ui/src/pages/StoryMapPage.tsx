@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
-  Controls,
   MiniMap,
+  ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeMouseHandler,
@@ -37,31 +38,40 @@ function mapNodeClass(type: string) {
   }
 }
 
-export function StoryMapPage({ data, loading, error, onJump, currentLabel }: StoryMapPageProps) {
+function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapPageProps) {
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [warpBusy, setWarpBusy] = useState(false);
   const [warpTarget, setWarpTarget] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
+
   const fallbackNodes = useMemo(
     () =>
       data.nodes.map((node, index) => {
         const { label, ...nodeData } = node.data;
+        const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
+        const nodeType = isCurrent ? "current" : (node.data.type ?? "label");
         return {
           id: node.id,
           data: {
             ...nodeData,
-            label,
+            label: (
+              <>
+                {label}
+                <span className="tag">{nodeType}</span>
+              </>
+            ),
           },
           position: {
             x: (index % 5) * 220 + (index % 2) * 10,
             y: Math.floor(index / 5) * 170,
           },
-          className: mapNodeClass(node.data.type ?? "label"),
+          className: `${mapNodeClass(node.data.type ?? "label")}${isCurrent ? " current" : ""}`,
         };
       }),
-    [data.nodes],
+    [data.nodes, currentLabel],
   );
 
   const fallbackEdges = useMemo(
@@ -89,19 +99,19 @@ export function StoryMapPage({ data, loading, error, onJump, currentLabel }: Sto
 
       try {
         const elk = new ELK();
-          const graph: {
-            id: string;
-            layoutOptions: Record<string, string>;
-            children: Array<{ id: string; width: number; height: number; x?: number; y?: number }>;
-            edges: Array<{ id: string; sources: string[]; targets: string[] }>;
-          } = {
-            id: "story-map-root",
-            layoutOptions: {
-              "elk.algorithm": "layered",
-              "elk.direction": "RIGHT",
-              "elk.padding": "[left=20,right=20,top=20,bottom=20]",
-              "elk.spacing.nodeNodeBetweenLayers": "44",
-            },
+        const graph: {
+          id: string;
+          layoutOptions: Record<string, string>;
+          children: Array<{ id: string; width: number; height: number; x?: number; y?: number }>;
+          edges: Array<{ id: string; sources: string[]; targets: string[] }>;
+        } = {
+          id: "story-map-root",
+          layoutOptions: {
+            "elk.algorithm": "layered",
+            "elk.direction": "RIGHT",
+            "elk.padding": "[left=20,right=20,top=20,bottom=20]",
+            "elk.spacing.nodeNodeBetweenLayers": "44",
+          },
           children: data.nodes.map((node) => ({
             id: node.id,
             width: 220,
@@ -115,7 +125,7 @@ export function StoryMapPage({ data, loading, error, onJump, currentLabel }: Sto
             targets: [edge.target],
           })),
         };
-          const positioned = await elk.layout(graph);
+        const positioned = await elk.layout(graph);
 
         const byId = new Map(
           (positioned.children ?? []).map((child: { id: string; x?: number; y?: number }) => [
@@ -128,17 +138,24 @@ export function StoryMapPage({ data, loading, error, onJump, currentLabel }: Sto
           data.nodes.map((node) => {
             const pos = byId.get(node.id);
             const { label, ...nodeData } = node.data;
+            const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
+            const nodeType = isCurrent ? "current" : (node.data.type ?? "label");
             return {
               id: node.id,
               data: {
                 ...nodeData,
-                label,
+                label: (
+                  <>
+                    {label}
+                    <span className="tag">{nodeType}</span>
+                  </>
+                ),
               },
               position: pos || { x: 0, y: 0 },
               style: {
                 width: 210,
               },
-              className: mapNodeClass(node.data.type ?? "label"),
+              className: `${mapNodeClass(node.data.type ?? "label")}${isCurrent ? " current" : ""}`,
             };
           }),
         );
@@ -169,13 +186,10 @@ export function StoryMapPage({ data, loading, error, onJump, currentLabel }: Sto
     return () => {
       active = false;
     };
-  }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes]);
+  }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes, currentLabel]);
 
   const onNodeClick: NodeMouseHandler = useCallback(
     async (_event, node) => {
-      // A warp relaunches the game at the target label, so ignore stray or
-      // repeat clicks while one is already in flight — otherwise a mis-click
-      // stacks several silent relaunches.
       if (warpBusy) {
         return;
       }
@@ -210,49 +224,60 @@ export function StoryMapPage({ data, loading, error, onJump, currentLabel }: Sto
   }
 
   return (
-    <section className="panel storyMapPanel">
-      <div className="panelHeader">
+    <div className="wrap">
+      <div className="page-head reveal in">
         <h2>Story Map</h2>
-        <span>
-          {data.nodes.length} labels • {data.edges.length} transitions • cliquez un nœud pour relancer le jeu à ce label
+        <span className="hint">
+          {data.nodes.length} labels · {data.edges.length} transitions · clique un nœud pour relancer
         </span>
       </div>
-      {currentLabel && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)" }}>Position actuelle :</span>
-          <span className="activeNodeBadge">{currentLabel}</span>
+
+      <div className="map-wrap reveal in" style={{ animationDelay: ".06s" }}>
+        <div className="map-meta">
+          <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Position actuelle</span>
+          <span className="pill-label">
+            <span className="dot" />
+            {currentLabel || "—"}
+          </span>
         </div>
-      )}
-      <div className="storyCanvas" aria-busy={warpBusy}>
-        <ReactFlow
-          onNodeClick={warpBusy ? undefined : onNodeClick}
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          fitView
-          panOnDrag={true}
-          zoomOnScroll={true}
-          onlyRenderVisibleElements={true}
-        >
-          <Background color="#2f3a49" gap={20} />
-          <MiniMap
-            pannable
-            zoomable
-            bgColor="#171b20"
-            maskColor="rgba(17, 19, 23, 0.65)"
-            nodeColor="#33485d"
-            nodeStrokeColor="#5a73f5"
-            nodeStrokeWidth={2}
-          />
-          <Controls />
-        </ReactFlow>
+
+        <div className="storyCanvas" aria-busy={warpBusy}>
+          <ReactFlow
+            onNodeClick={warpBusy ? undefined : onNodeClick}
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            fitView
+            panOnDrag={true}
+            zoomOnScroll={true}
+            onlyRenderVisibleElements={true}
+          >
+            <Background gap={20} />
+            <MiniMap pannable zoomable />
+          </ReactFlow>
+
+          <div className="zoom">
+            <button id="zin" onClick={() => zoomIn()}>+</button>
+            <button id="zout" onClick={() => zoomOut()}>−</button>
+            <button id="zfit" title="Ajuster" onClick={() => fitView()}>⊡</button>
+          </div>
+        </div>
       </div>
+
       {warpBusy ? (
         <div className="statusLine">Redémarrage du jeu sur « {warpTarget} »…</div>
       ) : layoutBusy ? (
         <div className="statusLine">Ajustement du graphe…</div>
       ) : null}
-    </section>
+    </div>
+  );
+}
+
+export function StoryMapPage(props: StoryMapPageProps) {
+  return (
+    <ReactFlowProvider>
+      <StoryMapInner {...props} />
+    </ReactFlowProvider>
   );
 }

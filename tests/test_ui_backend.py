@@ -120,6 +120,61 @@ def test_api_screenshot_handles_missing_bridge_as_json_error(tmp_path: Path, mon
     assert "RuntimeError" in payload["error"]
 
 
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_debug_events_polls_bridge_events(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_poll_events(project_path: str, since: int = 0):
+        calls["project_path"] = project_path
+        calls["since"] = since
+        return {
+            "ok": True,
+            "cursor": 12,
+            "events": [{"seq": 12, "type": "label", "label": "start"}],
+        }
+
+    monkeypatch.setattr(server.live, "poll_events", fake_poll_events)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/api/debug/events?token=token&since=5")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "cursor": 12,
+        "events": [{"seq": 12, "type": "label", "label": "start"}],
+    }
+    assert calls == {"project_path": str(project), "since": 5}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_control_dispatches_runtime_action(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_control(project_path: str, action: str):
+        calls["project_path"] = project_path
+        calls["action"] = action
+        return {"ok": True, "action": action, "event": "toggle_skip"}
+
+    monkeypatch.setattr(server.live, "control", fake_control)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/live/control?token=token",
+        json={"action": "toggle_skip"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "action": "toggle_skip", "event": "toggle_skip"}
+    assert calls == {"project_path": str(project), "action": "toggle_skip"}
+
+
 def test_list_choices_filters_out_non_choice_screen_controls(monkeypatch, tmp_path) -> None:
     class FakeClient:
         def get_state(self):

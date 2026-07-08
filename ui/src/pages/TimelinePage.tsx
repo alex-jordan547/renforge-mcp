@@ -22,15 +22,6 @@ function timeAgo(timestamp: string): string {
   }
 }
 
-function sourceBadgeClass(source: string): string {
-  const s = source.toLowerCase();
-  if (s === "bridge") return "sourceBadge source-bridge";
-  if (s === "activity") return "sourceBadge source-activity";
-  if (s === "error") return "sourceBadge source-error";
-  if (s === "ui") return "sourceBadge source-ui";
-  return "sourceBadge";
-}
-
 export function TimelinePage({ items }: TimelinePageProps) {
   const [search, setSearch] = useState("");
   const [showBridge, setShowBridge] = useState(true);
@@ -62,56 +53,81 @@ export function TimelinePage({ items }: TimelinePageProps) {
   }, [items, search, showActivity, showBridge]);
 
   return (
-    <section className="panel">
-      <div className="panelHeader">
+    <div className="wrap">
+      <div className="page-head reveal in">
         <h2>Timeline</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Rechercher…"
-            style={{ maxWidth: 220, fontSize: "0.85rem" }}
-          />
-          <div className="toggleGroup">
-            <label>
-              <input
-                type="checkbox"
-                checked={showBridge}
-                onChange={(event) => setShowBridge(event.target.checked)}
-              />
-              Bridge ({sources.bridge})
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={showActivity}
-                onChange={(event) => setShowActivity(event.target.checked)}
-              />
-              Activity ({sources.activity})
-            </label>
-          </div>
-          <span style={{ color: "var(--muted)", fontSize: "0.82rem", whiteSpace: "nowrap" }}>
-            {filtered.length} / {items.length} événements
-          </span>
+        <span className="hint">flux d’événements du bridge</span>
+      </div>
+
+      <div className="tl-controls reveal in" style={{ animationDelay: ".05s" }}>
+        <input
+          className="input"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher un événement…"
+        />
+        <div className="filters">
+          <button
+            className="chip"
+            aria-pressed={showBridge}
+            onClick={() => setShowBridge((prev) => !prev)}
+          >
+            <span className="dot" style={{ background: "var(--meta)" }} />
+            Bridge <span className="n">{sources.bridge}</span>
+          </button>
+          <button
+            className="chip"
+            aria-pressed={showActivity}
+            onClick={() => setShowActivity((prev) => !prev)}
+          >
+            <span className="dot" style={{ background: "var(--accent)" }} />
+            Activity <span className="n">{sources.activity}</span>
+          </button>
         </div>
+        <span className="count">{filtered.length} / {items.length} événements</span>
       </div>
 
       {filtered.length ? (
-        <ul className="timelineList">
-          {filtered.map((item) => (
-            <li key={item.id} className={`timelineItem ${item.level || "info"}`}>
-              <small>
-                {item.timestamp}
-                <span className="timeAgo">{timeAgo(item.timestamp)}</span>
-              </small>
-              <div className="titleRow">
-                <strong>{item.title}</strong>
-                <span className={sourceBadgeClass(item.source)}>{item.source}</span>
+        <div className="feed">
+          {filtered.map((item, index) => {
+            const delay = `${Math.min(0.3, 0.08 + index * 0.04)}s`;
+            
+            // Format details to match mockup if duration is present
+            let detailNode = <>{item.details}</>;
+            if (item.source === "activity" && item.payload && typeof item.payload === "object") {
+              const payload = item.payload as Record<string, unknown>;
+              if (payload.tool || payload.duration_ms) {
+                detailNode = (
+                  <>
+                    Tool <b>{String(payload.tool ?? payload.name ?? "activity")}</b> · Duration <b>{String(payload.duration_ms ?? "n/a")} ms</b>
+                  </>
+                );
+              }
+            }
+
+            return (
+              <div
+                key={item.id}
+                className={`ev ${item.source} reveal in`}
+                style={{ animationDelay: delay }}
+              >
+                <div className="ev-card">
+                  <div className="ev-main">
+                    <div className="ev-time">
+                      {item.timestamp}
+                      <span className="rel">{timeAgo(item.timestamp)}</span>
+                    </div>
+                    <div className="ev-name">{item.title}</div>
+                    <div className="ev-meta">
+                      {detailNode}
+                    </div>
+                  </div>
+                  <span className={`tag-lg ${item.source}`}>{item.source.toUpperCase()}</span>
+                </div>
               </div>
-              <p>{item.details}</p>
-            </li>
-          ))}
-        </ul>
+            );
+          })}
+        </div>
       ) : (
         <div className="emptyState">
           <div className="emptyState-icon">📭</div>
@@ -119,6 +135,6 @@ export function TimelinePage({ items }: TimelinePageProps) {
           <p>Les événements du bridge et de l'activité Ren'Py apparaîtront ici en temps réel.</p>
         </div>
       )}
-    </section>
+    </div>
   );
 }

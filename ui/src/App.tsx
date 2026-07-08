@@ -275,175 +275,242 @@ export function App() {
     }
   }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents, liveState, liveFrame]);
 
+  const SECTION_KEYS: Record<SectionId, string> = {
+    "story-map": "S",
+    live: "L",
+    timeline: "T",
+    assets: "A",
+    translation: "R",
+    diagnostics: "D",
+    editor: "E",
+    debugger: "B",
+  };
+
+  const SECTION_TITLES: Record<SectionId, [string, string]> = {
+    "story-map": ["Story Map", "Graphe des labels et transitions"],
+    live: ["Live", "Console opérationnelle — exécution en direct"],
+    timeline: ["Timeline", "Historique des événements runtime"],
+    assets: ["Assets", "Inventaire du projet Ren’Py"],
+    translation: ["Translation", "Progression de traduction par langue"],
+    diagnostics: ["Diagnostics", "Rapport lint et contrôles statiques"],
+    editor: ["Editor", "Lecture du script, scope projet"],
+    debugger: ["Debugger", "Contrôle runtime via bridge"],
+  };
+
   const SECTION_ICONS: Record<SectionId, ReactNode> = {
     "story-map": (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M19 15c-1.1 0-2 .9-2 2H7c0-1.1-.9-2-2-2s-2 .9-2 2s.9 2 2 2s2-.9 2-2h10c0 1.1.9 2 2 2s2-.9 2-2s-.9-2-2-2zM7 9c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2s-.9-2-2-2H9c-1.1 0-2 .9-2 2z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="5" cy="12" r="2.4" />
+        <circle cx="19" cy="6" r="2.4" />
+        <circle cx="19" cy="18" r="2.4" />
+        <path d="M7 11 17 6.8M7 13l10 4.2" />
       </svg>
     ),
     live: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm-1 14H4V5h16v12zm-10-2l6-4l-6-4v8z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="5" width="18" height="14" rx="2.5" />
+        <path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none" />
       </svg>
     ),
     timeline: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89l.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7s-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54l.72-1.21l-3.5-2.08V8H12z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 8v4l3 2" />
+        <circle cx="12" cy="12" r="9" />
       </svg>
     ),
     assets: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-8 7H4V8h8v5z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="m3 15 5-4 4 3 3-2 6 5" />
+        <circle cx="8.5" cy="9.5" r="1.4" />
       </svg>
     ),
     translation: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M12.87 15.07l-2.54-2.51l.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35C8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5l3.11 3.11l.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 6h9M8 4v2c0 4-2 6-4 7M6 9c0 2 2 3.6 5 4" />
+        <path d="m13 20 4-9 4 9M14.6 17h4.8" />
       </svg>
     ),
     diagnostics: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8v4M12 16h.01" />
       </svg>
     ),
     editor: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6l6 6l1.4-1.4zm5.2 0l4.6-4.6l-4.6-4.6L16 6l6 6l-6 6l-1.4-1.4z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14" />
       </svg>
     ),
     debugger: (
-      <svg viewBox="0 0 24 24">
-        <path fill="currentColor" d="M20 8h-2.81c-.45-.78-1.07-1.45-1.82-1.96L17 4.41L15.59 3l-2.17 2.17a6.002 6.002 0 0 0-2.83 0L8.41 3L7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z" />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="8" y="6" width="8" height="12" rx="4" />
+        <path d="M12 4v2M4 9h4M4 15h4M16 9h4M16 15h4M4 12h2M18 12h2" />
       </svg>
     ),
   };
 
+  const [titleText, subText] = SECTION_TITLES[activeSection];
+
   return (
-    <div className="dashboard">
+    <div className="app">
       <aside className="sidebar">
-        <div className="brand" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <span className="brand-name">RenForge</span>
-            <small>V2 Dashboard</small>
-          </div>
-          <button 
-            className="theme-toggle-btn" 
-            type="button" 
-            onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
-            title={theme === "light" ? "Passer au thème sombre" : "Passer au thème clair"}
-          >
-            {theme === "light" ? (
-              <svg viewBox="0 0 24 24">
-                <path fill="currentColor" d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9s9-4.03 9-9c0-.46-.04-.92-.1-1.36a.994.994 0 0 0-1.11-.8c-.89.12-1.78-.12-2.52-.66a5.008 5.008 0 0 1-2.02-3.82c0-1.74.88-3.32 2.37-4.22c.38-.23.54-.7.38-1.1A9.097 9.097 0 0 0 12 3z" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24">
-                <path fill="currentColor" d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5s5-2.24 5-5s-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 0 0-1.41 0a.996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 0 0-1.41 0a.996.996 0 0 0 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm-1.06-11.3a.996.996 0 0 0 0-1.41a.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zm-11.3 11.3a.996.996 0 0 0 0-1.41a.996.996 0 0 0-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z" />
-              </svg>
-            )}
-          </button>
+        <div className="traffic" aria-hidden="true">
+          <i></i>
+          <i></i>
+          <i></i>
         </div>
-        <nav aria-label="Sections">
-          {SECTIONS.map((item) => (
+        <div className="brand">
+          <div className="logo">
+            <span className="mark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3 4 7v6c0 4.5 3.4 7.3 8 8 4.6-.7 8-3.5 8-8V7z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+            </span>
+            <span className="name">Renforge</span>
+          </div>
+          <div className="sub">Ren’Py runtime console</div>
+        </div>
+
+        <nav className="nav">
+          <div className="nav-label">Atelier</div>
+          {SECTIONS.slice(0, 5).map((item) => (
             <button
               key={item.id}
-              className={`nav-item ${activeSection === item.id ? "active" : ""}`}
+              className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
               type="button"
               onClick={() => setActiveSection(item.id as SectionId)}
             >
               {SECTION_ICONS[item.id]}
               {item.label}
+              <span className="kbd">{SECTION_KEYS[item.id]}</span>
+            </button>
+          ))}
+
+          <div className="nav-label">Contrôle</div>
+          {SECTIONS.slice(5).map((item) => (
+            <button
+              key={item.id}
+              className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
+              type="button"
+              onClick={() => setActiveSection(item.id as SectionId)}
+            >
+              {SECTION_ICONS[item.id]}
+              {item.label}
+              <span className="kbd">{SECTION_KEYS[item.id]}</span>
             </button>
           ))}
         </nav>
-        <div className="statusCard">
-          <p className="statusTitle">État</p>
-          <div className="statusRow">
-            <strong>WS:</strong>
-            <span className="wsIndicator">
-              <span className={`wsDot ${stats.socket}`} />
+
+        <div className="side-foot">
+          <div className="row">
+            <span className="k">WS</span>
+            <span className="ws">
+              <span className="dot"></span>
               {stats.socket}
             </span>
           </div>
-          <div className="statusRow">
-            <strong>Nodes:</strong>
-            <span>{stats.nodeCount}</span>
+          <div className="row">
+            <span className="k">nodes</span>
+            <span className="v">{stats.nodeCount}</span>
           </div>
-          <div className="statusRow">
-            <strong>Edges:</strong>
-            <span>{stats.edgeCount}</span>
+          <div className="row">
+            <span className="k">edges</span>
+            <span className="v">{stats.edgeCount}</span>
           </div>
-          <div className="statusRow">
-            <strong>Events:</strong>
-            <span>{stats.messageCount}</span>
+          <div className="row">
+            <span className="k">events</span>
+            <span className="v">{stats.messageCount}</span>
           </div>
-          {ws.error ? <div className="statusRow errorText" style={{ marginTop: 8 }}><strong>Err:</strong> <span>{ws.error}</span></div> : null}
         </div>
       </aside>
 
-      <main className="content">
-        <header className="topbar">
-          <div className="topbar-info">
-            <h1>RenForge Dashboard</h1>
-            <p className="topbarSub" style={{ margin: 0 }}>Console opérationnelle unifiée</p>
+      <div className="main">
+        <header className="toolbar">
+          <div className="title">
+            <h1>{titleText}</h1>
+            <p>{subText}</p>
           </div>
-          
-          <div className="topbar-hud">
-            {liveFrame && (
-              <div className="hud-thumbnail-container" title="Survolez pour agrandir">
-                <img
-                  className="hud-thumbnail"
-                  src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
-                  alt="Aperçu live"
+          <div className="pilot">
+            <div className="label-chip">
+              <div className="thumb-container">
+                <span
+                  className="thumb"
+                  style={
+                    liveFrame
+                      ? { backgroundImage: `url(data:image/${liveFrame.format};base64,${liveFrame.base64})` }
+                      : undefined
+                  }
                 />
-                <div className="hud-preview-popover">
-                  <img
-                    src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
-                    alt="Aperçu live grand"
-                  />
-                </div>
+                {liveFrame && (
+                  <div className="thumb-popover">
+                    <img
+                      src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
+                      alt="Aperçu live grand"
+                    />
+                  </div>
+                )}
               </div>
-            )}
-            
-            <div className="hud-label">
-              Label courant
-              <span>{liveState?.current_label || "—"}</span>
+              <span>
+                <span className="k">Label courant</span>
+                <br />
+                <span className="v">{liveState?.current_label || "—"}</span>
+              </span>
             </div>
 
-            <div className="hud-actions">
-              <button className="btn small primary" type="button" onClick={handleAdvance} title="Avancer dans le jeu">
-                Advance
-              </button>
-              
-              <form 
-                className="hud-warp-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const formData = new FormData(e.currentTarget);
-                  const target = formData.get("warpTarget") as string;
-                  if (target?.trim()) {
-                    handleJump(target.trim());
-                    e.currentTarget.reset();
-                  }
-                }}
-              >
-                <input
-                  name="warpTarget"
-                  className="hud-warp-input"
-                  placeholder="Sauter au label..."
-                  type="text"
-                />
-                <button className="btn small" type="submit">Warp</button>
-              </form>
-            </div>
+            <form
+              className="warp"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const target = formData.get("warpTarget") as string;
+                if (target?.trim()) {
+                  handleJump(target.trim());
+                  e.currentTarget.reset();
+                }
+              }}
+            >
+              <input
+                name="warpTarget"
+                placeholder="Sauter au label…"
+                aria-label="Sauter au label"
+                type="text"
+              />
+              <button type="submit">Warp</button>
+            </form>
+
+            <button className="btn btn-primary" type="button" onClick={handleAdvance}>
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              Advance
+            </button>
+
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
+              aria-label="Basculer clair / sombre"
+              title="Basculer clair / sombre"
+            >
+              <svg className="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+              </svg>
+              <svg className="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+              </svg>
+            </button>
           </div>
         </header>
-        
-        <DashboardErrorBoundary key={activeSection}>
-          {dashboard}
-        </DashboardErrorBoundary>
-      </main>
+
+        <main className="content">
+          <DashboardErrorBoundary key={activeSection}>
+            {dashboard}
+          </DashboardErrorBoundary>
+        </main>
+      </div>
     </div>
   );
 }
-
