@@ -174,6 +174,7 @@ a { color: var(--accent); text-decoration: none; }
   -webkit-backdrop-filter: blur(30px) saturate(1.5);
   border-bottom: 1px solid var(--border-soft);
   flex: none;
+  z-index: 100;
 }
 .toolbar .title { min-width: 0; }
 .toolbar .title h1 { font-family: var(--font-display); font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
@@ -181,9 +182,13 @@ a { color: var(--accent); text-decoration: none; }
 
 .pilot { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .label-chip { display: flex; align-items: center; gap: 9px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-md); padding: 6px 12px 6px 8px; }
-.label-chip .thumb { width: 30px; height: 20px; border-radius: 5px; background: var(--scene-bg); border: 1px solid var(--border-soft); background-size: cover; background-position: center; }
+.label-chip .thumb { width: 30px; height: 20px; border-radius: 5px; background: var(--scene-bg); border: 1px solid var(--border-soft); background-size: cover; background-position: center; display: block; }
 .label-chip .k { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--meta); font-family: var(--font-mono); }
 .label-chip .v { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--fg); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb-container { position: relative; display: inline-flex; }
+.thumb-popover { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(6px) scale(0.96); width: 360px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--elev-raised); padding: 4px; z-index: 1000; opacity: 0; pointer-events: none; transition: opacity .18s var(--ease-standard), transform .18s var(--ease-standard); overflow: hidden; }
+.thumb-popover img { width: 100%; height: auto; border-radius: 8px; display: block; }
+.thumb-container:hover .thumb-popover { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 
 .warp { display: flex; align-items: center; background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-md); overflow: hidden; }
 .warp input { border: 0; background: transparent; outline: none; color: var(--fg); font-family: var(--font-mono); font-size: 12px; padding: 7px 11px; width: 150px; }
@@ -289,12 +294,12 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 15px !important;
   color: var(--fg) !important;
   box-shadow: var(--elev-raised) !important;
-  transition: transform var(--motion-base) var(--ease-standard), border-color .2s, box-shadow .2s !important;
+  transition: border-color .2s, box-shadow .2s !important;
   text-align: center !important;
 }
 .react-flow__node:hover {
-  transform: scale(1.04) !important;
   border-color: color-mix(in oklab, var(--accent) 45%, var(--border)) !important;
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--elev-raised) !important;
 }
 .react-flow__node.current, .react-flow__node.selected {
   border-color: var(--accent) !important;

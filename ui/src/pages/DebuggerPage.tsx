@@ -176,13 +176,13 @@ export function DebuggerPage() {
             </div>
           </div>
           <div className="debug-actions">
-            <button className="btn btn-primary" type="button" onClick={() => runAction(() => api.advance(), "avancé")}>
+            <button className="btn btn-primary" type="button" onClick={() => runAction(() => api.control("advance"), "avancé")}>
               Avancer
             </button>
-            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.evaluate("renpy.roll_back()"), "rollback exécuté")}>
+            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("rollback"), "rollback exécuté")}>
               Rollback
             </button>
-            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.evaluate("renpy.restart_interaction()"), "interaction relancée")}>
+            <button className="btn btn-ghost" type="button" onClick={() => runAction(() => api.control("restart_interaction"), "interaction relancée")}>
               Restart UI
             </button>
             <button className="btn btn-ghost" type="button" onClick={refresh}>

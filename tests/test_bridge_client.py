@@ -69,6 +69,28 @@ def test_bridge_client_ping_helper():
     assert sock.fileno() == -1
 
 
+def test_bridge_client_control_helper():
+    token = "control-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "action": "toggle_skip", "event": "toggle_skip"}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).control("toggle_skip")
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "control",
+        "payload": {"action": "toggle_skip"},
+    }
+    assert reply == {"ok": True, "action": "toggle_skip", "event": "toggle_skip"}
+
+
 def test_bridge_client_invalid_json_response():
     token = "bad-json-token"
 
