@@ -11,6 +11,8 @@ label main_menu:
 
 label start:
     $ renforge_choice = ""
+    play music "audio/missing_theme.ogg"
+    show eileen happy
     narrator "Ren'Forge démarre. Ton script de démo est prêt."
     jump choice
 

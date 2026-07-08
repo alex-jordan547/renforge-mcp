@@ -9,10 +9,11 @@ function toArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-function getFileType(path: string): "image" | "audio" | "other" {
+function getFileType(path: string): "image" | "audio" | "video" | "other" {
   const ext = path.toLowerCase().split('.').pop() || '';
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return "image";
-  if (['ogg', 'wav', 'mp3', 'm4a', 'opus'].includes(ext)) return "audio";
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'tga', 'bmp'].includes(ext)) return "image";
+  if (['ogg', 'wav', 'mp3', 'm4a', 'opus', 'flac', 'aac', 'mp2', 'wma'].includes(ext)) return "audio";
+  if (['webm', 'mp4', 'ogv', 'avi', 'mkv', 'mov', 'mpg', 'mpeg', 'flv'].includes(ext)) return "video";
   return "other";
 }
 
@@ -21,7 +22,7 @@ export function AssetsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedStat, setSelectedStat] = useState<"files" | "orphans" | "missing" | "undef">("files");
-  const [fileFilter, setFileFilter] = useState<"all" | "image" | "audio">("all");
+  const [fileFilter, setFileFilter] = useState<"all" | "image" | "audio" | "video">("all");
 
   useEffect(() => {
     let mounted = true;
@@ -63,6 +64,21 @@ export function AssetsPage() {
       return getFileType(file) === fileFilter;
     });
   }, [assetFiles, fileFilter]);
+
+  const rightCardsCount = useMemo(() => {
+    return 1 + (missingFiles.length > 0 ? 1 : 0) + (undefinedImages.length > 0 ? 1 : 0);
+  }, [missingFiles.length, undefinedImages.length]);
+
+  const orphansMaxHeight = useMemo(() => {
+    if (rightCardsCount === 1) return "500px";
+    if (rightCardsCount === 2) return "190px";
+    return "140px"; // rightCardsCount === 3
+  }, [rightCardsCount]);
+
+  const secondaryMaxHeight = useMemo(() => {
+    if (rightCardsCount === 2) return "190px";
+    return "70px"; // rightCardsCount === 3
+  }, [rightCardsCount]);
 
   if (loading) {
     return (
@@ -153,6 +169,12 @@ export function AssetsPage() {
                 >
                   Audio
                 </button>
+                <button
+                  className={fileFilter === "video" ? "on" : ""}
+                  onClick={() => setFileFilter("video")}
+                >
+                  Vidéos
+                </button>
               </div>
             </div>
 
@@ -176,6 +198,11 @@ export function AssetsPage() {
                           <circle cx="6" cy="18" r="3" />
                           <circle cx="16" cy="16" r="3" />
                         </svg>
+                      ) : type === "video" ? (
+                        <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
+                          <rect x="3" y="4" width="18" height="16" rx="2.5" />
+                          <path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none" />
+                        </svg>
                       ) : (
                         <svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" strokeWidth="1.8">
                           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -195,17 +222,17 @@ export function AssetsPage() {
           </div>
         </section>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <section className="card reveal in" style={{ animationDelay: ".15s" }}>
             <div className="card-head">
               <h3>Orphelins</h3>
               <span className="badge warn">{orphans.length}</span>
             </div>
-            <div className="card-body">
-              <p className="empty" style={{ marginBottom: "12px" }}>
-                Assets présents sur disque mais jamais référencés dans le script.
-              </p>
-              <div className="orphans">
+             <div className="card-body">
+               <p className="empty" style={{ marginBottom: "12px" }}>
+                 Assets présents sur disque mais jamais référencés dans le script.
+               </p>
+               <div className="orphans" style={{ maxHeight: orphansMaxHeight }}>
                 {orphans.map((orphan) => (
                   <span key={orphan} className="orphan">{orphan}</span>
                 ))}
@@ -228,7 +255,7 @@ export function AssetsPage() {
                 <p className="empty" style={{ marginBottom: "12px" }}>
                   Fichiers référencés dans le script mais introuvables sur le disque.
                 </p>
-                <div className="orphans">
+                <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {missingFiles.map((file) => (
                     <span
                       key={file}
@@ -259,7 +286,7 @@ export function AssetsPage() {
                 <p className="empty" style={{ marginBottom: "12px" }}>
                   Images utilisées dans le script de dialogue mais jamais déclarées avec une instruction image.
                 </p>
-                <div className="orphans">
+                <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {undefinedImages.map((img) => (
                     <span
                       key={img}

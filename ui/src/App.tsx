@@ -355,11 +355,6 @@ export function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="traffic" aria-hidden="true">
-          <i></i>
-          <i></i>
-          <i></i>
-        </div>
         <div className="brand">
           <div className="logo">
             <span className="mark">
