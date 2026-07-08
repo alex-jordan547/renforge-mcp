@@ -51,13 +51,13 @@ def test_scan_project_detects_demo_labels_jumps_and_menu(tmp_path: Path) -> None
     files = {item["file"] for item in result["files"]}
     graph_edges = result["graph"]["edges"]
 
-    assert {"start", "choice", "good", "bad"}.issubset(labels)
+    assert {"start", "village_gate", "crossroads", "summit"}.issubset(labels)
     assert {"default", "assignment"} <= var_kinds
     assert "renforge_choice" in variable_names
-    assert "good" in jumps
-    assert "bad" in jumps
+    assert "crossroads" in jumps
+    assert "summit" in jumps
     assert len(jumps) >= 3
-    assert any(item["target"] == "choice" for item in graph_edges)
+    assert any(item["target"] == "crossroads" for item in graph_edges)
     assert result["files"], "expected scanner to report parsed files"
     assert {"game/script.rpy"} <= files
     assert any("menu" in lbl or lbl == "menu" for lbl in menu_labels)

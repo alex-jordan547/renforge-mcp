@@ -1,0 +1,27 @@
+name: Feature request
+description: An idea to make RenForge better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the workflow or pain point, not just the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working (CLI flag, MCP tool, dashboard page, ...).
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      multiple: true
+      options:
+        - MCP server (tools)
+        - Web dashboard
+        - CLI
+        - In-game bridge
+        - Other / not sure

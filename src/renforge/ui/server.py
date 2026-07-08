@@ -321,8 +321,10 @@ def run_ui_server(
     ui_token = token_urlsafe(16)
     app = create_ui_app(project_root, ui_token)
 
+    browser_host = "127.0.0.1" if host == "0.0.0.0" else ("[::1]" if host == "::" else host)
+    target = f"http://{browser_host}:{port}/?token={ui_token}"
+    print(f"RenForge dashboard: {target}", flush=True)
     if open_browser:
-        target = f"http://{host}:{port}/?token={ui_token}"
         threading.Timer(0.5, lambda: webbrowser.open(target)).start()
 
     server = Server(Config(app, host=host, port=port, log_level="warning"))

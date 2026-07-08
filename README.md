@@ -1,5 +1,10 @@
 # RenForge
 
+[![PyPI](https://img.shields.io/pypi/v/renforge)](https://pypi.org/project/renforge/)
+[![Python](https://img.shields.io/pypi/pyversions/renforge)](https://pypi.org/project/renforge/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/alex-jordan547/renforge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-jordan547/renforge-mcp/actions/workflows/ci.yml)
+
 RenForge is an **MCP (Model Context Protocol) server, CLI, and web dashboard**
 for working with [Ren'Py](https://www.renpy.org/) visual-novel projects.
 
@@ -9,6 +14,23 @@ translations, find orphaned assets, run builds, and search Ren'Py's docs.
 
 > Status: **alpha**, actively developed. The core surfaces (MCP tools, in-game
 > bridge, CLI, dashboard) are functional; APIs may still change.
+
+![RenForge dashboard — live control of a running game](.github/screenshots/live.png)
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src=".github/screenshots/storymap.png" alt="Story map — interactive graph of labels and transitions" />
+    </td>
+    <td width="50%">
+      <img src=".github/screenshots/assets.png" alt="Assets — orphaned, missing and undefined asset audit" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>Story map — click a node to warp the running game</em></td>
+    <td align="center"><em>Asset audit — orphans, missing files, undefined images</em></td>
+  </tr>
+</table>
 
 ## What it does
 
@@ -35,12 +57,40 @@ setup is needed:
 ```bash
 # Start the web dashboard on your project
 uvx --from "renforge[ui]" renforge ui --project /path/to/your/game
+```
 
-# Or add the MCP server to Claude Code
+Prefer pip? `pip install "renforge[fastmcp,ui]"` gives you the `renforge` CLI.
+
+## Use with your AI agent
+
+The MCP server command is the same everywhere:
+
+```bash
+uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
+```
+
+| Client | Where to configure |
+| --- | --- |
+| [Claude Code](#claude-code) | `claude mcp add` (one command) |
+| [Claude Desktop](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `claude_desktop_config.json` |
+| [Cursor](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `.cursor/mcp.json` |
+| [Windsurf](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `~/.codeium/windsurf/mcp_config.json` |
+| [Cline](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `cline_mcp_settings.json` |
+| [Gemini CLI](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `~/.gemini/settings.json` |
+| [VS Code (Copilot)](#vs-code-github-copilot) | `.vscode/mcp.json` |
+| [Zed](#zed) | `settings.json` → `context_servers` |
+| [Codex CLI](#codex-cli) | `~/.codex/config.toml` |
+
+### Claude Code
+
+```bash
 claude mcp add renforge -- uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
 ```
 
-For Claude Desktop (or any MCP client using JSON config):
+### Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI
+
+These clients share the same `mcpServers` JSON shape — add this to the config
+file listed in the table above:
 
 ```json
 {
@@ -56,7 +106,55 @@ For Claude Desktop (or any MCP client using JSON config):
 }
 ```
 
-Prefer pip? `pip install "renforge[fastmcp,ui]"` gives you the `renforge` CLI.
+### VS Code (GitHub Copilot)
+
+`.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "renforge": {
+      "command": "uvx",
+      "args": [
+        "--from", "renforge[fastmcp]", "renforge",
+        "serve", "--project", "${workspaceFolder}"
+      ]
+    }
+  }
+}
+```
+
+### Zed
+
+In `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "renforge": {
+      "source": "custom",
+      "command": "uvx",
+      "args": [
+        "--from", "renforge[fastmcp]", "renforge",
+        "serve", "--project", "/path/to/your/game"
+      ]
+    }
+  }
+}
+```
+
+### Codex CLI
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.renforge]
+command = "uvx"
+args = ["--from", "renforge[fastmcp]", "renforge", "serve", "--project", "/path/to/your/game"]
+```
+
+> Don't have `uv`? Replace `uvx --from "renforge[fastmcp]" renforge` with
+> `renforge` after a `pip install "renforge[fastmcp]"`.
 
 ## Install (dev)
 
