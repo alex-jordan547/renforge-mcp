@@ -122,6 +122,15 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
             return JSONResponse({"ok": False, "error": "language is required"}, status_code=400)
         return JSONResponse(project_ops.translation_stats(str(project_root), language))
 
+    async def translation_strings(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        language = request.query_params.get("language")
+        if not language:
+            return JSONResponse({"ok": False, "error": "language is required"}, status_code=400)
+        from ..translation import list_translation_strings
+        return JSONResponse({"ok": True, "strings": list_translation_strings(project_root, language)})
+
     async def file(request: Request):
         if not await _check_token(request):
             return _unauthorized()
@@ -144,6 +153,18 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         if not await _check_token(request):
             return _unauthorized()
         return JSONResponse(live.list_choices(str(project_root)))
+
+    async def debug_events(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        raw_since = request.query_params.get("since", "0")
+        try:
+            since = int(raw_since)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "since must be an integer"}, status_code=400)
+        if since < 0:
+            since = 0
+        return JSONResponse(live.poll_events(str(project_root), since=since))
 
     async def warp(request: Request):
         if not await _check_token(request):
@@ -246,6 +267,7 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/assets", assets, methods=["GET"]),
         Route("/api/languages", languages, methods=["GET"]),
         Route("/api/translation-stats", translation_stats, methods=["GET"]),
+        Route("/api/translation-strings", translation_strings, methods=["GET"]),
         Route("/api/file", file, methods=["GET"]),
         Route("/api/lint", lint, methods=["GET"]),
         Route("/api/advance", advance, methods=["POST"]),
@@ -254,6 +276,7 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/set-var", set_var, methods=["POST"]),
         Route("/api/live/state", live_state, methods=["GET"]),
         Route("/api/live/choices", live_choices, methods=["GET"]),
+        Route("/api/debug/events", debug_events, methods=["GET"]),
         Route("/api/warp", warp, methods=["POST"]),
         Route("/api/screenshot", screenshot, methods=["POST"]),
         WebSocketRoute("/ws", ws_endpoint),
