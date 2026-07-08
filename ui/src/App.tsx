@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { api, getToken } from "./api";
+import { api, getToken, normalizeTimelineEntries, socketMessageToTimeline } from "./api";
 import type { LiveScreenshot, LiveState, SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { AssetsPage } from "./pages/AssetsPage";
@@ -34,6 +34,23 @@ interface ErrorBoundaryState {
   error: string | null;
 }
 
+function timelineTime(item: TimelineItem): number {
+  const parsed = Date.parse(item.timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergeTimelineItems(current: TimelineItem[], incoming: TimelineItem[]): TimelineItem[] {
+  const byId = new Map<string, TimelineItem>();
+  for (const item of [...current, ...incoming]) {
+    if (!byId.has(item.id)) {
+      byId.set(item.id, item);
+    }
+  }
+  return [...byId.values()]
+    .sort((a, b) => timelineTime(b) - timelineTime(a))
+    .slice(0, 250);
+}
+
 class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { hasError: false, error: null };
 
@@ -62,116 +79,6 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
   }
 }
 
-function safeRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-function socketMessageToTimeline(message: SocketEnvelope, fallbackAt: string): TimelineItem | null {
-  const kind = message.kind;
-  const messageType = message.type;
-  const event =
-    safeRecord(message.payload) ??
-    safeRecord(message.event) ??
-    null;
-  const messageTimestamp = toSafe(message.timestamp, fallbackAt);
-
-  const isActivity = kind === "activity" || messageType === "activity";
-  if (isActivity && event) {
-    const activity = event.type === "activity" && safeRecord(event.payload) ? (event.payload as Record<string, unknown>) : event;
-    const activityTs =
-      safeRecord(activity)?.["ts"] ??
-      safeRecord(activity)?.timestamp ??
-      messageTimestamp;
-    const normalizedTimestamp = toSafe(activityTs, messageTimestamp);
-
-    const tool = String(activity.tool ?? activity.name ?? "activity");
-    const category = String(activity.category ?? "tool");
-    const details = `Tool: ${tool} • Duration: ${String(activity.duration_ms ?? "n/a")}ms`;
-    return {
-      id: `${normalizedTimestamp}-${tool}`,
-      source: "activity",
-      timestamp: normalizedTimestamp,
-      type: category,
-      title: String(activity.name ?? "Tool call"),
-      details,
-      payload: activity,
-      level: "info",
-    };
-  }
-
-  const isBridge = kind === "bridge" || messageType === "state" || messageType === "event" || messageType === "screenshot";
-  if (!isBridge || !event) {
-    return null;
-  }
-
-  const eventType = String(event.type ?? messageType ?? "event");
-  // State snapshots and screenshot frames drive the Live view, not the
-  // Timeline — keeping them out avoids flooding it with base64 blobs.
-  if (eventType === "state" || eventType === "screenshot") {
-    return null;
-  }
-  if (eventType === "label") {
-    return {
-      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${String(event.label ?? "")}`,
-      source: "bridge",
-      timestamp: toSafe(event.timestamp, messageTimestamp),
-      type: eventType,
-      title: "Label",
-      details: `Entered ${String(event.label ?? "unknown")}`,
-      payload: event,
-      level: "info",
-    };
-  }
-  if (eventType === "say") {
-    return {
-      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${String(event.what ?? "")}`,
-      source: "bridge",
-      timestamp: toSafe(event.timestamp, messageTimestamp),
-      type: eventType,
-      title: "Say",
-      details: String(event.what ?? ""),
-      payload: event,
-      level: "info",
-    };
-  }
-  if (eventType === "exception") {
-    return {
-      id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}`,
-      source: "bridge",
-      timestamp: toSafe(event.timestamp, messageTimestamp),
-      type: eventType,
-      title: "Exception",
-      details: String(event.full ?? event.short ?? "Runtime error"),
-      payload: event,
-      level: "error",
-    };
-  }
-
-  return {
-    id: `${toSafe(event.timestamp, messageTimestamp)}-${eventType}-${Math.random().toString(16).slice(2, 6)}`,
-    source: "bridge",
-    timestamp: toSafe(event.timestamp, messageTimestamp),
-    type: eventType,
-    title: String(event.type ?? "Bridge event"),
-    details: JSON.stringify(event),
-    payload: event,
-    level: "info",
-  };
-}
-
-function toSafe(value: string | number | unknown, fallback: string = new Date().toISOString()): string {
-  if (typeof value === "string" && value.length > 0) {
-    return value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const parsed = new Date(value);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
-    }
-  }
-  return fallback;
-}
-
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("story-map");
   const [theme, setTheme] = useState<"light" | "dark">(
@@ -197,11 +104,11 @@ export function App() {
     } else if (message.type === "screenshot" && message.payload) {
       setLiveFrame(message.payload as unknown as LiveScreenshot);
     }
-    const next = socketMessageToTimeline(message, new Date().toISOString());
+    const next = socketMessageToTimeline(message);
     if (!next) {
       return;
     }
-    setTimelineEvents((prev) => [next, ...prev].slice(0, 250));
+    setTimelineEvents((prev) => mergeTimelineItems(prev, [next]));
   }, []);
 
   const wsPath = token ? `/ws?token=${encodeURIComponent(token)}` : "/ws";
@@ -243,8 +150,20 @@ export function App() {
       }
     };
 
+    const loadRecentTimeline = async () => {
+      try {
+        const seed = await api.fetchRecentTimeline();
+        if (mounted && seed.length > 0) {
+          setTimelineEvents((prev) => mergeTimelineItems(prev, normalizeTimelineEntries(seed)));
+        }
+      } catch (err) {
+        console.error("Failed to load recent timeline seed in App", err);
+      }
+    };
+
     load();
     loadLive();
+    loadRecentTimeline();
 
     return () => {
       mounted = false;
@@ -527,8 +446,4 @@ export function App() {
     </div>
   );
 }
-
-
-
-
 

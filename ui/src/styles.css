@@ -469,6 +469,10 @@ nav {
   gap: 20px;
 }
 
+.panelGrid {
+  align-items: start;
+}
+
 @media (max-width: 1200px) {
   .panelGrid, .liveGrid {
     grid-template-columns: 1fr;
@@ -994,6 +998,10 @@ tr:hover td {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.codeBlock.lintRaw {
+  max-height: 560px;
 }
 
 /* Assets Badge Inventory styling */

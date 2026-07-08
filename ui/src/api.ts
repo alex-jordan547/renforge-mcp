@@ -7,6 +7,8 @@ import type {
   LiveChoice,
   LiveScreenshot,
   LiveState,
+  SocketEnvelope,
+  TimelineItem,
   StoryMapResponse,
   TranslationStats,
 } from "./types";
@@ -16,6 +18,7 @@ type LanguageCandidate = Record<string, unknown>;
 
 const API_BASE = "";
 const JSON_HEADERS = { "Content-Type": "application/json" };
+const TIMELINE_RECENT_PATH = "/api/timeline/recent";
 
 function getToken(): string | null {
   if (typeof window === "undefined") {
@@ -54,6 +57,63 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function safeRecord(value: unknown): Record<string, unknown> | null {
+  return isObject(value) ? value : null;
+}
+
+function toSafe(value: string | number | unknown, fallback: string = new Date().toISOString()): string {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return fallback;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function compactIdPart(value: unknown): string {
+  if (value === null || typeof value === "undefined") {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return stableStringify(value);
+}
+
+function makeTimelineId(parts: unknown[]): string {
+  const value = parts.map((part) => compactIdPart(part)).filter((part) => part.length > 0).join("|");
+  return value.length > 0 ? value : "timeline";
+}
+
+function timelineFallbackId(message: SocketEnvelope): string {
+  return makeTimelineId(["socket", message.kind, message.type, message.source, message.event, message.payload, message.timestamp]);
+}
+
 function isBackendFailure(payload: unknown): payload is BackendFailure {
   return (
     isObject(payload) &&
@@ -64,6 +124,41 @@ function isBackendFailure(payload: unknown): payload is BackendFailure {
 
 function extractError(payload: BackendFailure): string {
   return payload.error ?? "Unexpected response";
+}
+
+function parseTimelineSeedPayload(payload: unknown): SocketEnvelope[] {
+  if (isBackendFailure(payload)) {
+    throw new Error(extractError(payload));
+  }
+  if (Array.isArray(payload)) {
+    return payload.filter(isObject) as SocketEnvelope[];
+  }
+  if (!isObject(payload)) {
+    return [];
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  const arrays = [
+    candidate.items,
+    candidate.events,
+    candidate.messages,
+    candidate.timeline,
+    candidate.activities,
+    candidate.activity,
+    candidate.data,
+    candidate.payload,
+  ];
+  for (const entry of arrays) {
+    if (Array.isArray(entry)) {
+      return entry.filter(isObject) as SocketEnvelope[];
+    }
+  }
+
+  return Object.keys(candidate).some((key) =>
+    ["kind", "source", "type", "event", "payload", "timestamp"].includes(key),
+  )
+    ? [candidate as SocketEnvelope]
+    : [];
 }
 
 function parseLiveStatePayload(payload: unknown): LiveState {
@@ -293,6 +388,100 @@ function parseFileResponse(path: string, payload: unknown): FileContent {
   };
 }
 
+export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: string): TimelineItem | null {
+  const kind = message.kind;
+  const messageType = message.type;
+  const event = safeRecord(message.payload) ?? safeRecord(message.event) ?? null;
+  const messageTimestamp = toSafe(message.timestamp, fallbackAt ?? new Date().toISOString());
+  const fallbackId = timelineFallbackId(message);
+
+  const isActivity = kind === "activity" || messageType === "activity";
+  if (isActivity && event) {
+    const activity =
+      event.type === "activity" && safeRecord(event.payload) ? (event.payload as Record<string, unknown>) : event;
+    const activityTs = safeRecord(activity)?.["ts"] ?? safeRecord(activity)?.timestamp ?? messageTimestamp;
+    const normalizedTimestamp = toSafe(activityTs, messageTimestamp);
+
+    const tool = String(activity.tool ?? activity.name ?? "activity");
+    const category = String(activity.category ?? "tool");
+    const details = `Tool: ${tool} • Duration: ${String(activity.duration_ms ?? "n/a")}ms`;
+    return {
+      id: makeTimelineId(["activity", normalizedTimestamp, tool, category, activity, fallbackId]),
+      source: "activity",
+      timestamp: normalizedTimestamp,
+      type: category,
+      title: String(activity.name ?? "Tool call"),
+      details,
+      payload: activity,
+      level: "info",
+    };
+  }
+
+  const isBridge =
+    kind === "bridge" || messageType === "state" || messageType === "event" || messageType === "screenshot";
+  if (!isBridge || !event) {
+    return null;
+  }
+
+  const eventType = String(event.type ?? messageType ?? "event");
+  // State snapshots and screenshot frames drive the Live view, not the
+  // Timeline — keeping them out avoids flooding it with base64 blobs.
+  if (eventType === "state" || eventType === "screenshot") {
+    return null;
+  }
+  if (eventType === "label") {
+    return {
+      id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event.label, fallbackId]),
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: "Label",
+      details: `Entered ${String(event.label ?? "unknown")}`,
+      payload: event,
+      level: "info",
+    };
+  }
+  if (eventType === "say") {
+    return {
+      id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event.what, fallbackId]),
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: "Say",
+      details: String(event.what ?? ""),
+      payload: event,
+      level: "info",
+    };
+  }
+  if (eventType === "exception") {
+    return {
+      id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event.full, event.short, fallbackId]),
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: "Exception",
+      details: String(event.full ?? event.short ?? "Runtime error"),
+      payload: event,
+      level: "error",
+    };
+  }
+
+  return {
+    id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event, fallbackId]),
+    source: "bridge",
+    timestamp: toSafe(event.timestamp, messageTimestamp),
+    type: eventType,
+    title: String(event.type ?? "Bridge event"),
+    details: JSON.stringify(event),
+    payload: event,
+    level: "info",
+  };
+}
+
+export function normalizeTimelineEntries(messages: SocketEnvelope[]): TimelineItem[] {
+  return messages.map((message) => socketMessageToTimeline(message)).filter((entry): entry is TimelineItem => entry !== null);
+}
+
 export const api = {
   async fetchStoryMap(): Promise<StoryMapResponse> {
     return apiGet<StoryMapResponse>("/api/story-map");
@@ -311,6 +500,11 @@ export const api = {
   async fetchLiveChoices(): Promise<{ choices: LiveChoice[] }> {
     const response = await apiGet<unknown>("/api/live/choices");
     return parseLiveChoicesPayload(response);
+  },
+
+  async fetchRecentTimeline(): Promise<SocketEnvelope[]> {
+    const response = await apiGet<unknown>(TIMELINE_RECENT_PATH);
+    return parseTimelineSeedPayload(response);
   },
 
   async jumpToLabel(target: string): Promise<{ ok: boolean; error?: string }> {
@@ -369,8 +563,10 @@ export const api = {
 
   async fetchLint(): Promise<LintResponse> {
     const response = await apiGet<unknown>("/api/lint");
+    const payload = isObject(response) ? response : {};
     return {
       diagnostics: toDiagnosticArray(response),
+      raw: typeof payload.raw === "string" ? payload.raw : undefined,
     };
   },
 

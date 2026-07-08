@@ -33,3 +33,47 @@ def test_parse_lint_output_unknown_lines_are_ignored() -> None:
     )
     diagnostics = parse_lint_output(output)
     assert diagnostics == []
+
+
+def test_parse_lint_output_parses_sections_with_file_line_details() -> None:
+    output = "\n".join(
+        [
+            "Orphan Translations",
+            "game/script.rpy:33:",
+            "    The default translation entry is orphaned.",
+            "  game/other.rpy:77: [warning] old translation key",
+            "This note should be ignored",
+        ]
+    )
+    diagnostics = parse_lint_output(output)
+
+    assert diagnostics[0]["file"] == "game/script.rpy"
+    assert diagnostics[0]["line"] == 33
+    assert diagnostics[0]["severity"] == "warning"
+    assert diagnostics[0]["message"] == "The default translation entry is orphaned."
+
+    assert diagnostics[1]["file"] == "game/other.rpy"
+    assert diagnostics[1]["line"] == 77
+    assert diagnostics[1]["severity"] == "warning"
+    assert diagnostics[1]["message"] == "old translation key"
+
+
+def test_parse_lint_output_parses_orphan_translation_file_blocks() -> None:
+    output = "\n".join(
+        [
+            "Orphan Translations:",
+            "",
+            "game/tl/french/script.rpy:",
+            "    * line     9 (id start)",
+        ]
+    )
+    diagnostics = parse_lint_output(output)
+
+    assert diagnostics == [
+        {
+            "file": "game/tl/french/script.rpy",
+            "line": 9,
+            "severity": "warning",
+            "message": "Orphan Translations (id start)",
+        }
+    ]

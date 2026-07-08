@@ -132,16 +132,22 @@ export interface LintDiagnostic {
 export interface LintResponse {
   diagnostics: LintDiagnostic[];
   total?: number;
+  raw?: string;
   [key: string]: unknown;
 }
 
 export interface TranslationStats {
   language?: string;
   coverage?: number;
+  done?: number;
+  total?: number;
   total_files?: number;
   translated_files?: number;
   missing_files?: number;
   missing_translations?: number;
+  missing_dialogue?: number;
+  missing_dialogues?: number;
+  missing_strings?: number;
   translated_lines?: number;
   total_lines?: number;
   percent?: number;

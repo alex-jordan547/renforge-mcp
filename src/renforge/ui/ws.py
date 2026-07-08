@@ -3,22 +3,27 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Set
-
-from starlette.websockets import WebSocket
+from typing import Any, Protocol, Set
 
 
 class WebSocketHub:
+    class _WebSocket(Protocol):
+        async def accept(self) -> None:
+            ...
+
+        async def send_text(self, text: str) -> None:
+            ...
+
     def __init__(self) -> None:
-        self._connections: Set[WebSocket] = set()
+        self._connections: Set[WebSocketHub._WebSocket] = set()
         self._lock = asyncio.Lock()
 
-    async def connect(self, socket: WebSocket) -> None:
+    async def connect(self, socket: WebSocketHub._WebSocket) -> None:
         await socket.accept()
         async with self._lock:
             self._connections.add(socket)
 
-    async def disconnect(self, socket: WebSocket) -> None:
+    async def disconnect(self, socket: WebSocketHub._WebSocket) -> None:
         async with self._lock:
             self._connections.discard(socket)
 
