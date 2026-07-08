@@ -8,6 +8,7 @@ and string translations without writing files.
 from __future__ import annotations
 
 import re
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,31 @@ _COUNT_RE = re.compile(
     r"(?P<dialogue>\d+)\s+missing\s+dialogue\s+translations.*?(?P<strings>\d+)\s+missing\s+string\s+translations",
     re.IGNORECASE | re.DOTALL,
 )
+_QUOTED_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_NON_DIALOGUE_STATEMENTS = (
+    "voice",
+    "play",
+    "stop",
+    "queue",
+    "show",
+    "hide",
+    "scene",
+    "with",
+    "window",
+    "pause",
+    "$",
+)
+
+
+def _quoted_text(line: str) -> str | None:
+    match = _QUOTED_STRING_RE.search(line)
+    if not match:
+        return None
+    try:
+        value = ast.literal_eval(match.group(0))
+    except (SyntaxError, ValueError):
+        return match.group(0)[1:-1]
+    return value if isinstance(value, str) else str(value)
 
 
 def list_languages(project_path: str | Path) -> list[str]:
@@ -78,4 +104,103 @@ def export_dialogue(sdk: RenpySdk, project: RenpyProject, language: str = "None"
     }
 
 
-__all__ = ["list_languages", "generate_translations", "translation_stats", "export_dialogue"]
+def list_translation_strings(project_path: str | Path, language: str) -> list[dict[str, Any]]:
+    """Parse real translation blocks (dialogue & strings) from game/tl/<language>/*.rpy."""
+    tl_dir = Path(project_path).expanduser().resolve() / "game" / "tl" / language
+    if not tl_dir.is_dir():
+        return []
+
+    strings = []
+    string_idx = 1
+    
+    # regex for dialogue translation blocks
+    dialogue_block_re = re.compile(
+        r'^[ \t]*translate\s+' + re.escape(language) + r'\s+(?P<id>(?!strings\b)[a-zA-Z0-9_]+)\s*:\s*\n'
+        r'(?P<lines>(?:(?:^[ \t]+.*(?:\n|$))|(?:^[ \t]*\n))*)',
+        re.MULTILINE
+    )
+    
+    # regex for strings translation block
+    strings_block_re = re.compile(
+        r'^[ \t]*translate\s+' + re.escape(language) + r'\s+strings\s*:\s*\n'
+        r'(?P<lines>(?:(?:^[ \t]+.*(?:\n|$))|(?:^[ \t]*\n))*)',
+        re.MULTILINE
+    )
+    
+    # scan for any .rpy files under the language directory
+    for rpy_file in sorted(tl_dir.glob("**/*.rpy")):
+        try:
+            content = rpy_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+            
+        # 1. Parse dialogue blocks
+        for match in dialogue_block_re.finditer(content):
+            label_id = match.group("id")
+            lines_str = match.group("lines")
+            
+            src_text = ""
+            tr_text = ""
+            
+            for line in lines_str.split("\n"):
+                line_trimmed = line.strip()
+                if not line_trimmed:
+                    continue
+                if line_trimmed.startswith("#"):
+                    text = _quoted_text(line_trimmed)
+                    if text is not None:
+                        src_text = text
+                else:
+                    if line_trimmed.startswith(_NON_DIALOGUE_STATEMENTS):
+                        continue
+                    text = _quoted_text(line_trimmed)
+                    if text is not None:
+                        tr_text = text
+            
+            if src_text or tr_text:
+                status = "ok" if tr_text and tr_text != src_text else "todo"
+                status_label = "OK" if status == "ok" else "À TRADUIRE"
+                strings.append({
+                    "id": label_id,
+                    "src": src_text,
+                    "tr": tr_text,
+                    "status": status,
+                    "statusLabel": status_label
+                })
+                
+        # 2. Parse strings blocks
+        for match in strings_block_re.finditer(content):
+            lines_str = match.group("lines")
+            
+            old_texts = []
+            new_texts = []
+            
+            for line in lines_str.split("\n"):
+                line_trimmed = line.strip()
+                if line_trimmed.startswith("old"):
+                    text = _quoted_text(line_trimmed)
+                    if text is not None:
+                        old_texts.append(text)
+                elif line_trimmed.startswith("new"):
+                    text = _quoted_text(line_trimmed)
+                    if text is not None:
+                        new_texts.append(text)
+            
+            for i in range(min(len(old_texts), len(new_texts))):
+                src = old_texts[i]
+                tr = new_texts[i]
+                status = "ok" if tr else "todo"
+                status_label = "OK" if status == "ok" else "À TRADUIRE"
+                strings.append({
+                    "id": f"string_{string_idx}",
+                    "src": src,
+                    "tr": tr,
+                    "status": status,
+                    "statusLabel": status_label
+                })
+                string_idx += 1
+                
+    return strings
+
+
+__all__ = ["list_languages", "generate_translations", "translation_stats", "export_dialogue", "list_translation_strings"]
