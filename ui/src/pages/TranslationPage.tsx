@@ -12,22 +12,13 @@ interface TranslationRow {
   rawStats: TranslationStats | null;
 }
 
-interface MockString {
+interface TranslationString {
   id: string;
   src: string;
   tr: string;
   status: "orphan" | "todo" | "ok";
   statusLabel: string;
 }
-
-const MOCK_FRENCH_STRINGS: MockString[] = [
-  { id: "start_000001", src: "Ren’Forge is starting. Your demo script is ready.", tr: "Ren’Forge démarre. Ton script de démo est prêt.", status: "orphan", statusLabel: "ORPHAN" },
-  { id: "choice_000001", src: "Two routes lie before you.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
-  { id: "choice_menu_01", src: "Follow the bright road.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
-  { id: "choice_menu_02", src: "Take the dark road.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
-  { id: "good_000001", src: "You reached the bright ending.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
-  { id: "bad_000001", src: "You reached the dark ending.", tr: "", status: "todo", statusLabel: "À TRADUIRE" },
-];
 
 function toNumber(value: unknown): number | null {
   if (typeof value === "number") {
@@ -115,7 +106,7 @@ export function TranslationPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [realStrings, setRealStrings] = useState<MockString[]>([]);
+  const [realStrings, setRealStrings] = useState<TranslationString[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -209,19 +200,7 @@ export function TranslationPage() {
 
   const stringsList = useMemo(() => {
     if (!selectedLanguage) return [];
-    if (realStrings.length > 0) return realStrings;
-    
-    // Check if the selected language is French
-    const isFrench = selectedLanguage.toLowerCase() === "french" || selectedLanguage.toLowerCase() === "fr";
-    
-    if (isFrench) {
-      return MOCK_FRENCH_STRINGS;
-    }
-    
-    // For other languages, generate generic mock strings since the API doesn't expose translation tables
-    return [
-      { id: "start_000001", src: "Ren’Forge is starting. Your demo script is ready.", tr: "Ren’Forge is starting. Your demo script is ready.", status: "ok" as const, statusLabel: "OK" },
-    ];
+    return realStrings;
   }, [selectedLanguage, realStrings]);
 
   const filteredStrings = useMemo(() => {

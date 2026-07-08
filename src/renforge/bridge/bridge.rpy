@@ -137,6 +137,13 @@ init python:
         renpy.exports.queue_event("dismiss")
         return {"ok": True}
 
+    def _renforge_invoke(fn):
+        invoke = getattr(renpy, "invoke_in_main_thread", None)
+        if callable(invoke):
+            invoke(fn)
+        else:
+            fn()
+
     def _renforge_h_control(payload):
         payload = payload or {}
         action = str(payload.get("action", ""))
@@ -155,13 +162,13 @@ init python:
             renpy.exports.queue_event(event_name)
             return {"ok": True, "action": action, "event": event_name}
         if action == "reload_script":
-            renpy.reload_script()
+            _renforge_invoke(renpy.reload_script)
             return {"ok": True, "action": action}
         if action == "restart_interaction":
-            renpy.restart_interaction()
+            _renforge_invoke(renpy.restart_interaction)
             return {"ok": True, "action": action}
         if action == "quit":
-            renpy.quit()
+            _renforge_invoke(renpy.quit)
             return {"ok": True, "action": action}
         return {"ok": False, "error": "unknown control action: %s" % action}
 

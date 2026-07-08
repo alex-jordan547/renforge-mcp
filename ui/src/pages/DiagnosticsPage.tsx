@@ -112,7 +112,7 @@ export function DiagnosticsPage() {
     
     // Attempt to parse screen count from the raw report
     const screenMatch = rawReport.match(/(\d+)\s+screens/);
-    const screenCount = screenMatch ? parseInt(screenMatch[1], 10) : 24; // fallback to 24 mockup screens if parsing fails
+    const screenCount = screenMatch ? parseInt(screenMatch[1], 10) : 0;
     
     // If no structured diagnostics are returned but raw report mentions orphans or warning, we count them as warning
     if (warnCount === 0 && (rawReport.includes("warning") || rawReport.includes("Orphan"))) {
