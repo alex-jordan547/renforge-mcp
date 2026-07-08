@@ -229,6 +229,24 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 Quitter
               </button>
             </div>
+            {narrativeChoices.length > 0 && (
+              <div className="live-choices">
+                <div className="live-choices-head">
+                  <h4>Choix narratif</h4>
+                  <span className="badge warn">interactif</span>
+                </div>
+                <div className="choice-list">
+                  {narrativeChoices.map((choice) => (
+                    <div key={`${choice.text}-${choice.index}`} className="choice-item">
+                      <span>{choice.text}</span>
+                      <button className="btn btn-primary" onClick={() => onSelectChoice(choice.index)}>
+                        Choisir
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -341,26 +359,6 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
           </div>
         </section>
 
-        {narrativeChoices.length > 0 && (
-          <section className="card reveal in" style={{ animationDelay: ".20s" }}>
-            <div className="card-head">
-              <h3>Choix narratif</h3>
-              <span className="badge warn">interactif</span>
-            </div>
-            <div className="card-body">
-              <div className="choice-list">
-                {narrativeChoices.map((choice) => (
-                  <div key={`${choice.text}-${choice.index}`} className="choice-item">
-                    <span>{choice.text}</span>
-                    <button className="btn btn-primary" onClick={() => onSelectChoice(choice.index)}>
-                      Choisir
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
       </div>
     </div>
   );
