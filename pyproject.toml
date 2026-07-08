@@ -5,14 +5,29 @@ build-backend = "hatchling.build"
 [project]
 name = "renforge"
 version = "0.1.0"
-description = "RenForge MCP foundation for Ren'Py project workflows"
+description = "MCP server, CLI, and web dashboard for Ren'Py visual-novel development"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "RenForge contributors" }]
+keywords = ["renpy", "mcp", "model-context-protocol", "visual-novel", "game-dev"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Games/Entertainment",
+  "Topic :: Software Development :: Libraries",
+]
 dependencies = [
   "mcp>=1.0.0"
 ]
+
+[project.urls]
+Homepage = "https://github.com/alex-jordan547/renforge-mcp"
+Repository = "https://github.com/alex-jordan547/renforge-mcp"
+Issues = "https://github.com/alex-jordan547/renforge-mcp/issues"
 
 [project.optional-dependencies]
 fastmcp = ["fastmcp>=2.0.0"]
