@@ -91,7 +91,14 @@ label ridge_path:
     scene bg summit with dissolve
     narrator "Wind claws at your coat. Far below, Emberfall is a handful of sparks."
     call wisp_advice
-    jump summit
+    menu:
+        "Shield the lantern from the wind.":
+            $ courage += 1
+            jump summit
+        "Grip the rocks with both hands.":
+            $ lantern = False
+            narrator "A gust snatches the flame. The lantern goes dark in your hand."
+            jump summit
 
 label wisp_advice:
     w "Whatever you meet up there — it's not the dark you should fear, it's forgetting why you climbed."

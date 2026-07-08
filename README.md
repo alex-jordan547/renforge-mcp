@@ -132,13 +132,12 @@ In `settings.json`:
 {
   "context_servers": {
     "renforge": {
-      "command": {
-        "path": "uvx",
-        "args": [
-          "--from", "renforge[fastmcp]", "renforge",
-          "serve", "--project", "/path/to/your/game"
-        ]
-      }
+      "source": "custom",
+      "command": "uvx",
+      "args": [
+        "--from", "renforge[fastmcp]", "renforge",
+        "serve", "--project", "/path/to/your/game"
+      ]
     }
   }
 }
