@@ -119,6 +119,10 @@ class BridgeClient:
         """Advance the current dialogue (posts a 'dismiss' event)."""
         return self._checked("advance")
 
+    def control(self, action: str) -> dict:
+        """Run a named runtime control action inside the Ren'Py bridge."""
+        return self._checked("control", {"action": action})
+
     def poll_events(self, since: int = 0) -> dict:
         """Return pushed events with ``seq > since`` plus the current cursor.
 

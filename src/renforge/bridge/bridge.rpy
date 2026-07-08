@@ -137,6 +137,34 @@ init python:
         renpy.exports.queue_event("dismiss")
         return {"ok": True}
 
+    def _renforge_h_control(payload):
+        payload = payload or {}
+        action = str(payload.get("action", ""))
+        key_events = {
+            "advance": "dismiss",
+            "rollback": "rollback",
+            "toggle_skip": "toggle_skip",
+            "toggle_auto": "toggle_auto",
+            "game_menu": "game_menu",
+            "hide_windows": "hide_windows",
+            "quick_save": "quick_save",
+            "quick_load": "quick_load",
+        }
+        if action in key_events:
+            event_name = key_events[action]
+            renpy.exports.queue_event(event_name)
+            return {"ok": True, "action": action, "event": event_name}
+        if action == "reload_script":
+            renpy.reload_script()
+            return {"ok": True, "action": action}
+        if action == "restart_interaction":
+            renpy.restart_interaction()
+            return {"ok": True, "action": action}
+        if action == "quit":
+            renpy.quit()
+            return {"ok": True, "action": action}
+        return {"ok": False, "error": "unknown control action: %s" % action}
+
     def _renforge_h_poll_events(payload):
         payload = payload or {}
         since = int(payload.get("since", 0) or 0)
@@ -225,6 +253,7 @@ init python:
         "set_var": _renforge_h_set_var,
         "screenshot": _renforge_h_screenshot,
         "advance": _renforge_h_advance,
+        "control": _renforge_h_control,
         "poll_events": _renforge_h_poll_events,
         "list_choices": _renforge_h_list_choices,
         "select_choice": _renforge_h_select_choice,

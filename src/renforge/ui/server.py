@@ -183,6 +183,15 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
             return _unauthorized()
         return JSONResponse(live.advance(str(project_root)))
 
+    async def control(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        payload = _as_dict(await _read_json(request))
+        action = payload.get("action")
+        if not isinstance(action, str) or not action:
+            return JSONResponse({"ok": False, "error": "action is required"}, status_code=400)
+        return JSONResponse(live.control(str(project_root), action))
+
     async def select_choice(request: Request):
         if not await _check_token(request):
             return _unauthorized()
@@ -271,6 +280,7 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/file", file, methods=["GET"]),
         Route("/api/lint", lint, methods=["GET"]),
         Route("/api/advance", advance, methods=["POST"]),
+        Route("/api/live/control", control, methods=["POST"]),
         Route("/api/select-choice", select_choice, methods=["POST"]),
         Route("/api/eval", eval_route, methods=["POST"]),
         Route("/api/set-var", set_var, methods=["POST"]),

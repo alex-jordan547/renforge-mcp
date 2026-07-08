@@ -186,6 +186,10 @@ def advance(project_path: str) -> dict:
     return _with_client(project_path, lambda c: c.advance())
 
 
+def control(project_path: str, action: str) -> dict:
+    return _with_client(project_path, lambda c: c.control(action))
+
+
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep only choices that come from the active narrative choice screen."""
 
@@ -258,6 +262,7 @@ __all__ = [
     "stop_all",
     "game_state",
     "advance",
+    "control",
     "list_choices",
     "select_choice",
     "eval_expr",
