@@ -55,16 +55,19 @@ Requires Python 3.11+. With [uv](https://docs.astral.sh/uv/) installed, no
 setup is needed:
 
 ```bash
-# Start the web dashboard on your project
-uvx --from "renforge[ui]" renforge ui --project /path/to/your/game
+# Start the web dashboard
+uvx --from "renforge[ui]" renforge ui
 ```
+
+Then choose your game in the dashboard's project picker — no path to type. (Or
+skip the picker with `--project /path/to/your/game`.)
 
 Prefer a persistent install? [pipx](https://pipx.pypa.io/) puts `renforge` on
 your PATH in an isolated environment:
 
 ```bash
 pipx install "renforge[ui]"
-renforge ui --project /path/to/your/game
+renforge ui
 ```
 
 On managed systems (Debian/Ubuntu), plain `pip install` is blocked by
@@ -200,7 +203,7 @@ The server falls back to a compatibility mode with a clear message if
 renforge --version
 renforge inspect <project>      # lightweight project summary (JSON)
 renforge serve [--project .]    # start the MCP server (stdio transport)
-renforge ui --project <project> [--port 8765]   # start the web dashboard
+renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 ```
 
 ### MCP server
@@ -226,9 +229,10 @@ directly; headless CI should wrap the call with `xvfb-run`.
 
 ### Web dashboard
 
-`renforge ui --project <project>` serves a dashboard (default `127.0.0.1:8765`)
-with a story map, activity log, autopilot coverage, lint view, and live game
-controls over WebSocket.
+`renforge ui` serves a dashboard (default `127.0.0.1:8765`) with a story map,
+activity log, autopilot coverage, lint view, and live game controls over
+WebSocket. Pick a project from the in-app project picker, or pass
+`--project <project>` to open one directly.
 
 ## Examples
 
