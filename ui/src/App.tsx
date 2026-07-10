@@ -96,6 +96,7 @@ export function App() {
   const [storyMapError, setStoryMapError] = useState<string | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<TimelineItem[]>([]);
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectRevision, setProjectRevision] = useState(0);
   const projectPathRef = useRef<string | null>(null);
@@ -209,6 +210,7 @@ export function App() {
         if (mounted) {
           projectPathRef.current = response.project;
           setProjectPath(response.project);
+          setAppVersion(response.version ?? null);
         }
       })
       .catch((error) => console.error("Failed to load project", error));
@@ -412,6 +414,12 @@ export function App() {
             <span className="k">events</span>
             <span className="v">{stats.messageCount}</span>
           </div>
+          {appVersion && (
+            <div className="row">
+              <span className="k">version</span>
+              <span className="v">v{appVersion}</span>
+            </div>
+          )}
         </div>
       </aside>
 

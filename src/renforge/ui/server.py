@@ -8,6 +8,7 @@ import json
 import string
 import threading
 import webbrowser
+from importlib.metadata import PackageNotFoundError, version as _package_version
 from pathlib import Path, PurePosixPath
 from secrets import token_urlsafe
 from typing import Any
@@ -26,6 +27,13 @@ from .activity import read_recent_activity, tail_activity
 from .graph import build_story_map, resolve_game_file_path, resolve_warp_target
 from .poller import poll_bridge
 from .ws import WebSocketHub, build_ws_envelope
+
+
+def _renforge_version() -> str:
+    try:
+        return _package_version("renforge")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def _unauthorized() -> JSONResponse:
@@ -249,7 +257,7 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
     async def project(request: Request):
         if not await _check_token(request):
             return _unauthorized()
-        return JSONResponse({"ok": True, "project": str(runtime.root)})
+        return JSONResponse({"ok": True, "project": str(runtime.root), "version": _renforge_version()})
 
     async def project_browser(request: Request):
         if not await _check_token(request):

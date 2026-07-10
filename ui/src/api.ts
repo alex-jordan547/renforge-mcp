@@ -510,8 +510,8 @@ export function normalizeTimelineEntries(messages: SocketEnvelope[]): TimelineIt
 }
 
 export const api = {
-  async fetchProject(): Promise<{ ok: boolean; project: string }> {
-    return apiGet<{ ok: boolean; project: string }>("/api/project");
+  async fetchProject(): Promise<{ ok: boolean; project: string; version?: string }> {
+    return apiGet<{ ok: boolean; project: string; version?: string }>("/api/project");
   },
 
   async browseProjects(rootId?: string, path = ""): Promise<ProjectBrowserResponse> {
