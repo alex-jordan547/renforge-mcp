@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from contextlib import asynccontextmanager
 import json
 import threading
@@ -120,22 +121,26 @@ def _browse_project_directories(project_root: Path, root_id: str | None, raw_pat
     entries: list[dict[str, Any]] = []
     truncated = False
     try:
-        children = sorted(directory.iterdir(), key=lambda child: child.name.casefold())
+        with os.scandir(directory) as scan:
+            children = sorted(scan, key=lambda child: child.name.casefold())
     except OSError:
         return {"ok": False, "error": "folder is not accessible"}
     for child in children:
         if len(entries) >= 500:
             truncated = True
             break
-        if child.name.startswith(".") or child.is_symlink() or not child.is_dir():
+        try:
+            if child.name.startswith(".") or child.is_symlink() or not child.is_dir(follow_symlinks=False):
+                continue
+            is_project = (directory / child.name / "game").is_dir()
+        except OSError:
             continue
-        markers = _project_markers(child)
         entries.append(
             {
                 "name": child.name,
-                "path": child.relative_to(root).as_posix(),
-                "project": bool(markers and markers[0] == "game"),
-                "markers": markers,
+                "path": (directory / child.name).relative_to(root).as_posix(),
+                "project": is_project,
+                "markers": ["game"] if is_project else [],
             }
         )
 
@@ -240,7 +245,8 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
     async def project_browser(request: Request):
         if not await _check_token(request):
             return _unauthorized()
-        result = _browse_project_directories(
+        result = await asyncio.to_thread(
+            _browse_project_directories,
             runtime.root,
             request.query_params.get("root_id"),
             request.query_params.get("path", ""),
