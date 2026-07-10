@@ -63,3 +63,29 @@ def test_live_tools_error_cleanly_without_a_running_game(tmp_path) -> None:
     # An invalid project path is reported, not raised.
     launched = live.launch_game(str(tmp_path / "does-not-exist"))
     assert launched["ok"] is False
+
+
+def test_screenshot_serializes_to_an_mcp_image_block(tmp_path, monkeypatch) -> None:
+    fastmcp = pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    import base64
+
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    monkeypatch.setattr(live, "screenshot_png", lambda path: b"fake-png-bytes")
+    app = create_app()
+    if isinstance(app, _FallbackServer):
+        pytest.skip("MCP backend (mcp/fastmcp) not installed")
+
+    async def _call():
+        async with Client(app) as client:
+            return await client.call_tool(
+                "renforge_screenshot", {"project_path": str(tmp_path)}
+            )
+
+    result = asyncio.run(_call())
+    image_blocks = [block for block in result.content if getattr(block, "type", None) == "image"]
+    assert image_blocks, f"expected an image content block, got: {result.content!r}"
+    assert image_blocks[0].mimeType == "image/png"
+    assert base64.b64decode(image_blocks[0].data) == b"fake-png-bytes"

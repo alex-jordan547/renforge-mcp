@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -385,11 +386,16 @@ def _register_tools(app: Any) -> None:
             except Exception as exc:  # pragma: no cover - defensive
                 return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-            try:
-                from fastmcp import Image  # type: ignore
-            except Exception:
-                from mcp.server.fastmcp import Image  # type: ignore
-            return Image(data=png, format="png")
+            # Return a raw MCP content block: helper classes like fastmcp.Image
+            # moved between fastmcp versions, and an Image object from the
+            # wrong package gets stringified instead of rendered.
+            from mcp.types import ImageContent
+
+            return ImageContent(
+                type="image",
+                data=base64.b64encode(png).decode("ascii"),
+                mimeType="image/png",
+            )
 
         return _log_tool_call(
             name="renforge_screenshot",
