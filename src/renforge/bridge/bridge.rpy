@@ -265,6 +265,11 @@ init python:
         # Select a menu option by visible text (preferred) or by index, by
         # resolving the focusable and simulating a mouse click on it — the same
         # path Ren'Py's own test framework uses.
+        #
+        # Important: when the Ren'Py window is unfocused (common while driving
+        # the game from the dashboard), Interface.mouse_focused is False and
+        # core.py forces click coords to (-1, -1), so clicks never hit buttons.
+        # Force mouse focus for the synthetic click so choices still work.
         payload = payload or {}
         text = payload.get("text")
         index = payload.get("index")
@@ -293,6 +298,17 @@ init python:
         else:
             px, py = renpy.test.testfocus.find_position(focus, (None, None))
             x, y = int(px), int(py)
+
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
 
         renpy.test.testmouse.click_mouse(1, x, y)
         return {"ok": True, "text": chosen, "x": x, "y": y}

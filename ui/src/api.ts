@@ -579,8 +579,11 @@ export const api = {
     return apiPost<{ ok: boolean }>("/api/set-var", { name, value });
   },
 
-  async selectChoice(index: number): Promise<{ ok: boolean; text: string }> {
-    const response = await apiPost<unknown>("/api/select-choice", { index });
+  async selectChoice(index: number, text?: string): Promise<{ ok: boolean; text: string }> {
+    const response = await apiPost<unknown>("/api/select-choice", {
+      index,
+      ...(typeof text === "string" && text.length > 0 ? { text } : {}),
+    });
     checkBooleanResponse(response, "Choice");
     if (isObject(response)) {
       return {

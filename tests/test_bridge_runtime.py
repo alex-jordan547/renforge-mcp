@@ -71,7 +71,10 @@ def _fake_renpy(store):
         _FakeFocus("Alpha choice", 10, 10, 100, 20),
         _FakeFocus("Beta choice", 10, 40, 100, 20),
     ]
-    renpy.display = types.SimpleNamespace(focus=types.SimpleNamespace(focus_list=focus_list))
+    renpy.display = types.SimpleNamespace(
+        focus=types.SimpleNamespace(focus_list=focus_list),
+        interface=types.SimpleNamespace(mouse_focused=False, ignore_touch=False),
+    )
     renpy._clicks = []
 
     def _find_focus(pattern):
@@ -218,6 +221,8 @@ def test_select_choice_by_text_clicks_focus_center(running_bridge):
     assert reply["ok"] is True
     # Beta focus is at (10, 40) sized 100x20 -> center (60, 50).
     assert running_bridge.renpy._clicks[-1] == (1, 60, 50)
+    # Unfocused Ren'Py windows zero click coords; select must re-enable mouse focus.
+    assert running_bridge.renpy.display.interface.mouse_focused is True
 
 
 def test_select_choice_by_index_resolves_text(running_bridge):

@@ -330,7 +330,42 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
             onlyRenderVisibleElements={true}
           >
             <Background gap={20} />
-            <MiniMap pannable zoomable />
+            <MiniMap
+              className="story-minimap"
+              pannable
+              zoomable
+              nodeColor={(node) => {
+                const type = String(node.data?.type ?? "label");
+                const name = String(node.data?.name ?? node.id).replace(/^label:/, "");
+                if (currentLabel && (name === currentLabel || node.id === currentLabel || node.id === `label:${currentLabel}`)) {
+                  return "var(--minimap-node-current)";
+                }
+                if (type === "menu" || type === "choice") {
+                  return "var(--minimap-node-menu)";
+                }
+                if (type === "call") {
+                  return "var(--minimap-node-call)";
+                }
+                if (node.data?.covered) {
+                  return "var(--minimap-node-covered)";
+                }
+                return "var(--minimap-node)";
+              }}
+              nodeStrokeColor={(node) => {
+                const name = String(node.data?.name ?? node.id).replace(/^label:/, "");
+                if (currentLabel && (name === currentLabel || node.id === currentLabel || node.id === `label:${currentLabel}`)) {
+                  return "var(--minimap-node-current)";
+                }
+                return "var(--minimap-node-stroke)";
+              }}
+              nodeStrokeWidth={1}
+              nodeBorderRadius={2}
+              maskColor="var(--minimap-mask)"
+              maskStrokeColor="var(--minimap-mask-stroke)"
+              maskStrokeWidth={1.5}
+              bgColor="var(--minimap-bg)"
+              ariaLabel="Story map overview"
+            />
           </ReactFlow>
 
           <div className="zoom">

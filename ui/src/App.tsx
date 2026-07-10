@@ -275,17 +275,6 @@ export function App() {
     }
   }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents, liveState, liveFrame]);
 
-  const SECTION_KEYS: Record<SectionId, string> = {
-    "story-map": "S",
-    live: "L",
-    timeline: "T",
-    assets: "A",
-    translation: "R",
-    diagnostics: "D",
-    editor: "E",
-    debugger: "B",
-  };
-
   const SECTION_TITLES: Record<SectionId, [string, string]> = {
     "story-map": ["Story Map", "Graph of labels and transitions"],
     live: ["Live", "Operational console — live execution"],
@@ -379,7 +368,6 @@ export function App() {
             >
               {SECTION_ICONS[item.id]}
               {item.label}
-              <span className="kbd">{SECTION_KEYS[item.id]}</span>
             </button>
           ))}
 
@@ -393,7 +381,6 @@ export function App() {
             >
               {SECTION_ICONS[item.id]}
               {item.label}
-              <span className="kbd">{SECTION_KEYS[item.id]}</span>
             </button>
           ))}
         </nav>

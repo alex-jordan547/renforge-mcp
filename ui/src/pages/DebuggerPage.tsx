@@ -260,7 +260,7 @@ export function DebuggerPage() {
                 <button
                   className="btn btn-primary"
                   type="button"
-                  onClick={() => runAction(() => api.selectChoice(choice.index), "choice selected")}
+                  onClick={() => runAction(() => api.selectChoice(choice.index, choice.text), "choice selected")}
                 >
                   Choose
                 </button>

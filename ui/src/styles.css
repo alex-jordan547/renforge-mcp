@@ -51,6 +51,16 @@
   --scene-bg: linear-gradient(180deg, #2a2a2c, #000);
   --shadow-window: 0 40px 90px -34px rgba(20,26,40,.28), 0 10px 26px -18px rgba(20,26,40,.16);
   --traffic-dim: rgba(0,0,0,.16);
+  /* minimap — solid fills, high contrast on light */
+  --minimap-bg: #e8e8ed;
+  --minimap-node: #86868b;
+  --minimap-node-covered: #6e6e73;
+  --minimap-node-current: #0071e3;
+  --minimap-node-menu: #c98900;
+  --minimap-node-call: #16a34a;
+  --minimap-node-stroke: rgba(0,0,0,.18);
+  --minimap-mask: rgba(29,29,31,.14);
+  --minimap-mask-stroke: #0071e3;
 }
 
 /* ── DARK — surfaces graphite Apple ── */
@@ -83,6 +93,15 @@
   --shadow-window: 0 40px 90px -30px rgba(0,0,0,.75), 0 12px 30px -18px rgba(0,0,0,.6);
   --elev-raised: 0 12px 32px rgba(0,0,0,.5);
   --traffic-dim: rgba(255,255,255,.16);
+  --minimap-bg: #16171c;
+  --minimap-node: #6e6e73;
+  --minimap-node-covered: #a1a1a6;
+  --minimap-node-current: #2997ff;
+  --minimap-node-menu: #ffd60a;
+  --minimap-node-call: #30d158;
+  --minimap-node-stroke: rgba(255,255,255,.14);
+  --minimap-mask: rgba(0,0,0,.42);
+  --minimap-mask-stroke: #2997ff;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -142,7 +161,7 @@ a { color: var(--accent); text-decoration: none; }
 .nav button.nav-btn:hover { background: var(--hair); color: var(--fg); }
 .nav button.nav-btn.active { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
 .nav button.nav-btn.active svg { opacity: 1; }
-.nav button.nav-btn .kbd { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--meta); border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px; }
+
 
 .side-foot { margin-top: auto; padding: 14px 16px 16px; border-top: 1px solid var(--hair); }
 .side-foot .row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 11.5px; }
@@ -349,8 +368,34 @@ a { color: var(--accent); text-decoration: none; }
 .zoom button:last-child { border-bottom: 0; }
 .zoom button:hover { background: var(--hair); color: var(--fg); }
 
+/* Minimap — solid overview, contrast-safe in light + dark */
+.react-flow__minimap.story-minimap,
 .react-flow__minimap {
-  position: absolute; right: 16px; bottom: 16px; width: 180px !important; height: 96px !important; border-radius: var(--radius-md) !important; background: var(--surface) !important; border: 1px solid var(--border) !important; box-shadow: var(--elev-raised) !important; overflow: hidden !important; z-index: 10 !important;
+  position: absolute !important;
+  right: 14px !important;
+  bottom: 14px !important;
+  width: 220px !important;
+  height: 132px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--minimap-bg) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--elev-raised) !important;
+  overflow: hidden !important;
+  z-index: 10 !important;
+}
+.react-flow__minimap svg {
+  display: block;
+}
+.react-flow__minimap-mask {
+  fill: var(--minimap-mask) !important;
+  stroke: var(--minimap-mask-stroke) !important;
+  stroke-width: 1.5px !important;
+}
+.react-flow__minimap-node {
+  stroke: var(--minimap-node-stroke) !important;
+  stroke-width: 1px !important;
 }
 .react-flow__controls {
   display: none !important; /* Managed by our custom .zoom panel */

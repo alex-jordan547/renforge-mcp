@@ -186,8 +186,8 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     await runAction(() => api.setVariable(setVarName, setVarValue), `defined: ${setVarName}`, "set-var");
   };
 
-  const onSelectChoice = async (index: number) => {
-    await runAction(() => api.selectChoice(index), "choice selected");
+  const onSelectChoice = async (index: number, text: string) => {
+    await runAction(() => api.selectChoice(index, text), "choice selected", "choice");
     await refresh();
   };
 
@@ -313,7 +313,11 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   {narrativeChoices.map((choice) => (
                     <div key={`${choice.text}-${choice.index}`} className="choice-item">
                       <span>{choice.text}</span>
-                      <button className="btn btn-primary" onClick={() => onSelectChoice(choice.index)} disabled={Boolean(busyAction)}>
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => onSelectChoice(choice.index, choice.text)}
+                        disabled={Boolean(busyAction)}
+                      >
                         Choose
                       </button>
                     </div>
