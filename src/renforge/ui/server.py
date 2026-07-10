@@ -192,6 +192,30 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
             return JSONResponse({"ok": False, "error": "action is required"}, status_code=400)
         return JSONResponse(live.control(str(project_root), action))
 
+    async def launch(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        payload = _as_dict(await _read_json(request))
+        version = payload.get("version", "stable")
+        warp = payload.get("warp")
+        if not isinstance(version, str) or not version:
+            return JSONResponse({"ok": False, "error": "version must be a non-empty string"}, status_code=400)
+        if warp is not None and not isinstance(warp, str):
+            return JSONResponse({"ok": False, "error": "warp must be a string"}, status_code=400)
+        result = await asyncio.to_thread(
+            live.launch_game,
+            str(project_root),
+            version=version,
+            warp=warp,
+        )
+        return JSONResponse(result)
+
+    async def stop(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        result = await asyncio.to_thread(live.stop_game, str(project_root))
+        return JSONResponse(result)
+
     async def select_choice(request: Request):
         if not await _check_token(request):
             return _unauthorized()
@@ -281,6 +305,8 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/lint", lint, methods=["GET"]),
         Route("/api/advance", advance, methods=["POST"]),
         Route("/api/live/control", control, methods=["POST"]),
+        Route("/api/live/launch", launch, methods=["POST"]),
+        Route("/api/live/stop", stop, methods=["POST"]),
         Route("/api/select-choice", select_choice, methods=["POST"]),
         Route("/api/eval", eval_route, methods=["POST"]),
         Route("/api/set-var", set_var, methods=["POST"]),

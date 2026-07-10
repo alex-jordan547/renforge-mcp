@@ -54,9 +54,16 @@ def _fake_renpy(store):
     renpy.screenshot_to_bytes = lambda size: b"\x89PNG\r\n_fake_frame_"
     renpy.get_showing_tags = lambda: ["bg", "eileen"]
     renpy._queued_events = []
+    renpy._ran_actions = []
+    renpy._invoked = []
     renpy.exports = types.SimpleNamespace(
         queue_event=lambda name, **kw: renpy._queued_events.append(name)
     )
+    renpy.run = lambda action, *a, **k: renpy._ran_actions.append(action) or action
+    renpy.invoke_in_main_thread = lambda fn, *a, **k: renpy._invoked.append((fn, a, k)) or fn(*a, **k)
+    renpy.reload_script = lambda: renpy._invoked.append(("reload_script",))
+    renpy.restart_interaction = lambda: renpy._invoked.append(("restart_interaction",))
+    renpy.quit = lambda: renpy._invoked.append(("quit",))
 
     # Minimal focus + input system mirroring Ren'Py's runtime shape.
     focus_list = [
@@ -93,13 +100,31 @@ def running_bridge(tmp_path, monkeypatch):
     monkeypatch.setenv("RENFORGE_BRIDGE_PORT", "0")
 
     store = types.SimpleNamespace(score=7, player_name="Rin", _hidden="x")
+
+    class _QuickSave:
+        def __call__(self):
+            return ("QuickSave",)
+
+    class _QuickLoad:
+        def __call__(self, confirm=True):
+            return ("QuickLoad", confirm)
+
+    store.QuickSave = _QuickSave()
+    store.QuickLoad = _QuickLoad()
+
     renpy = _fake_renpy(store)
     renpy.config.basedir = str(tmp_path)
+
+    # Bridge keeps runtime state on a sys.modules entry so saves stay picklable.
+    import sys
+
+    sys.modules.pop("_renforge_runtime", None)
 
     globs = {"__name__": "bridge_rpy", "renpy": renpy}
     exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), globs)
 
-    bridge = globs["_RENFORGE_BRIDGE"]
+    runtime = sys.modules.get("_renforge_runtime")
+    bridge = getattr(runtime, "bridge", None)
     assert bridge is not None, "bridge did not start"
 
     # Stand in for Ren'Py's main thread: keep draining the request queue.
@@ -204,3 +229,29 @@ def test_select_choice_by_index_resolves_text(running_bridge):
 def test_select_choice_without_match_returns_error(running_bridge):
     reply = running_bridge.client.request("select_choice", {"text": "nope", "index": None})
     assert "error" in reply
+
+
+def test_control_maps_toggle_auto_to_toggle_afm(running_bridge):
+    reply = running_bridge.client.control("toggle_auto")
+    assert reply["ok"] is True
+    assert reply["event"] == "toggle_afm"
+    assert "toggle_afm" in running_bridge.renpy._queued_events
+
+
+def test_control_toggle_skip_queues_keymap_event(running_bridge):
+    reply = running_bridge.client.control("toggle_skip")
+    assert reply["ok"] is True
+    assert reply["event"] == "toggle_skip"
+    assert "toggle_skip" in running_bridge.renpy._queued_events
+
+
+def test_control_quick_save_runs_action(running_bridge):
+    reply = running_bridge.client.control("quick_save")
+    assert reply == {"ok": True, "action": "quick_save"}
+    assert ("QuickSave",) in running_bridge.renpy._ran_actions
+
+
+def test_control_quick_load_runs_action(running_bridge):
+    reply = running_bridge.client.control("quick_load")
+    assert reply == {"ok": True, "action": "quick_load"}
+    assert ("QuickLoad", False) in running_bridge.renpy._ran_actions

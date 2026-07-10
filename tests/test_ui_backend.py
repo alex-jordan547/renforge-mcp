@@ -175,6 +175,51 @@ def test_api_live_control_dispatches_runtime_action(tmp_path: Path, monkeypatch)
     assert calls == {"project_path": str(project), "action": "toggle_skip"}
 
 
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        return {"ok": True, "already_running": False, "current_label": "start"}
+
+    monkeypatch.setattr(server.live, "launch_game", fake_launch)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "already_running": False, "current_label": "start"}
+    assert calls == {"project_path": str(project), "version": "stable", "warp": None}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_stop_dispatches_runtime_stop(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_stop(project_path: str):
+        calls["project_path"] = project_path
+        return {"ok": True, "was_running": True}
+
+    monkeypatch.setattr(server.live, "stop_game", fake_stop)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post("/api/live/stop?token=token", json={})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "was_running": True}
+    assert calls == {"project_path": str(project)}
+
+
 def test_list_choices_filters_out_non_choice_screen_controls(monkeypatch, tmp_path) -> None:
     class FakeClient:
         def get_state(self):

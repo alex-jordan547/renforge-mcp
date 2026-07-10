@@ -6,12 +6,12 @@ default renforge_choice = ""
 default courage = 0
 default lantern = False
 
-# Skip the main menu and drop straight into the story. This overrides Ren'Py's
-# default main menu (see the `main_menu` label hook in 00start.rpy) so the demo
-# — and the RenForge bridge that drives it — starts playing immediately. The
-# save/load/preferences/quit screens are still reachable in-game via Escape.
+# Skip the main menu and drop straight into the story. Returning from this
+# label exits the menu context (see `_main_menu` in 00start.rpy); a plain
+# `jump start` would keep `_menu`/`main_menu` true and break skip/save/load.
+# Save/load/preferences/quit remain reachable in-game via Escape.
 label main_menu:
-    jump start
+    return
 
 label start:
     $ renforge_choice = ""

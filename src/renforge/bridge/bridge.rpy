@@ -25,9 +25,18 @@ init python:
     import os
     import queue
     import socket
+    import sys
     import threading
+    import types
 
-    _RENFORGE_BRIDGE = None
+    # Keep runtime state off renpy.store / rollback. `init python` top-level
+    # names become store fields; a Queue/lock inside the bridge is not picklable
+    # and would break QuickSave. A dedicated sys.modules entry is never saved.
+    if "_renforge_runtime" not in sys.modules:
+        sys.modules["_renforge_runtime"] = types.ModuleType("_renforge_runtime")
+    _renforge_runtime = sys.modules["_renforge_runtime"]
+    if not hasattr(_renforge_runtime, "bridge"):
+        _renforge_runtime.bridge = None
 
     class _RenforgeRequest(object):
         # NB: no __slots__ — Ren'Py forbids slotted classes in init python
@@ -100,8 +109,9 @@ init python:
             menu_active = renpy.get_screen("choice") is not None
         except Exception:
             menu_active = False
+        bridge = _renforge_runtime.bridge
         return {
-            "current_label": _RENFORGE_BRIDGE.current_label,
+            "current_label": bridge.current_label if bridge is not None else None,
             "showing_tags": showing,
             "menu": menu_active,
             "variables": _renforge_store_snapshot(),
@@ -138,29 +148,62 @@ init python:
         return {"ok": True}
 
     def _renforge_invoke(fn):
+        # Schedule work for the interaction loop. Prefer invoke_in_main_thread
+        # when already on the main thread would re-enter drain; callers that
+        # already run inside renforge_drain_bridge should call fn() directly
+        # unless the work must raise engine control-flow exceptions (load/quit).
         invoke = getattr(renpy, "invoke_in_main_thread", None)
         if callable(invoke):
             invoke(fn)
         else:
             fn()
 
+    def _renforge_run_action(action):
+        run = getattr(renpy, "run", None)
+        if not callable(run):
+            run = getattr(getattr(renpy, "exports", None), "run", None)
+        if not callable(run):
+            raise RuntimeError("renpy.run is unavailable")
+        return run(action)
+
     def _renforge_h_control(payload):
         payload = payload or {}
         action = str(payload.get("action", ""))
+        # Names that exist on config.keymap / the default Keymap underlay.
+        # Note: there is no "toggle_auto" or "quick_save"/"quick_load" keymap
+        # entry — those used to return ok while doing nothing.
         key_events = {
             "advance": "dismiss",
             "rollback": "rollback",
             "toggle_skip": "toggle_skip",
-            "toggle_auto": "toggle_auto",
+            "toggle_auto": "toggle_afm",
+            "toggle_afm": "toggle_afm",
             "game_menu": "game_menu",
             "hide_windows": "hide_windows",
-            "quick_save": "quick_save",
-            "quick_load": "quick_load",
         }
         if action in key_events:
             event_name = key_events[action]
             renpy.exports.queue_event(event_name)
             return {"ok": True, "action": action, "event": event_name}
+        if action == "quick_save":
+            quick_save = getattr(renpy.store, "QuickSave", None)
+            if not callable(quick_save):
+                return {"ok": False, "error": "QuickSave is unavailable", "action": action}
+            _renforge_run_action(quick_save())
+            return {"ok": True, "action": action}
+        if action == "quick_load":
+            quick_load = getattr(renpy.store, "QuickLoad", None)
+            if not callable(quick_load):
+                return {"ok": False, "error": "QuickLoad is unavailable", "action": action}
+            # Load raises FullRestartException; schedule it so the interaction
+            # loop can propagate engine control-flow instead of catching it here.
+            load_action = quick_load(confirm=False)
+
+            def _do_quick_load():
+                _renforge_run_action(load_action)
+
+            _renforge_invoke(_do_quick_load)
+            return {"ok": True, "action": action}
         if action == "reload_script":
             _renforge_invoke(renpy.reload_script)
             return {"ok": True, "action": action}
@@ -175,7 +218,9 @@ init python:
     def _renforge_h_poll_events(payload):
         payload = payload or {}
         since = int(payload.get("since", 0) or 0)
-        bridge = _RENFORGE_BRIDGE
+        bridge = _renforge_runtime.bridge
+        if bridge is None:
+            return {"events": [], "cursor": 0}
         events = [e for e in list(bridge.events) if e["seq"] > since]
         cursor = bridge.event_seq
         return {"events": events, "cursor": cursor}
@@ -268,7 +313,7 @@ init python:
 
     def renforge_drain_bridge():
         # Runs on the MAIN thread via config.periodic_callbacks.
-        bridge = _RENFORGE_BRIDGE
+        bridge = _renforge_runtime.bridge
         if bridge is None:
             return
         while True:
@@ -313,6 +358,7 @@ init python:
         try:
             server.bind((bridge.host, bridge.port))
             bridge.port = server.getsockname()[1]
+            # Plain int only — never hang the bridge object off the store.
             setattr(renpy.store, "renforge_bridge_port", bridge.port)
             _renforge_publish(bridge, bridge.port)
             server.listen(5)
@@ -350,8 +396,7 @@ init python:
             server.close()
 
     def renforge_start_bridge():
-        global _RENFORGE_BRIDGE
-        if _RENFORGE_BRIDGE is not None:
+        if getattr(_renforge_runtime, "bridge", None) is not None:
             return
 
         token = os.environ.get("RENFORGE_BRIDGE_TOKEN", "")
@@ -367,7 +412,7 @@ init python:
 
         basedir = getattr(renpy.config, "basedir", "") or os.getcwd()
         bridge = _RenforgeBridge(host, port, token, basedir)
-        _RENFORGE_BRIDGE = bridge
+        _renforge_runtime.bridge = bridge
 
         def _renforge_on_label(name, abnormal):
             bridge.current_label = name
