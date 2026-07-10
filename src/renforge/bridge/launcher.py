@@ -2,7 +2,7 @@
 
 Injects ``bridge.rpy`` into ``<project>/game/``, starts the game, waits for the
 bridge to publish ``<project>/.renforge/bridge.json``, and returns a connected
-:class:`~renforge.bridge.client.BridgeClient`. Closing the session terminates
+:class:`~renforge.bridge.client.BridgeClient`. Closing the session force-kills
 the game and removes the injected file.
 """
 
@@ -61,12 +61,8 @@ class BridgeSession:
 
     def close(self, timeout: float = 10.0) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+            self.process.kill()
+            self.process.wait(timeout=timeout)
         else:
             # Already exited: reap it so it does not linger as a zombie.
             self.process.wait()

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from renforge.bridge.launcher import launch_with_bridge, remove_bridge_artifacts
+from renforge.bridge.launcher import BridgeSession, launch_with_bridge, remove_bridge_artifacts
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
 
@@ -13,6 +13,8 @@ class _FakeProcess:
         self.stdout = None
         self.stderr = None
         self.terminated = False
+        self.killed = False
+        self.waited = False
 
     def poll(self):
         return self.returncode
@@ -21,8 +23,12 @@ class _FakeProcess:
         self.returncode = 0
         self.terminated = True
 
+    def kill(self):
+        self.returncode = -9
+        self.killed = True
+
     def wait(self, timeout: float | None = None):
-        self.terminated = True
+        self.waited = True
         self.returncode = 0
 
 
@@ -90,3 +96,13 @@ def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Pa
 
     # Idempotent: a second call on an already-clean tree does not raise.
     remove_bridge_artifacts(tmp_path)
+
+
+def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
+    process = _FakeProcess()
+    session = BridgeSession(process, _FakeClient(), tmp_path)
+
+    session.close()
+
+    assert process.killed is True
+    assert process.terminated is False

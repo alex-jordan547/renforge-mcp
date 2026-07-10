@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -143,29 +142,14 @@ def _stop_external(project_path: str) -> dict:
     return {"ok": True, "was_running": was_running}
 
 
-def _terminate_pid(pid: int, timeout: float = 10.0) -> bool:
-    """SIGTERM ``pid`` (then SIGKILL if it lingers). Returns whether it existed."""
+def _terminate_pid(pid: int) -> bool:
+    """Force-kill ``pid``. Returns whether it existed."""
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         return False
     except OSError:
         return False
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            os.kill(pid, 0)  # probe liveness without signalling
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return True
-        time.sleep(0.2)
-
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
     return True
 
 

@@ -260,3 +260,10 @@ def test_control_quick_load_runs_action(running_bridge):
     reply = running_bridge.client.control("quick_load")
     assert reply == {"ok": True, "action": "quick_load"}
     assert ("QuickLoad", False) in running_bridge.renpy._ran_actions
+
+
+def test_control_quit_uses_native_renpy_quit(running_bridge):
+    reply = running_bridge.client.control("quit")
+
+    assert reply == {"ok": True, "action": "quit"}
+    assert ("quit",) in running_bridge.renpy._invoked
