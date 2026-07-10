@@ -5,6 +5,7 @@ import base64
 import os
 from contextlib import asynccontextmanager
 import json
+import string
 import threading
 import webbrowser
 from pathlib import Path, PurePosixPath
@@ -68,12 +69,20 @@ def _is_renpy_project(path: Path) -> bool:
 
 
 def _project_browser_roots(project_root: Path) -> dict[str, tuple[str, Path]]:
-    candidates = (
+    candidates = [
         ("current-project", "Current project", project_root),
         ("project-parent", "Current project parent", project_root.parent),
         ("home", "Home", Path.home()),
-        ("windows-drives", "Windows drives", Path("/mnt")),
-    )
+    ]
+    if os.name == "nt":
+        candidates.extend(
+            (f"drive-{letter.lower()}", f"Drive {letter}:", Path(f"{letter}:\\"))
+            for letter in string.ascii_uppercase
+            if Path(f"{letter}:\\").is_dir()
+        )
+    else:
+        # Under WSL the Windows drives are mounted below /mnt.
+        candidates.append(("windows-drives", "Windows drives", Path("/mnt")))
     roots: dict[str, tuple[str, Path]] = {}
     seen: set[Path] = set()
     for root_id, label, path in candidates:
