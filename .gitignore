@@ -32,8 +32,10 @@ examples/demo_game/game/gui/**/*.png
 !examples/demo_game/game/gui/bubble.png
 !examples/demo_game/game/gui/thoughtbubble.png
 
-# Internal working docs (reviews, competitive analysis, plans) — keep private
-docs/
+# Internal working docs (reviews, competitive analysis, plans) — keep private.
+# The public MCP reference is versioned alongside the code.
+docs/*
+!docs/MCP.md
 
 # Ren'Py / RenForge runtime artifacts
 *.rpyc

@@ -75,6 +75,11 @@ On managed systems (Debian/Ubuntu), plain `pip install` is blocked by
 
 ## Use with your AI agent
 
+The complete operational reference is available in
+[docs/MCP.md](docs/MCP.md). This README keeps the installation examples below;
+the guide documents the full tool catalogue, safety guards, visual interaction,
+and troubleshooting.
+
 The MCP server command is the same everywhere:
 
 ```bash
