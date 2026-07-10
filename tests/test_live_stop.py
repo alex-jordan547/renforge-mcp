@@ -34,6 +34,11 @@ class _DeadClient:
         raise ConnectionRefusedError("no bridge")
 
 
+class _StateClient(_AliveClient):
+    def get_state(self) -> dict:
+        return {"current_label": "dashboard_scene"}
+
+
 def test_stop_game_without_bridge_is_noop(tmp_path: Path) -> None:
     project = _make_project(tmp_path, with_bridge=False)
     assert live.stop_game(str(project)) == {"ok": True, "was_running": False}
@@ -84,3 +89,26 @@ def test_stop_game_cleans_stale_bridge_without_killing(tmp_path: Path, monkeypat
     assert calls["terminated"] is False  # a dead bridge is never killed by PID
     assert not (project / ".renforge" / "bridge.json").exists()
     assert not (project / "game" / "renforge_bridge.rpy").exists()
+
+
+def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypatch) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, **_kwargs: _StateClient()),
+    )
+    monkeypatch.setattr(
+        live,
+        "get_or_install_sdk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not relaunch")),
+    )
+
+    result = live.launch_game(str(project))
+
+    assert result == {
+        "ok": True,
+        "already_running": True,
+        "external": True,
+        "current_label": "dashboard_scene",
+    }

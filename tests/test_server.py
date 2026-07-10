@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import io
+import json
 
 import pytest
 
@@ -7,13 +10,19 @@ from renforge.server import _FallbackServer, create_app
 EXPECTED_TOOLS = {
     # static
     "renforge_info",
+    "renforge_context",
     "renforge_inspect_project",
     "renforge_scan_project",
     "renforge_parse_lint",
+    "renforge_inspect_image",
+    "renforge_find_references",
     # live game control
     "renforge_launch",
+    "renforge_jump",
+    "renforge_new_game",
     "renforge_stop",
     "renforge_game_state",
+    "renforge_game_state_compact",
     "renforge_advance",
     "renforge_list_choices",
     "renforge_select_choice",
@@ -49,6 +58,8 @@ def test_create_app_registers_expected_tools() -> None:
     tools = asyncio.run(app.list_tools())
     names = {tool.name for tool in tools}
     assert EXPECTED_TOOLS <= names
+    instructions = getattr(app, "instructions", "") or ""
+    assert "renforge_info" in instructions or not hasattr(app, "instructions")
 
 
 def test_live_tools_error_cleanly_without_a_running_game(tmp_path) -> None:
@@ -63,6 +74,366 @@ def test_live_tools_error_cleanly_without_a_running_game(tmp_path) -> None:
     # An invalid project path is reported, not raised.
     launched = live.launch_game(str(tmp_path / "does-not-exist"))
     assert launched["ok"] is False
+
+
+def test_info_reports_the_project_selected_in_the_dashboard(tmp_path, monkeypatch) -> None:
+    fastmcp = pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.session_registry import publish_dashboard
+
+    monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "runtime"))
+    project = tmp_path / "game-project"
+    publish_dashboard(project, url="http://127.0.0.1:8765/")
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool("renforge_info", {})
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["active_project"] == str(project.resolve())
+    assert payload["dashboard"]["url"] == "http://127.0.0.1:8765/"
+
+
+def test_info_falls_back_to_the_server_default_project(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "empty-runtime"))
+    app = create_app()
+    app.project_root = tmp_path
+
+    async def _call():
+        async with Client(app) as client:
+            return await client.call_tool("renforge_info", {})
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["active_project"] == str(tmp_path.resolve())
+    assert payload["dashboard"] is None
+
+
+def test_scan_tool_accepts_bounded_queries(tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text(
+        "label start:\n    jump ending\nlabel ending:\n    return\n",
+        encoding="utf-8",
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_scan_project",
+                {
+                    "project_path": str(tmp_path),
+                    "sections": ["labels"],
+                    "symbol": "ending",
+                    "limit": 1,
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["labels"] == [{"file": "game/script.rpy", "line": 3, "name": "ending"}]
+    assert "jumps" not in payload
+
+
+def test_scan_tool_defaults_to_summary_only(tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_scan_project",
+                {"project_path": str(tmp_path)},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert set(payload) == {"summary", "pagination"}
+
+
+def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        return {"ok": True, "current_label": "chapter_two"}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_launch",
+                {"project_path": str(tmp_path), "warp": "game/script.rpy:42"},
+            )
+
+    result = asyncio.run(_call())
+    assert result.is_error is False
+    assert calls == {
+        "project_path": str(tmp_path),
+        "version": "stable",
+        "warp": "game/script.rpy:42",
+    }
+
+
+def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_dashboard_launch(project_path: str, *, version: str, warp: str | None):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        return {"ok": True, "via": "dashboard"}
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
+    monkeypatch.setattr(
+        live,
+        "launch_game",
+        lambda *_args, **_kwargs: pytest.fail("direct launch should not run"),
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_launch",
+                {"project_path": str(tmp_path), "warp": "game/script.rpy:42"},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload == {"ok": True, "via": "dashboard"}
+    assert calls == {
+        "project_path": str(tmp_path),
+        "version": "stable",
+        "warp": "game/script.rpy:42",
+    }
+
+
+def test_jump_tool_resolves_a_label_and_relaunches_at_it(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text(
+        "label start:\n    return\nlabel chapter_two:\n    return\n",
+        encoding="utf-8",
+    )
+    calls = {}
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        return {"ok": True, "current_label": "chapter_two"}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_jump",
+                {"project_path": str(tmp_path), "target": "chapter_two"},
+            )
+
+    result = asyncio.run(_call())
+    assert result.is_error is False
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["warp"].endswith("script.rpy:3")
+
+
+def test_new_game_tool_relaunches_a_fresh_process_at_start(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    calls = {}
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        return {"ok": True, "current_label": "start"}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_new_game",
+                {"project_path": str(tmp_path)},
+            )
+
+    result = asyncio.run(_call())
+    assert result.is_error is False
+    assert calls == {
+        "project_path": str(tmp_path),
+        "version": "stable",
+        "warp": "game/script.rpy:1",
+    }
+
+
+def test_inspect_image_crops_and_zooms_without_external_scripts(tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from fastmcp import Client
+
+    source = tmp_path / "mockup.png"
+    image = image_module.new("RGB", (100, 60), "red")
+    image.paste("blue", (50, 0, 100, 60))
+    image.save(source)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_inspect_image",
+                {
+                    "image_path": str(source),
+                    "crop_x": 50,
+                    "crop_y": 0,
+                    "crop_width": 50,
+                    "crop_height": 60,
+                    "scale": 2.0,
+                },
+            )
+
+    result = asyncio.run(_call())
+    block = next(block for block in result.content if block.type == "image")
+    cropped = image_module.open(io.BytesIO(base64.b64decode(block.data)))
+    assert cropped.size == (100, 120)
+    assert cropped.getpixel((50, 60))[:3] == (0, 0, 255)
+
+
+def test_screenshot_can_crop_and_zoom_the_live_frame(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    source = image_module.new("RGB", (100, 60), "red")
+    source.paste("blue", (50, 0, 100, 60))
+    encoded = io.BytesIO()
+    source.save(encoded, format="PNG")
+    calls = {}
+
+    def fake_screenshot(path: str, width: int = 0, height: int = 0) -> bytes:
+        calls.update(path=path, width=width, height=height)
+        return encoded.getvalue()
+
+    monkeypatch.setattr(live, "screenshot_png", fake_screenshot)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_screenshot",
+                {
+                    "project_path": str(tmp_path),
+                    "width": 100,
+                    "height": 60,
+                    "crop_x": 50,
+                    "crop_y": 0,
+                    "crop_width": 50,
+                    "crop_height": 60,
+                    "scale": 2.0,
+                },
+            )
+
+    result = asyncio.run(_call())
+    block = next(block for block in result.content if block.type == "image")
+    cropped = image_module.open(io.BytesIO(base64.b64decode(block.data)))
+    assert cropped.size == (100, 120)
+    assert calls == {"path": str(tmp_path), "width": 100, "height": 60}
+
+
+def test_find_references_tool_reports_unused_definitions(tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "ui.rpy").write_text(
+        'define DEAD_ICON = "images/dead.png"\n# DEAD_ICON\n',
+        encoding="utf-8",
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_find_references",
+                {"project_path": str(tmp_path), "symbol": "DEAD_ICON"},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["unused"] is True
+    assert payload["definition_count"] == 1
+    assert payload["reference_count"] == 0
+
+
+def test_game_state_preserves_full_state_and_compact_tool_can_select_variables(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    monkeypatch.setattr(
+        live,
+        "game_state",
+        lambda _path: {
+            "ok": True,
+            "current_label": "start",
+            "showing_tags": ["bg"],
+            "menu": False,
+            "variables": {"score": 7, "player_name": "Rin", "ICON_UNUSED": "x.png"},
+        },
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            full = await client.call_tool(
+                "renforge_game_state",
+                {"project_path": str(tmp_path)},
+            )
+            selected = await client.call_tool(
+                "renforge_game_state_compact",
+                {"project_path": str(tmp_path), "variable_names": ["score"]},
+            )
+            return full, selected
+
+    full_result, selected_result = asyncio.run(_call())
+    full = json.loads(next(block.text for block in full_result.content if block.type == "text"))
+    selected = json.loads(next(block.text for block in selected_result.content if block.type == "text"))
+    assert full["variables"] == {
+        "score": 7,
+        "player_name": "Rin",
+        "ICON_UNUSED": "x.png",
+    }
+    assert selected["variable_count"] == 3
+    assert selected["variables"] == {"score": 7}
 
 
 def test_screenshot_serializes_to_an_mcp_image_block(tmp_path, monkeypatch) -> None:

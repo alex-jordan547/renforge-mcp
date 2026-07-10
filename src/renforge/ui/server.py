@@ -20,6 +20,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .. import session_registry
 from ..tools import live
 from ..tools import project_ops
 from ..lint import run_lint
@@ -194,9 +195,17 @@ def _list_script_files(project_root: Path) -> dict[str, Any]:
 
 
 class _ProjectRuntime:
-    def __init__(self, project_root: Path, hub: WebSocketHub) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        hub: WebSocketHub,
+        dashboard_url: str | None = None,
+        dashboard_token: str | None = None,
+    ) -> None:
         self.root = project_root
         self.hub = hub
+        self.dashboard_url = dashboard_url
+        self.dashboard_token = dashboard_token
         self.generation = 0
         self._lock = asyncio.Lock()
         self._stop_event: asyncio.Event | None = None
@@ -204,6 +213,12 @@ class _ProjectRuntime:
 
     async def start(self) -> None:
         async with self._lock:
+            if self.dashboard_url is not None:
+                session_registry.publish_dashboard(
+                    self.root,
+                    url=self.dashboard_url,
+                    token=self.dashboard_token,
+                )
             self._start_feeds()
 
     def _start_feeds(self) -> None:
@@ -233,6 +248,8 @@ class _ProjectRuntime:
             await self._stop_feeds()
             self.root = target
             self.generation += 1
+            if self.dashboard_url is not None:
+                session_registry.publish_dashboard(self.root, token=self.dashboard_token)
             self._start_feeds()
 
         await self.hub.broadcast(
@@ -247,13 +264,15 @@ class _ProjectRuntime:
     async def shutdown(self) -> None:
         async with self._lock:
             await self._stop_feeds()
+            if self.dashboard_url is not None:
+                session_registry.clear_dashboard()
 
 
-def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
+def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None = None) -> Starlette:
     static_dir = Path(__file__).resolve().parent / "static"
     assets_dir = static_dir / "assets"
     hub = WebSocketHub()
-    runtime = _ProjectRuntime(project_root, hub)
+    runtime = _ProjectRuntime(project_root, hub, dashboard_url, ui_token)
 
     async def _check_token(request: Request) -> bool:
         return request.query_params.get("token") == ui_token
@@ -576,10 +595,10 @@ def run_ui_server(
 
     project_root = Path(project).expanduser().resolve()
     ui_token = token_urlsafe(16)
-    app = create_ui_app(project_root, ui_token)
-
     browser_host = "127.0.0.1" if host == "0.0.0.0" else ("[::1]" if host == "::" else host)
-    target = f"http://{browser_host}:{port}/?token={ui_token}"
+    dashboard_url = f"http://{browser_host}:{port}/"
+    target = f"{dashboard_url}?token={ui_token}"
+    app = create_ui_app(project_root, ui_token, dashboard_url=dashboard_url)
     print(f"RenForge dashboard: {target}", flush=True)
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(target)).start()

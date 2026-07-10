@@ -211,8 +211,10 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 `renforge serve` exposes the tools below to any MCP client. A subset:
 
 - `renforge_inspect_project`, `renforge_scan_project`, `renforge_parse_lint`
-- `renforge_launch`, `renforge_stop`
-- `renforge_game_state`, `renforge_advance`, `renforge_list_choices`,
+- `renforge_info`, `renforge_context` (discover the project selected in the dashboard)
+- `renforge_find_references`, `renforge_inspect_image`
+- `renforge_launch`, `renforge_jump`, `renforge_new_game`, `renforge_stop`
+- `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_list_choices`,
   `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
   `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
 - `renforge_autopilot`
@@ -221,11 +223,27 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_web_build`, `renforge_distribute`
 - `renforge_search_docs`, `renforge_get_doc`, `renforge_list_docs`
 
+Large-project calls are bounded at the tool boundary: `renforge_scan_project`
+accepts `sections`, `file_glob`, `symbol`, `offset`, and `limit`, while
+`renforge_game_state_compact` omits the full variable store unless
+`variable_names` or `variable_prefix` is requested. The original
+`renforge_game_state` remains backward compatible. `renforge_screenshot` and
+`renforge_inspect_image` accept crop coordinates plus `scale` for close visual
+inspection without a separate image-processing script.
+
 ### Live control
 
 `renforge_launch` injects a bridge into `<project>/game/` (removed on teardown)
-and starts the game. Live tools require a display — under WSLg it works
-directly; headless CI should wrap the call with `xvfb-run`.
+and starts the game. If the matching dashboard is running, MCP delegates launch
+to that process so it inherits the dashboard's display environment; otherwise
+it launches directly. Fully headless CI should wrap direct launches with
+`xvfb-run`.
+
+The dashboard publishes its selected project in a per-user local runtime
+registry. Agents can call `renforge_info` or `renforge_context` first instead of
+guessing the game path. `renforge_jump` resolves a label to `file:line` and
+restarts through Ren'Py's supported warp path; `renforge_new_game` starts a
+fresh process at the project's `start` label through that same path.
 
 ### Web dashboard
 
@@ -250,6 +268,11 @@ src/renforge/
     project_ops.py  # assets, translations, builds, docs
     static.py       # inspect / scan / parse-lint
   ui/               # Starlette dashboard (server, ws, graph, activity, poller)
+  dashboard_client.py # private display-bound delegation to the dashboard
+  image_ops.py       # local/live image crop and zoom primitives
+  navigation.py      # shared label and file:line warp resolution
+  session_registry.py # dashboard-to-MCP active-project discovery
+  symbols.py         # Ren'Py-aware token/reference lookup
   util/             # filesystem + subprocess helpers
   sdk.py            # Ren'Py SDK download/cache
   scanner.py        # script/label/asset scanning

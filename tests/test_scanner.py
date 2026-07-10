@@ -75,3 +75,51 @@ def test_scan_project_detects_demo_labels_jumps_and_menu(tmp_path: Path) -> None
     )
     assert any("target" in edge for edge in graph_edges)
     assert result["unresolved_targets"] == []
+
+
+def test_scan_project_resolves_local_and_dotted_labels(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "\n".join(
+            [
+                "label route.chapter:",
+                "    jump .detail",
+                "label .detail:",
+                "    return",
+                "label other:",
+                "    return",
+                "label .detail:",
+                "    return",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(project))
+
+    assert [item["name"] for item in result["labels"]] == [
+        "route.chapter",
+        "route.chapter.detail",
+        "other",
+        "other.detail",
+    ]
+    assert result["jumps"][0]["target"] == "route.chapter.detail"
+
+
+def test_scan_project_excludes_embedded_sdks_and_tools(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    embedded = tmp_path / "tools" / "renpy-sdk" / "launcher" / "game"
+    game.mkdir()
+    embedded.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (embedded / "script.rpy").write_text(
+        "label foreign_launcher_start:\n    return\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert [item["name"] for item in result["labels"]] == ["start"]
+    assert [item["file"] for item in result["files"]] == ["game/script.rpy"]

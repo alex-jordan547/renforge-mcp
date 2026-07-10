@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..dump import run_native_dump, normalize_definitions
+from ..navigation import resolve_warp_target
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
 from ..scanner import scan_project
@@ -89,41 +90,6 @@ def resolve_game_file_path(
         "path": f"game/{normalized}",
         "text": text,
     }
-
-
-def resolve_warp_target(project_root: str, target: str) -> dict[str, Any]:
-    value = (target or "").strip()
-    if not value:
-        return {"ok": False, "error": "target is required"}
-
-    if ":" in value:
-        file_part, _, line_part = value.rpartition(":")
-        if not file_part or not line_part.strip().isdigit():
-            return {"ok": False, "error": "invalid warp target; expected file:line"}
-        return {"ok": True, "target": f"{file_part}:{int(line_part.strip())}"}
-
-    story_map = build_story_map(project_root)
-    if not story_map.get("ok"):
-        return {"ok": False, "error": story_map.get("error") or "failed to build story map"}
-
-    for node in story_map.get("nodes", []):
-        if node.get("label") != value and node.get("id") != value:
-            continue
-        data = node.get("data", {})
-        file = data.get("file")
-        line = data.get("line")
-        if not file or not line:
-            return {
-                "ok": False,
-                "error": f"target '{value}' does not expose file and line",
-            }
-        try:
-            line_no = int(line)
-        except Exception:
-            return {"ok": False, "error": f"target '{value}' has non-numeric line: {line}"}
-        return {"ok": True, "target": f"{file}:{line_no}"}
-
-    return {"ok": False, "error": f"target '{value}' not found in story map"}
 
 
 def _story_map_signature(project_root: Path) -> tuple[tuple[Any, ...], tuple[int, int]]:

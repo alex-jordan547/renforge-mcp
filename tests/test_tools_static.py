@@ -31,6 +31,32 @@ def test_scan_project_index_returns_coherent_summary() -> None:
     assert summary["image_count"] == len(result["images"])
 
 
+def test_scan_project_can_select_filter_and_page_sections() -> None:
+    result = scan_project_index(
+        str(_demo_project_root()),
+        sections=["labels"],
+        file_glob="game/script.rpy",
+        symbol="start",
+        offset=0,
+        limit=1,
+    )
+
+    assert result["labels"] == [{"file": "game/script.rpy", "line": 16, "name": "start"}]
+    assert "variables" not in result
+    assert result["pagination"]["labels"] == {
+        "total": 1,
+        "offset": 0,
+        "limit": 1,
+        "returned": 1,
+    }
+
+
+def test_scan_project_can_return_summary_only() -> None:
+    result = scan_project_index(str(_demo_project_root()), sections=[])
+
+    assert set(result) == {"summary", "pagination"}
+
+
 def test_parse_lint_text_returns_count_and_diagnostics() -> None:
     result = parse_lint_text(
         "\n".join(

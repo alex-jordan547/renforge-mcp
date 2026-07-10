@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "renforge"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server, CLI, and web dashboard for Ren'Py visual-novel development"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
   "mcp>=1.0.0",
   "fastmcp>=2.0.0",
+  "pillow>=10.0.0",
 ]
 
 [project.urls]

@@ -117,11 +117,11 @@ def launch_with_bridge(
             time.sleep(0.3)
     except BaseException:
         process.terminate()
-        injected.unlink(missing_ok=True)
+        remove_bridge_artifacts(project.root)
         raise
 
     process.terminate()
-    injected.unlink(missing_ok=True)
+    remove_bridge_artifacts(project.root)
     raise TimeoutError(f"Bridge did not come up within {startup_timeout}s")
 
 

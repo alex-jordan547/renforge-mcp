@@ -5,7 +5,10 @@ import re
 from typing import Any, Dict, List
 
 
-LABEL_RE = re.compile(r"^\s*label\s+([A-Za-z_][\w]*)\s*:\s*(?:#.*)?$")
+LABEL_RE = re.compile(
+    r"^\s*label\s+((?:[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)|(?:\.[A-Za-z_][\w]*))"
+    r"\s*(?:\([^)]*\))?\s*:\s*(?:#.*)?$"
+)
 JUMP_RE = re.compile(r"^\s*jump\s+(.+?)\s*(?:#.*)?$")
 CALL_RE = re.compile(r"^\s*call\s+(.+?)\s*(?:#.*)?$")
 MENU_RE = re.compile(r"^\s*menu\b(.*):\s*(?:#.*)?$")
@@ -22,7 +25,7 @@ IMAGE_LINE_RE = re.compile(r"^\s*image\s+(.+?)\s*=\s*(.+?)\s*(?:#.*)?$")
 
 
 def _is_static_target(value: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z_][\w]*(?:[./-][A-Za-z_][\w]*)*", value))
+    return bool(re.fullmatch(r"(?:\.)?[A-Za-z_][\w]*(?:[./-][A-Za-z_][\w]*)*", value))
 
 
 def _indent(line: str) -> int:
@@ -70,7 +73,11 @@ def scan_project(project_path: str) -> Dict[str, Any]:
     if not os.path.isdir(project_root):
         return result
 
-    for root, _dirs, filenames in os.walk(project_root):
+    game_root = os.path.join(project_root, "game")
+    if not os.path.isdir(game_root):
+        return result
+
+    for root, _dirs, filenames in os.walk(game_root):
         for fname in sorted(filenames):
             if not fname.endswith(".rpy"):
                 continue
@@ -88,6 +95,7 @@ def scan_project(project_path: str) -> Dict[str, Any]:
             result["files"].append({"file": rel_file, "line_count": len(lines)})
 
             current_label = None
+            current_global_label = None
 
             current_menu: Dict[str, Any] | None = None
             menu_indent = 0
@@ -104,8 +112,15 @@ def scan_project(project_path: str) -> Dict[str, Any]:
 
                 match = LABEL_RE.match(line)
                 if match:
-                    _append_item(result["labels"], rel_file, idx, name=match.group(1))
-                    current_label = match.group(1)
+                    declared_name = match.group(1)
+                    if declared_name.startswith(".") and current_global_label:
+                        label_name = current_global_label + declared_name
+                    else:
+                        label_name = declared_name
+                        if not declared_name.startswith("."):
+                            current_global_label = declared_name
+                    _append_item(result["labels"], rel_file, idx, name=label_name)
+                    current_label = label_name
                     continue
 
                 default_match = DEFAULT_RE.match(line)
@@ -133,6 +148,8 @@ def scan_project(project_path: str) -> Dict[str, Any]:
                 match = JUMP_RE.match(line)
                 if match:
                     target = match.group(1).strip()
+                    if target.startswith(".") and current_global_label:
+                        target = current_global_label + target
                     item_fields = {"target": target}
                     if current_label is not None:
                         item_fields["source"] = current_label
@@ -157,6 +174,8 @@ def scan_project(project_path: str) -> Dict[str, Any]:
                 match = CALL_RE.match(line)
                 if match:
                     target = match.group(1).strip()
+                    if target.startswith(".") and current_global_label:
+                        target = current_global_label + target
                     item_fields = {"target": target}
                     if current_label is not None:
                         item_fields["source"] = current_label

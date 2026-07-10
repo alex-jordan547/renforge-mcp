@@ -76,6 +76,23 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
             pass
         _SESSIONS.pop(key, None)
 
+    if warp is None:
+        try:
+            external = _client(project.root)
+            state = external.get_state()
+            return {
+                "ok": True,
+                "already_running": True,
+                "external": True,
+                "current_label": state.get("current_label"),
+            }
+        except Exception:
+            pass
+    else:
+        # A dashboard or another MCP process may own the live session. A warp
+        # needs a single fresh process, so stop that external session first.
+        _stop_external(str(project.root))
+
     try:
         sdk = get_or_install_sdk(version)
         launch_kwargs: dict[str, object] = {}

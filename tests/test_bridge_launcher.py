@@ -106,3 +106,26 @@ def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
 
     assert process.killed is True
     assert process.terminated is False
+
+
+def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
+    project, sdk, root = _make_project(tmp_path)
+
+    def fake_popen(*_args, **_kwargs):
+        process = _FakeProcess()
+        process.returncode = 1
+        (root / "game" / "renforge_bridge.rpyc").write_bytes(b"compiled")
+        (root / ".renforge").mkdir(exist_ok=True)
+        (root / ".renforge" / "bridge.json").write_text("{}", encoding="utf-8")
+        (root / "traceback.txt").write_text("no display", encoding="utf-8")
+        return process
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="Game exited"):
+        launch_with_bridge(sdk, project)
+
+    assert not (root / "game" / "renforge_bridge.rpy").exists()
+    assert not (root / "game" / "renforge_bridge.rpyc").exists()
+    assert not (root / ".renforge" / "bridge.json").exists()
+    assert not (root / "traceback.txt").exists()

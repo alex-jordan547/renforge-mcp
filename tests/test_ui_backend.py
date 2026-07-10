@@ -66,20 +66,23 @@ def test_resolve_warp_target_prefers_file_spec() -> None:
     assert result["target"] == "script.rpy:123"
 
 
-def test_resolve_warp_target_uses_story_map_label(monkeypatch) -> None:
-    story_map = {
-        "ok": True,
-        "nodes": [
-            {
-                "label": "start",
-                "data": {"file": "script.rpy", "line": 42},
-            }
-        ],
-    }
-    monkeypatch.setattr(graph, "build_story_map", lambda _project_root: story_map)
-    result = graph.resolve_warp_target("/tmp", "start")
+def test_resolve_warp_target_uses_project_label(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    result = graph.resolve_warp_target(str(project), "start")
     assert result["ok"] is True
-    assert result["target"] == "script.rpy:42"
+    assert result["target"] == "game/script.rpy:1"
+
+
+def test_resolve_warp_target_supports_unique_local_label(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    (project / "game" / "script.rpy").write_text(
+        "label chapter:\n    return\nlabel .detail:\n    return\n",
+        encoding="utf-8",
+    )
+
+    result = graph.resolve_warp_target(str(project), ".detail")
+
+    assert result == {"ok": True, "target": "game/script.rpy:3"}
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
