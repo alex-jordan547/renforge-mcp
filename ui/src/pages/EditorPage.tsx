@@ -45,6 +45,103 @@ function highlightLine(line: string) {
   return highlightCode(line);
 }
 
+interface DirNode {
+  name: string;
+  path: string;
+  dirs: DirNode[];
+  files: { name: string; path: string }[];
+}
+
+function buildTree(paths: string[]): DirNode {
+  const root: DirNode = { name: "game", path: "game", dirs: [], files: [] };
+  const dirMap = new Map<string, DirNode>([["game", root]]);
+  for (const full of paths) {
+    const parts = full.split("/");
+    if (parts[0] !== "game" || parts.length < 2) {
+      continue;
+    }
+    let parentPath = "game";
+    for (let i = 1; i < parts.length - 1; i += 1) {
+      const dirPath = `${parentPath}/${parts[i]}`;
+      let node = dirMap.get(dirPath);
+      if (!node) {
+        node = { name: parts[i], path: dirPath, dirs: [], files: [] };
+        dirMap.get(parentPath)?.dirs.push(node);
+        dirMap.set(dirPath, node);
+      }
+      parentPath = dirPath;
+    }
+    dirMap.get(parentPath)?.files.push({ name: parts[parts.length - 1], path: full });
+  }
+  return root;
+}
+
+function TreeFolder({
+  node,
+  depth,
+  collapsed,
+  onToggle,
+  activePath,
+  onOpen,
+}: {
+  node: DirNode;
+  depth: number;
+  collapsed: Set<string>;
+  onToggle: (path: string) => void;
+  activePath: string;
+  onOpen: (path: string) => void;
+}) {
+  const isCollapsed = collapsed.has(node.path);
+  return (
+    <div>
+      <button
+        type="button"
+        className="tree-row tree-folder"
+        style={{ paddingLeft: `${depth * 14 + 10}px` }}
+        onClick={() => onToggle(node.path)}
+        aria-expanded={!isCollapsed}
+      >
+        <svg className={`tree-chevron ${isCollapsed ? "" : "open"}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 7h6l2 2h10v10H3z" />
+        </svg>
+        {node.name}
+      </button>
+      {!isCollapsed && (
+        <>
+          {node.dirs.map((dir) => (
+            <TreeFolder
+              key={dir.path}
+              node={dir}
+              depth={depth + 1}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              activePath={activePath}
+              onOpen={onOpen}
+            />
+          ))}
+          {node.files.map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              className={`tree-row tree-file ${activePath === entry.path ? "on" : ""}`}
+              style={{ paddingLeft: `${(depth + 1) * 14 + 10}px` }}
+              onClick={() => onOpen(entry.path)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 3h9l3 3v15H6z" />
+              </svg>
+              {entry.name}
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function EditorPage() {
   const [pathInput, setPathInput] = useState(DEFAULT_PATH);
   const [activePath, setActivePath] = useState(DEFAULT_PATH);
@@ -53,6 +150,39 @@ export function EditorPage() {
   const [error, setError] = useState<string | null>(null);
   const codeRef = useRef<HTMLDivElement | null>(null);
   const [scrollbar, setScrollbar] = useState({ visible: false, top: 8, height: 40 });
+  const [scriptFiles, setScriptFiles] = useState<string[]>([]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let mounted = true;
+    api.fetchScriptFiles()
+      .then((response) => {
+        if (mounted && response.ok) {
+          setScriptFiles(response.files);
+        }
+      })
+      .catch((err) => console.error("Failed to list project scripts", err));
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleToggleFolder = (path: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const handleOpenFile = (path: string) => {
+    setPathInput(path);
+    setActivePath(path);
+  };
 
   const updateScrollbar = useCallback(() => {
     const code = codeRef.current;
@@ -181,10 +311,26 @@ export function EditorPage() {
           <rect x="5" y="11" width="14" height="9" rx="2" />
           <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </svg>
-        Read a file under <code>game/</code>. This is intentionally not a project tree or code editor.
+        Read-only view of the project&apos;s scripts. Pick a file on the left or type a path under <code>game/</code>.
       </div>
 
-      <section className="editor reveal in" style={{ animationDelay: ".10s" }}>
+      <div className="ed-cols reveal in" style={{ animationDelay: ".10s" }}>
+        <aside className="tree" aria-label="Project scripts">
+          {scriptFiles.length === 0 ? (
+            <div className="tree-empty">No .rpy files found.</div>
+          ) : (
+            <TreeFolder
+              node={buildTree(scriptFiles)}
+              depth={0}
+              collapsed={collapsed}
+              onToggle={handleToggleFolder}
+              activePath={activePath}
+              onOpen={handleOpenFile}
+            />
+          )}
+        </aside>
+
+        <section className="editor">
           <div className="ed-tabbar">
             <span className="ed-tab">
               {activePath}
@@ -227,7 +373,8 @@ export function EditorPage() {
               )}
             </div>
           )}
-      </section>
+        </section>
+      </div>
     </div>
   );
 }

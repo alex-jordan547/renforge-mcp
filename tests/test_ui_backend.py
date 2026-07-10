@@ -104,6 +104,22 @@ def test_api_file_is_restricted_to_game_directory(tmp_path: Path) -> None:
     assert "inside game" in str(data["error"]).lower()
 
 
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_files_lists_game_scripts_recursively(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    game = project / "game"
+    (game / "tl" / "french").mkdir(parents=True)
+    (game / "tl" / "french" / "script.rpy").write_text("# tl\n", encoding="utf-8")
+    (game / "notes.txt").write_text("not a script\n", encoding="utf-8")
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/api/files?token=token")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["files"] == ["game/script.rpy", "game/tl/french/script.rpy"]
+
+
 def test_api_screenshot_handles_missing_bridge_as_json_error(tmp_path: Path, monkeypatch) -> None:
     if TestClient is None:
         pytest.skip("starlette not installed")

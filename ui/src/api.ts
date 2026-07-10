@@ -653,6 +653,10 @@ export const api = {
     };
   },
 
+  async fetchScriptFiles(): Promise<{ ok: boolean; files: string[] }> {
+    return apiGet<{ ok: boolean; files: string[] }>("/api/files");
+  },
+
   async fetchFile(path: string): Promise<FileContent> {
     const response = await apiGet<unknown>(
       `/api/file?path=${encodeURIComponent(path)}`,

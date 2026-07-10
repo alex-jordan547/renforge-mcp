@@ -178,6 +178,21 @@ def _browse_project_directories(project_root: Path, root_id: str | None, raw_pat
     }
 
 
+def _list_script_files(project_root: Path) -> dict[str, Any]:
+    game_root = project_root / "game"
+    if not game_root.is_dir():
+        return {"ok": True, "files": []}
+    try:
+        files = sorted(
+            "game/" + path.relative_to(game_root).as_posix()
+            for path in game_root.rglob("*.rpy")
+            if path.is_file()
+        )
+    except OSError:
+        return {"ok": False, "error": "could not list project scripts", "files": []}
+    return {"ok": True, "files": files}
+
+
 class _ProjectRuntime:
     def __init__(self, project_root: Path, hub: WebSocketHub) -> None:
         self.root = project_root
@@ -352,6 +367,11 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         status = 200 if result.get("ok") else 400
         return JSONResponse(result, status_code=status)
 
+    async def files(request: Request):
+        if not await _check_token(request):
+            return _unauthorized()
+        return JSONResponse(await asyncio.to_thread(_list_script_files, runtime.root))
+
     async def lint(request: Request):
         if not await _check_token(request):
             return _unauthorized()
@@ -512,6 +532,7 @@ def create_ui_app(project_root: Path, ui_token: str) -> Starlette:
         Route("/api/translation-stats", translation_stats, methods=["GET"]),
         Route("/api/translation-strings", translation_strings, methods=["GET"]),
         Route("/api/file", file, methods=["GET"]),
+        Route("/api/files", files, methods=["GET"]),
         Route("/api/lint", lint, methods=["GET"]),
         Route("/api/advance", advance, methods=["POST"]),
         Route("/api/live/control", control, methods=["POST"]),
