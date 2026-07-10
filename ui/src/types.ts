@@ -98,10 +98,13 @@ export interface SocketActivityMessage {
   tool?: string;
   name?: string;
   category?: string;
+  ts?: number;
+  ok?: boolean;
   duration_ms?: number;
   params?: Record<string, unknown>;
   result?: unknown;
   files?: string[];
+  files_touched?: string[];
   timestamp?: string | number;
 }
 

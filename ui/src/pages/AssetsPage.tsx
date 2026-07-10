@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { AssetsResponse } from "../types";
 
+type AssetStat = "files" | "orphans" | "missing" | "undef";
+
 function toArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -21,7 +23,7 @@ export function AssetsPage() {
   const [assets, setAssets] = useState<AssetsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedStat, setSelectedStat] = useState<"files" | "orphans" | "missing" | "undef">("files");
+  const [selectedStat, setSelectedStat] = useState<AssetStat>("files");
   const [fileFilter, setFileFilter] = useState<"all" | "image" | "audio" | "video">("all");
 
   useEffect(() => {
@@ -80,6 +82,16 @@ export function AssetsPage() {
     return "70px"; // rightCardsCount === 3
   }, [rightCardsCount]);
 
+  const selectStat = (stat: AssetStat) => {
+    setSelectedStat(stat);
+    if (stat === "files") {
+      setFileFilter("all");
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(`assets-${stat}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  };
+
   if (loading) {
     return (
       <div className="wrap">
@@ -112,38 +124,48 @@ export function AssetsPage() {
       </div>
 
       <div className="stat-grid reveal in" style={{ animationDelay: ".05s" }}>
-        <div
+        <button
+          type="button"
           className={`stat accent ${selectedStat === "files" ? "sel" : ""}`}
-          onClick={() => setSelectedStat("files")}
+          aria-pressed={selectedStat === "files"}
+          onClick={() => selectStat("files")}
         >
-          <div className="lbl">Project files</div>
-          <div className="num">{assetFiles.length}</div>
-        </div>
-        <div
+          <span className="lbl">Project files</span>
+          <span className="num">{assetFiles.length}</span>
+        </button>
+        <button
+          type="button"
           className={`stat warn ${selectedStat === "orphans" ? "sel" : ""}`}
-          onClick={() => setSelectedStat("orphans")}
+          aria-pressed={selectedStat === "orphans"}
+          onClick={() => selectStat("orphans")}
         >
-          <div className="lbl">Orphans</div>
-          <div className="num">{orphans.length}</div>
-        </div>
-        <div
+          <span className="lbl">Orphans</span>
+          <span className="num">{orphans.length}</span>
+        </button>
+        <button
+          type="button"
           className={`stat danger ${selectedStat === "missing" ? "sel" : ""}`}
-          onClick={() => setSelectedStat("missing")}
+          aria-pressed={selectedStat === "missing"}
+          onClick={() => selectStat("missing")}
+          disabled={missingFiles.length === 0}
         >
-          <div className="lbl">Missing files</div>
-          <div className="num">{missingFiles.length}</div>
-        </div>
-        <div
+          <span className="lbl">Missing files</span>
+          <span className="num">{missingFiles.length}</span>
+        </button>
+        <button
+          type="button"
           className={`stat ${selectedStat === "undef" ? "sel" : ""}`}
-          onClick={() => setSelectedStat("undef")}
+          aria-pressed={selectedStat === "undef"}
+          onClick={() => selectStat("undef")}
+          disabled={undefinedImages.length === 0}
         >
-          <div className="lbl">Undefined images</div>
-          <div className="num">{undefinedImages.length}</div>
-        </div>
+          <span className="lbl">Undefined images</span>
+          <span className="num">{undefinedImages.length}</span>
+        </button>
       </div>
 
       <div className="cols">
-        <section className="card reveal in" style={{ animationDelay: ".10s" }}>
+        <section id="assets-files" className={`card reveal in ${selectedStat === "files" ? "asset-focus" : ""}`} style={{ animationDelay: ".10s" }}>
           <div className="card-head">
             <h3>Project files</h3>
             <span className="badge info">{assetFiles.length}</span>
@@ -223,7 +245,7 @@ export function AssetsPage() {
         </section>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <section className="card reveal in" style={{ animationDelay: ".15s" }}>
+          <section id="assets-orphans" className={`card reveal in ${selectedStat === "orphans" ? "asset-focus" : ""}`} style={{ animationDelay: ".15s" }}>
             <div className="card-head">
               <h3>Orphans</h3>
               <span className="badge warn">{orphans.length}</span>
@@ -244,7 +266,7 @@ export function AssetsPage() {
           </section>
 
           {missingFiles.length > 0 && (
-            <section className="card reveal in" style={{ animationDelay: ".20s" }}>
+            <section id="assets-missing" className={`card reveal in ${selectedStat === "missing" ? "asset-focus" : ""}`} style={{ animationDelay: ".20s" }}>
               <div className="card-head">
                 <h3>Missing files</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
@@ -275,7 +297,7 @@ export function AssetsPage() {
           )}
 
           {undefinedImages.length > 0 && (
-            <section className="card reveal in" style={{ animationDelay: ".25s" }}>
+            <section id="assets-undef" className={`card reveal in ${selectedStat === "undef" ? "asset-focus" : ""}`} style={{ animationDelay: ".25s" }}>
               <div className="card-head">
                 <h3>Undefined images</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>

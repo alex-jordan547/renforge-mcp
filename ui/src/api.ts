@@ -425,16 +425,18 @@ export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: st
 
     const tool = String(activity.tool ?? activity.name ?? "activity");
     const category = String(activity.category ?? "tool");
-    const details = `Tool: ${tool} • Duration: ${String(activity.duration_ms ?? "n/a")}ms`;
+    const result = safeRecord(activity.result);
+    const failed = activity.ok === false || typeof result?.error === "string";
+    const details = `${failed ? "Failed" : "Completed"} ${tool} • ${String(activity.duration_ms ?? "n/a")}ms`;
     return {
       id: makeTimelineId(["activity", normalizedTimestamp, tool, category, activity, fallbackId]),
       source: "activity",
       timestamp: normalizedTimestamp,
       type: category,
-      title: String(activity.name ?? "Tool call"),
+      title: tool,
       details,
       payload: activity,
-      level: "info",
+      level: failed ? "error" : "info",
     };
   }
 

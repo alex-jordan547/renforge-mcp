@@ -4,7 +4,6 @@ import { api, getToken, normalizeTimelineEntries, socketMessageToTimeline } from
 import type { LiveScreenshot, LiveState, SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { AssetsPage } from "./pages/AssetsPage";
-import { DebuggerPage } from "./pages/DebuggerPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { EditorPage } from "./pages/EditorPage";
 import { LivePage } from "./pages/LivePage";
@@ -19,8 +18,7 @@ const SECTIONS = [
   { id: "assets", label: "Assets" },
   { id: "translation", label: "Translation" },
   { id: "diagnostics", label: "Diagnostics" },
-  { id: "editor", label: "Editor" },
-  { id: "debugger", label: "Debugger" },
+  { id: "editor", label: "Script Reader" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -203,37 +201,6 @@ export function App() {
     }
   }, []);
 
-  const handleAdvance = useCallback(async () => {
-    try {
-      await api.advance();
-      setTimelineEvents((prev) => {
-        const item: TimelineItem = {
-          id: `${Date.now()}-advance`,
-          source: "ui",
-          timestamp: new Date().toISOString(),
-          type: "ui",
-          title: "Advance",
-          details: "Requested story advancement from Command Center",
-          level: "info",
-        };
-        return [item, ...prev].slice(0, 250);
-      });
-    } catch (error) {
-      setTimelineEvents((prev) => {
-        const item: TimelineItem = {
-          id: `${Date.now()}-advance-fail`,
-          source: "ui",
-          timestamp: new Date().toISOString(),
-          type: "ui",
-          title: "Advance Failed",
-          details: error instanceof Error ? error.message : "Advance failed",
-          level: "error",
-        };
-        return [item, ...prev].slice(0, 250);
-      });
-    }
-  }, []);
-
   const stats = useMemo(
     () => ({
       socket: ws.connected ? "connected" : ws.connecting ? "connecting" : "offline",
@@ -268,8 +235,6 @@ export function App() {
         return <DiagnosticsPage />;
       case "editor":
         return <EditorPage />;
-      case "debugger":
-        return <DebuggerPage />;
       default:
         return <StoryMapPage data={storyMap} loading={storyMapLoading} error={storyMapError} onJump={handleJump} currentLabel={liveState?.current_label ?? null} />;
     }
@@ -282,8 +247,7 @@ export function App() {
     assets: ["Assets", "Inventory of the Ren'Py project"],
     translation: ["Translation", "Translation progress per language"],
     diagnostics: ["Diagnostics", "Lint report and static checks"],
-    editor: ["Editor", "Script reading, project scope"],
-    debugger: ["Debugger", "Runtime control via bridge"],
+    editor: ["Script Reader", "Read-only project source"],
   };
 
   const SECTION_ICONS: Record<SectionId, ReactNode> = {
@@ -331,12 +295,6 @@ export function App() {
         <path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14" />
       </svg>
     ),
-    debugger: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="8" y="6" width="8" height="12" rx="4" />
-        <path d="M12 4v2M4 9h4M4 15h4M16 9h4M16 15h4M4 12h2M18 12h2" />
-      </svg>
-    ),
   };
 
   const [titleText, subText] = SECTION_TITLES[activeSection];
@@ -371,7 +329,7 @@ export function App() {
             </button>
           ))}
 
-          <div className="nav-label">Control</div>
+          <div className="nav-label">Project</div>
           {SECTIONS.slice(5).map((item) => (
             <button
               key={item.id}
@@ -440,34 +398,6 @@ export function App() {
                 <span className="v">{liveState?.current_label || "—"}</span>
               </span>
             </div>
-
-            <form
-              className="warp"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const formData = new FormData(e.currentTarget);
-                const target = formData.get("warpTarget") as string;
-                if (target?.trim()) {
-                  handleJump(target.trim());
-                  e.currentTarget.reset();
-                }
-              }}
-            >
-              <input
-                name="warpTarget"
-                placeholder="Jump to label…"
-                aria-label="Jump to label"
-                type="text"
-              />
-              <button type="submit">Warp</button>
-            </form>
-
-            <button className="btn btn-primary" type="button" onClick={handleAdvance}>
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              Advance
-            </button>
 
             <button
               className="theme-toggle"

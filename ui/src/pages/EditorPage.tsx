@@ -4,13 +4,6 @@ import type { FileContent } from "../types";
 
 const DEFAULT_PATH = "game/script.rpy";
 
-const TREE_FILES = [
-  { path: "game/script.rpy", name: "script.rpy", isDir: false, indent: true },
-  { path: "game/gui.rpy", name: "gui.rpy", isDir: false, indent: true },
-  { path: "game/screens.rpy", name: "screens.rpy", isDir: false, indent: true },
-  { path: "game/tl/french/script.rpy", name: "script.rpy", isDir: false, indent: true, prefix: "tl / french" },
-];
-
 function highlightCode(code: string): ReactNode[] {
   const tokens: ReactNode[] = [];
   const regex = /(#[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(?:define|default|label|jump|menu|show|scene|play|stop|pass|return|init|python|if|else|elif)\b|\b[A-Z][a-zA-Z0-9_]*(?=\()|\b[a-zA-Z0-9_]+\b)/g;
@@ -134,11 +127,6 @@ export function EditorPage() {
     setActivePath(pathInput.trim());
   };
 
-  const handleTreeClick = (path: string) => {
-    setPathInput(path);
-    setActivePath(path);
-  };
-
   const codeLines = file?.content ? file.content.split("\n") : ["Content unavailable."];
 
   const handleScrollbarPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -171,7 +159,7 @@ export function EditorPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Editor</h2>
+        <h2>Script Reader</h2>
         <span className="hint">read-only · backend project scope</span>
       </div>
 
@@ -193,57 +181,10 @@ export function EditorPage() {
           <rect x="5" y="11" width="14" height="9" rx="2" />
           <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </svg>
-        The backend limits access to project files. The current path is read-only.
+        Read a file under <code>game/</code>. This is intentionally not a project tree or code editor.
       </div>
 
-      <div className="ed-cols">
-        <aside className="card reveal in" style={{ animationDelay: ".10s" }}>
-          <div className="card-body">
-            <div className="tree">
-              <div className="row" onClick={() => handleTreeClick("game/script.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M3 7h6l2 2h10v10H3z" />
-                </svg>
-                game
-              </div>
-              <div className={`row indent ${activePath === "game/script.rpy" ? "on" : ""}`} onClick={() => handleTreeClick("game/script.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 3h9l3 3v15H6z" />
-                </svg>
-                script.rpy
-              </div>
-              <div className={`row indent ${activePath === "game/gui.rpy" ? "on" : ""}`} onClick={() => handleTreeClick("game/gui.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 3h9l3 3v15H6z" />
-                </svg>
-                gui.rpy
-              </div>
-              <div className={`row indent ${activePath === "game/screens.rpy" ? "on" : ""}`} onClick={() => handleTreeClick("game/screens.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 3h9l3 3v15H6z" />
-                </svg>
-                screens.rpy
-              </div>
-              
-              <div style={{ marginTop: "8px" }} />
-              
-              <div className="row" onClick={() => handleTreeClick("game/tl/french/script.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M3 7h6l2 2h10v10H3z" />
-                </svg>
-                tl / french
-              </div>
-              <div className={`row indent ${activePath === "game/tl/french/script.rpy" ? "on" : ""}`} onClick={() => handleTreeClick("game/tl/french/script.rpy")}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 3h9l3 3v15H6z" />
-                </svg>
-                script.rpy
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        <section className="editor reveal in" style={{ animationDelay: ".14s" }}>
+      <section className="editor reveal in" style={{ animationDelay: ".10s" }}>
           <div className="ed-tabbar">
             <span className="ed-tab">
               {activePath}
@@ -286,8 +227,7 @@ export function EditorPage() {
               )}
             </div>
           )}
-        </section>
-      </div>
+      </section>
     </div>
   );
 }

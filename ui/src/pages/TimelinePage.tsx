@@ -22,10 +22,34 @@ function timeAgo(timestamp: string): string {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function formatPayload(value: unknown): string {
+  if (value === undefined) {
+    return "None";
+  }
+  try {
+    const text = JSON.stringify(value, null, 2) ?? String(value);
+    return text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text;
+  } catch {
+    return String(value);
+  }
+}
+
+function activityFiles(payload: Record<string, unknown>): string[] {
+  const raw = payload.files_touched ?? payload.files;
+  return Array.isArray(raw) ? raw.filter((file): file is string => typeof file === "string") : [];
+}
+
 export function TimelinePage({ items }: TimelinePageProps) {
   const [search, setSearch] = useState("");
   const [showBridge, setShowBridge] = useState(true);
   const [showActivity, setShowActivity] = useState(true);
+  const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   const sources = useMemo(
     () => ({
@@ -38,7 +62,7 @@ export function TimelinePage({ items }: TimelinePageProps) {
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return items.filter((item) => {
-      const matchText = `${item.type} ${item.title} ${item.details}`.toLowerCase();
+      const matchText = `${item.type} ${item.title} ${item.details} ${JSON.stringify(item.payload ?? "")}`.toLowerCase();
       if (term && !matchText.includes(term)) {
         return false;
       }
@@ -92,23 +116,15 @@ export function TimelinePage({ items }: TimelinePageProps) {
           {filtered.map((item, index) => {
             const delay = `${Math.min(0.3, 0.08 + index * 0.04)}s`;
             
-            // Format details to match mockup if duration is present
-            let detailNode = <>{item.details}</>;
-            if (item.source === "activity" && item.payload && typeof item.payload === "object") {
-              const payload = item.payload as Record<string, unknown>;
-              if (payload.tool || payload.duration_ms) {
-                detailNode = (
-                  <>
-                    Tool <b>{String(payload.tool ?? payload.name ?? "activity")}</b> · Duration <b>{String(payload.duration_ms ?? "n/a")} ms</b>
-                  </>
-                );
-              }
-            }
+            const payload = item.source === "activity" ? asRecord(item.payload) : null;
+            const files = payload ? activityFiles(payload) : [];
+            const failed = item.level === "error" || payload?.ok === false || typeof asRecord(payload?.result)?.error === "string";
+            const expanded = expandedActivityId === item.id;
 
             return (
               <div
                 key={item.id}
-                className={`ev ${item.source} reveal in`}
+                className={`ev ${item.source} ${item.level === "error" ? "error" : ""} reveal in`}
                 style={{ animationDelay: delay }}
               >
                 <div className="ev-card">
@@ -118,12 +134,44 @@ export function TimelinePage({ items }: TimelinePageProps) {
                       <span className="rel">{timeAgo(item.timestamp)}</span>
                     </div>
                     <div className="ev-name">{item.title}</div>
-                    <div className="ev-meta">
-                      {detailNode}
-                    </div>
+                    <div className="ev-meta">{item.details}</div>
+                    {payload && (
+                      <div className="activity-summary">
+                        <span className={failed ? "activity-failure" : "activity-success"}>{failed ? "failed" : "ok"}</span>
+                        {files.length > 0 && <span>{files.length} file{files.length === 1 ? "" : "s"} touched</span>}
+                      </div>
+                    )}
                   </div>
                   <span className={`tag-lg ${item.source}`}>{item.source.toUpperCase()}</span>
+                  {payload && (
+                    <button
+                      type="button"
+                      className="activity-toggle"
+                      aria-expanded={expanded}
+                      onClick={() => setExpandedActivityId((current) => current === item.id ? null : item.id)}
+                    >
+                      {expanded ? "Hide" : "Details"}
+                    </button>
+                  )}
                 </div>
+                {payload && expanded && (
+                  <div className="activity-details">
+                    <div>
+                      <span>Parameters</span>
+                      <pre>{formatPayload(payload.params)}</pre>
+                    </div>
+                    <div>
+                      <span>Result</span>
+                      <pre>{formatPayload(payload.result)}</pre>
+                    </div>
+                    {files.length > 0 && (
+                      <div>
+                        <span>Files touched</span>
+                        <ul>{files.map((file) => <li key={file}>{file}</li>)}</ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

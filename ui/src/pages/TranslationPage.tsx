@@ -342,7 +342,7 @@ export function TranslationPage() {
                 placeholder="Search a string…"
               />
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div className="translation-table">
               <table>
                 <thead>
                   <tr>

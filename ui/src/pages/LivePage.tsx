@@ -1,6 +1,6 @@
-import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { LiveChoice, LiveScreenshot, LiveState } from "../types";
+import type { DebugBridgeEvent, LiveChoice, LiveScreenshot, LiveState } from "../types";
 
 const POLL_MS = 1800;
 
@@ -20,6 +20,31 @@ const formatUnknown = (value: unknown) => {
   return String(value);
 };
 
+function parseVariableValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function describeEvent(event: DebugBridgeEvent): string {
+  if (event.type === "label") {
+    return `Label: ${String(event.label ?? "unknown")}`;
+  }
+  if (event.type === "say") {
+    return `Say: ${String(event.what ?? "")}`;
+  }
+  if (event.type === "exception") {
+    return `Exception: ${String(event.short ?? event.full ?? "runtime error")}`;
+  }
+  return formatUnknown(event);
+}
+
 interface LivePageProps {
   liveState?: LiveState | null;
   liveFrame?: LiveScreenshot | null;
@@ -29,6 +54,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const [state, setState] = useState<LiveState | null>(null);
   const [screenshot, setScreenshot] = useState<LiveScreenshot | null>(null);
   const [choices, setChoices] = useState<LiveChoice[]>([]);
+  const [events, setEvents] = useState<DebugBridgeEvent[]>([]);
   const [expr, setExpr] = useState("");
   const [evalResult, setEvalResult] = useState<string>("");
   const [setVarName, setSetVarName] = useState("");
@@ -37,16 +63,24 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [stoppedByUser, setStoppedByUser] = useState(false);
+  const eventCursor = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
-      const [liveStateVal, liveChoices] = await Promise.all([
+      const [liveStateVal, liveChoices, liveEvents] = await Promise.all([
         api.fetchLiveState(),
         api.fetchLiveChoices(),
+        api.fetchDebugEvents(eventCursor.current).catch(() => ({ events: [], cursor: eventCursor.current })),
       ]);
       const frame = await api.fetchLiveScreenshot().catch(() => null);
       setState(liveStateVal);
       setChoices(liveChoices.choices);
+      if (typeof liveEvents.cursor === "number") {
+        eventCursor.current = liveEvents.cursor;
+      }
+      if (liveEvents.events.length > 0) {
+        setEvents((current) => [...current, ...liveEvents.events].slice(-80));
+      }
       if (frame) {
         setScreenshot(frame);
       } else {
@@ -99,6 +133,8 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     }
     setBusyAction("launch");
     setStoppedByUser(false);
+    eventCursor.current = 0;
+    setEvents([]);
     try {
       const result = await api.launchGame();
       setStatus(result.already_running ? "already running" : "launched");
@@ -121,6 +157,8 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       setState(null);
       setScreenshot(null);
       setChoices([]);
+      eventCursor.current = 0;
+      setEvents([]);
       setStatus(result.was_running ? "stopped" : "already stopped");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "stop failed");
@@ -156,11 +194,17 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     setState(null);
     setScreenshot(null);
     setChoices([]);
+    eventCursor.current = 0;
+    setEvents([]);
     setStatus("stopped");
   };
 
   const onReloadGame = async () => {
     runAction(() => api.control("reload_script"), "reload ok", "reload");
+  };
+
+  const onRestartInteraction = async () => {
+    runAction(() => api.control("restart_interaction"), "interface restarted", "restart-ui");
   };
 
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
@@ -183,7 +227,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     if (!setVarName.trim()) {
       return;
     }
-    await runAction(() => api.setVariable(setVarName, setVarValue), `defined: ${setVarName}`, "set-var");
+    await runAction(() => api.setVariable(setVarName, parseVariableValue(setVarValue)), `defined: ${setVarName}`, "set-var");
   };
 
   const onSelectChoice = async (index: number, text: string) => {
@@ -420,7 +464,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   />
                 </div>
                 <div>
-                  <label className="field-label" htmlFor="wval">Value</label>
+                  <label className="field-label" htmlFor="wval">JSON or text value</label>
                   <input
                     className="input"
                     id="wval"
@@ -434,6 +478,31 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 <button type="submit" className="btn btn-ghost" disabled={controlsDisabled}>Set</button>
               </div>
             </form>
+
+            <details className="live-advanced">
+              <summary>
+                Advanced runtime
+                <span>{events.length} events</span>
+              </summary>
+              <div className="live-advanced-actions">
+                <button type="button" className="btn btn-ghost" onClick={onRestartInteraction} disabled={controlsDisabled}>
+                  Restart UI
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => void refresh()} disabled={Boolean(busyAction)}>
+                  Refresh
+                </button>
+              </div>
+              <div className="live-events">
+                {events.length > 0 ? [...events].reverse().map((event, index) => (
+                  <div className={`live-event ${event.type === "exception" ? "error" : ""}`} key={`${event.seq ?? index}-${event.type ?? "event"}`}>
+                    <span>{event.seq ?? "-"}</span>
+                    <p>{describeEvent(event)}</p>
+                  </div>
+                )) : (
+                  <p className="muted">No runtime event received yet.</p>
+                )}
+              </div>
+            </details>
           </div>
         </section>
 
