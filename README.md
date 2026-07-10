@@ -59,15 +59,21 @@ setup is needed:
 uvx --from "renforge[ui]" renforge ui --project /path/to/your/game
 ```
 
-Prefer pip? `pip install "renforge[fastmcp,ui]"` gives you the `renforge` CLI.
+Prefer pip? `pip install renforge` gives you the MCP server and CLI;
+`pip install "renforge[ui]"` adds the dashboard.
 
 ## Use with your AI agent
 
 The MCP server command is the same everywhere:
 
 ```bash
-uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
+uvx renforge serve
 ```
+
+Every RenForge tool takes a `project_path` argument, so the agent passes your
+game's path on each call — no path substitution in the configs below. Copy them
+as-is. The optional `--project` flag on `renforge serve` still sets a default
+project for activity logging.
 
 | Client | Where to configure |
 | --- | --- |
@@ -79,12 +85,12 @@ uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
 | [Gemini CLI](#claude-desktop-cursor-windsurf-cline-gemini-cli) | `~/.gemini/settings.json` |
 | [VS Code (Copilot)](#vs-code-github-copilot) | `.vscode/mcp.json` |
 | [Zed](#zed) | `settings.json` → `context_servers` |
-| [Codex CLI](#codex-cli) | `~/.codex/config.toml` |
+| [Codex CLI](#codex-cli) | `codex mcp add` or `~/.codex/config.toml` |
 
 ### Claude Code
 
 ```bash
-claude mcp add renforge -- uvx --from "renforge[fastmcp]" renforge serve --project /path/to/your/game
+claude mcp add renforge -- uvx renforge serve
 ```
 
 ### Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI
@@ -97,10 +103,7 @@ file listed in the table above:
   "mcpServers": {
     "renforge": {
       "command": "uvx",
-      "args": [
-        "--from", "renforge[fastmcp]", "renforge",
-        "serve", "--project", "/path/to/your/game"
-      ]
+      "args": ["renforge", "serve"]
     }
   }
 }
@@ -115,10 +118,7 @@ file listed in the table above:
   "servers": {
     "renforge": {
       "command": "uvx",
-      "args": [
-        "--from", "renforge[fastmcp]", "renforge",
-        "serve", "--project", "${workspaceFolder}"
-      ]
+      "args": ["renforge", "serve"]
     }
   }
 }
@@ -134,10 +134,7 @@ In `settings.json`:
     "renforge": {
       "source": "custom",
       "command": "uvx",
-      "args": [
-        "--from", "renforge[fastmcp]", "renforge",
-        "serve", "--project", "/path/to/your/game"
-      ]
+      "args": ["renforge", "serve"]
     }
   }
 }
@@ -145,29 +142,47 @@ In `settings.json`:
 
 ### Codex CLI
 
-In `~/.codex/config.toml`:
+```bash
+codex mcp add renforge -- uvx renforge serve
+```
+
+Or edit `~/.codex/config.toml` (on Windows: `%USERPROFILE%\.codex\config.toml`):
 
 ```toml
 [mcp_servers.renforge]
 command = "uvx"
-args = ["--from", "renforge[fastmcp]", "renforge", "serve", "--project", "/path/to/your/game"]
+args = ["renforge", "serve"]
 ```
 
-> Don't have `uv`? Replace `uvx --from "renforge[fastmcp]" renforge` with
-> `renforge` after a `pip install "renforge[fastmcp]"`.
+### Verify it works
+
+After configuring your client, ask the agent:
+
+> Inspect my Ren'Py project at /path/to/game
+
+The agent should call `renforge_inspect_project` with that path and return a
+JSON summary of the project (labels, scripts, assets, and related metadata).
+
+> **Windows / GUI clients:** Desktop apps (Claude Desktop, Cursor, etc.) may not
+> inherit your shell `PATH`. If `uvx` is not found, set `command` to the
+> absolute path of `uvx` (for example `C:\Users\you\.local\bin\uvx.exe`).
+
+> Don't have `uv`? Replace `uvx renforge` with `renforge` after a
+> `pip install renforge`.
 
 ## Install (dev)
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[fastmcp]"  # full MCP runtime (fastmcp)
+pip install -e .             # MCP runtime (includes fastmcp)
+pip install -e ".[fastmcp]"  # alias for the base install
 pip install -e ".[ui]"       # dashboard (starlette, uvicorn, watchfiles)
 pip install -e ".[test]"     # pytest
 ```
 
-The base install only requires `mcp>=1.0.0`; the server falls back to a
-compatibility mode with a clear message if `fastmcp` is not installed.
+The server falls back to a compatibility mode with a clear message if
+`fastmcp` is not installed (for example after a minimal manual install).
 
 ## Usage
 
