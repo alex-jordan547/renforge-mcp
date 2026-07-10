@@ -36,7 +36,7 @@ def test_get_or_install_sdk_downloads_and_install_sdk_from_local_file_url(monkey
     archive_path = _write_fake_sdk_archive(tmp_path, version)
 
     monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(cache_dir))
-    monkeypatch.setenv(sdk.RENPY_SDK_ARCHIVE_URL_ENV, f"file://{archive_path}")
+    monkeypatch.setenv(sdk.RENPY_SDK_ARCHIVE_URL_ENV, archive_path.as_uri())
     monkeypatch.setenv(sdk.RENPY_SDK_BASE_URL_ENV, "https://example.invalid")
     monkeypatch.delenv(sdk.RENPY_SDK_ENV, raising=False)
     monkeypatch.delenv(sdk.RENPY_SDK_STABLE_ENV, raising=False)
@@ -53,7 +53,7 @@ def test_get_or_install_sdk_rejects_path_traversal_in_archive(monkeypatch: pytes
     archive_path = _write_traversal_archive(tmp_path)
 
     monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(cache_dir))
-    monkeypatch.setenv(sdk.RENPY_SDK_ARCHIVE_URL_ENV, f"file://{archive_path}")
+    monkeypatch.setenv(sdk.RENPY_SDK_ARCHIVE_URL_ENV, archive_path.as_uri())
     monkeypatch.setenv(sdk.RENPY_SDK_BASE_URL_ENV, "https://example.invalid")
 
     with pytest.raises(ValueError, match="path traversal"):

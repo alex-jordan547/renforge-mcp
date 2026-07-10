@@ -77,9 +77,10 @@ def _find_entrypoint(path: Path) -> Path:
     # Prefer the platform launcher scripts: they bootstrap Ren'Py's *bundled*
     # Python (which ships every dependency). `renpy.py` run with an arbitrary
     # system Python fails on missing deps, so it is only a last resort.
+    # renpy.sh is not runnable on native Windows, so prefer renpy.exe there.
+    scripts = ("renpy.exe", "renpy.sh") if os.name == "nt" else ("renpy.sh", "renpy.exe")
     options = [
-        path / "renpy.sh",
-        path / "renpy.exe",
+        *(path / script for script in scripts),
         path / "renpy.py",
         path / "renpy-sdk" / "renpy.sh",
         path / "renpy-sdk" / "renpy.py",
@@ -188,6 +189,9 @@ def _find_sdk_root(directory: Path) -> Path:
 def _download_archive(url: str, destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     fd, archive_file = tempfile.mkstemp(prefix="renpy-sdk-", suffix=".archive", dir=destination)
+    # Close the mkstemp handle right away: on Windows an open handle blocks
+    # both re-opening for write and the unlink in the error path.
+    os.close(fd)
     archive_path = Path(archive_file)
     try:
         with urllib.request.urlopen(url) as response:
@@ -196,8 +200,6 @@ def _download_archive(url: str, destination: Path) -> Path:
     except (HTTPError, URLError, OSError):
         archive_path.unlink(missing_ok=True)
         raise
-    finally:
-        os.close(fd)
     return archive_path
 
 

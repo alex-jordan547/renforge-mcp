@@ -31,9 +31,11 @@ def _indent(line: str) -> int:
 
 def _relative_path(base: str, target: str) -> str:
     try:
-        return os.path.relpath(target, base)
+        rel = os.path.relpath(target, base)
     except ValueError:
         return target
+    # Keep reported paths POSIX-style on every platform.
+    return rel.replace(os.sep, "/")
 
 
 def _append_item(bucket: List[Dict[str, Any]], file: str, line_no: int, **fields: Any) -> None:
