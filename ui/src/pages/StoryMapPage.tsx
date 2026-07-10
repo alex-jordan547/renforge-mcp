@@ -38,14 +38,51 @@ function mapNodeClass(type: string) {
   }
 }
 
+function focusClass(nodeId: string, focusedNodeId: string | null, focusedNodeIds: Set<string> | null) {
+  if (!focusedNodeId || !focusedNodeIds) {
+    return "";
+  }
+  if (nodeId === focusedNodeId) {
+    return " focus-node";
+  }
+  return focusedNodeIds.has(nodeId) ? " focus-related" : " focus-muted";
+}
+
+function edgeEndpointNodeId(endpoint: string) {
+  return endpoint.startsWith("label:") ? endpoint : `label:${endpoint}`;
+}
+
+function edgeTouchesNode(edge: Pick<StoryMapResponse["edges"][number], "source" | "target">, nodeId: string) {
+  const normalizedNodeId = nodeId.replace(/^label:/, "");
+  return [edge.source, edge.target].some(
+    (endpoint) => endpoint === nodeId || endpoint === normalizedNodeId || edgeEndpointNodeId(endpoint) === nodeId,
+  );
+}
+
 function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapPageProps) {
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [warpBusy, setWarpBusy] = useState(false);
   const [warpTarget, setWarpTarget] = useState<string | null>(null);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(false);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const { zoomIn, zoomOut, fitView } = useReactFlow();
+
+  const focusedNodeIds = useMemo(() => {
+    if (!focusedNodeId) {
+      return null;
+    }
+    const related = new Set([focusedNodeId]);
+    data.edges.forEach((edge) => {
+      if (edgeTouchesNode(edge, focusedNodeId)) {
+        related.add(edgeEndpointNodeId(edge.source));
+        related.add(edgeEndpointNodeId(edge.target));
+      }
+    });
+    return related;
+  }, [data.edges, focusedNodeId]);
 
   const fallbackNodes = useMemo(
     () =>
@@ -188,6 +225,30 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
     };
   }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes, currentLabel]);
 
+  useEffect(() => {
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => ({
+        ...node,
+        className: `${(node.className ?? "").replace(/\s+focus-(?:node|related|muted)/g, "")}${focusClass(node.id, focusedNodeId, focusedNodeIds)}`,
+      })),
+    );
+  }, [focusedNodeId, focusedNodeIds, setNodes]);
+
+  useEffect(() => {
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) => {
+        const active = Boolean(focusedNodeId && edgeTouchesNode(edge, focusedNodeId));
+        return {
+          ...edge,
+          className: active ? "focus-edge" : undefined,
+          domAttributes: focusedNodeId
+            ? ({ "data-focus-edge": active ? "active" : "muted" } as Edge["domAttributes"])
+            : undefined,
+        };
+      }),
+    );
+  }, [focusedNodeId, setEdges]);
+
   const onNodeClick: NodeMouseHandler = useCallback(
     async (_event, node) => {
       if (warpBusy) {
@@ -228,26 +289,41 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
       <div className="page-head reveal in">
         <h2>Story Map</h2>
         <span className="hint">
-          {data.nodes.length} labels · {data.edges.length} transitions · click a node to replay
+        {data.nodes.length} labels · {data.edges.length} transitions · hover to focus, click to replay
         </span>
       </div>
 
       <div className="map-wrap reveal in" style={{ animationDelay: ".06s" }}>
         <div className="map-meta">
-          <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Current position</span>
-          <span className="pill-label">
-            <span className="dot" />
-            {currentLabel || "—"}
-          </span>
+          <div className="map-current">
+            <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Current position</span>
+            <span className="pill-label">
+              <span className="dot" />
+              {currentLabel || "—"}
+            </span>
+          </div>
+          <div className="map-actions">
+            <button
+              className={`map-toggle ${showEdgeLabels ? "on" : ""}`}
+              type="button"
+              aria-pressed={showEdgeLabels}
+              onClick={() => setShowEdgeLabels((visible) => !visible)}
+            >
+              <span className="map-toggle-indicator" aria-hidden="true" />
+              {showEdgeLabels ? "Masquer les transitions" : "Afficher les transitions"}
+            </button>
+          </div>
         </div>
 
-        <div className="storyCanvas" aria-busy={warpBusy}>
+        <div className={`storyCanvas${showEdgeLabels ? " show-edge-labels" : ""}`} aria-busy={warpBusy}>
           <ReactFlow
             onNodeClick={warpBusy ? undefined : onNodeClick}
             nodes={nodes}
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
+            onNodeMouseEnter={(_event, node) => setFocusedNodeId(node.id)}
+            onNodeMouseLeave={() => setFocusedNodeId(null)}
             fitView
             panOnDrag={true}
             zoomOnScroll={true}

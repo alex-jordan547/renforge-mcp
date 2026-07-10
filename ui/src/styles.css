@@ -260,9 +260,18 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ── Story Map & React Flow ── */
 .map-wrap { position: relative; width: 100%; display: flex; flex-direction: column; }
-.map-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.map-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.map-current { display: inline-flex; align-items: center; gap: 10px; }
+.map-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .pill-label { display: inline-flex; align-items: center; gap: 7px; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent); border-radius: var(--radius-pill); padding: 5px 13px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
 .pill-label .dot { background: var(--accent); width: 7px; height: 7px; border-radius: 50%; }
+.map-toggle { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); background: var(--surface); color: var(--muted); font-family: var(--font-mono); font-size: 11px; cursor: pointer; transition: background .16s var(--ease-standard), border-color .16s var(--ease-standard), color .16s var(--ease-standard), transform .16s var(--ease-standard); }
+.map-toggle:hover { border-color: var(--border); background: var(--hair); color: var(--fg); }
+.map-toggle:active { transform: scale(.98); }
+.map-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.map-toggle.on { border-color: color-mix(in oklab, var(--accent) 36%, var(--border-soft)); background: var(--accent-soft); color: var(--accent); }
+.map-toggle-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px var(--hair); }
+.map-toggle.on .map-toggle-indicator { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent); }
 
 .storyCanvas {
   position: relative;
@@ -298,6 +307,9 @@ a { color: var(--accent); text-decoration: none; }
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 3px var(--accent-soft), var(--elev-raised) !important;
 }
+.react-flow__node.focus-muted { opacity: .2 !important; filter: saturate(.45); }
+.react-flow__node.focus-related { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)) !important; box-shadow: 0 0 0 2px var(--accent-soft), var(--elev-raised) !important; }
+.react-flow__node.focus-node { border-color: var(--accent) !important; box-shadow: 0 0 0 4px var(--accent-soft), var(--elev-raised) !important; }
 .react-flow__node .tag {
   display: block;
   font-family: var(--font-mono);
@@ -324,6 +336,14 @@ a { color: var(--accent); text-decoration: none; }
 .react-flow__edge-text {
   fill: var(--muted) !important;
 }
+.storyCanvas:not(.show-edge-labels) .react-flow__edge-textwrapper {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.react-flow__edge.focus-muted { opacity: .16; }
+.react-flow__edge.focus-edge .react-flow__edge-path { stroke: var(--accent) !important; stroke-width: 2.2 !important; }
+.react-flow__edge[data-focus-edge="muted"] { opacity: .16; }
+.react-flow__edge[data-focus-edge="active"] .react-flow__edge-path { stroke: var(--accent) !important; stroke-width: 2.2 !important; }
 .zoom { position: absolute; left: 16px; bottom: 16px; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; box-shadow: var(--elev-raised); z-index: 10; }
 .zoom button { width: 34px; height: 34px; border: 0; border-bottom: 1px solid var(--hair); background: transparent; color: var(--fg-2); font-size: 17px; cursor: pointer; transition: background .15s; }
 .zoom button:last-child { border-bottom: 0; }

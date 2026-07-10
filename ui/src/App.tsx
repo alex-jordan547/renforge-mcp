@@ -13,8 +13,8 @@ import { TimelinePage } from "./pages/TimelinePage";
 import { TranslationPage } from "./pages/TranslationPage";
 
 const SECTIONS = [
-  { id: "story-map", label: "Story Map" },
   { id: "live", label: "Live" },
+  { id: "story-map", label: "Story Map" },
   { id: "timeline", label: "Timeline" },
   { id: "assets", label: "Assets" },
   { id: "translation", label: "Translation" },
@@ -80,7 +80,7 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
 }
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<SectionId>("story-map");
+  const [activeSection, setActiveSection] = useState<SectionId>("live");
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("renforge-theme") as "light" | "dark") || "light",
   );
