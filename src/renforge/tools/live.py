@@ -144,8 +144,11 @@ def _stop_external(project_path: str) -> dict:
 
 def _terminate_pid(pid: int) -> bool:
     """Force-kill ``pid``. Returns whether it existed."""
+    # SIGKILL does not exist on Windows; there os.kill with SIGTERM calls
+    # TerminateProcess, which is already an unconditional kill.
+    sig = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, sig)
     except ProcessLookupError:
         return False
     except OSError:
