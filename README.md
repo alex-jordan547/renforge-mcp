@@ -83,8 +83,13 @@ and troubleshooting.
 The MCP server command is the same everywhere:
 
 ```bash
-uvx renforge serve
+uvx renforge@latest serve
 ```
+
+The `@latest` suffix makes `uvx` fetch the newest published RenForge on each
+start instead of silently reusing a cached older build — so new tools land
+without a manual `uv cache clean`. Drop it (`uvx renforge serve`) if you prefer
+to pin whatever is already cached.
 
 Every RenForge tool takes a `project_path` argument, so the agent passes your
 game's path on each call — no path substitution in the configs below. Copy them
@@ -106,7 +111,7 @@ project for activity logging.
 ### Claude Code
 
 ```bash
-claude mcp add renforge -- uvx renforge serve
+claude mcp add renforge -- uvx renforge@latest serve
 ```
 
 ### Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI
@@ -119,7 +124,7 @@ file listed in the table above:
   "mcpServers": {
     "renforge": {
       "command": "uvx",
-      "args": ["renforge", "serve"]
+      "args": ["renforge@latest", "serve"]
     }
   }
 }
@@ -134,7 +139,7 @@ file listed in the table above:
   "servers": {
     "renforge": {
       "command": "uvx",
-      "args": ["renforge", "serve"]
+      "args": ["renforge@latest", "serve"]
     }
   }
 }
@@ -150,7 +155,7 @@ In `settings.json`:
     "renforge": {
       "source": "custom",
       "command": "uvx",
-      "args": ["renforge", "serve"]
+      "args": ["renforge@latest", "serve"]
     }
   }
 }
@@ -159,7 +164,7 @@ In `settings.json`:
 ### Codex CLI
 
 ```bash
-codex mcp add renforge -- uvx renforge serve
+codex mcp add renforge -- uvx renforge@latest serve
 ```
 
 Or edit `~/.codex/config.toml` (on Windows: `%USERPROFILE%\.codex\config.toml`):
@@ -167,7 +172,7 @@ Or edit `~/.codex/config.toml` (on Windows: `%USERPROFILE%\.codex\config.toml`):
 ```toml
 [mcp_servers.renforge]
 command = "uvx"
-args = ["renforge", "serve"]
+args = ["renforge@latest", "serve"]
 ```
 
 ### Verify it works
@@ -183,8 +188,8 @@ JSON summary of the project (labels, scripts, assets, and related metadata).
 > inherit your shell `PATH`. If `uvx` is not found, set `command` to the
 > absolute path of `uvx` (for example `C:\Users\you\.local\bin\uvx.exe`).
 
-> Don't have `uv`? Run `pipx install renforge`, then replace `uvx renforge`
-> with `renforge` in your config.
+> Don't have `uv`? Run `pipx install renforge`, then replace `uvx renforge@latest`
+> with `renforge` in your config (and `pipx upgrade renforge` to update).
 
 ## Install (dev)
 
@@ -224,6 +229,8 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
   `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
 - `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
   `renforge_find_image_on_screen`
+- `renforge_get_displayable_bounds`, `renforge_position_element`,
+  `renforge_diff_screenshots`
 - `renforge_autopilot`
 - `renforge_assets`, `renforge_languages`, `renforge_translation_stats`,
   `renforge_generate_translations`, `renforge_export_dialogue`

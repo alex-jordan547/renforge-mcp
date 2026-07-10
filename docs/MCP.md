@@ -10,8 +10,12 @@ structure or screen coordinates.
 The MCP server uses `stdio` and starts with:
 
 ```bash
-uvx renforge serve
+uvx renforge@latest serve
 ```
+
+The `@latest` suffix makes `uvx` fetch the newest published release on each
+start instead of reusing a cached older build, so new tools appear without a
+manual `uv cache clean`. Use `uvx renforge serve` to pin the cached build.
 
 For a persistent installation with the dashboard:
 
@@ -51,7 +55,7 @@ The command is the same for every client. Example JSON configuration:
   "mcpServers": {
     "renforge": {
       "command": "uvx",
-      "args": ["renforge", "serve"]
+      "args": ["renforge@latest", "serve"]
     }
   }
 }
@@ -60,7 +64,7 @@ The command is the same for every client. Example JSON configuration:
 For Codex CLI:
 
 ```bash
-codex mcp add renforge -- uvx renforge serve
+codex mcp add renforge -- uvx renforge@latest serve
 ```
 
 Or add this to `~/.codex/config.toml`:
@@ -68,13 +72,13 @@ Or add this to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.renforge]
 command = "uvx"
-args = ["renforge", "serve"]
+args = ["renforge@latest", "serve"]
 ```
 
 For Claude Code:
 
 ```bash
-claude mcp add renforge -- uvx renforge serve
+claude mcp add renforge -- uvx renforge@latest serve
 ```
 
 Every project-related tool takes `project_path`. Call `renforge_info` first
