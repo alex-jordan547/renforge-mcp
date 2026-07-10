@@ -178,7 +178,7 @@ export function TimelinePage({ items }: TimelinePageProps) {
         </div>
       ) : (
         <div className="emptyState">
-          <div className="emptyState-icon">📭</div>
+          <img className="emptyState-mascot" src="/brand/renforge-mascot.png" alt="" aria-hidden="true" />
           <h3>No events</h3>
           <p>Bridge and Ren'Py activity events will appear here in real time.</p>
         </div>

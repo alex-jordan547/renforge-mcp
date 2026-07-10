@@ -246,7 +246,7 @@ export function TranslationPage() {
           <span className="hint">/api/languages · /api/translation-stats</span>
         </div>
         <div className="emptyState">
-          <div className="emptyState-icon">🌐</div>
+          <img className="emptyState-mascot" src="/brand/renforge-mascot.png" alt="" aria-hidden="true" />
           <h3>No language detected</h3>
           <p>
             Configure languages in your Ren'Py project to see translation statistics here.

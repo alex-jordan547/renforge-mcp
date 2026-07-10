@@ -278,6 +278,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
   if (!data.nodes.length) {
     return (
       <section className="panel empty">
+        <img className="emptyState-mascot" src="/brand/renforge-mascot.png" alt="" aria-hidden="true" />
         <h2>Empty Story Map</h2>
         <p>The backend has not exposed data yet.</p>
       </section>

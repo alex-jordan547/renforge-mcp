@@ -144,9 +144,9 @@ a { color: var(--accent); text-decoration: none; }
   display: grid; place-items: center;
   box-shadow: 0 4px 12px -4px color-mix(in oklab, var(--accent) 55%, transparent);
 }
-.brand .mark svg { width: 17px; height: 17px; }
+.brand .mark img { width: 23px; height: 23px; object-fit: contain; }
 .brand .name { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
-.brand .sub { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--meta); margin-top: 3px; padding-left: 40px; }
+.brand .sub { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--meta); margin-top: 3px; padding-left: 40px; }
 
 .nav { padding: 4px 12px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .nav-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--meta); padding: 12px 12px 6px; }
@@ -537,6 +537,12 @@ a { color: var(--accent); text-decoration: none; }
 .tag-lg.error { color: var(--danger); background: var(--danger-soft); }
 .emptyState { text-align: center; padding: 48px 24px; color: var(--muted); }
 .emptyState-icon { font-size: 32px; margin-bottom: 12px; }
+.emptyState-mascot {
+  display: block; width: min(190px, 52vw); height: min(150px, 42vw); object-fit: contain;
+  margin: 0 auto 18px; border-radius: var(--radius-lg); background: #fff;
+  box-shadow: 0 14px 30px -20px rgba(0,0,0,.32);
+}
+.panel.empty .emptyState-mascot { margin-bottom: 18px; }
 
 /* ── Assets ── */
 .stat-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 20px; width: 100%; }

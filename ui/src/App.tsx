@@ -356,14 +356,11 @@ export function App() {
         <div className="brand">
           <div className="logo">
             <span className="mark">
-              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3 4 7v6c0 4.5 3.4 7.3 8 8 4.6-.7 8-3.5 8-8V7z" />
-                <path d="m9 12 2 2 4-4" />
-              </svg>
+              <img src="/brand/renforge-mark.png" alt="" aria-hidden="true" />
             </span>
-            <span className="name">Renforge</span>
+            <span className="name">RenForge</span>
           </div>
-          <div className="sub">Ren’Py runtime console</div>
+          <div className="sub">Ren’Py runtime console · MCP</div>
         </div>
 
         <nav className="nav">
