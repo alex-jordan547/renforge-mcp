@@ -232,6 +232,58 @@ class BridgeClient:
             return result
         return reply
 
+    def get_displayable_bounds(
+        self,
+        tag: str,
+        *,
+        layer: str | None = None,
+    ) -> dict[str, Any]:
+        """Return where a shown image ``tag`` was rendered, in logical pixels.
+
+        The reply carries ``bounds`` (integer ``x``/``y``/``width``/``height``),
+        ``center``, and ``coordinate_space: "logical"``. When the tag is not
+        showing, ``ok`` is ``False`` and ``showing_tags`` lists what is on the
+        layer instead. A guard error is a normal control result here, so this
+        does not raise on a missing tag.
+        """
+        payload: dict[str, Any] = {"tag": tag}
+        if layer is not None:
+            payload["layer"] = layer
+        reply = self.request("get_displayable_bounds", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def position_element(
+        self,
+        tag: str,
+        *,
+        layer: str | None = None,
+        **placement: float,
+    ) -> dict[str, Any]:
+        """Reposition a showing image ``tag`` and return its new bounds.
+
+        ``placement`` accepts any of ``xpos``, ``ypos``, ``xanchor``,
+        ``yanchor``, ``xalign``, ``yalign``, ``xoffset``, ``yoffset``, ``zoom``
+        and ``rotate``. At least one is required. The tag keeps its current
+        attributes, and the reply mirrors :meth:`get_displayable_bounds` plus an
+        ``applied`` echo of the placement that was set.
+        """
+        payload: dict[str, Any] = {"tag": tag}
+        if layer is not None:
+            payload["layer"] = layer
+        for key, value in placement.items():
+            if value is not None:
+                payload[key] = value
+        reply = self.request("show_displayable", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
     def click_at(
         self,
         x: int | float,

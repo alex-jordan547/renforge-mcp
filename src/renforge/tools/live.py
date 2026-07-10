@@ -319,6 +319,33 @@ def click_at(
     )
 
 
+def get_displayable_bounds(
+    project_path: str,
+    tag: str,
+    *,
+    layer: str | None = None,
+) -> dict:
+    """Return the rendered bounds of a shown image tag in logical coordinates."""
+    return _with_client(
+        project_path,
+        lambda c: c.get_displayable_bounds(tag, layer=layer),
+    )
+
+
+def position_element(
+    project_path: str,
+    tag: str,
+    *,
+    layer: str | None = None,
+    **placement: float,
+) -> dict:
+    """Reposition a shown image tag at runtime and return its new bounds."""
+    return _with_client(
+        project_path,
+        lambda c: c.position_element(tag, layer=layer, **placement),
+    )
+
+
 def eval_expr(project_path: str, expr: str) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, "value": c.eval_expr(expr)})
 

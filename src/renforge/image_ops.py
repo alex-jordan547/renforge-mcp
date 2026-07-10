@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
 _MAX_INPUT_BYTES = 100 * 1024 * 1024
@@ -503,6 +503,186 @@ def transform_png(
     return output.getvalue()
 
 
+def _normalise_point(
+    point: Sequence[int] | dict[str, int],
+    *,
+    width: int,
+    height: int,
+    name: str,
+) -> tuple[int, int]:
+    """Validate an ``(x, y)`` pixel coordinate that must lie inside the image."""
+
+    if isinstance(point, dict):
+        try:
+            values = (point["x"], point["y"])
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"{name} must contain x and y") from exc
+    else:
+        if isinstance(point, (str, bytes, bytearray)) or len(point) != 2:
+            raise ValueError(f"{name} must be (x, y)")
+        values = tuple(point)
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        raise ValueError(f"{name} coordinates must be integers")
+    x, y = values
+    if not (0 <= x < width and 0 <= y < height):
+        raise ValueError(f"{name} must lie inside the image {width}x{height}")
+    return x, y
+
+
+def annotate_png(
+    data: bytes,
+    *,
+    grid: int = 0,
+    crosshair: Sequence[int] | dict[str, int] | None = None,
+    rulers: bool = False,
+) -> bytes:
+    """Overlay measurement guides on an encoded frame, returning PNG bytes.
+
+    ``grid`` draws lines every ``grid`` pixels; ``rulers`` labels those steps
+    along the top and left edges; ``crosshair`` marks one ``(x, y)`` point and
+    prints its coordinate. Coordinates are in the image's own pixel space, so
+    capture at the game's logical resolution (``renforge_screenshot`` ``width``
+    / ``height``) when you want labels to read as logical coordinates.
+    """
+
+    if isinstance(grid, bool) or not isinstance(grid, int):
+        raise ValueError("grid must be an integer pixel spacing")
+    if grid < 0:
+        raise ValueError("grid must be non-negative")
+    if grid and grid < 5:
+        raise ValueError("grid spacing must be at least 5 pixels")
+
+    with Image.open(io.BytesIO(data)) as source:
+        if source.width * source.height > _MAX_OUTPUT_PIXELS:
+            raise ValueError("image exceeds the 50 megapixel safety limit")
+        source.load()
+        image = source.convert("RGBA")
+
+    width, height = image.size
+    point = None
+    if crosshair is not None:
+        point = _normalise_point(crosshair, width=width, height=height, name="crosshair")
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    try:
+        font = ImageFont.load_default()
+    except Exception:  # pragma: no cover - Pillow always ships the default font
+        font = None
+
+    line_colour = (255, 0, 255, 110)
+    label_colour = (255, 255, 255, 255)
+    label_bg = (0, 0, 0, 160)
+
+    def _label(x: int, y: int, text: str) -> None:
+        if font is None:
+            return
+        try:
+            box = draw.textbbox((x, y), text, font=font)
+        except Exception:
+            return
+        draw.rectangle((box[0] - 1, box[1] - 1, box[2] + 1, box[3] + 1), fill=label_bg)
+        draw.text((x, y), text, fill=label_colour, font=font)
+
+    if grid:
+        for x in range(grid, width, grid):
+            draw.line((x, 0, x, height), fill=line_colour, width=1)
+            if rulers:
+                _label(x + 2, 1, str(x))
+        for y in range(grid, height, grid):
+            draw.line((0, y, width, y), fill=line_colour, width=1)
+            if rulers:
+                _label(1, y + 1, str(y))
+
+    if point is not None:
+        px, py = point
+        cross_colour = (0, 255, 255, 220)
+        draw.line((px, 0, px, height), fill=cross_colour, width=1)
+        draw.line((0, py, width, py), fill=cross_colour, width=1)
+        _label(min(px + 4, width - 1), min(py + 4, height - 1), f"({px}, {py})")
+
+    composited = Image.alpha_composite(image, overlay)
+    output = io.BytesIO()
+    composited.save(output, format="PNG")
+    return output.getvalue()
+
+
+def diff_images(
+    before: bytes | bytearray | memoryview | str | Path | Image.Image,
+    after: bytes | bytearray | memoryview | str | Path | Image.Image,
+    *,
+    threshold: int = 0,
+) -> dict[str, Any]:
+    """Compare two same-size frames and locate the region that changed.
+
+    ``threshold`` is the maximum per-channel difference (0..255) still counted
+    as unchanged, which absorbs anti-aliasing jitter. The return value is
+    JSON-ready and reports the bounding box of the changed pixels, so a caller
+    can measure how far an element moved or confirm a tweak left everything
+    else untouched::
+
+        {
+            "ok": True,
+            "changed": True,
+            "bounds": {"x": 100, "y": 40, "width": 64, "height": 32},
+            "center": {"x": 132, "y": 56},
+            "changed_pixels": 1508,
+            "total_pixels": 2073600,
+            "fraction": 0.000727,
+            "size": {"width": 1920, "height": 1080},
+            "threshold": 0,
+        }
+    """
+
+    if isinstance(threshold, bool) or not isinstance(threshold, int):
+        raise ValueError("threshold must be an integer")
+    if not 0 <= threshold <= 255:
+        raise ValueError("threshold must be between 0 and 255")
+
+    before_image = _read_image_source(before, name="before").convert("RGB")
+    after_image = _read_image_source(after, name="after").convert("RGB")
+    if before_image.size != after_image.size:
+        raise ValueError(
+            f"images differ in size: {before_image.size} vs {after_image.size}"
+        )
+
+    width, height = before_image.size
+    difference = ImageChops.difference(before_image, after_image)
+    red, green, blue = difference.split()
+    per_pixel_max = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    mask = per_pixel_max.point(lambda value: 255 if value > threshold else 0)
+    bbox = mask.getbbox()
+    changed_pixels = mask.histogram()[255]
+    total_pixels = width * height
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "changed": bbox is not None,
+        "bounds": None,
+        "center": None,
+        "changed_pixels": changed_pixels,
+        "total_pixels": total_pixels,
+        "fraction": round(changed_pixels / total_pixels, 6) if total_pixels else 0.0,
+        "size": {"width": width, "height": height},
+        "threshold": threshold,
+    }
+    if bbox is not None:
+        left, top, right, bottom = bbox
+        region_width = right - left
+        region_height = bottom - top
+        result["bounds"] = {
+            "x": left,
+            "y": top,
+            "width": region_width,
+            "height": region_height,
+        }
+        result["center"] = {
+            "x": left + region_width // 2,
+            "y": top + region_height // 2,
+        }
+    return result
+
+
 def inspect_image(
     image_path: str | Path,
     *,
@@ -530,6 +710,8 @@ def inspect_image(
 
 
 __all__ = [
+    "annotate_png",
+    "diff_images",
     "find_image_matches",
     "find_image_on_screen",
     "inspect_image",

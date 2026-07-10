@@ -678,6 +678,138 @@ init python:
             result["sha256"] = screenshot_digest
         return result
 
+    def _renforge_h_get_displayable_bounds(payload):
+        # Report where a shown image tag was actually rendered, in Ren'Py
+        # logical coordinates. This closes the pixel-perfect loop: instead of
+        # eyeballing a sprite on a screenshot, a caller can measure its real
+        # position and size after a show/reposition.
+        payload = payload or {}
+        tag = payload.get("tag")
+        if not tag:
+            return {"ok": False, "error": "get_displayable_bounds requires a tag"}
+        tag = str(tag)
+        layer = payload.get("layer")
+        layer = str(layer) if layer else None
+        get_bounds = getattr(renpy, "get_image_bounds", None)
+        if not callable(get_bounds):
+            return {"ok": False, "error": "renpy.get_image_bounds is unavailable"}
+        try:
+            if layer:
+                bounds = get_bounds(tag, layer=layer)
+            else:
+                bounds = get_bounds(tag)
+        except Exception as exc:
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+        try:
+            showing = list(renpy.get_showing_tags(layer)) if layer else list(renpy.get_showing_tags())
+        except Exception:
+            showing = []
+        if not bounds:
+            return {
+                "ok": False,
+                "error": "tag %r is not showing" % tag,
+                "tag": tag,
+                "showing": False,
+                "showing_tags": showing,
+            }
+        x, y, w, h = bounds
+        x, y, w, h = int(x), int(y), int(w), int(h)
+        result = {
+            "ok": True,
+            "tag": tag,
+            "showing": True,
+            "bounds": {"x": x, "y": y, "width": w, "height": h},
+            "center": {"x": x + w // 2, "y": y + h // 2},
+            "coordinate_space": "logical",
+        }
+        if layer:
+            result["layer"] = layer
+        screen_width = getattr(renpy.config, "screen_width", None)
+        screen_height = getattr(renpy.config, "screen_height", None)
+        if screen_width and screen_height:
+            result["screen"] = {"width": int(screen_width), "height": int(screen_height)}
+        return result
+
+    _RENFORGE_POSITION_FIELDS = (
+        "xpos", "ypos", "xanchor", "yanchor",
+        "xalign", "yalign", "xoffset", "yoffset",
+        "zoom", "rotate",
+    )
+
+    def _renforge_h_show_displayable(payload):
+        # Reposition an already-showing image tag at runtime and return where it
+        # landed. This turns "edit .rpy, relaunch, look, guess the offset" into
+        # an interactive loop: converge on live coordinates, then write the
+        # final values into the script. The tag keeps its current attributes,
+        # so `show eileen happy` stays happy after a nudge.
+        payload = payload or {}
+        tag = payload.get("tag")
+        if not tag:
+            return {"ok": False, "error": "position_element requires a tag"}
+        tag = str(tag)
+        layer = payload.get("layer")
+        layer = str(layer) if layer else None
+
+        transform_kwargs = {}
+        for field in _RENFORGE_POSITION_FIELDS:
+            value = payload.get(field)
+            if value is None:
+                continue
+            # Preserve int vs float: Ren'Py reads an int position as absolute
+            # pixels and a float as a fraction of the screen (xpos 600 == 600px,
+            # xpos 0.5 == halfway). Coercing to float would turn "600 pixels"
+            # into 600x the screen width.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return {"ok": False, "error": "%s must be a number" % field}
+            transform_kwargs[field] = value
+        if not transform_kwargs:
+            return {"ok": False, "error": "position_element requires at least one placement field"}
+
+        try:
+            showing = list(renpy.get_showing_tags(layer)) if layer else list(renpy.get_showing_tags())
+        except Exception:
+            showing = []
+        if tag not in showing:
+            return {
+                "ok": False,
+                "error": "tag %r is not showing; show it first" % tag,
+                "tag": tag,
+                "showing_tags": showing,
+            }
+
+        transform_cls = getattr(renpy.store, "Transform", None)
+        if transform_cls is None:
+            return {"ok": False, "error": "Transform is unavailable in the store"}
+        show = getattr(renpy, "show", None)
+        if not callable(show):
+            return {"ok": False, "error": "renpy.show is unavailable"}
+        try:
+            transform = transform_cls(**transform_kwargs)
+            if layer:
+                show(tag, at_list=[transform], layer=layer)
+            else:
+                show(tag, at_list=[transform])
+        except Exception as exc:
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+
+        # get_image_bounds reads the last drawn frame; force a render so the
+        # reported bounds reflect the show we just applied rather than the
+        # previous position.
+        restart = getattr(renpy, "restart_interaction", None)
+        if callable(restart):
+            try:
+                restart()
+            except Exception:
+                pass
+        try:
+            renpy.screenshot_to_bytes(None)
+        except Exception:
+            pass
+
+        result = _renforge_h_get_displayable_bounds({"tag": tag, "layer": layer})
+        result["applied"] = transform_kwargs
+        return result
+
     def _renforge_h_select_choice(payload):
         # Select a menu option by visible text (preferred) or by index, by
         # resolving the focusable and simulating a mouse click on it — the same
@@ -745,6 +877,8 @@ init python:
         "list_ui_elements": _renforge_h_list_ui_elements,
         "click_element": _renforge_h_click_element,
         "click_at": _renforge_h_click_at,
+        "get_displayable_bounds": _renforge_h_get_displayable_bounds,
+        "show_displayable": _renforge_h_show_displayable,
     }
 
     def renforge_drain_bridge():

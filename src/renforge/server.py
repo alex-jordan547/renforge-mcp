@@ -498,6 +498,112 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_get_displayable_bounds(
+        project_path: str,
+        tag: str,
+        layer: str = "",
+    ) -> dict:
+        """Report where a shown image tag was rendered, in logical coordinates."""
+        return _log_tool_call(
+            name="renforge_get_displayable_bounds",
+            params={"project_path": project_path, "tag": tag, "layer": layer},
+            project_root=project_path,
+            fn=live.get_displayable_bounds,
+            args=(project_path, tag),
+            kwargs={"layer": layer or None},
+        )
+
+    @tool_decorator()
+    def renforge_position_element(
+        project_path: str,
+        tag: str,
+        xpos: int | float | None = None,
+        ypos: int | float | None = None,
+        xanchor: int | float | None = None,
+        yanchor: int | float | None = None,
+        xalign: int | float | None = None,
+        yalign: int | float | None = None,
+        xoffset: int | float | None = None,
+        yoffset: int | float | None = None,
+        zoom: float | None = None,
+        rotate: float | None = None,
+        layer: str = "",
+    ) -> dict:
+        """Reposition a shown image tag live and return its new logical bounds.
+
+        Provide at least one placement field. The tag keeps its current
+        attributes. Positions follow Ren'Py's rule: an integer is absolute
+        pixels (``xpos=600`` is 600px), a float is a fraction of the screen
+        (``xpos=0.5`` is the centre). Use this to converge on coordinates
+        interactively, then write the final values into the ``.rpy`` script.
+        """
+        placement = {
+            "xpos": xpos,
+            "ypos": ypos,
+            "xanchor": xanchor,
+            "yanchor": yanchor,
+            "xalign": xalign,
+            "yalign": yalign,
+            "xoffset": xoffset,
+            "yoffset": yoffset,
+            "zoom": zoom,
+            "rotate": rotate,
+        }
+        placement = {key: value for key, value in placement.items() if value is not None}
+        return _log_tool_call(
+            name="renforge_position_element",
+            params={"project_path": project_path, "tag": tag, "layer": layer, **placement},
+            project_root=project_path,
+            fn=live.position_element,
+            args=(project_path, tag),
+            kwargs={"layer": layer or None, **placement},
+        )
+
+    @tool_decorator()
+    def renforge_diff_screenshots(
+        project_path: str,
+        before_path: str,
+        after_path: str = "",
+        threshold: int = 0,
+    ) -> dict:
+        """Diff two frames and return the bounding box of what changed.
+
+        ``before_path`` is a saved PNG. ``after_path`` is another saved PNG, or
+        empty to diff against the current live frame. Use it to measure how far
+        an element moved or to confirm a tweak left everything else untouched.
+        """
+        def _diff() -> dict:
+            from .image_ops import diff_images
+
+            before = Path(before_path).expanduser()
+            if not before.is_absolute():
+                before = Path(project_path).expanduser() / before
+            if after_path:
+                after: Any = Path(after_path).expanduser()
+                if not after.is_absolute():
+                    after = Path(project_path).expanduser() / after
+            else:
+                try:
+                    after = live.screenshot_png(project_path)
+                except FileNotFoundError:
+                    return {"ok": False, "error": "no running game; call renforge_launch first"}
+            return diff_images(before, after, threshold=threshold)
+
+        return _log_tool_call(
+            name="renforge_diff_screenshots",
+            params={
+                "project_path": project_path,
+                "before_path": before_path,
+                "after_path": after_path,
+                "threshold": threshold,
+            },
+            project_root=project_path,
+            fn=_diff,
+            args=(),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_eval(project_path: str, expr: str) -> dict:
         """Evaluate a Python expression in the running game's store namespace."""
         return _log_tool_call(
@@ -689,12 +795,25 @@ def _register_tools(app: Any) -> None:
         crop_width: int = 0,
         crop_height: int = 0,
         scale: float = 1.0,
+        grid: int = 0,
+        crosshair_x: int = -1,
+        crosshair_y: int = -1,
+        rulers: bool = False,
     ):
-        """Capture a game frame, optionally resizing, cropping, and zooming it."""
+        """Capture a game frame, optionally resizing, cropping, and zooming it.
+
+        Measurement guides help pixel-perfect placement: ``grid`` draws lines
+        every N pixels, ``rulers`` labels those steps along the edges, and
+        ``crosshair_x``/``crosshair_y`` mark a point. Capture at the game's
+        logical resolution (``width``/``height``) so the labels read as logical
+        coordinates.
+        """
         def _tool() -> Any:
             try:
                 if (width == 0) != (height == 0):
                     raise ValueError("width and height must be provided together")
+                if (crosshair_x < 0) != (crosshair_y < 0):
+                    raise ValueError("crosshair_x and crosshair_y must be provided together")
                 if width or height:
                     png = live.screenshot_png(project_path, width=width, height=height)
                 else:
@@ -709,6 +828,15 @@ def _register_tools(app: Any) -> None:
                         crop_width=crop_width,
                         crop_height=crop_height,
                         scale=scale,
+                    )
+                if grid or rulers or crosshair_x >= 0:
+                    from .image_ops import annotate_png
+
+                    png = annotate_png(
+                        png,
+                        grid=grid,
+                        rulers=rulers,
+                        crosshair=(crosshair_x, crosshair_y) if crosshair_x >= 0 else None,
                     )
             except FileNotFoundError:
                 return {"ok": False, "error": "no running game; call renforge_launch first"}
@@ -731,6 +859,10 @@ def _register_tools(app: Any) -> None:
                 "crop_width": crop_width,
                 "crop_height": crop_height,
                 "scale": scale,
+                "grid": grid,
+                "crosshair_x": crosshair_x,
+                "crosshair_y": crosshair_y,
+                "rulers": rulers,
             },
             project_root=project_path,
             fn=_tool,
@@ -813,7 +945,11 @@ def create_app() -> Any:
         "renforge_game_state_compact for large results. For UI interaction, call "
         "renforge_list_ui_elements first, then pass its frame_id to "
         "renforge_click_element or renforge_click_at; use "
-        "renforge_find_image_on_screen for visual template placement."
+        "renforge_find_image_on_screen for visual template placement. For "
+        "pixel-perfect layout, measure a shown image with "
+        "renforge_get_displayable_bounds, nudge it live with "
+        "renforge_position_element, overlay a grid or crosshair via "
+        "renforge_screenshot, and compare frames with renforge_diff_screenshots."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)

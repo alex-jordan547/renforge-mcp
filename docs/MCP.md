@@ -120,6 +120,42 @@ by `renforge_find_image_on_screen` use the captured PNG's coordinates, so pass
 its `coordinate_space: "screenshot"` to `renforge_click_at`. RenForge converts
 them to logical coordinates, including when WSLg scales the capture.
 
+## Pixel-perfect placement
+
+Positioning a sprite, CG, or overlay to the exact pixel is otherwise a blind
+loop: edit the `.rpy`, relaunch, eyeball the offset, repeat. These tools let an
+agent *measure* instead of guess, then converge on coordinates live before
+writing them back to the script.
+
+```text
+renforge_get_displayable_bounds(project_path, tag="eileen")
+  -> bounds, center, coordinate_space="logical"
+renforge_position_element(project_path, tag="eileen", xpos=960, xanchor=0.5)
+  -> new bounds after the nudge (tag keeps its attributes)
+renforge_screenshot(project_path, grid=100, rulers=True)
+  -> a frame with a labelled coordinate grid to read positions off
+renforge_diff_screenshots(project_path, before_path="before.png")
+  -> bounding box of every pixel that changed vs the live frame
+```
+
+Notes:
+
+- `renforge_position_element` re-shows an already-visible tag through a
+  `Transform`, so it needs the game running and the tag on screen; it keeps the
+  current image attributes (`show eileen happy` stays happy). It reports the
+  bounds the tag actually rendered at, not the values you requested.
+- Positions follow Ren'Py's own rule: an **integer** is absolute pixels
+  (`xpos=600` is 600px) and a **float** is a fraction of the screen
+  (`xpos=0.5` is the centre). Send `xpos=600`, not `xpos=600.0`, for pixels.
+- `renforge_get_displayable_bounds` and `renforge_position_element` work in
+  Ren'Py **logical** coordinates — the same space as `xpos`/`ypos` in a script,
+  so measured values drop straight into the `.rpy`.
+- Screenshot overlays (`grid`, `rulers`, `crosshair_x`/`crosshair_y`) are drawn
+  in the captured image's pixel space. Capture at the game's logical resolution
+  (pass `width`/`height`) so the labels read as logical coordinates.
+- `renforge_diff_screenshots` needs same-size frames; `threshold` (0..255)
+  absorbs anti-aliasing jitter so only real movement is reported.
+
 ## Tool catalogue
 
 ### Discovery and static analysis
@@ -145,7 +181,7 @@ them to logical coordinates, including when WSLg scales the capture.
 | `renforge_game_state` | Complete state, including variables. |
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
-| `renforge_screenshot` | Capture a frame; width, height, crop, and scale are optional. |
+| `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
 ### Choices and user interface
 
@@ -157,6 +193,9 @@ them to logical coordinates, including when WSLg scales the capture.
 | `renforge_click_element` | Click a control by ID or text. Supports `exact`, `screen`, and `expected_frame_id`. |
 | `renforge_click_at` | Click `logical` or `screenshot` coordinates, with `expected_frame_id` and `expected_state` guards. |
 | `renforge_find_image_on_screen` | Locate a local PNG template in the current frame and return confidence, bounds, center, and frame guard. |
+| `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
+| `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |
+| `renforge_diff_screenshots` | Diff two frames (or a saved PNG against the live frame) and return the changed region's bounding box. |
 
 ### State and controlled execution
 
@@ -187,8 +226,8 @@ them to logical coordinates, including when WSLg scales the capture.
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
-`renforge_select_choice`, `renforge_click_*`, `renforge_set_var`,
-`renforge_generate_translations`, `renforge_web_build`, and
+`renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
+`renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
 
 Recommended practices:

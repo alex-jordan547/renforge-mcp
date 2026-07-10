@@ -94,6 +94,37 @@ def _fake_renpy(store):
             click_mouse=lambda button, x, y: renpy._clicks.append((button, x, y))
         ),
     )
+
+    # Displayable bounds + live repositioning. `_shown` maps a tag to its
+    # rendered [x, y, w, h]; show() mutates it from the Transform's placement so
+    # a reposition round-trips through get_image_bounds like the real engine.
+    renpy._shown = {"eileen": [400, 300, 200, 400]}
+    renpy.config.screen_width = 1920
+    renpy.config.screen_height = 1080
+
+    def _get_image_bounds(tag, layer=None):
+        box = renpy._shown.get(tag)
+        return tuple(box) if box else None
+
+    renpy.get_image_bounds = _get_image_bounds
+
+    class _FakeTransform:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    renpy.store.Transform = _FakeTransform
+
+    def _show(name, at_list=None, layer=None, **kwargs):
+        tag = str(name).split()[0]
+        box = renpy._shown.setdefault(tag, [0, 0, 100, 100])
+        for transform in at_list or []:
+            placement = getattr(transform, "kwargs", {})
+            if "xpos" in placement:
+                box[0] = int(placement["xpos"])
+            if "ypos" in placement:
+                box[1] = int(placement["ypos"])
+
+    renpy.show = _show
     return renpy
 
 
@@ -295,6 +326,48 @@ def test_click_at_translates_screenshot_pixels_to_logical_coordinates(running_br
         "coordinate_space": "screenshot",
     }
     assert running_bridge.renpy._clicks[-1] == (1, 100, 200)
+
+
+def test_get_displayable_bounds_reports_logical_rect(running_bridge):
+    reply = running_bridge.client.get_displayable_bounds("eileen")
+    assert reply["ok"] is True
+    assert reply["showing"] is True
+    assert reply["bounds"] == {"x": 400, "y": 300, "width": 200, "height": 400}
+    assert reply["center"] == {"x": 500, "y": 500}
+    assert reply["coordinate_space"] == "logical"
+    assert reply["screen"] == {"width": 1920, "height": 1080}
+
+
+def test_get_displayable_bounds_missing_tag_is_a_control_result(running_bridge):
+    reply = running_bridge.client.get_displayable_bounds("ghost")
+    assert reply["ok"] is False
+    assert reply["showing"] is False
+    assert "not showing" in reply["error"]
+    assert "eileen" in reply["showing_tags"]
+
+
+def test_position_element_moves_tag_and_returns_new_bounds(running_bridge):
+    reply = running_bridge.client.position_element("eileen", xpos=960, ypos=100)
+    assert reply["ok"] is True
+    assert reply["bounds"] == {"x": 960, "y": 100, "width": 200, "height": 400}
+    # Integer positions are preserved as pixels, not coerced to a float
+    # fraction of the screen.
+    assert reply["applied"] == {"xpos": 960, "ypos": 100}
+    # The move is durable: a follow-up measurement sees the new position.
+    again = running_bridge.client.get_displayable_bounds("eileen")
+    assert again["bounds"]["x"] == 960
+
+
+def test_position_element_requires_a_placement_field(running_bridge):
+    reply = running_bridge.client.position_element("eileen")
+    assert reply["ok"] is False
+    assert "placement" in reply["error"]
+
+
+def test_position_element_rejects_a_hidden_tag(running_bridge):
+    reply = running_bridge.client.position_element("ghost", xpos=10)
+    assert reply["ok"] is False
+    assert "not showing" in reply["error"]
 
 
 def test_control_maps_toggle_auto_to_toggle_afm(running_bridge):

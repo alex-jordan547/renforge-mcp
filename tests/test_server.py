@@ -35,6 +35,9 @@ EXPECTED_TOOLS = {
     "renforge_poll_events",
     "renforge_screenshot",
     "renforge_find_image_on_screen",
+    "renforge_get_displayable_bounds",
+    "renforge_position_element",
+    "renforge_diff_screenshots",
     "renforge_autopilot",
     # assets / translation / build / docs
     "renforge_assets",
@@ -576,3 +579,100 @@ def test_screenshot_serializes_to_an_mcp_image_block(tmp_path, monkeypatch) -> N
     assert image_blocks, f"expected an image content block, got: {result.content!r}"
     assert image_blocks[0].mimeType == "image/png"
     assert base64.b64decode(image_blocks[0].data) == b"fake-png-bytes"
+
+
+def test_placement_tools_forward_to_the_bridge_client(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_bounds(path, tag, **kwargs):
+        calls["bounds"] = (path, tag, kwargs)
+        return {"ok": True, "tag": tag, "bounds": {"x": 400, "y": 300, "width": 200, "height": 400}}
+
+    def fake_position(path, tag, **kwargs):
+        calls["position"] = (path, tag, kwargs)
+        return {"ok": True, "tag": tag, "bounds": {"x": 960, "y": 100, "width": 200, "height": 400}}
+
+    monkeypatch.setattr(live, "get_displayable_bounds", fake_bounds)
+    monkeypatch.setattr(live, "position_element", fake_position)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            bounds = await client.call_tool(
+                "renforge_get_displayable_bounds",
+                {"project_path": str(tmp_path), "tag": "eileen"},
+            )
+            moved = await client.call_tool(
+                "renforge_position_element",
+                {"project_path": str(tmp_path), "tag": "eileen", "xpos": 960, "xanchor": 0.5},
+            )
+            return bounds, moved
+
+    bounds, moved = asyncio.run(_call())
+    bounds_payload = json.loads(next(b.text for b in bounds.content if b.type == "text"))
+    moved_payload = json.loads(next(b.text for b in moved.content if b.type == "text"))
+    assert bounds_payload["bounds"]["x"] == 400
+    assert moved_payload["bounds"]["x"] == 960
+    assert calls["bounds"][1] == "eileen"
+    assert calls["position"][2] == {"layer": None, "xpos": 960, "xanchor": 0.5}
+
+
+def test_diff_screenshots_tool_reports_the_changed_region(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    before = image_module.new("RGB", (120, 80), "black")
+    before.save(tmp_path / "before.png")
+    after = image_module.new("RGB", (120, 80), "black")
+    after.paste("white", (20, 10, 40, 30))
+    encoded = io.BytesIO()
+    after.save(encoded, format="PNG")
+    monkeypatch.setattr(live, "screenshot_png", lambda _path: encoded.getvalue())
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_diff_screenshots",
+                {"project_path": str(tmp_path), "before_path": "before.png"},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(b.text for b in result.content if b.type == "text"))
+    assert payload["changed"] is True
+    assert payload["bounds"] == {"x": 20, "y": 10, "width": 20, "height": 20}
+
+
+def test_screenshot_can_overlay_a_measurement_grid(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import base64
+
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    frame = image_module.new("RGB", (200, 120), "navy")
+    encoded = io.BytesIO()
+    frame.save(encoded, format="PNG")
+    monkeypatch.setattr(live, "screenshot_png", lambda *a, **k: encoded.getvalue())
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_screenshot",
+                {"project_path": str(tmp_path), "grid": 50, "rulers": True},
+            )
+
+    result = asyncio.run(_call())
+    image_blocks = [b for b in result.content if getattr(b, "type", None) == "image"]
+    assert image_blocks, f"expected an image block, got: {result.content!r}"
+    annotated = image_module.open(io.BytesIO(base64.b64decode(image_blocks[0].data)))
+    assert annotated.size == (200, 120)
+    assert annotated.convert("RGB").getpixel((50, 60)) != (0, 0, 128)

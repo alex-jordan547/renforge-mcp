@@ -124,3 +124,52 @@ def test_autopilot_covers_all_labels(sdk, demo_copy: Path) -> None:
     assert report["labels_unreached"] == []
     assert report["crashes"] == []
     assert report["choices_explored"] >= 2  # both branches taken
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_displayable_bounds_and_repositioning(sdk, demo_copy: Path) -> None:
+    """Exercise the pixel-perfect tools against a real engine.
+
+    Unit tests use a fake ``renpy``; this proves the real
+    ``renpy.get_image_bounds`` and ``renpy.show(at_list=[Transform])`` behave as
+    the bridge assumes, and that the image overlays/diff run on real frames.
+    """
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.image_ops import annotate_png, diff_images
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+
+        # Advance until the "wisp" sprite is actually on screen.
+        for _ in range(8):
+            if "wisp" in client.get_state().get("showing_tags", []):
+                break
+            client.advance()
+            time.sleep(1.0)
+        assert "wisp" in client.get_state()["showing_tags"], "wisp sprite never shown"
+
+        # 1) get_displayable_bounds returns a real logical rectangle.
+        measured = client.get_displayable_bounds("wisp")
+        assert measured["ok"] is True, measured
+        assert measured["coordinate_space"] == "logical"
+        start = measured["bounds"]
+        assert start["width"] > 0 and start["height"] > 0, measured
+
+        # 2) overlay + diff run on genuine PNG frames of the same size.
+        before_png = client.screenshot()
+        overlaid = annotate_png(before_png, grid=100, rulers=True, crosshair=(start["x"], start["y"]))
+        assert overlaid.startswith(b"\x89PNG") and len(overlaid) > 1000
+
+        # 3) position_element moves the sprite; bounds and the frame both change.
+        target_x = start["x"] + 200
+        moved = client.position_element("wisp", xpos=target_x, xanchor=0.0, ypos=start["y"], yanchor=0.0)
+        assert moved["ok"] is True, moved
+        assert moved["bounds"]["x"] != start["x"], (start, moved["bounds"])
+        assert abs(moved["bounds"]["x"] - target_x) <= 2, moved
+
+        # 4) the reposition is measurable frame-to-frame.
+        after_png = client.screenshot()
+        diff = diff_images(before_png, after_png, threshold=16)
+        assert diff["changed"] is True, diff
+        assert diff["bounds"] is not None, diff

@@ -152,3 +152,83 @@ def test_find_image_matches_rejects_bad_inputs_and_empty_alpha() -> None:
     transparent = image_module.new("RGBA", (2, 2), (255, 255, 255, 0))
     with pytest.raises(ValueError, match="no visible pixels"):
         find_image_matches(_png(4, 4), _encoded(transparent))
+
+
+def test_annotate_png_overlays_guides_without_resizing() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import annotate_png
+
+    base = image_module.new("RGB", (200, 120), "navy")
+    annotated = annotate_png(
+        _encoded(base), grid=50, rulers=True, crosshair=(100, 60)
+    )
+
+    result = image_module.open(io.BytesIO(annotated))
+    assert result.size == (200, 120)
+    # The overlay must actually change pixels along a gridline.
+    assert result.convert("RGB").getpixel((50, 60)) != (0, 0, 128)
+
+
+def test_annotate_png_rejects_out_of_bounds_crosshair() -> None:
+    pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import annotate_png
+
+    with pytest.raises(ValueError, match="inside the image"):
+        annotate_png(_png(20, 10), crosshair=(50, 5))
+
+
+def test_annotate_png_rejects_tiny_grid_spacing() -> None:
+    pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import annotate_png
+
+    with pytest.raises(ValueError, match="at least 5 pixels"):
+        annotate_png(_png(20, 10), grid=2)
+
+
+def test_diff_images_locates_the_changed_region() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import diff_images
+
+    before = image_module.new("RGB", (200, 120), "black")
+    before.paste("white", (10, 10, 30, 30))
+    after = image_module.new("RGB", (200, 120), "black")
+    after.paste("white", (50, 10, 70, 30))
+
+    result = diff_images(_encoded(before), _encoded(after))
+
+    assert result["changed"] is True
+    assert result["bounds"] == {"x": 10, "y": 10, "width": 60, "height": 20}
+    assert result["center"] == {"x": 40, "y": 20}
+    assert result["changed_pixels"] == 800
+    assert result["total_pixels"] == 200 * 120
+
+
+def test_diff_images_reports_no_change_for_identical_frames() -> None:
+    pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import diff_images
+
+    frame = _png(40, 30)
+    result = diff_images(frame, frame)
+
+    assert result["changed"] is False
+    assert result["bounds"] is None
+    assert result["changed_pixels"] == 0
+
+
+def test_diff_images_threshold_absorbs_small_jitter() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import diff_images
+
+    before = image_module.new("RGB", (20, 20), (100, 100, 100))
+    after = image_module.new("RGB", (20, 20), (104, 104, 104))
+
+    assert diff_images(_encoded(before), _encoded(after), threshold=10)["changed"] is False
+    assert diff_images(_encoded(before), _encoded(after), threshold=0)["changed"] is True
+
+
+def test_diff_images_rejects_mismatched_sizes() -> None:
+    pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import diff_images
+
+    with pytest.raises(ValueError, match="differ in size"):
+        diff_images(_png(20, 10), _png(30, 10))
