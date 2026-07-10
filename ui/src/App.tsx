@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, getToken, normalizeTimelineEntries, socketMessageToTimeline } from "./api";
 import type { LiveScreenshot, LiveState, SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
@@ -10,6 +10,7 @@ import { LivePage } from "./pages/LivePage";
 import { StoryMapPage } from "./pages/StoryMapPage";
 import { TimelinePage } from "./pages/TimelinePage";
 import { TranslationPage } from "./pages/TranslationPage";
+import { ProjectPicker } from "./components/ProjectPicker";
 
 const SECTIONS = [
   { id: "live", label: "Live" },
@@ -49,6 +50,14 @@ function mergeTimelineItems(current: TimelineItem[], incoming: TimelineItem[]): 
     .slice(0, 250);
 }
 
+function projectName(path: string | null): string {
+  if (!path) {
+    return "Project";
+  }
+  const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "Project";
+}
+
 class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { hasError: false, error: null };
 
@@ -86,6 +95,10 @@ export function App() {
   const [storyMapLoading, setStoryMapLoading] = useState(true);
   const [storyMapError, setStoryMapError] = useState<string | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<TimelineItem[]>([]);
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [projectRevision, setProjectRevision] = useState(0);
+  const projectPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -95,7 +108,25 @@ export function App() {
   const [liveFrame, setLiveFrame] = useState<LiveScreenshot | null>(null);
   const token = getToken();
 
+  const updateProject = useCallback((project: string) => {
+    if (projectPathRef.current === project) {
+      setProjectPickerOpen(false);
+      return;
+    }
+    projectPathRef.current = project;
+    setProjectPath(project);
+    setProjectPickerOpen(false);
+    setProjectRevision((revision) => revision + 1);
+  }, []);
+
   const handleSocketMessage = useCallback((message: SocketEnvelope) => {
+    if (message.kind === "project" && message.type === "project-changed") {
+      const project = (message.payload as { project?: unknown } | undefined)?.project;
+      if (typeof project === "string") {
+        updateProject(project);
+      }
+      return;
+    }
     // Route live frames to the Live view and narrative events to the Timeline.
     if (message.type === "state" && message.payload) {
       setLiveState(message.payload as unknown as LiveState);
@@ -107,13 +138,16 @@ export function App() {
       return;
     }
     setTimelineEvents((prev) => mergeTimelineItems(prev, [next]));
-  }, []);
+  }, [updateProject]);
 
   const wsPath = token ? `/ws?token=${encodeURIComponent(token)}` : "/ws";
   const ws = useWebSocket({ path: wsPath, onMessage: handleSocketMessage });
 
   useEffect(() => {
     let mounted = true;
+    setTimelineEvents([]);
+    setLiveState(null);
+    setLiveFrame(null);
     const load = async () => {
       setStoryMapLoading(true);
       try {
@@ -163,6 +197,21 @@ export function App() {
     loadLive();
     loadRecentTimeline();
 
+    return () => {
+      mounted = false;
+    };
+  }, [projectRevision]);
+
+  useEffect(() => {
+    let mounted = true;
+    api.fetchProject()
+      .then((response) => {
+        if (mounted) {
+          projectPathRef.current = response.project;
+          setProjectPath(response.project);
+        }
+      })
+      .catch((error) => console.error("Failed to load project", error));
     return () => {
       mounted = false;
     };
@@ -400,6 +449,25 @@ export function App() {
             </div>
 
             <button
+              className="project-switcher"
+              type="button"
+              onClick={() => setProjectPickerOpen(true)}
+              title="Switch project"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3.5 6.5h6l1.7 2h9.3v9.3a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2z" />
+                <path d="M3.5 8.5h17" />
+              </svg>
+              <span className="project-switcher-copy">
+                <span className="k">Switch project</span>
+                <span className="v">{projectName(projectPath)}</span>
+              </span>
+              <svg className="project-switcher-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+
+            <button
               className="theme-toggle"
               type="button"
               onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
@@ -418,11 +486,16 @@ export function App() {
         </header>
 
         <main className="content">
-          <DashboardErrorBoundary key={activeSection}>
+          <DashboardErrorBoundary key={`${activeSection}-${projectRevision}`}>
             {dashboard}
           </DashboardErrorBoundary>
         </main>
       </div>
+      <ProjectPicker
+        open={projectPickerOpen}
+        onClose={() => setProjectPickerOpen(false)}
+        onSelected={updateProject}
+      />
     </div>
   );
 }

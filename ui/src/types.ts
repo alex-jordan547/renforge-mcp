@@ -108,12 +108,17 @@ export interface SocketActivityMessage {
   timestamp?: string | number;
 }
 
+export interface SocketProjectMessage {
+  project?: string;
+  generation?: number;
+}
+
 export interface SocketEnvelope {
-  kind?: "bridge" | "activity";
+  kind?: "bridge" | "activity" | "project";
   source?: string;
   type?: string;
-  event?: SocketBridgeMessage | SocketActivityMessage;
-  payload?: SocketBridgeMessage | SocketActivityMessage;
+  event?: SocketBridgeMessage | SocketActivityMessage | SocketProjectMessage;
+  payload?: SocketBridgeMessage | SocketActivityMessage | SocketProjectMessage;
   timestamp?: string | number;
 }
 
@@ -181,4 +186,30 @@ export interface FileContent {
   content: string;
   size?: number;
   [key: string]: unknown;
+}
+
+export interface ProjectBrowserRoot {
+  id: string;
+  label: string;
+  path: string;
+}
+
+export interface ProjectBrowserEntry {
+  name: string;
+  path: string;
+  project: boolean;
+  markers: string[];
+}
+
+export interface ProjectBrowserResponse {
+  ok: boolean;
+  roots: ProjectBrowserRoot[];
+  root_id: string;
+  path: string;
+  parent_path: string;
+  project: boolean;
+  markers: string[];
+  entries: ProjectBrowserEntry[];
+  truncated: boolean;
+  error?: string;
 }

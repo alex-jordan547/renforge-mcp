@@ -9,6 +9,7 @@ import type {
   LiveChoice,
   LiveScreenshot,
   LiveState,
+  ProjectBrowserResponse,
   SocketEnvelope,
   TimelineItem,
   StoryMapResponse,
@@ -283,8 +284,11 @@ function checkBooleanResponse(payload: unknown, action: string): void {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || `HTTP ${response.status}`);
+    const body: unknown = await response.json().catch(() => null);
+    if (isBackendFailure(body)) {
+      throw new Error(extractError(body));
+    }
+    throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as T;
 }
@@ -506,6 +510,29 @@ export function normalizeTimelineEntries(messages: SocketEnvelope[]): TimelineIt
 }
 
 export const api = {
+  async fetchProject(): Promise<{ ok: boolean; project: string }> {
+    return apiGet<{ ok: boolean; project: string }>("/api/project");
+  },
+
+  async browseProjects(rootId?: string, path = ""): Promise<ProjectBrowserResponse> {
+    const query = new URLSearchParams();
+    if (rootId) {
+      query.set("root_id", rootId);
+    }
+    if (path) {
+      query.set("path", path);
+    }
+    const response = await apiGet<ProjectBrowserResponse>(`/api/project/browser${query.size ? `?${query}` : ""}`);
+    checkBooleanResponse(response, "Project browser");
+    return response;
+  },
+
+  async selectProject(rootId: string, path: string): Promise<{ ok: boolean; project: string; error?: string }> {
+    const response = await apiPost<unknown>("/api/project", { root_id: rootId, path });
+    checkBooleanResponse(response, "Project selection");
+    return response as { ok: boolean; project: string; error?: string };
+  },
+
   async fetchStoryMap(): Promise<StoryMapResponse> {
     return apiGet<StoryMapResponse>("/api/story-map");
   },

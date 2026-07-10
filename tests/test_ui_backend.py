@@ -29,6 +29,13 @@ def _project_root(tmp_path: Path) -> Path:
     return project
 
 
+def _project_at(path: Path) -> Path:
+    game = path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    return path
+
+
 def test_resolve_game_file_path_rejects_traversal(tmp_path: Path) -> None:
     project = _project_root(tmp_path)
     result = graph.resolve_game_file_path(project, "../outside.rpy")
@@ -218,6 +225,116 @@ def test_api_live_stop_dispatches_runtime_stop(tmp_path: Path, monkeypatch) -> N
     assert response.status_code == 200
     assert response.json() == {"ok": True, "was_running": True}
     assert calls == {"project_path": str(project)}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_project_browser_opens_current_project_and_lists_project_parent(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    _project_at(tmp_path / "other-project")
+    (tmp_path / "notes").mkdir()
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+
+    response = client.get("/api/project/browser?token=token")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["root_id"] == "current-project"
+    assert payload["path"] == ""
+    assert payload["project"] is True
+    assert {entry["name"] for entry in payload["entries"]} == {"game"}
+
+    parent = client.get("/api/project/browser?token=token&root_id=project-parent")
+    assert parent.status_code == 200
+    assert {entry["name"] for entry in parent.json()["entries"]} == {"other-project", "project", "notes"}
+    assert next(entry for entry in parent.json()["entries"] if entry["name"] == "other-project")["project"] is True
+
+    child = client.get("/api/project/browser?token=token&root_id=project-parent&path=other-project")
+    assert child.status_code == 200
+    assert child.json()["parent_path"] == ""
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_project_browser_rejects_paths_outside_root(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+
+    response = client.get("/api/project/browser?token=token&path=../outside")
+
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert "selected root" in response.json()["error"]
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_project_selection_rejects_non_project_directory(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    (tmp_path / "not-a-project").mkdir()
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/project?token=token",
+        json={"root_id": "project-parent", "path": "not-a-project"},
+    )
+
+    assert response.status_code == 422
+    assert "missing game/" in response.json()["error"]
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_project_selection_refuses_while_game_is_running(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    _project_at(tmp_path / "other-project")
+    monkeypatch.setattr(server.live, "game_state", lambda _path: {"ok": True})
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/project?token=token",
+        json={"root_id": "project-parent", "path": "other-project"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "stop the running game before switching projects"
+    assert client.get("/api/project?token=token").json()["project"] == str(project)
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_project_selection_switches_runtime_and_notifies_clients(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    target = _project_at(tmp_path / "other-project")
+    broadcasts: list[dict] = []
+
+    async def wait_for_stop(_root, _hub, stop_event):
+        await stop_event.wait()
+
+    async def record_broadcast(_self, payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(server.live, "game_state", lambda _path: {"ok": False})
+    monkeypatch.setattr(server, "poll_bridge", wait_for_stop)
+    monkeypatch.setattr(server, "tail_activity", wait_for_stop)
+    monkeypatch.setattr(server.WebSocketHub, "broadcast", record_broadcast)
+    app = create_ui_app(project, ui_token="token")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/project?token=token",
+            json={"root_id": "project-parent", "path": "other-project"},
+        )
+        assert response.status_code == 200
+        assert response.json()["project"] == str(target)
+        assert client.get("/api/project?token=token").json()["project"] == str(target)
+
+    assert broadcasts[0]["kind"] == "project"
+    assert broadcasts[0]["type"] == "project-changed"
+    assert broadcasts[0]["payload"]["project"] == str(target)
 
 
 def test_list_choices_filters_out_non_choice_screen_controls(monkeypatch, tmp_path) -> None:
