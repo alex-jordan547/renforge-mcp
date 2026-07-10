@@ -13,12 +13,15 @@ The MCP server uses `stdio` and starts with:
 uvx renforge serve
 ```
 
-With a local installation:
+For a persistent installation with the dashboard:
 
 ```bash
-pipx install renforge
+pipx install "renforge[ui]"
 renforge serve
 ```
+
+Install `renforge` without `[ui]` only when the stdio MCP server is all that is
+needed. The dashboard command requires the optional UI dependencies.
 
 To develop RenForge:
 
@@ -35,7 +38,7 @@ The dashboard is a separate process:
 renforge ui --project /path/to/game
 ```
 
-When the dashboard is running, an `renforge_launch` request from an MCP client
+When the dashboard is running, a `renforge_launch` request from an MCP client
 is delegated to it. This is particularly useful with WSLg or when the MCP
 client does not have direct access to a graphical display.
 
@@ -97,11 +100,12 @@ For image-driven interaction:
 
 ```text
 renforge_find_image_on_screen(project_path, template_path)
-  -> bounds, center, coordinate_space="screenshot", frame_id
+  -> matches[], coordinate_space="screenshot", frame_id
+match = matches[0]
 renforge_click_at(
   project_path,
-  x=center.x,
-  y=center.y,
+  x=match.center.x,
+  y=match.center.y,
   coordinate_space="screenshot",
   expected_frame_id=frame_id,
 )
@@ -182,7 +186,8 @@ them to logical coordinates, including when WSLg scales the capture.
 ## Writes and safety
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
-`renforge_new_game`, `renforge_stop`, `renforge_click_*`, `renforge_set_var`,
+`renforge_new_game`, `renforge_stop`, `renforge_advance`,
+`renforge_select_choice`, `renforge_click_*`, `renforge_set_var`,
 `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
 
