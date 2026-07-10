@@ -224,6 +224,101 @@ def select_choice(project_path: str, text: str | None = None, index: int | None 
     return _with_client(project_path, lambda c: c.select_choice(text=text, index=index))
 
 
+def list_ui_elements(
+    project_path: str,
+    *,
+    screen: str | None = None,
+    text: str | None = None,
+    element_type: str | None = None,
+) -> dict:
+    """List visible focusable Ren'Py controls and screen-space bounds."""
+
+    def _handler(client: BridgeClient) -> dict:
+        info_method = getattr(client, "list_ui_elements_info", None)
+        if callable(info_method):
+            info = info_method(
+                screen=screen,
+                text=text,
+                element_type=element_type,
+            )
+        else:
+            # Keep dashboard/older bridge fakes compatible while the frame
+            # metadata remains available when supported by the bridge.
+            info = {
+                "elements": client.list_ui_elements(
+                    screen=screen,
+                    text=text,
+                    element_type=element_type,
+                )
+            }
+        return {
+            "ok": True,
+            **info,
+        }
+
+    return _with_client(project_path, _handler)
+
+
+def click_element(
+    project_path: str,
+    text: str | None = None,
+    id: str | None = None,
+    *,
+    screen: str | None = None,
+    exact: bool = False,
+    element_id: str | None = None,
+    expected_frame_id: str | None = None,
+) -> dict:
+    """Click a visible control by semantic text or an ID from list_ui_elements."""
+    def _handler(client: BridgeClient) -> dict:
+        kwargs: dict[str, Any] = {
+            "text": text,
+            "id": id,
+            "screen": screen,
+            "exact": exact,
+            "element_id": element_id,
+        }
+        if expected_frame_id is not None:
+            kwargs["expected_frame_id"] = expected_frame_id
+        return client.click_element(**kwargs)
+
+    return _with_client(
+        project_path,
+        _handler,
+    )
+
+
+def click_at(
+    project_path: str,
+    x: int | float,
+    y: int | float,
+    *,
+    expected_screenshot: str | dict[str, Any] | None = None,
+    expected_state: dict[str, Any] | None = None,
+    expected_screenshot_hash: str | None = None,
+    expected_frame_id: str | None = None,
+    coordinate_space: str = "logical",
+) -> dict:
+    """Click screen coordinates with optional screenshot/state guards."""
+    def _handler(client: BridgeClient) -> dict:
+        kwargs: dict[str, Any] = {}
+        if expected_screenshot is not None:
+            kwargs["expected_screenshot"] = expected_screenshot
+        if expected_state is not None:
+            kwargs["expected_state"] = expected_state
+        if expected_screenshot_hash is not None:
+            kwargs["expected_screenshot_hash"] = expected_screenshot_hash
+        if expected_frame_id is not None:
+            kwargs["expected_frame_id"] = expected_frame_id
+        kwargs["coordinate_space"] = coordinate_space
+        return client.click_at(x, y, **kwargs)
+
+    return _with_client(
+        project_path,
+        _handler,
+    )
+
+
 def eval_expr(project_path: str, expr: str) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, "value": c.eval_expr(expr)})
 
@@ -269,6 +364,9 @@ __all__ = [
     "control",
     "list_choices",
     "select_choice",
+    "list_ui_elements",
+    "click_element",
+    "click_at",
     "eval_expr",
     "get_var",
     "set_var",

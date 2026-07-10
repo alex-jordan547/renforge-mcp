@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -409,6 +410,94 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_list_ui_elements(
+        project_path: str,
+        screen: str = "",
+        text: str = "",
+        element_type: str = "",
+    ) -> dict:
+        """List visible focusable Ren'Py controls with bounds and frame guard."""
+        return _log_tool_call(
+            name="renforge_list_ui_elements",
+            params={
+                "project_path": project_path,
+                "screen": screen,
+                "text": text,
+                "element_type": element_type,
+            },
+            project_root=project_path,
+            fn=live.list_ui_elements,
+            args=(project_path,),
+            kwargs={
+                "screen": screen or None,
+                "text": text or None,
+                "element_type": element_type or None,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_click_element(
+        project_path: str,
+        text: str = "",
+        element_id: str = "",
+        screen: str = "",
+        exact: bool = False,
+        expected_frame_id: str = "",
+    ) -> dict:
+        """Click a visible control by text/id, guarded against a stale frame."""
+        return _log_tool_call(
+            name="renforge_click_element",
+            params={
+                "project_path": project_path,
+                "text": text,
+                "element_id": element_id,
+                "screen": screen,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id,
+            },
+            project_root=project_path,
+            fn=live.click_element,
+            args=(project_path,),
+            kwargs={
+                "text": text or None,
+                "element_id": element_id or None,
+                "screen": screen or None,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id or None,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_click_at(
+        project_path: str,
+        x: float,
+        y: float,
+        expected_frame_id: str = "",
+        expected_state: dict[str, Any] | None = None,
+        coordinate_space: str = "logical",
+    ) -> dict:
+        """Click screen coordinates with optional frame/state safety guards."""
+        return _log_tool_call(
+            name="renforge_click_at",
+            params={
+                "project_path": project_path,
+                "x": x,
+                "y": y,
+                "expected_frame_id": expected_frame_id,
+                "expected_state": expected_state,
+                "coordinate_space": coordinate_space,
+            },
+            project_root=project_path,
+            fn=live.click_at,
+            args=(project_path, x, y),
+            kwargs={
+                "expected_frame_id": expected_frame_id or None,
+                "expected_state": expected_state,
+                "coordinate_space": coordinate_space,
+            },
+        )
+
+    @tool_decorator()
     def renforge_eval(project_path: str, expr: str) -> dict:
         """Evaluate a Python expression in the running game's store namespace."""
         return _log_tool_call(
@@ -649,6 +738,67 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
+    @tool_decorator()
+    def renforge_find_image_on_screen(
+        project_path: str,
+        template_path: str,
+        threshold: float = 0.92,
+        max_matches: int = 20,
+        region_x: int = 0,
+        region_y: int = 0,
+        region_width: int = 0,
+        region_height: int = 0,
+    ) -> dict:
+        """Find a template image in the current frame and return its bounds."""
+        def _find() -> dict:
+            from .image_ops import find_image_matches
+
+            if (region_width == 0) != (region_height == 0):
+                raise ValueError("region_width and region_height must be provided together")
+            if (region_x or region_y) and not (region_width and region_height):
+                raise ValueError("region coordinates require region_width and region_height")
+            screenshot = live.screenshot_png(project_path)
+            template = Path(template_path).expanduser()
+            if not template.is_absolute():
+                template = Path(project_path).expanduser() / template
+            region = (
+                (region_x, region_y, region_width, region_height)
+                if region_width and region_height
+                else None
+            )
+            result = find_image_matches(
+                screenshot,
+                template,
+                threshold=threshold,
+                max_matches=max_matches,
+                region=region,
+            )
+            result["frame_id"] = hashlib.sha256(screenshot).hexdigest()
+            result["coordinate_space"] = "screenshot"
+            result["click_hint"] = {
+                "coordinate_space": "screenshot",
+                "expected_frame_id": result["frame_id"],
+            }
+            return result
+
+        return _log_tool_call(
+            name="renforge_find_image_on_screen",
+            params={
+                "project_path": project_path,
+                "template_path": template_path,
+                "threshold": threshold,
+                "max_matches": max_matches,
+                "region_x": region_x,
+                "region_y": region_y,
+                "region_width": region_width,
+                "region_height": region_height,
+            },
+            project_root=project_path,
+            fn=_find,
+            args=(),
+            kwargs={},
+        )
+
 
 def create_app() -> Any:
     backend_cls, _ = _get_fastmcp_backend()
@@ -660,7 +810,10 @@ def create_app() -> Any:
         "dashboard; use active_project for project_path instead of guessing. "
         "When that dashboard is active, renforge_launch delegates display-bound startup "
         "to its process automatically. Prefer bounded scan queries and "
-        "renforge_game_state_compact for large results."
+        "renforge_game_state_compact for large results. For UI interaction, call "
+        "renforge_list_ui_elements first, then pass its frame_id to "
+        "renforge_click_element or renforge_click_at; use "
+        "renforge_find_image_on_screen for visual template placement."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)

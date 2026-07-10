@@ -26,11 +26,15 @@ EXPECTED_TOOLS = {
     "renforge_advance",
     "renforge_list_choices",
     "renforge_select_choice",
+    "renforge_list_ui_elements",
+    "renforge_click_element",
+    "renforge_click_at",
     "renforge_eval",
     "renforge_get_var",
     "renforge_set_var",
     "renforge_poll_events",
     "renforge_screenshot",
+    "renforge_find_image_on_screen",
     "renforge_autopilot",
     # assets / translation / build / docs
     "renforge_assets",
@@ -294,6 +298,118 @@ def test_new_game_tool_relaunches_a_fresh_process_at_start(tmp_path, monkeypatch
         "version": "stable",
         "warp": "game/script.rpy:1",
     }
+
+
+def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setattr(
+        live,
+        "list_ui_elements",
+        lambda path, **kwargs: {
+            "ok": True,
+            "frame_id": "frame-1",
+            "elements": [
+                {
+                    "id": "save-1",
+                    "text": "Save",
+                    "type": "button",
+                    "bounds": {"x": 20, "y": 30, "width": 80, "height": 40},
+                }
+            ],
+            "screen": "quick_menu",
+        },
+    )
+
+    def fake_click_element(path, **kwargs):
+        calls["element"] = (path, kwargs)
+        return {"ok": True, "id": kwargs["element_id"], "x": 60, "y": 50}
+
+    def fake_click_at(path, x, y, **kwargs):
+        calls["at"] = (path, x, y, kwargs)
+        return {"ok": True, "x": x, "y": y}
+
+    monkeypatch.setattr(live, "click_element", fake_click_element)
+    monkeypatch.setattr(live, "click_at", fake_click_at)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            listed = await client.call_tool(
+                "renforge_list_ui_elements", {"project_path": str(tmp_path)}
+            )
+            clicked = await client.call_tool(
+                "renforge_click_element",
+                {
+                    "project_path": str(tmp_path),
+                    "element_id": "save-1",
+                    "expected_frame_id": "frame-1",
+                },
+            )
+            by_coord = await client.call_tool(
+                "renforge_click_at",
+                {
+                    "project_path": str(tmp_path),
+                    "x": 60,
+                    "y": 50,
+                    "expected_frame_id": "frame-1",
+                    "expected_state": {"menu": True},
+                    "coordinate_space": "screenshot",
+                },
+            )
+            return listed, clicked, by_coord
+
+    listed, clicked, by_coord = asyncio.run(_call())
+    listed_payload = json.loads(next(block.text for block in listed.content if block.type == "text"))
+    clicked_payload = json.loads(next(block.text for block in clicked.content if block.type == "text"))
+    coord_payload = json.loads(next(block.text for block in by_coord.content if block.type == "text"))
+    assert listed_payload["elements"][0]["bounds"]["width"] == 80
+    assert clicked_payload == {"ok": True, "id": "save-1", "x": 60, "y": 50}
+    assert coord_payload == {"ok": True, "x": 60, "y": 50}
+    assert calls["element"][1]["expected_frame_id"] == "frame-1"
+    assert calls["at"][3]["expected_state"] == {"menu": True}
+    assert calls["at"][3]["coordinate_space"] == "screenshot"
+
+
+def test_find_image_on_screen_returns_template_bounds(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    game = tmp_path / "game"
+    game.mkdir()
+    source = image_module.new("RGB", (30, 20), "black")
+    source.paste("white", (12, 6, 16, 10))
+    encoded = io.BytesIO()
+    source.save(encoded, format="PNG")
+    template = game / "save.png"
+    source.crop((12, 6, 16, 10)).save(template)
+    monkeypatch.setattr(live, "screenshot_png", lambda _path: encoded.getvalue())
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_find_image_on_screen",
+                {"project_path": str(tmp_path), "template_path": "game/save.png"},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is True
+    assert payload["matches"][0]["bounds"] == {
+        "x": 12,
+        "y": 6,
+        "width": 4,
+        "height": 4,
+    }
+    assert len(payload["frame_id"]) == 64
+    assert payload["coordinate_space"] == "screenshot"
+    assert payload["click_hint"]["expected_frame_id"] == payload["frame_id"]
 
 
 def test_inspect_image_crops_and_zooms_without_external_scripts(tmp_path) -> None:

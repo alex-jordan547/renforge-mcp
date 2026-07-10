@@ -217,6 +217,8 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_list_choices`,
   `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
   `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
+- `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
+  `renforge_find_image_on_screen`
 - `renforge_autopilot`
 - `renforge_assets`, `renforge_languages`, `renforge_translation_stats`,
   `renforge_generate_translations`, `renforge_export_dialogue`
@@ -229,7 +231,16 @@ accepts `sections`, `file_glob`, `symbol`, `offset`, and `limit`, while
 `variable_names` or `variable_prefix` is requested. The original
 `renforge_game_state` remains backward compatible. `renforge_screenshot` and
 `renforge_inspect_image` accept crop coordinates plus `scale` for close visual
-inspection without a separate image-processing script.
+inspection without a separate image-processing script. For visual interaction,
+call `renforge_list_ui_elements` first: it returns visible controls, bounds,
+semantic text, and a `frame_id`. Pass that id to `renforge_click_element` or
+`renforge_click_at` so a stale screenshot cannot silently produce a wrong click.
+`renforge_find_image_on_screen` locates a local PNG/template in the current
+frame and returns bounds, center, and confidence; its result also includes a
+`frame_id` suitable for the guarded click call. Template bounds are in
+`coordinate_space: "screenshot"`; pass that value to `renforge_click_at` so
+Ren'Py's logical coordinates are derived correctly even when WSLg scales the
+captured image.
 
 ### Live control
 

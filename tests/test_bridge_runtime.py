@@ -236,6 +236,67 @@ def test_select_choice_without_match_returns_error(running_bridge):
     assert "error" in reply
 
 
+def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
+    elements = running_bridge.client.list_ui_elements()
+    assert [element["text"] for element in elements] == ["Alpha choice", "Beta choice"]
+    assert elements[0]["bounds"] == {"x": 10, "y": 10, "width": 100, "height": 20}
+    assert elements[0]["center"] == {"x": 60, "y": 20}
+    assert elements[0]["enabled"] is True
+    assert elements[0]["visible"] is True
+    assert elements[0]["type"] == "_FakeWidget"
+    assert elements[0]["id"]
+    info = running_bridge.client.list_ui_elements_info()
+    assert info["elements"] == elements
+    assert len(info["frame_id"]) == 64
+
+
+def test_click_element_by_id_and_click_at_guards(running_bridge):
+    element = running_bridge.client.list_ui_elements()[1]
+    clicked = running_bridge.client.click_element(id=element["id"])
+    assert clicked["ok"] is True
+    assert clicked["x"] == 60 and clicked["y"] == 50
+
+    frame_hash = running_bridge.client.screenshot_hash()
+    guarded = running_bridge.client.click_at(
+        123,
+        77,
+        expected_screenshot=frame_hash,
+        expected_state={"current_label": None, "menu": False},
+    )
+    assert guarded["ok"] is True
+    assert running_bridge.renpy._clicks[-1] == (1, 123, 77)
+
+    mismatch = running_bridge.client.click_at(
+        123,
+        77,
+        expected_screenshot="0" * 64,
+    )
+    assert mismatch["ok"] is False
+    assert "expected_screenshot" in mismatch["error"]
+
+
+def test_click_at_translates_screenshot_pixels_to_logical_coordinates(running_bridge):
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    import io
+
+    image = image_module.new("RGB", (100, 50), "black")
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+    running_bridge.renpy.screenshot_to_bytes = lambda _size: encoded.getvalue()
+    running_bridge.renpy.config.screen_width = 1000
+    running_bridge.renpy.config.screen_height = 500
+
+    result = running_bridge.client.click_at(10, 20, coordinate_space="screenshot")
+
+    assert result == {
+        "ok": True,
+        "x": 100,
+        "y": 200,
+        "coordinate_space": "screenshot",
+    }
+    assert running_bridge.renpy._clicks[-1] == (1, 100, 200)
+
+
 def test_control_maps_toggle_auto_to_toggle_afm(running_bridge):
     reply = running_bridge.client.control("toggle_auto")
     assert reply["ok"] is True

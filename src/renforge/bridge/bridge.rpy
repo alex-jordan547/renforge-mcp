@@ -21,10 +21,12 @@ init python:
 
     import base64
     import collections
+    import hashlib
     import json
     import os
     import queue
     import socket
+    import struct
     import sys
     import threading
     import types
@@ -138,7 +140,14 @@ init python:
         height = int(payload.get("height", 0) or 0)
         size = (width, height) if (width and height) else None
         data = renpy.screenshot_to_bytes(size)  # PNG bytes
-        return {"format": "png", "base64": base64.b64encode(data).decode("ascii")}
+        return {
+            "format": "png",
+            "base64": base64.b64encode(data).decode("ascii"),
+            # The digest lets an external client use the exact frame it
+            # inspected as an optimistic click guard, without storing image
+            # data in the bridge process.
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
 
     def _renforge_h_advance(payload):
         # Post a "dismiss" event (the keymap action that advances dialogue).
@@ -228,6 +237,8 @@ init python:
     def _renforge_screen_name(focus):
         scr = getattr(focus, "screen", None)
         name = getattr(scr, "screen_name", None)
+        if name is None:
+            name = getattr(focus, "screen_name", None)
         if not name:
             return None
         try:
@@ -235,31 +246,437 @@ init python:
         except Exception:
             return None
 
-    def _renforge_focusable_choices():
-        # On-screen focusables that expose text (menu choices, buttons).
-        # Each entry is (focus, text, screen_name).
-        choices = []
-        try:
-            focus_list = renpy.display.focus.focus_list
-        except Exception:
-            return choices
-        for focus in focus_list:
-            if getattr(focus, "x", None) is None:
-                continue
-            widget = getattr(focus, "widget", None)
-            if widget is None:
+    def _renforge_focus_text(widget):
+        """Best-effort accessible text for a Ren'Py focus widget."""
+        if widget is None:
+            return ""
+        text = None
+        for method_name in ("_tts_all", "get_text"):
+            method = getattr(widget, method_name, None)
+            if not callable(method):
                 continue
             try:
-                text = widget._tts_all()
+                text = method()
             except Exception:
                 continue
             if text:
-                choices.append((focus, text, _renforge_screen_name(focus)))
+                break
+        if text is None:
+            for attr_name in ("text", "label", "caption", "value"):
+                value = getattr(widget, attr_name, None)
+                if value is not None and not callable(value):
+                    text = value
+                    if text:
+                        break
+        if isinstance(text, (list, tuple)):
+            text = " ".join(str(part) for part in text if part is not None)
+        if text is None:
+            return ""
+        try:
+            return str(text).strip()
+        except Exception:
+            return ""
+
+    def _renforge_focus_type(focus, widget):
+        # Some Ren'Py displayables expose a semantic type; otherwise use the
+        # displayable class name and normalize common controls to useful roles.
+        raw = None
+        # Prefer the concrete displayable. Ren'Py's Focus wrapper may expose a
+        # generic ``kind='focus'`` marker which is less useful than the button
+        # or input class that actually receives the click.
+        for owner in (widget, focus):
+            if owner is None:
+                continue
+            for attr_name in ("role", "kind", "widget_type", "displayable_type", "type"):
+                value = getattr(owner, attr_name, None)
+                if value is not None and not callable(value):
+                    if str(value).casefold() in ("", "focus", "default"):
+                        continue
+                    raw = value
+                    break
+            if raw is not None:
+                break
+        if raw is None:
+            raw = getattr(getattr(widget, "__class__", None), "__name__", "focus")
+        try:
+            name = str(raw)
+        except Exception:
+            name = "focus"
+        lowered = name.casefold()
+        for marker, role in (
+            ("button", "button"),
+            ("input", "input"),
+            ("bar", "bar"),
+            ("viewport", "viewport"),
+            ("image", "image"),
+            ("text", "text"),
+        ):
+            if marker in lowered:
+                return role
+        return name or "focus"
+
+    def _renforge_focus_enabled(focus, widget):
+        for owner in (focus, widget):
+            if owner is None:
+                continue
+            for attr_name in ("enabled", "sensitive", "is_sensitive"):
+                value = getattr(owner, attr_name, None)
+                if value is None:
+                    continue
+                try:
+                    value = value() if callable(value) else value
+                except Exception:
+                    continue
+                return bool(value)
+        return True
+
+    def _renforge_explicit_focus_id(focus, widget):
+        for owner in (focus, widget):
+            if owner is None:
+                continue
+            for attr_name in ("id", "widget_id", "focus_id", "name", "key"):
+                value = getattr(owner, attr_name, None)
+                if value is None or callable(value):
+                    continue
+                try:
+                    value = str(value).strip()
+                except Exception:
+                    continue
+                if value:
+                    return value
+        return None
+
+    def _renforge_focusable_elements():
+        """Return ``(focus, element)`` pairs for visible focus rectangles.
+
+        ``focus_list`` is Ren'Py's authoritative list of controls that can
+        receive pointer/keyboard focus.  It already excludes hidden screens;
+        zero-sized and off-layout entries are omitted here.  IDs are supplied
+        by the displayable when possible and otherwise are deterministic for
+        the current focus list, so an agent can list and immediately click.
+        """
+        elements = []
+        used_ids = {}
+        try:
+            focus_list = renpy.display.focus.focus_list
+        except Exception:
+            return elements
+        for ordinal, focus in enumerate(focus_list):
+            x = getattr(focus, "x", None)
+            y = getattr(focus, "y", None)
+            w = getattr(focus, "w", None)
+            h = getattr(focus, "h", None)
+            if x is None or y is None or w is None or h is None:
+                continue
+            try:
+                x, y, w, h = int(x), int(y), int(w), int(h)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if w <= 0 or h <= 0:
+                continue
+
+            widget = getattr(focus, "widget", None)
+            text = _renforge_focus_text(widget)
+            screen = _renforge_screen_name(focus)
+            role = _renforge_focus_type(focus, widget)
+            element_id = _renforge_explicit_focus_id(focus, widget)
+            if not element_id:
+                # Include text/type/screen where available so IDs remain useful
+                # across a redraw; ordinal disambiguates duplicate labels.
+                base = "%s:%s:%s" % (screen or "screen", role, text or ordinal)
+                element_id = base
+            count = used_ids.get(element_id, 0)
+            used_ids[element_id] = count + 1
+            if count:
+                element_id = "%s#%s" % (element_id, count + 1)
+
+            bounds = {"x": x, "y": y, "width": w, "height": h}
+            element = {
+                "id": element_id,
+                "text": text or None,
+                "type": role,
+                "role": role,
+                "screen": screen,
+                "bounds": bounds,
+                "center": {"x": x + w // 2, "y": y + h // 2},
+                "enabled": _renforge_focus_enabled(focus, widget),
+                "visible": True,
+                "index": ordinal,
+            }
+            elements.append((focus, element))
+        return elements
+
+    def _renforge_focusable_choices():
+        # Keep the historical choices API (text + compact index) unchanged;
+        # generic UI enumeration above is intentionally broader and includes
+        # controls without text.
+        choices = []
+        for focus, element in _renforge_focusable_elements():
+            text = element.get("text")
+            if text:
+                choices.append((focus, text, element.get("screen")))
         return choices
 
     def _renforge_h_list_choices(payload):
         choices = _renforge_focusable_choices()
         return {"choices": [{"index": i, "text": t, "screen": s} for i, (_f, t, s) in enumerate(choices)]}
+
+    def _renforge_h_list_ui_elements(payload):
+        payload = payload or {}
+        requested_screen = payload.get("screen")
+        requested_text = payload.get("text")
+        requested_type = payload.get("type", payload.get("element_type"))
+        if requested_screen is not None:
+            requested_screen = str(requested_screen).casefold()
+        if requested_text is not None:
+            requested_text = str(requested_text).casefold()
+        if requested_type is not None:
+            requested_type = str(requested_type).casefold()
+
+        elements = []
+        for _focus, element in _renforge_focusable_elements():
+            if requested_screen and str(element.get("screen") or "").casefold() != requested_screen:
+                continue
+            if requested_type:
+                kind = str(element.get("type") or "").casefold()
+                role = str(element.get("role") or "").casefold()
+                if requested_type not in (kind, role):
+                    continue
+            if requested_text:
+                text = str(element.get("text") or "").casefold()
+                if requested_text not in text:
+                    continue
+            elements.append(element)
+        result = {"elements": elements}
+        try:
+            frame = renpy.screenshot_to_bytes(None)
+            result["frame_id"] = hashlib.sha256(frame).hexdigest()
+            width = getattr(renpy.config, "screen_width", None)
+            height = getattr(renpy.config, "screen_height", None)
+            if width and height:
+                result["screenshot"] = {"width": int(width), "height": int(height)}
+        except Exception:
+            pass
+        return result
+
+    def _renforge_click_focus(focus):
+        """Click a focus center through Ren'Py's synthetic test input path."""
+        fx = getattr(focus, "x", None)
+        fy = getattr(focus, "y", None)
+        fw = getattr(focus, "w", None)
+        fh = getattr(focus, "h", None)
+        if fx is not None and fy is not None and fw and fh:
+            x = int(fx + fw // 2)
+            y = int(fy + fh // 2)
+        else:
+            find_position = getattr(getattr(renpy, "test", None), "testfocus", None)
+            find_position = getattr(find_position, "find_position", None)
+            if not callable(find_position):
+                raise RuntimeError("Ren'Py focus position API is unavailable")
+            px, py = find_position(focus, (None, None))
+            x, y = int(px), int(py)
+
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+        click_mouse = getattr(testmouse, "click_mouse", None)
+        if not callable(click_mouse):
+            raise RuntimeError("Ren'Py synthetic mouse API is unavailable")
+        click_mouse(1, x, y)
+        return x, y
+
+    def _renforge_h_click_element(payload):
+        payload = payload or {}
+        wanted_id = payload.get("id") or payload.get("element_id")
+        wanted_text = payload.get("text")
+        if wanted_text == "":
+            wanted_text = None
+        exact = bool(payload.get("exact", False))
+        wanted_screen = payload.get("screen")
+        expected_frame_id = payload.get("expected_frame_id") or payload.get("expected_screenshot")
+        if wanted_id is None and wanted_text is None:
+            return {"ok": False, "error": "click_element requires text or id"}
+        if wanted_id is not None:
+            wanted_id = str(wanted_id)
+        if wanted_text is not None:
+            wanted_text = str(wanted_text)
+        if wanted_screen is not None:
+            wanted_screen = str(wanted_screen).casefold()
+
+        candidates = []
+        for focus, element in _renforge_focusable_elements():
+            if wanted_screen and str(element.get("screen") or "").casefold() != wanted_screen:
+                continue
+            if wanted_id is not None and str(element.get("id")) != wanted_id:
+                continue
+            if wanted_text is not None:
+                actual_text = str(element.get("text") or "")
+                if exact:
+                    if actual_text.casefold() != wanted_text.casefold():
+                        continue
+                elif wanted_text.casefold() not in actual_text.casefold():
+                    continue
+            candidates.append((focus, element))
+        if not candidates:
+            return {"ok": False, "error": "no UI element matching %r/%r" % (wanted_text, wanted_id)}
+        if len(candidates) > 1:
+            return {
+                "ok": False,
+                "error": "ambiguous UI element; provide an id or exact text",
+                "matches": [item[1] for item in candidates],
+            }
+
+        screenshot_digest = None
+        if expected_frame_id not in (None, ""):
+            data = renpy.screenshot_to_bytes(None)
+            matches, screenshot_digest = _renforge_screenshot_guard_matches(expected_frame_id, data)
+            if not matches:
+                return {
+                    "ok": False,
+                    "error": "expected_frame_id guard failed",
+                    "sha256": screenshot_digest,
+                }
+        focus, element = candidates[0]
+        if not element.get("enabled", True):
+            return {"ok": False, "error": "UI element is disabled", "element": element}
+        x, y = _renforge_click_focus(focus)
+        result = {
+            "ok": True,
+            "id": element.get("id"),
+            "text": element.get("text"),
+            "type": element.get("type"),
+            "screen": element.get("screen"),
+            "bounds": element.get("bounds"),
+            "x": x,
+            "y": y,
+            "element": element,
+        }
+        if screenshot_digest is not None:
+            result["sha256"] = screenshot_digest
+        return result
+
+    def _renforge_state_matches(actual, expected):
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                return False
+            for key, value in expected.items():
+                if key not in actual or not _renforge_state_matches(actual[key], value):
+                    return False
+            return True
+        if isinstance(expected, (list, tuple)):
+            return isinstance(actual, (list, tuple)) and len(actual) == len(expected) and all(
+                _renforge_state_matches(a, e) for a, e in zip(actual, expected)
+            )
+        return actual == expected
+
+    def _renforge_screenshot_guard_matches(expected, data):
+        digest = hashlib.sha256(data).hexdigest()
+        if isinstance(expected, dict):
+            expected = expected.get(
+                "sha256",
+                expected.get(
+                    "hash",
+                    expected.get("frame_id", expected.get("id", expected.get("base64"))),
+                ),
+            )
+        if isinstance(expected, bytes):
+            return expected == data, digest
+        if not isinstance(expected, str) or not expected.strip():
+            return False, digest
+        value = expected.strip()
+        if value.casefold().startswith("sha256:"):
+            value = value.split(":", 1)[1].strip()
+        if value.casefold() == digest.casefold():
+            return True, digest
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except Exception:
+            decoded = None
+        return decoded == data, digest
+
+    def _renforge_png_dimensions(data):
+        if not isinstance(data, bytes) or len(data) < 24:
+            return None, None
+        if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+            return None, None
+        try:
+            return struct.unpack(">II", data[16:24])
+        except Exception:
+            return None, None
+
+    def _renforge_h_click_at(payload):
+        payload = payload or {}
+        try:
+            raw_x, raw_y = payload.get("x"), payload.get("y")
+            if isinstance(raw_x, bool) or isinstance(raw_y, bool):
+                raise ValueError
+            x, y = int(round(float(raw_x))), int(round(float(raw_y)))
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "error": "click_at requires numeric x and y"}
+        if x < 0 or y < 0:
+            return {"ok": False, "error": "click_at coordinates must be non-negative"}
+
+        coordinate_space = str(payload.get("coordinate_space", "logical") or "logical").casefold()
+        if coordinate_space not in ("logical", "screenshot"):
+            return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+
+        expected_state = payload.get("expected_state")
+        if expected_state is not None:
+            state = _renforge_h_get_state({})
+            if not _renforge_state_matches(state, expected_state):
+                return {"ok": False, "error": "expected_state guard failed", "state": state}
+
+        expected_screenshot = payload.get("expected_screenshot") or payload.get("expected_frame_id")
+        screenshot_digest = None
+        frame_data = None
+        if expected_screenshot not in (None, ""):
+            frame_data = renpy.screenshot_to_bytes(None)
+            matches, screenshot_digest = _renforge_screenshot_guard_matches(expected_screenshot, frame_data)
+            if not matches:
+                return {
+                    "ok": False,
+                    "error": "expected_screenshot guard failed",
+                    "sha256": screenshot_digest,
+                }
+
+        if coordinate_space == "screenshot":
+            if frame_data is None:
+                frame_data = renpy.screenshot_to_bytes(None)
+            pixel_width, pixel_height = _renforge_png_dimensions(frame_data)
+            logical_width = getattr(renpy.config, "screen_width", None)
+            logical_height = getattr(renpy.config, "screen_height", None)
+            if not pixel_width or not pixel_height or not logical_width or not logical_height:
+                return {"ok": False, "error": "screenshot coordinate space is unavailable"}
+            x = int(round(x * float(logical_width) / float(pixel_width)))
+            y = int(round(y * float(logical_height) / float(pixel_height)))
+
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+        click_mouse = getattr(testmouse, "click_mouse", None)
+        if not callable(click_mouse):
+            return {"ok": False, "error": "Ren'Py synthetic mouse API is unavailable"}
+        click_mouse(1, x, y)
+        result = {"ok": True, "x": x, "y": y, "coordinate_space": coordinate_space}
+        if screenshot_digest is not None:
+            result["sha256"] = screenshot_digest
+        return result
 
     def _renforge_h_select_choice(payload):
         # Select a menu option by visible text (preferred) or by index, by
@@ -325,6 +742,9 @@ init python:
         "poll_events": _renforge_h_poll_events,
         "list_choices": _renforge_h_list_choices,
         "select_choice": _renforge_h_select_choice,
+        "list_ui_elements": _renforge_h_list_ui_elements,
+        "click_element": _renforge_h_click_element,
+        "click_at": _renforge_h_click_at,
     }
 
     def renforge_drain_bridge():

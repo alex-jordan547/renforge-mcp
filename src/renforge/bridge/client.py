@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import socket
 from dataclasses import dataclass
@@ -115,6 +116,26 @@ class BridgeClient:
             raise BridgeProtocolError("screenshot reply missing 'base64' data")
         return base64.b64decode(encoded)
 
+    def screenshot_hash(self, width: int = 0, height: int = 0) -> str:
+        """Return a SHA-256 fingerprint of the current game frame.
+
+        The bridge includes the fingerprint in newer screenshot replies.  For
+        older injected bridges (which only return ``base64``), it is computed
+        locally so callers can still use it as a click guard.
+        """
+        reply = self._checked("screenshot", {"width": width, "height": height})
+        encoded = reply.get("base64")
+        if not encoded:
+            raise BridgeProtocolError("screenshot reply missing 'base64' data")
+        digest = reply.get("sha256")
+        if isinstance(digest, str) and digest:
+            return digest
+        try:
+            data = base64.b64decode(encoded)
+        except (ValueError, TypeError) as exc:
+            raise BridgeProtocolError("screenshot reply has invalid 'base64' data") from exc
+        return hashlib.sha256(data).hexdigest()
+
     def advance(self) -> dict:
         """Advance the current dialogue (posts a 'dismiss' event)."""
         return self._checked("advance")
@@ -137,3 +158,118 @@ class BridgeClient:
     def select_choice(self, text: str | None = None, index: int | None = None) -> dict:
         """Select a menu option by visible text (preferred) or by index."""
         return self._checked("select_choice", {"text": text, "index": index})
+
+    def list_ui_elements(
+        self,
+        *,
+        screen: str | None = None,
+        text: str | None = None,
+        element_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return visible focusable controls and their screen-space bounds.
+
+        Each element has a stable-for-the-current-frame ``id``, optional
+        ``text``, ``type``/``role``, ``screen``, ``enabled``, and a ``bounds``
+        object containing integer ``x``, ``y``, ``width`` and ``height``.
+        Optional filters are applied by the bridge before the response is
+        returned.
+        """
+        return self.list_ui_elements_info(
+            screen=screen,
+            text=text,
+            element_type=element_type,
+        )["elements"]
+
+    def list_ui_elements_info(
+        self,
+        *,
+        screen: str | None = None,
+        text: str | None = None,
+        element_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Return UI elements plus the frame id used to guard a click."""
+        payload: dict[str, Any] = {}
+        if screen is not None:
+            payload["screen"] = screen
+        if text is not None:
+            payload["text"] = text
+        if element_type is not None:
+            payload["type"] = element_type
+        reply = self._checked("list_ui_elements", payload or None)
+        elements = reply.get("elements")
+        if not isinstance(elements, list):
+            raise BridgeProtocolError("list_ui_elements reply missing 'elements' list")
+        return reply
+
+    def click_element(
+        self,
+        text: str | None = None,
+        id: str | None = None,
+        *,
+        screen: str | None = None,
+        exact: bool = False,
+        element_id: str | None = None,
+        expected_frame_id: str | None = None,
+    ) -> dict:
+        """Click a visible focusable element by text or its returned ``id``.
+
+        Text matching is case-insensitive and substring-based by default. Set
+        ``exact=True`` when duplicate/partial labels should not be accepted.
+        ``element_id`` is an alias for ``id`` for callers that avoid Python's
+        built-in name.
+        """
+        if id is None:
+            id = element_id
+        payload: dict[str, Any] = {"text": text, "id": id, "exact": bool(exact)}
+        if screen is not None:
+            payload["screen"] = screen
+        if expected_frame_id is not None:
+            payload["expected_frame_id"] = expected_frame_id
+        reply = self.request("click_element", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def click_at(
+        self,
+        x: int | float,
+        y: int | float,
+        *,
+        expected_screenshot: str | dict[str, Any] | None = None,
+        expected_state: dict[str, Any] | None = None,
+        expected_screenshot_hash: str | None = None,
+        expected_frame_id: str | None = None,
+        coordinate_space: str = "logical",
+    ) -> dict:
+        """Click screen coordinates, optionally guarded by frame/state.
+
+        ``expected_screenshot`` may be a SHA-256 digest (or a bridge screenshot
+        guard object containing ``sha256``/``base64``), while
+        ``expected_state`` is a subset of ``get_state()`` that must still
+        match. A failed guard returns ``{"ok": False, "error": ...}`` and no
+        click is sent to Ren'Py.
+        """
+        payload: dict[str, Any] = {
+            "x": x,
+            "y": y,
+            "coordinate_space": coordinate_space,
+        }
+        if expected_screenshot is not None:
+            payload["expected_screenshot"] = expected_screenshot
+        elif expected_screenshot_hash is not None:
+            payload["expected_screenshot"] = expected_screenshot_hash
+        elif expected_frame_id is not None:
+            payload["expected_frame_id"] = expected_frame_id
+        if expected_state is not None:
+            payload["expected_state"] = expected_state
+        reply = self.request("click_at", payload)
+        if reply.get("error") is not None:
+            # A stale-frame/state guard is an expected control result, not a
+            # transport failure. Keep it structured so an agent can refresh
+            # the frame and retry safely.
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
