@@ -59,8 +59,16 @@ setup is needed:
 uvx --from "renforge[ui]" renforge ui --project /path/to/your/game
 ```
 
-Prefer pip? `pip install renforge` gives you the MCP server and CLI;
-`pip install "renforge[ui]"` adds the dashboard.
+Prefer a persistent install? [pipx](https://pipx.pypa.io/) puts `renforge` on
+your PATH in an isolated environment:
+
+```bash
+pipx install "renforge[ui]"
+renforge ui --project /path/to/your/game
+```
+
+On managed systems (Debian/Ubuntu), plain `pip install` is blocked by
+[PEP 668](https://peps.python.org/pep-0668/) — use `uvx` or `pipx` instead.
 
 ## Use with your AI agent
 
@@ -167,8 +175,8 @@ JSON summary of the project (labels, scripts, assets, and related metadata).
 > inherit your shell `PATH`. If `uvx` is not found, set `command` to the
 > absolute path of `uvx` (for example `C:\Users\you\.local\bin\uvx.exe`).
 
-> Don't have `uv`? Replace `uvx renforge` with `renforge` after a
-> `pip install renforge`.
+> Don't have `uv`? Run `pipx install renforge`, then replace `uvx renforge`
+> with `renforge` in your config.
 
 ## Install (dev)
 
