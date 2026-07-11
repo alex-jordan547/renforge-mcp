@@ -240,6 +240,7 @@ Notes:
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
+`renforge_control`,
 `renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
 `renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.

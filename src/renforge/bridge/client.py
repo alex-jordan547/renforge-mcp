@@ -142,7 +142,12 @@ class BridgeClient:
 
     def control(self, action: str) -> dict:
         """Run a named runtime control action inside the Ren'Py bridge."""
-        return self._checked("control", {"action": action})
+        reply = self.request("control", {"action": action})
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
 
     def poll_events(self, since: int = 0) -> dict:
         """Return pushed events with ``seq > since`` plus the current cursor.

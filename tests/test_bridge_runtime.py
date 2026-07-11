@@ -401,3 +401,12 @@ def test_control_quit_uses_native_renpy_quit(running_bridge):
 
     assert reply == {"ok": True, "action": "quit"}
     assert ("quit",) in running_bridge.renpy._invoked
+
+
+def test_control_unknown_action_preserves_bridge_error_payload(running_bridge):
+    reply = running_bridge.client.control("not_an_action")
+
+    assert reply == {
+        "ok": False,
+        "error": "unknown control action: not_an_action",
+    }
