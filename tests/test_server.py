@@ -24,6 +24,7 @@ EXPECTED_TOOLS = {
     "renforge_game_state",
     "renforge_game_state_compact",
     "renforge_advance",
+    "renforge_control",
     "renforge_list_choices",
     "renforge_select_choice",
     "renforge_list_ui_elements",
@@ -301,6 +302,55 @@ def test_new_game_tool_relaunches_a_fresh_process_at_start(tmp_path, monkeypatch
         "version": "stable",
         "warp": "game/script.rpy:1",
     }
+
+
+def test_control_tool_dispatches_runtime_action_and_documents_valid_actions(
+    tmp_path, monkeypatch
+) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_control(project_path: str, action: str):
+        calls.update(project_path=project_path, action=action)
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr(live, "control", fake_control)
+    app = create_app()
+
+    async def _call():
+        tools = await app.list_tools()
+        async with Client(app) as client:
+            result = await client.call_tool(
+                "renforge_control",
+                {"project_path": str(tmp_path), "action": "reload_script"},
+            )
+        return tools, result
+
+    tools, result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    description = next(tool.description for tool in tools if tool.name == "renforge_control")
+    valid_actions = {
+        "advance",
+        "rollback",
+        "toggle_skip",
+        "toggle_auto",
+        "toggle_afm",
+        "game_menu",
+        "hide_windows",
+        "quick_save",
+        "quick_load",
+        "reload_script",
+        "restart_interaction",
+        "quit",
+    }
+
+    assert payload == {"ok": True, "action": "reload_script"}
+    assert calls == {"project_path": str(tmp_path), "action": "reload_script"}
+    assert all(action in description for action in valid_actions)
 
 
 def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:

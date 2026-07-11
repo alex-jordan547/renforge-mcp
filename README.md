@@ -224,8 +224,8 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_info`, `renforge_context` (discover the project selected in the dashboard)
 - `renforge_find_references`, `renforge_inspect_image`
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, `renforge_stop`
-- `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_list_choices`,
-  `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
+- `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_control`,
+  `renforge_list_choices`, `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
   `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
 - `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
   `renforge_find_image_on_screen`
@@ -267,6 +267,14 @@ registry. Agents can call `renforge_info` or `renforge_context` first instead of
 guessing the game path. `renforge_jump` resolves a label to `file:line` and
 restarts through Ren'Py's supported warp path; `renforge_new_game` starts a
 fresh process at the project's `start` label through that same path.
+
+To verify an `.rpy` edit without relaunching the game process:
+
+```text
+edit game/script.rpy
+renforge_control(project_path, action="reload_script")
+renforge_screenshot(project_path)
+```
 
 ### Web dashboard
 

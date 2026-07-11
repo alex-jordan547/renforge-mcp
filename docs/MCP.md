@@ -100,6 +100,15 @@ renforge_click_element(..., expected_frame_id=frame_id)
   -> safe interaction
 ```
 
+After editing a running project's `.rpy` file, hot-reload it and inspect the
+result without restarting the game process:
+
+```text
+edit game/script.rpy
+renforge_control(project_path, action="reload_script")
+renforge_screenshot(project_path)
+```
+
 For image-driven interaction:
 
 ```text
@@ -185,6 +194,7 @@ Notes:
 | `renforge_game_state` | Complete state, including variables. |
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
+| `renforge_control` | Run engine controls such as rollback, hot reload, quicksave/quickload, skip, or auto-forward. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
 ### Choices and user interface

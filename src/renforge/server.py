@@ -386,6 +386,21 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_control(project_path: str, action: str) -> dict:
+        """Run a runtime action: advance, rollback, toggle_skip, toggle_auto,
+        toggle_afm, game_menu, hide_windows, quick_save, quick_load,
+        reload_script, restart_interaction, or quit.
+        """
+        return _log_tool_call(
+            name="renforge_control",
+            params={"project_path": project_path, "action": action},
+            project_root=project_path,
+            fn=live.control,
+            args=(project_path, action),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_list_choices(project_path: str) -> dict:
         """List the on-screen menu choices (text + index)."""
         return _log_tool_call(
