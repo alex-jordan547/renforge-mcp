@@ -126,7 +126,47 @@ def test_info_falls_back_to_the_server_default_project(tmp_path, monkeypatch) ->
     result = asyncio.run(_call())
     payload = json.loads(next(block.text for block in result.content if block.type == "text"))
     assert payload["active_project"] == str(tmp_path.resolve())
+    assert payload["project_source"] == "serve_default"
     assert payload["dashboard"] is None
+
+
+def test_info_detects_a_project_from_the_current_directory(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "empty-runtime"))
+    project = tmp_path / "my-game"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n")
+    monkeypatch.chdir(project)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool("renforge_info", {})
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["active_project"] == str(project.resolve())
+    assert payload["project_source"] == "cwd"
+
+
+def test_info_explains_the_fallback_when_nothing_matches(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "empty-runtime"))
+    monkeypatch.chdir(tmp_path)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool("renforge_info", {})
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["active_project"] is None
+    assert payload["project_source"] is None
+    assert "project_path" in payload["hint"]
 
 
 def test_scan_tool_accepts_bounded_queries(tmp_path) -> None:
@@ -861,6 +901,33 @@ def test_screenshot_can_crop_and_zoom_the_live_frame(tmp_path, monkeypatch) -> N
     cropped = image_module.open(io.BytesIO(base64.b64decode(block.data)))
     assert cropped.size == (100, 120)
     assert calls == {"path": str(tmp_path), "width": 100, "height": 60}
+
+
+def test_screenshot_accepts_a_single_dimension(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_screenshot(path: str, width: int = 0, height: int = 0) -> bytes:
+        calls.update(width=width, height=height)
+        return b"fake-png-bytes"
+
+    monkeypatch.setattr(live, "screenshot_png", fake_screenshot)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_screenshot",
+                {"project_path": str(tmp_path), "width": 1280},
+            )
+
+    result = asyncio.run(_call())
+    # The bridge derives the missing height from the game's aspect ratio.
+    assert any(block.type == "image" for block in result.content)
+    assert calls == {"width": 1280, "height": 0}
 
 
 def test_find_references_tool_reports_unused_definitions(tmp_path) -> None:

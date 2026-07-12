@@ -370,6 +370,23 @@ def test_screenshot_returns_decoded_png_bytes(running_bridge):
     assert data.startswith(b"\x89PNG")
 
 
+def test_screenshot_derives_the_missing_dimension_from_the_aspect_ratio(running_bridge):
+    sizes = []
+
+    def record(size):
+        sizes.append(size)
+        return b"\x89PNG\r\n_fake_frame_"
+
+    running_bridge.renpy.screenshot_to_bytes = record
+
+    # Logical screen is 1920x1080 (16:9) in the fake renpy module.
+    running_bridge.client.screenshot(width=320)
+    running_bridge.client.screenshot(height=270)
+    running_bridge.client.screenshot()
+
+    assert sizes == [(320, 180), (480, 270), None]
+
+
 def test_bad_token_is_rejected(running_bridge):
     port = running_bridge.client._config.port
     wrong = BridgeClient(BridgeConfig(port=port, token="WRONG"))

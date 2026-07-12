@@ -396,6 +396,14 @@ init python:
         payload = payload or {}
         width = int(payload.get("width", 0) or 0)
         height = int(payload.get("height", 0) or 0)
+        # A single dimension keeps the game's aspect ratio.
+        logical_width = getattr(renpy.config, "screen_width", None)
+        logical_height = getattr(renpy.config, "screen_height", None)
+        if logical_width and logical_height:
+            if width and not height:
+                height = max(1, int(round(width * logical_height / float(logical_width))))
+            elif height and not width:
+                width = max(1, int(round(height * logical_width / float(logical_height))))
         size = (width, height) if (width and height) else None
         data = renpy.screenshot_to_bytes(size)  # PNG bytes
         return {

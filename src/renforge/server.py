@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import Any, Callable, Optional
 
 from . import __version__, session_registry
+from .project import discover_project_from
 
 
 @dataclass
@@ -113,23 +114,45 @@ def _register_tools(app: Any) -> None:
         dashboard = session_registry.active_dashboard()
         default_project = getattr(app, "project_root", None)
         active_project = dashboard.get("project") if dashboard else None
+        project_source = "dashboard" if active_project else None
         if active_project is None and default_project is not None:
             active_project = str(Path(default_project).expanduser().resolve())
-        return {
+            project_source = "serve_default"
+        if active_project is None:
+            detected = discover_project_from()
+            if detected is not None:
+                active_project = str(detected)
+                project_source = "cwd"
+        payload: dict[str, Any] = {
             "ok": True,
             "version": __version__,
             "active_project": active_project,
+            "project_source": project_source,
             "dashboard": dashboard,
         }
+        if active_project is None:
+            payload["hint"] = (
+                "No dashboard, serve default, or Ren'Py project near the "
+                "current directory. Every tool accepts project_path directly: "
+                "ask the user for the game's path."
+            )
+        return payload
 
     @tool_decorator()
     def renforge_info() -> dict:
-        """Call first: report RenForge version and the project selected in the dashboard."""
+        """Call first: report RenForge version and the active project.
+
+        active_project falls back from the dashboard selection to the serve
+        default, then to a Ren'Py project detected from the current directory
+        (project_source says which one matched). A null active_project only
+        means auto-discovery found nothing — every tool accepts project_path
+        directly, so ask the user for the game's path and keep going.
+        """
         return _context_payload()
 
     @tool_decorator()
     def renforge_context() -> dict:
-        """Discover the active dashboard and its currently selected Ren'Py project."""
+        """Discover the active Ren'Py project (dashboard, serve default, or cwd)."""
         return _context_payload()
 
     @tool_decorator()
@@ -959,12 +982,11 @@ def _register_tools(app: Any) -> None:
         every N pixels, ``rulers`` labels those steps along the edges, and
         ``crosshair_x``/``crosshair_y`` mark a point. Capture at the game's
         logical resolution (``width``/``height``) so the labels read as logical
-        coordinates.
+        coordinates. Passing only one of ``width``/``height`` keeps the game's
+        aspect ratio.
         """
         def _tool() -> Any:
             try:
-                if (width == 0) != (height == 0):
-                    raise ValueError("width and height must be provided together")
                 if (crosshair_x < 0) != (crosshair_y < 0):
                     raise ValueError("crosshair_x and crosshair_y must be provided together")
                 if width or height:
@@ -1091,10 +1113,12 @@ def create_app() -> Any:
         return _FallbackServer()
 
     instructions = (
-        "Call renforge_info first. It reports the project selected in the RenForge "
-        "dashboard; use active_project for project_path instead of guessing. "
-        "When that dashboard is active, renforge_launch delegates display-bound startup "
-        "to its process automatically. Prefer bounded scan queries and "
+        "Call renforge_info first: its active_project (see project_source — "
+        "dashboard, serve_default, or cwd) is the project_path to pass to the "
+        "other tools. If active_project is null, ask the user for the game's "
+        "path; every tool accepts project_path directly and no dashboard is "
+        "required. When the dashboard is active, renforge_launch delegates "
+        "display-bound startup to its process automatically. Prefer bounded scan queries and "
         "renforge_game_state_compact for large results. For UI interaction, call "
         "renforge_list_ui_elements first, then pass its frame_id to "
         "renforge_click_element or renforge_click_at; use "
