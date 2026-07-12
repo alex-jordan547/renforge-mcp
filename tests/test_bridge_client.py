@@ -163,6 +163,26 @@ def test_bridge_client_save_slot_helper():
     assert reply == {"ok": True, "slot": "branch-a", "extra_info": "before menu"}
 
 
+@pytest.mark.parametrize(
+    "method,args",
+    [("save_slot", ("branch-a",)), ("load_slot", ("branch-a",)), ("list_slots", ())],
+)
+def test_bridge_client_save_helpers_normalize_bridge_errors(method, args):
+    token = "save-error-token"
+
+    def handler(_line, conn):
+        conn.sendall(b'{"error": "stale bridge"}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    client = BridgeClient(BridgeConfig(port=port, token=token))
+
+    reply = getattr(client, method)(*args)
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert reply == {"ok": False, "error": "stale bridge"}
+
+
 def test_bridge_client_load_slot_helper():
     token = "load-token"
     captured = {}

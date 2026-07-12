@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -773,7 +774,9 @@ def _register_tools(app: Any) -> None:
         """Wait for exactly one label, screen, or expression condition."""
         def _wait() -> dict:
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-                return {"ok": False, "error": "timeout must be <= 120 seconds"}
+                return {"ok": False, "error": "timeout must be a finite non-negative number"}
+            if not math.isfinite(float(timeout)) or timeout < 0:
+                return {"ok": False, "error": "timeout must be a finite non-negative number"}
             if timeout > 120:
                 return {"ok": False, "error": "timeout must be <= 120 seconds"}
             return live.wait_until(

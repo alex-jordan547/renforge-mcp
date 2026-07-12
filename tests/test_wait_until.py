@@ -85,3 +85,21 @@ def test_wait_until_requires_exactly_one_condition_and_valid_numbers(tmp_path):
         "ok": False,
         "error": "interval must be a finite non-negative number",
     }
+
+
+def test_wait_until_yields_when_interval_is_zero(monkeypatch, tmp_path):
+    sleeps = []
+
+    class FakeClient:
+        def get_state(self):
+            return {"current_label": "start"}
+
+    monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
+    monkeypatch.setattr(live.time, "sleep", lambda duration: sleeps.append(duration))
+
+    result = live.wait_until(str(tmp_path), label="never", timeout=0.01, interval=0)
+
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+    assert sleeps
+    assert all(0 < duration <= 0.001 for duration in sleeps)

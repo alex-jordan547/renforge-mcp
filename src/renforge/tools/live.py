@@ -583,10 +583,11 @@ def wait_until(
             return {
                 "ok": False,
                 "error": "timeout",
-                "elapsed": time.monotonic() - started,
+                "elapsed": elapsed,
                 "state": state,
             }
-        time.sleep(min(float(interval), remaining) if interval > 0 else 0)
+        sleep_interval = float(interval) if interval > 0 else 0.001
+        time.sleep(min(sleep_interval, remaining))
 
 
 def screenshot_png(project_path: str, width: int = 0, height: int = 0) -> bytes:

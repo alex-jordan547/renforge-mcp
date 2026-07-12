@@ -749,9 +749,9 @@ init python:
         else:
             config = getattr(renpy, "config", None)
             store = getattr(renpy, "store", None)
-            allowed = bool(getattr(config, "save", True))
-            allowed = allowed and not bool(getattr(store, "main_menu", False))
-            allowed = allowed and not bool(getattr(store, "_in_replay", False))
+            allowed = bool(config and getattr(config, "save", True))
+            allowed = allowed and not bool(store and getattr(store, "main_menu", False))
+            allowed = allowed and not bool(store and getattr(store, "_in_replay", False))
 
         if not allowed:
             return {"ok": False, "error": "saving is unavailable in the current game state"}
@@ -815,11 +815,17 @@ init python:
         slot_mtime = getattr(renpy, "slot_mtime", None)
         slots = []
         for name in slot_names:
-            metadata = slot_json(name) if callable(slot_json) else None
+            try:
+                metadata = slot_json(name) if callable(slot_json) else None
+            except Exception:
+                metadata = None
             extra_info = ""
             if isinstance(metadata, dict):
                 extra_info = metadata.get("_save_name", "")
-            mtime = slot_mtime(name) if callable(slot_mtime) else None
+            try:
+                mtime = slot_mtime(name) if callable(slot_mtime) else None
+            except Exception:
+                mtime = None
             slots.append(
                 {
                     "name": str(name),

@@ -121,6 +121,26 @@ def test_scan_project_excludes_screen_language_labels(tmp_path: Path) -> None:
     assert [item["name"] for item in result["labels"]] == ["start"]
 
 
+def test_scan_project_does_not_treat_python_screen_variable_as_screen_block(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "init python:\n"
+        "    screen = (\n"
+        "        renpy.get_screen(\"say\")\n"
+        "    )\n"
+        "screen actual_screen():\n"
+        "    text \"hello\"\n"
+        "label after:\n"
+        "    return\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert [item["name"] for item in result["labels"]] == ["after"]
+
+
 def test_scan_project_excludes_embedded_sdks_and_tools(tmp_path: Path) -> None:
     game = tmp_path / "game"
     embedded = tmp_path / "tools" / "renpy-sdk" / "launcher" / "game"

@@ -701,6 +701,18 @@ def test_save_slot_fallback_respects_disabled_save_config(running_bridge):
     }
 
 
+def test_save_slot_fallback_rejects_missing_runtime_objects(running_bridge):
+    running_bridge.renpy.config = None
+    running_bridge.renpy.store = None
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
 def test_load_slot_missing_name_returns_clean_error(running_bridge):
     running_bridge.renpy.can_load = lambda slot: False
 
@@ -760,3 +772,30 @@ def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge)
         ],
     }
     assert calls == []
+
+
+def test_list_slots_skips_corrupt_metadata_and_keeps_valid_slots(running_bridge):
+    running_bridge.renpy.list_slots = lambda regexp=None: ["broken", "valid"]
+
+    def slot_json(slot):
+        if slot == "broken":
+            raise ValueError("corrupt save metadata")
+        return {"_save_name": "ok"}
+
+    def slot_mtime(slot):
+        if slot == "broken":
+            raise OSError("inaccessible save")
+        return 42.0
+
+    running_bridge.renpy.slot_json = slot_json
+    running_bridge.renpy.slot_mtime = slot_mtime
+
+    reply = running_bridge.client.list_slots()
+
+    assert reply == {
+        "ok": True,
+        "slots": [
+            {"name": "broken", "extra_info": "", "mtime": None},
+            {"name": "valid", "extra_info": "ok", "mtime": 42.0},
+        ],
+    }
