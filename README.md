@@ -227,7 +227,8 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_control`,
   `renforge_saves`,
   `renforge_list_choices`, `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
-  `renforge_set_var`, `renforge_poll_events`, `renforge_get_errors`, `renforge_screenshot`
+  `renforge_set_var`, `renforge_poll_events`, `renforge_get_errors`, `renforge_wait_until`,
+  `renforge_screenshot`
 - `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
   `renforge_find_image_on_screen`
 - `renforge_get_displayable_bounds`, `renforge_position_element`,

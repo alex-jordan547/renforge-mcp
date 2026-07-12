@@ -703,6 +703,46 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_wait_until(
+        project_path: str,
+        label: str | None = None,
+        screen: str | None = None,
+        expr: str | None = None,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+    ) -> dict:
+        """Wait for exactly one label, screen, or expression condition."""
+        def _wait() -> dict:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return {"ok": False, "error": "timeout must be <= 120 seconds"}
+            if timeout > 120:
+                return {"ok": False, "error": "timeout must be <= 120 seconds"}
+            return live.wait_until(
+                project_path,
+                label=label,
+                screen=screen,
+                expr=expr,
+                timeout=timeout,
+                interval=interval,
+            )
+
+        return _log_tool_call(
+            name="renforge_wait_until",
+            params={
+                "project_path": project_path,
+                "label": label,
+                "screen": screen,
+                "expr": expr,
+                "timeout": timeout,
+                "interval": interval,
+            },
+            project_root=project_path,
+            fn=_wait,
+            args=(),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_autopilot(project_path: str, max_runs: int = 16, max_steps: int = 60) -> dict:
         """Auto-play the game across all branches; report label coverage and crashes."""
         return _log_tool_call(

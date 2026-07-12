@@ -221,6 +221,7 @@ Notes:
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
 | `renforge_get_errors` | Read recent bridge errors or bounded crash-file tails with mtimes and exit code when tracked. |
+| `renforge_wait_until` | Wait for exactly one label, screen, or expression condition with a bounded timeout. |
 | `renforge_autopilot` | Explore branches and report label coverage and crashes. |
 
 ### Project, translation, builds, and Ren'Py documentation

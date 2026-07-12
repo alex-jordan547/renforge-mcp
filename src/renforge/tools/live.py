@@ -13,8 +13,10 @@ PNG from :func:`screenshot_png` into an MCP image.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable
@@ -470,6 +472,75 @@ def get_errors(project_path: str, since: int = 0) -> dict:
         return _error_files(project_path)
 
 
+def wait_until(
+    project_path: str,
+    *,
+    label: str | None = None,
+    screen: str | None = None,
+    expr: str | None = None,
+    timeout: float = 30.0,
+    interval: float = 0.5,
+) -> dict:
+    """Poll exactly one live-game condition until it matches or times out."""
+    conditions = [("label", label), ("screen", screen), ("expr", expr)]
+    selected = [(name, value) for name, value in conditions if value is not None]
+    if len(selected) != 1:
+        return {"ok": False, "error": "exactly one of label, screen, expr is required"}
+    condition, value = selected[0]
+    if not isinstance(value, str) or not value.strip():
+        return {"ok": False, "error": "%s must be a non-empty string" % condition}
+
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return {"ok": False, "error": "timeout must be a finite non-negative number"}
+    if not math.isfinite(float(timeout)) or timeout < 0 or timeout > 120:
+        return {"ok": False, "error": "timeout must be between 0 and 120 seconds"}
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        return {"ok": False, "error": "interval must be a finite non-negative number"}
+    if not math.isfinite(float(interval)) or interval < 0:
+        return {"ok": False, "error": "interval must be a finite non-negative number"}
+
+    try:
+        client = _client(project_path)
+    except FileNotFoundError:
+        return {"ok": False, "error": "no running game (bridge not found); call renforge_launch first"}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    started = time.monotonic()
+    deadline = started + float(timeout)
+    while True:
+        try:
+            state = client.get_state()
+            if not isinstance(state, dict):
+                return {"ok": False, "error": "bridge state must be an object"}
+            if condition == "label":
+                matched = state.get("current_label") == value
+            elif condition == "screen":
+                matched = bool(client.eval_expr("renpy.get_screen(%r) is not None" % value))
+            else:
+                matched = bool(client.eval_expr(value))
+        except BridgeError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        elapsed = time.monotonic() - started
+        if matched:
+            return {"ok": True, "matched": condition, "elapsed": elapsed, "state": state}
+        if elapsed >= float(timeout):
+            return {"ok": False, "error": "timeout", "elapsed": elapsed, "state": state}
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "ok": False,
+                "error": "timeout",
+                "elapsed": time.monotonic() - started,
+                "state": state,
+            }
+        time.sleep(min(float(interval), remaining) if interval > 0 else 0)
+
+
 def screenshot_png(project_path: str, width: int = 0, height: int = 0) -> bytes:
     """Return the current frame as PNG bytes (raises if no game is running)."""
     return _client(project_path).screenshot(width, height)
@@ -508,6 +579,7 @@ __all__ = [
     "set_var",
     "poll_events",
     "get_errors",
+    "wait_until",
     "screenshot_png",
     "run_autopilot",
 ]

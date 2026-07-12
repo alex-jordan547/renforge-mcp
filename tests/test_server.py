@@ -36,6 +36,7 @@ EXPECTED_TOOLS = {
     "renforge_set_var",
     "renforge_poll_events",
     "renforge_get_errors",
+    "renforge_wait_until",
     "renforge_screenshot",
     "renforge_find_image_on_screen",
     "renforge_get_displayable_bounds",
@@ -532,6 +533,99 @@ def test_get_errors_tool_dispatches_since_cursor(tmp_path, monkeypatch) -> None:
 
     assert payload == {"ok": True, "events": [], "cursor": 7}
     assert calls == {"project_path": str(tmp_path), "since": 7}
+
+
+def test_wait_until_tool_dispatches_condition(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_wait_until(project_path, **kwargs):
+        calls.update(project_path=project_path, **kwargs)
+        return {
+            "ok": True,
+            "matched": "label",
+            "elapsed": 0.1,
+            "state": {"current_label": "chapter_two"},
+        }
+
+    monkeypatch.setattr(live, "wait_until", fake_wait_until)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_wait_until",
+                {
+                    "project_path": str(tmp_path),
+                    "label": "chapter_two",
+                    "timeout": 5,
+                    "interval": 0.1,
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+
+    assert payload == {
+        "ok": True,
+        "matched": "label",
+        "elapsed": 0.1,
+        "state": {"current_label": "chapter_two"},
+    }
+    assert calls == {
+        "project_path": str(tmp_path),
+        "label": "chapter_two",
+        "screen": None,
+        "expr": None,
+        "timeout": 5.0,
+        "interval": 0.1,
+    }
+
+
+def test_wait_until_tool_enforces_maximum_timeout(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    monkeypatch.setattr(
+        live,
+        "wait_until",
+        lambda **_kwargs: pytest.fail("wait_until should not run above server maximum"),
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_wait_until",
+                {"project_path": str(tmp_path), "label": "chapter_two", "timeout": 121},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+
+    assert payload == {"ok": False, "error": "timeout must be <= 120 seconds"}
+
+
+def test_wait_until_tool_schema_covers_conditions_and_polling() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+
+    tools = asyncio.run(create_app().list_tools())
+    tool = next(tool for tool in tools if tool.name == "renforge_wait_until")
+
+    assert all(condition in tool.description for condition in ("label", "screen", "expr"))
+    assert tool.parameters["required"] == ["project_path"]
+    assert set(tool.parameters["properties"]) == {
+        "project_path",
+        "label",
+        "screen",
+        "expr",
+        "timeout",
+        "interval",
+    }
 
 
 def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:

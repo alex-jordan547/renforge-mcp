@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from renforge.bridge.client import BridgeError
+from renforge.tools import live
+
+
+def test_wait_until_matches_label_and_returns_final_state(monkeypatch, tmp_path):
+    states = iter(
+        [
+            {"current_label": "start", "menu": False},
+            {"current_label": "chapter_two", "menu": True},
+        ]
+    )
+
+    class FakeClient:
+        def get_state(self):
+            return next(states)
+
+    monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
+
+    result = live.wait_until(
+        str(tmp_path), label="chapter_two", timeout=1.0, interval=0
+    )
+
+    assert result["ok"] is True
+    assert result["matched"] == "label"
+    assert result["state"] == {"current_label": "chapter_two", "menu": True}
+    assert 0 <= result["elapsed"] < 1.0
+
+
+def test_wait_until_times_out_with_final_state(monkeypatch, tmp_path):
+    class FakeClient:
+        def get_state(self):
+            return {"current_label": "start", "menu": False}
+
+        def eval_expr(self, expression):
+            assert expression == "renpy.get_screen('dialogue') is not None"
+            return False
+
+    monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
+
+    result = live.wait_until(
+        str(tmp_path), screen="dialogue", timeout=0, interval=0
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+    assert result["state"] == {"current_label": "start", "menu": False}
+    assert result["elapsed"] >= 0
+
+
+def test_wait_until_returns_clean_bridge_error_on_disconnect(monkeypatch, tmp_path):
+    class FakeClient:
+        calls = 0
+
+        def get_state(self):
+            self.calls += 1
+            if self.calls == 1:
+                return {"current_label": "start"}
+            raise BridgeError("bridge disconnected")
+
+    monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
+
+    result = live.wait_until(
+        str(tmp_path), label="chapter_two", timeout=1.0, interval=0
+    )
+
+    assert result == {"ok": False, "error": "bridge disconnected"}
+
+
+def test_wait_until_requires_exactly_one_condition_and_valid_numbers(tmp_path):
+    assert live.wait_until(str(tmp_path), timeout=0, interval=0) == {
+        "ok": False,
+        "error": "exactly one of label, screen, expr is required",
+    }
+    assert live.wait_until(str(tmp_path), label="a", screen="b") == {
+        "ok": False,
+        "error": "exactly one of label, screen, expr is required",
+    }
+    assert live.wait_until(str(tmp_path), label="a", timeout=-1) == {
+        "ok": False,
+        "error": "timeout must be between 0 and 120 seconds",
+    }
+    assert live.wait_until(str(tmp_path), label="a", interval=-1) == {
+        "ok": False,
+        "error": "interval must be a finite non-negative number",
+    }
