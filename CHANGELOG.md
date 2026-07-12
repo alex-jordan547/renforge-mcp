@@ -5,6 +5,8 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-13
+
 ### Added
 
 - `renforge_info`/`renforge_context` now resolve `active_project` without the
