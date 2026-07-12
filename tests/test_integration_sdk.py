@@ -110,7 +110,12 @@ def test_live_screen_introspection_reports_default_say_screen(sdk, demo_copy: Pa
         assert inspected["layer"] == "screens", inspected
         assert isinstance(inspected["scope"], dict), inspected
         assert isinstance(inspected["arguments"], dict), inspected
-        assert "what" in inspected["arguments"]["kwargs"], inspected
+        # Ren'Py's built-in say screen exposes its resolved parameters as
+        # scope variables; this invocation does not retain _args/_kwargs on
+        # the active ScreenDisplayable, so inspect_screen must not invent them.
+        assert "what" in inspected["scope"], inspected
+        assert "who" in inspected["scope"], inspected
+        assert inspected["arguments"] == {"args": [], "kwargs": {}}, inspected
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
