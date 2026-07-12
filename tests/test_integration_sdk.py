@@ -90,6 +90,30 @@ def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_screen_introspection_reports_default_say_screen(sdk, demo_copy: Path) -> None:
+    """Exercise inspect_screen against Ren'Py's real ScreenDisplayable."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        inspected = None
+        for _ in range(20):
+            inspected = session.client.inspect_screen("say")
+            if inspected.get("active"):
+                break
+            time.sleep(0.25)
+
+        assert inspected is not None
+        assert inspected["ok"] is True, inspected
+        assert inspected["active"] is True, inspected
+        assert inspected["name"] == "say", inspected
+        assert inspected["layer"] == "screens", inspected
+        assert isinstance(inspected["scope"], dict), inspected
+        assert isinstance(inspected["arguments"], dict), inspected
+        assert "what" in inspected["arguments"]["kwargs"], inspected
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
 def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject

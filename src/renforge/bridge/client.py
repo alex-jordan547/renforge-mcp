@@ -109,6 +109,15 @@ class BridgeClient:
         """Return the current file, volume, and pause state for each channel."""
         return self._checked("get_audio_state")
 
+    def inspect_screen(self, name: str) -> dict:
+        """Inspect an active screen's layer, scope, and passed arguments."""
+        reply = self.request("inspect_screen", {"name": name})
+        if reply.get("error") is not None and reply.get("active") is not False:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
     def eval_expr(self, expr: str) -> Any:
         return self._checked("eval", {"expr": expr})["value"]
 

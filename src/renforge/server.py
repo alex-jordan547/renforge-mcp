@@ -383,6 +383,18 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_inspect_screen(project_path: str, name: str) -> dict:
+        """Inspect an active screen's layer, JSON-safe scope, and arguments."""
+        return _log_tool_call(
+            name="renforge_inspect_screen",
+            params={"project_path": project_path, "name": name},
+            project_root=project_path,
+            fn=live.inspect_screen,
+            args=(project_path, name),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_advance(project_path: str) -> dict:
         """Advance the current dialogue."""
         return _log_tool_call(

@@ -195,6 +195,13 @@ def game_state(project_path: str, include: list[str] | tuple[str, ...] | None = 
     )
 
 
+def inspect_screen(project_path: str, name: str) -> dict:
+    """Inspect an active screen's scope and passed arguments."""
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "error": "screen name is required"}
+    return _with_client(project_path, lambda c: c.inspect_screen(name.strip()))
+
+
 def advance(project_path: str) -> dict:
     return _with_client(project_path, lambda c: c.advance())
 
@@ -607,6 +614,7 @@ __all__ = [
     "stop_game",
     "stop_all",
     "game_state",
+    "inspect_screen",
     "advance",
     "control",
     "send_input",

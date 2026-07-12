@@ -96,6 +96,8 @@ renforge_game_state_compact(project_path)
   -> current label and bounded state
 renforge_game_state(project_path, include=["metrics", "audio"])
   -> optional render/cache/window metrics and per-channel audio state
+renforge_inspect_screen(project_path, name="say")
+  -> active layer, JSON-safe scope, and passed screen arguments
 renforge_list_ui_elements(project_path)
   -> visible controls and frame_id
 renforge_click_element(..., expected_frame_id=frame_id)
@@ -220,6 +222,7 @@ Notes:
 | Tool | Purpose |
 | --- | --- |
 | `renforge_eval` | Evaluate a Python expression in `store`. Use for diagnosis and development only. |
+| `renforge_inspect_screen` | Inspect whether a screen is active and, when shown, return its layer, JSON-safe scope, and passed arguments. |
 | `renforge_get_var` | Read a store variable. |
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
@@ -263,6 +266,13 @@ change the response. Metrics report `render_time_ms`, an FPS estimate,
 `image_cache_size`, and logical/physical window sizes. Audio reports every
 registered channel with its playing filename, volume, and pause state when
 Ren'Py exposes them.
+
+`renforge_inspect_screen` is read-only and reports `active=false` clearly when
+the requested screen is not shown. There is intentionally no separate style
+tool yet: use `renforge_eval` as the controlled style-introspection escape
+hatch when the active screen's resolved style needs investigation. Treat
+`renforge_eval` as arbitrary Python execution and use it only on a trusted
+local project.
 
 Recommended practices:
 

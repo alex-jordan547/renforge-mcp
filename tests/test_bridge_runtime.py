@@ -288,6 +288,45 @@ def test_get_state_rejects_unknown_include_values(running_bridge):
     assert "metrics" in reply["error"]
 
 
+def test_inspect_screen_reports_active_screen_contract_and_arguments(running_bridge):
+    screen = types.SimpleNamespace(
+        screen_name=("custom",),
+        layer="overlay",
+        scope={
+            "count": 7,
+            "title": "Demo",
+            "_args": ("branch-a",),
+            "_kwargs": {"enabled": True},
+        },
+    )
+    running_bridge.renpy.get_screen = lambda name: screen if name == "custom" else None
+
+    reply = running_bridge.client.inspect_screen("custom")
+
+    assert reply["ok"] is True
+    assert reply["active"] is True
+    assert reply["name"] == "custom"
+    assert reply["layer"] == "overlay"
+    assert reply["scope"] == {"count": 7, "title": "Demo"}
+    assert reply["arguments"] == {
+        "args": ["branch-a"],
+        "kwargs": {"enabled": True},
+    }
+
+
+def test_inspect_screen_reports_inactive_screen_clearly(running_bridge):
+    running_bridge.renpy.get_screen = lambda _name: None
+
+    reply = running_bridge.client.inspect_screen("missing")
+
+    assert reply == {
+        "ok": True,
+        "active": False,
+        "name": "missing",
+        "error": "screen not showing: missing",
+    }
+
+
 def test_eval_and_set_var_mutate_real_store(running_bridge):
     client, store = running_bridge.client, running_bridge.store
     assert client.eval_expr("score * 2") == 14

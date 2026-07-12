@@ -93,6 +93,30 @@ def test_bridge_client_game_state_forwards_optional_includes():
     assert reply == {"ok": True, "metrics": {"fps": 60.0}}
 
 
+def test_bridge_client_inspect_screen_helper():
+    token = "screen-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(
+            b'{"ok": true, "active": true, "name": "custom", "layer": "screens", "scope": {}, "arguments": {"args": [], "kwargs": {}}}\n'
+        )
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).inspect_screen("custom")
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "inspect_screen",
+        "payload": {"name": "custom"},
+    }
+    assert reply["active"] is True
+
+
 def test_bridge_client_control_helper():
     token = "control-token"
     captured = {}

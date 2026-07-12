@@ -279,6 +279,67 @@ init python:
             }
         return result
 
+    def _renforge_screen_display_name(displayable, fallback):
+        raw_name = getattr(displayable, "screen_name", None)
+        if isinstance(raw_name, (list, tuple)):
+            raw_name = " ".join(str(part) for part in raw_name)
+        if raw_name:
+            return str(raw_name)
+        return fallback
+
+    def _renforge_h_inspect_screen(payload):
+        payload = payload or {}
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return {"ok": False, "error": "screen name is required"}
+        name = name.strip()
+        get_screen = getattr(renpy, "get_screen", None)
+        if not callable(get_screen):
+            return {"ok": False, "error": "screen inspection is unavailable"}
+        try:
+            displayable = get_screen(name)
+        except Exception as exc:
+            return {"ok": False, "error": "could not inspect screen %s: %s" % (name, exc)}
+        if displayable is None:
+            return {
+                "ok": True,
+                "active": False,
+                "name": name,
+                "error": "screen not showing: %s" % name,
+            }
+
+        raw_scope = getattr(displayable, "scope", {}) or {}
+        try:
+            scope_items = raw_scope.items()
+        except AttributeError:
+            scope_items = []
+        scope = {}
+        for key, value in scope_items:
+            if str(key) in ("_args", "_kwargs", "_scope", "_name", "_debug"):
+                continue
+            scope[str(key)] = _renforge_jsonable(value)
+
+        raw_args = raw_scope.get("_args", ()) if hasattr(raw_scope, "get") else ()
+        raw_kwargs = raw_scope.get("_kwargs", {}) if hasattr(raw_scope, "get") else {}
+        if raw_args is None:
+            raw_args = ()
+        if not isinstance(raw_args, (list, tuple)):
+            raw_args = (raw_args,)
+        if not isinstance(raw_kwargs, dict):
+            raw_kwargs = {}
+        arguments = {
+            "args": _renforge_jsonable(list(raw_args)),
+            "kwargs": _renforge_jsonable(raw_kwargs),
+        }
+        return {
+            "ok": True,
+            "active": True,
+            "name": _renforge_screen_display_name(displayable, name),
+            "layer": _renforge_jsonable(getattr(displayable, "layer", None)),
+            "scope": scope,
+            "arguments": arguments,
+        }
+
     def _renforge_h_get_state(payload):
         include, include_error = _renforge_state_includes(payload)
         if include_error is not None:
@@ -1389,6 +1450,7 @@ init python:
         "get_state": _renforge_h_get_state,
         "get_metrics": _renforge_h_get_metrics_handler,
         "get_audio_state": _renforge_h_get_audio_state_handler,
+        "inspect_screen": _renforge_h_inspect_screen,
         "eval": _renforge_h_eval,
         "get_var": _renforge_h_get_var,
         "set_var": _renforge_h_set_var,

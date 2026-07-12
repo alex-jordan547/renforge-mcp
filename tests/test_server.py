@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "renforge_new_game",
     "renforge_stop",
     "renforge_game_state",
+    "renforge_inspect_screen",
     "renforge_game_state_compact",
     "renforge_advance",
     "renforge_control",
@@ -961,6 +962,45 @@ def test_game_state_tool_dispatches_optional_metrics_and_audio_includes(tmp_path
     assert tool.parameters["required"] == ["project_path"]
     assert "include" in tool.parameters["properties"]
     assert "metrics" in tool.description and "audio" in tool.description
+
+
+def test_inspect_screen_tool_dispatches_name_and_documents_inactive_result(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_inspect_screen(project_path, name):
+        calls.update(project_path=project_path, name=name)
+        return {"ok": True, "active": False, "name": name, "error": "screen not showing: %s" % name}
+
+    monkeypatch.setattr(live, "inspect_screen", fake_inspect_screen)
+
+    async def _call():
+        app = create_app()
+        tools = await app.list_tools()
+        async with Client(app) as client:
+            result = await client.call_tool(
+                "renforge_inspect_screen",
+                {"project_path": str(tmp_path), "name": "custom"},
+            )
+        return tools, result
+
+    tools, result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    tool = next(tool for tool in tools if tool.name == "renforge_inspect_screen")
+
+    assert payload == {
+        "ok": True,
+        "active": False,
+        "name": "custom",
+        "error": "screen not showing: custom",
+    }
+    assert calls == {"project_path": str(tmp_path), "name": "custom"}
+    assert tool.parameters["required"] == ["project_path", "name"]
+    assert set(tool.parameters["properties"]) == {"project_path", "name"}
 
 
 def test_screenshot_serializes_to_an_mcp_image_block(tmp_path, monkeypatch) -> None:
