@@ -20,6 +20,7 @@ init python:
     # so the client can discover them.
 
     import base64
+    import builtins
     import collections
     import hashlib
     import json
@@ -114,7 +115,7 @@ init python:
         if "include" not in payload or payload.get("include") is None:
             return [], None
         include = payload.get("include")
-        if isinstance(include, str) or not isinstance(include, (list, tuple)):
+        if isinstance(include, str) or not isinstance(include, (builtins.list, tuple)):
             return [], "include must be a list containing only: metrics, audio"
         unknown = [name for name in include if name not in _RENFORGE_STATE_INCLUDES]
         if unknown:
@@ -464,20 +465,54 @@ init python:
             widget = get_focused()
         except Exception as exc:
             return None, "cannot verify focused Ren'Py Input: %s" % exc
-        if widget is None:
-            return None, "no focused Ren'Py Input; text was not sent"
 
         behavior = getattr(display, "behavior", None)
         input_type = getattr(behavior, "Input", None)
-        if callable(input_type):
-            try:
-                if isinstance(widget, input_type):
-                    return widget, None
-            except TypeError:
-                pass
-        # Older/custom runtimes may not expose behavior.Input, but its concrete
-        # class name remains a reliable last-resort signal.
-        if getattr(getattr(widget, "__class__", None), "__name__", "") == "Input":
+
+        def _is_input(candidate):
+            if candidate is None:
+                return False
+            if callable(input_type):
+                try:
+                    if isinstance(candidate, input_type):
+                        return True
+                except TypeError:
+                    pass
+            return getattr(getattr(candidate, "__class__", None), "__name__", "") == "Input"
+
+        # Ren'Py can have an active Input screen without assigning keyboard
+        # focus yet (notably after a warp under Xvfb). Select the visible Input
+        # through the engine focus API before posting TEXTINPUT events.
+        if widget is None:
+            change_focus = getattr(focus, "change_focus", None)
+            for candidate in list(getattr(focus, "focus_list", None) or []):
+                candidate_widget = getattr(candidate, "widget", None)
+                if not _is_input(candidate_widget) or not callable(change_focus):
+                    continue
+                try:
+                    change_focus(candidate)
+                    widget = get_focused()
+                except Exception:
+                    widget = None
+                if _is_input(widget):
+                    break
+
+        if widget is None:
+            get_screen = getattr(renpy, "get_screen", None)
+            force_focus = getattr(focus, "force_focus", None)
+            if callable(get_screen) and callable(force_focus):
+                try:
+                    input_screen = get_screen("input")
+                    input_widget = getattr(input_screen, "widgets", {}).get("input")
+                    if _is_input(input_widget):
+                        force_focus(input_widget)
+                        widget = get_focused()
+                except Exception:
+                    widget = None
+
+        if widget is None:
+            return None, "no focused Ren'Py Input; text was not sent"
+        if _is_input(widget):
             return widget, None
         return None, "no focused Ren'Py Input; focused widget is %s" % (
             getattr(getattr(widget, "__class__", None), "__name__", "unknown"),

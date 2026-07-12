@@ -288,6 +288,21 @@ def test_get_state_rejects_unknown_include_values(running_bridge):
     assert "metrics" in reply["error"]
 
 
+def test_get_state_include_accepts_wire_lists_when_store_list_is_revertable(running_bridge):
+    # Ren'Py exposes its RevertableList as the unqualified ``list`` name in
+    # store-backed init-python code. JSON decoding still returns a built-in
+    # list, so validation must use builtins.list rather than that shadow.
+    class _RevertableList(list):
+        pass
+
+    running_bridge.globs["list"] = _RevertableList
+
+    reply = running_bridge.client.request("get_state", {"include": []})
+
+    assert reply.get("error") is None
+    assert "metrics" not in reply
+
+
 def test_inspect_screen_reports_active_screen_contract_and_arguments(running_bridge):
     screen = types.SimpleNamespace(
         screen_name=("custom",),
@@ -373,6 +388,47 @@ def test_send_input_text_reports_missing_focused_input(running_bridge):
     assert reply["ok"] is False
     assert "focused Ren'Py Input" in reply["error"]
     assert running_bridge.renpy._pygame_events == []
+
+
+def test_send_input_text_focuses_visible_input_when_engine_has_no_current_focus(running_bridge):
+    input_focus = _FakeFocus(None, 10, 10, 200, 30)
+    input_focus.widget = _FakeInput()
+    running_bridge.renpy.display.focus.focus_list.append(input_focus)
+    running_bridge.renpy.display.focus.change_focus = lambda focus: setattr(
+        running_bridge.renpy, "_focused_widget", focus.widget
+    )
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert "input_enter" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_force_focuses_active_input_screen_widget(running_bridge):
+    input_widget = _FakeInput()
+    running_bridge.renpy.get_screen = lambda name: (
+        types.SimpleNamespace(widgets={"input": input_widget}) if name == "input" else None
+    )
+    running_bridge.renpy.display.focus.force_focus = lambda widget: setattr(
+        running_bridge.renpy, "_focused_widget", widget
+    )
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert "input_enter" in running_bridge.renpy._queued_events
 
 
 def test_send_input_named_key_uses_readable_keymap_and_direct_pair(running_bridge):
