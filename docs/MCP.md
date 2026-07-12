@@ -220,6 +220,7 @@ Notes:
 | `renforge_get_var` | Read a store variable. |
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
+| `renforge_get_errors` | Read recent bridge errors or bounded crash-file tails with mtimes and exit code when tracked. |
 | `renforge_autopilot` | Explore branches and report label coverage and crashes. |
 
 ### Project, translation, builds, and Ren'Py documentation

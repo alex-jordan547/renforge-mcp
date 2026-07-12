@@ -35,6 +35,7 @@ EXPECTED_TOOLS = {
     "renforge_get_var",
     "renforge_set_var",
     "renforge_poll_events",
+    "renforge_get_errors",
     "renforge_screenshot",
     "renforge_find_image_on_screen",
     "renforge_get_displayable_bounds",
@@ -503,6 +504,34 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
         "extra_info",
         "regexp",
     }
+
+
+def test_get_errors_tool_dispatches_since_cursor(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_get_errors(project_path, since=0):
+        calls.update(project_path=project_path, since=since)
+        return {"ok": True, "events": [], "cursor": since}
+
+    monkeypatch.setattr(live, "get_errors", fake_get_errors)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_get_errors",
+                {"project_path": str(tmp_path), "since": 7},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+
+    assert payload == {"ok": True, "events": [], "cursor": 7}
+    assert calls == {"project_path": str(tmp_path), "since": 7}
 
 
 def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -404,6 +405,71 @@ def poll_events(project_path: str, since: int = 0) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, **c.poll_events(since)})
 
 
+def _tail_project_file(project_root: Path, filename: str, max_lines: int = 100) -> dict | None:
+    """Read a bounded tail from a project-root diagnostic file."""
+    path = (project_root / filename).resolve()
+    try:
+        path.relative_to(project_root)
+    except ValueError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = deque(handle, maxlen=max_lines)
+    except OSError:
+        return None
+    return {"name": filename, "tail": "".join(lines), "mtime": mtime}
+
+
+def _error_files(project_path: str) -> dict:
+    project_root = Path(project_path).expanduser().resolve()
+    files = []
+    for filename in ("traceback.txt", "errors.txt", "log.txt"):
+        record = _tail_project_file(project_root, filename)
+        if record is not None:
+            files.append(record)
+
+    result: dict[str, Any] = {"ok": True, "events": [], "files": files}
+    session = _SESSIONS.get(_key(project_root))
+    if session is not None:
+        try:
+            exit_code = session.process.poll()
+        except Exception:
+            exit_code = None
+        if exit_code is not None:
+            result["exit_code"] = exit_code
+    if not files:
+        result["message"] = "no errors found"
+    return result
+
+
+def get_errors(project_path: str, since: int = 0) -> dict:
+    """Return recent bridge errors or bounded crash diagnostics from disk."""
+    try:
+        cursor = int(since)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "since must be an integer"}
+    if cursor < 0:
+        return {"ok": False, "error": "since must be non-negative"}
+
+    try:
+        reply = _client(project_path).poll_events(cursor)
+        events = reply.get("events", [])
+        if not isinstance(events, list):
+            events = []
+        errors = [
+            event
+            for event in events
+            if isinstance(event, dict)
+            and str(event.get("type", "")).lower() in {"error", "exception"}
+        ]
+        return {"ok": True, "events": errors, "cursor": reply.get("cursor", cursor)}
+    except Exception:
+        return _error_files(project_path)
+
+
 def screenshot_png(project_path: str, width: int = 0, height: int = 0) -> bytes:
     """Return the current frame as PNG bytes (raises if no game is running)."""
     return _client(project_path).screenshot(width, height)
@@ -441,6 +507,7 @@ __all__ = [
     "get_var",
     "set_var",
     "poll_events",
+    "get_errors",
     "screenshot_png",
     "run_autopilot",
 ]

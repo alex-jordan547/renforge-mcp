@@ -691,6 +691,18 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_get_errors(project_path: str, since: int = 0) -> dict:
+        """Return recent bridge exceptions or bounded crash-file diagnostics."""
+        return _log_tool_call(
+            name="renforge_get_errors",
+            params={"project_path": project_path, "since": since},
+            project_root=project_path,
+            fn=live.get_errors,
+            args=(project_path,),
+            kwargs={"since": since},
+        )
+
+    @tool_decorator()
     def renforge_autopilot(project_path: str, max_runs: int = 16, max_steps: int = 60) -> dict:
         """Auto-play the game across all branches; report label coverage and crashes."""
         return _log_tool_call(
