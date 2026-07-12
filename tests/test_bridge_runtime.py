@@ -303,6 +303,21 @@ def test_get_state_include_accepts_wire_lists_when_store_list_is_revertable(runn
     assert "metrics" not in reply
 
 
+def test_send_input_accepts_wire_scroll_when_store_dict_is_revertable(running_bridge):
+    class _RevertableDict(dict):
+        pass
+
+    running_bridge.globs["dict"] = _RevertableDict
+
+    reply = running_bridge.client.send_input(
+        scroll={"x": 640, "y": 360, "direction": "down", "amount": 1}
+    )
+
+    assert reply["ok"] is True
+    assert reply["mode"] == "scroll"
+    assert reply["direction"] == "down"
+
+
 def test_inspect_screen_reports_active_screen_contract_and_arguments(running_bridge):
     screen = types.SimpleNamespace(
         screen_name=("custom",),

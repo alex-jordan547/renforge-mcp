@@ -89,7 +89,7 @@ init python:
             return value
         if isinstance(value, (list, tuple)):
             return [_renforge_jsonable(v) for v in value]
-        if isinstance(value, dict):
+        if isinstance(value, builtins.dict):
             return {str(k): _renforge_jsonable(v) for k, v in value.items()}
         return repr(value)
 
@@ -120,7 +120,7 @@ init python:
         unknown = [name for name in include if name not in _RENFORGE_STATE_INCLUDES]
         if unknown:
             return [], "include contains unsupported values: %s (supported: metrics, audio)" % ", ".join(str(name) for name in unknown)
-        return list(dict.fromkeys(include)), None
+        return list(builtins.dict.fromkeys(include)), None
 
     def _renforge_size(value):
         if not isinstance(value, (list, tuple)) or len(value) < 2:
@@ -326,7 +326,7 @@ init python:
             raw_args = ()
         if not isinstance(raw_args, (list, tuple)):
             raw_args = (raw_args,)
-        if not isinstance(raw_kwargs, dict):
+        if not isinstance(raw_kwargs, builtins.dict):
             raw_kwargs = {}
         arguments = {
             "args": _renforge_jsonable(list(raw_args)),
@@ -588,7 +588,7 @@ init python:
             return {"ok": True, "mode": "key", "key": key, "keycode": keycode}
 
         scroll = payload.get("scroll")
-        if not isinstance(scroll, dict):
+        if not isinstance(scroll, builtins.dict):
             return {"ok": False, "error": "scroll must be an object with x, y, and direction"}
         try:
             raw_x, raw_y = scroll.get("x"), scroll.get("y")
@@ -820,7 +820,7 @@ init python:
             except Exception:
                 metadata = None
             extra_info = ""
-            if isinstance(metadata, dict):
+            if isinstance(metadata, builtins.dict):
                 extra_info = metadata.get("_save_name", "")
             try:
                 mtime = slot_mtime(name) if callable(slot_mtime) else None
@@ -1176,8 +1176,8 @@ init python:
         return result
 
     def _renforge_state_matches(actual, expected):
-        if isinstance(expected, dict):
-            if not isinstance(actual, dict):
+        if isinstance(expected, builtins.dict):
+            if not isinstance(actual, builtins.dict):
                 return False
             for key, value in expected.items():
                 if key not in actual or not _renforge_state_matches(actual[key], value):
@@ -1191,7 +1191,7 @@ init python:
 
     def _renforge_screenshot_guard_matches(expected, data):
         digest = hashlib.sha256(data).hexdigest()
-        if isinstance(expected, dict):
+        if isinstance(expected, builtins.dict):
             expected = expected.get(
                 "sha256",
                 expected.get(
