@@ -82,8 +82,12 @@ claude mcp add renforge -- uvx renforge@latest serve
 ```
 
 Every project-related tool takes `project_path`. Call `renforge_info` first
-when possible: it returns `active_project`, the project selected in the
-dashboard, so an agent does not have to guess a path.
+when possible: it returns `active_project` with a `project_source` explaining
+how it was resolved — the dashboard selection, the `serve --project` default,
+or a Ren'Py project auto-detected from the current directory. A null
+`active_project` only means auto-discovery found nothing: every tool still
+accepts `project_path` directly (no dashboard required), so ask the user for
+the game's path and continue.
 
 ## Recommended workflow
 
@@ -231,7 +235,7 @@ Notes:
 | `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. |
 | `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
 | `renforge_saves` | Run `save`, `load`, or `list` for named slots. Save/load require `slot`; save accepts optional `extra_info`; list accepts optional `regexp` and returns `name`, `extra_info`, and `mtime` without screenshots. |
-| `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
+| `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. Passing only one of `width`/`height` keeps the game's aspect ratio. |
 
 ### Choices and user interface
 
@@ -319,7 +323,7 @@ Recommended practices:
 | Symptom | Likely cause and resolution |
 | --- | --- |
 | `no running game` | Call `renforge_launch` or start the dashboard with `renforge ui`. |
-| No `active_project` | Select a project in the dashboard or provide `project_path` explicitly. |
+| No `active_project` | Provide `project_path` explicitly (every tool accepts it), run the server from the game's directory, or select a project in the dashboard. |
 | `expected_frame_id guard failed` | The screen changed; call `renforge_list_ui_elements` or `renforge_find_image_on_screen` again. |
 | A click lands at the wrong place under WSLg | Reuse the `coordinate_space` returned by visual search. |
 | The MCP client cannot open a display | Start `renforge ui --project …`; launch requests are delegated to the display-owning process. |

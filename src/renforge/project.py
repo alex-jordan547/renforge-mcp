@@ -10,6 +10,46 @@ from .sdk import RenpySdk
 RENPY_GAME_DIR: Final = "game"
 RENFORGE_CACHE_DIR: Final = ".renforge"
 
+# A real project's game/ dir holds scripts or archives; requiring one avoids
+# misdetecting an unrelated directory that merely contains a "game" folder.
+_PROJECT_CONTENT_GLOBS: Final = ("*.rpy", "*.rpyc", "*.rpa")
+_PROJECT_CONTENT_SUFFIXES: Final = (".rpy", ".rpyc", ".rpa")
+
+
+def _has_renpy_content(game_dir: Path) -> bool:
+    # Fast path: virtually every project keeps a script or archive at the top
+    # level of game/. Fall back to one recursive walk for projects that nest
+    # everything in subfolders (e.g. game/chapters/script.rpy).
+    for pattern in _PROJECT_CONTENT_GLOBS:
+        if next(game_dir.glob(pattern), None) is not None:
+            return True
+    return (
+        next(
+            (p for p in game_dir.rglob("*") if p.suffix in _PROJECT_CONTENT_SUFFIXES),
+            None,
+        )
+        is not None
+    )
+
+
+def discover_project_from(start: Path | None = None) -> Path | None:
+    """Walk up from *start* (default: cwd) to the nearest Ren'Py project root."""
+    # This runs inside the first tool an agent calls (renforge_info), so a
+    # deleted cwd or an unreadable directory must degrade to "not found"
+    # rather than crash the call.
+    try:
+        current = (start or Path.cwd()).resolve()
+    except OSError:
+        return None
+    for candidate in (current, *current.parents):
+        game_dir = candidate / RENPY_GAME_DIR
+        try:
+            if game_dir.is_dir() and _has_renpy_content(game_dir):
+                return candidate
+        except OSError:
+            continue
+    return None
+
 
 @dataclass(frozen=True)
 class RenpyProject:

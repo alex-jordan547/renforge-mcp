@@ -3,6 +3,23 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
 
+## [Unreleased]
+
+### Added
+
+- `renforge_info`/`renforge_context` now resolve `active_project` without the
+  dashboard: they fall back to the `serve --project` default, then to a Ren'Py
+  project auto-detected from the current directory, and report the winning
+  source in a new `project_source` field. When nothing matches, the payload
+  carries an explicit `hint` so agents pass `project_path` directly instead of
+  stalling.
+
+### Changed
+
+- `renforge_screenshot` accepts a single `width` or `height` and derives the
+  other dimension from the game's aspect ratio (previously both were required
+  together).
+
 ## [0.4.0] - 2026-07-12
 
 ### Added
