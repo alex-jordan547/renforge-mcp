@@ -69,6 +69,54 @@ def test_bridge_client_ping_helper():
     assert sock.fileno() == -1
 
 
+def test_bridge_client_game_state_forwards_optional_includes():
+    token = "state-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "metrics": {"fps": 60.0}}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).get_state(
+        include=("metrics",)
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "get_state",
+        "payload": {"include": ["metrics"]},
+    }
+    assert reply == {"ok": True, "metrics": {"fps": 60.0}}
+
+
+def test_bridge_client_inspect_screen_helper():
+    token = "screen-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(
+            b'{"ok": true, "active": true, "name": "custom", "layer": "screens", "scope": {}, "arguments": {"args": [], "kwargs": {}}}\n'
+        )
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).inspect_screen("custom")
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "inspect_screen",
+        "payload": {"name": "custom"},
+    }
+    assert reply["active"] is True
+
+
 def test_bridge_client_control_helper():
     token = "control-token"
     captured = {}
@@ -89,6 +137,123 @@ def test_bridge_client_control_helper():
         "payload": {"action": "toggle_skip"},
     }
     assert reply == {"ok": True, "action": "toggle_skip", "event": "toggle_skip"}
+
+
+def test_bridge_client_save_slot_helper():
+    token = "save-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "slot": "branch-a", "extra_info": "before menu"}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).save_slot(
+        "branch-a", extra_info="before menu"
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "save_slot",
+        "payload": {"slot": "branch-a", "extra_info": "before menu"},
+    }
+    assert reply == {"ok": True, "slot": "branch-a", "extra_info": "before menu"}
+
+
+@pytest.mark.parametrize(
+    "method,args",
+    [("save_slot", ("branch-a",)), ("load_slot", ("branch-a",)), ("list_slots", ())],
+)
+def test_bridge_client_save_helpers_normalize_bridge_errors(method, args):
+    token = "save-error-token"
+
+    def handler(_line, conn):
+        conn.sendall(b'{"error": "stale bridge"}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    client = BridgeClient(BridgeConfig(port=port, token=token))
+
+    reply = getattr(client, method)(*args)
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert reply == {"ok": False, "error": "stale bridge"}
+
+
+def test_bridge_client_load_slot_helper():
+    token = "load-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "slot": "branch-a"}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).load_slot("branch-a")
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "load_slot",
+        "payload": {"slot": "branch-a"},
+    }
+    assert reply == {"ok": True, "slot": "branch-a"}
+
+
+def test_bridge_client_list_slots_helper():
+    token = "list-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(
+            b'{"ok": true, "slots": [{"name": "branch-a", "extra_info": "before menu", "mtime": 12.5}]}\n'
+        )
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).list_slots(regexp="branch")
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "list_slots",
+        "payload": {"regexp": "branch"},
+    }
+    assert reply == {
+        "ok": True,
+        "slots": [{"name": "branch-a", "extra_info": "before menu", "mtime": 12.5}],
+    }
+
+
+def test_bridge_client_send_input_helper():
+    token = "input-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "mode": "text", "characters": 4, "submitted": true}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).send_input(
+        text="Alex", submit=True
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "send_input",
+        "payload": {"text": "Alex", "submit": True},
+    }
+    assert reply == {"ok": True, "mode": "text", "characters": 4, "submitted": True}
 
 
 def test_bridge_client_invalid_json_response():

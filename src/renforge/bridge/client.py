@@ -93,11 +93,38 @@ class BridgeClient:
             raise BridgeError(f"bridge error on '{command}': {reply['error']}")
         return reply
 
+    @staticmethod
+    def _normalize_error_reply(reply: dict) -> dict:
+        if reply.get("error") is None or reply.get("ok") is False:
+            return reply
+        result = dict(reply)
+        result["ok"] = False
+        return result
+
     def ping(self) -> dict:
         return self.request("ping")
 
-    def get_state(self) -> dict:
-        return self._checked("get_state")
+    def get_state(self, include: list[str] | tuple[str, ...] | None = None) -> dict:
+        """Return live state, with optional compact metrics/audio sections."""
+        payload = None if include is None else {"include": list(include)}
+        return self._checked("get_state", payload)
+
+    def get_metrics(self) -> dict:
+        """Return render, image-cache, and logical/physical window metrics."""
+        return self._checked("get_metrics")
+
+    def get_audio_state(self) -> dict:
+        """Return the current file, volume, and pause state for each channel."""
+        return self._checked("get_audio_state")
+
+    def inspect_screen(self, name: str) -> dict:
+        """Inspect an active screen's layer, scope, and passed arguments."""
+        reply = self.request("inspect_screen", {"name": name})
+        if reply.get("error") is not None and reply.get("active") is not False:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
 
     def eval_expr(self, expr: str) -> Any:
         return self._checked("eval", {"expr": expr})["value"]
@@ -142,7 +169,51 @@ class BridgeClient:
 
     def control(self, action: str) -> dict:
         """Run a named runtime control action inside the Ren'Py bridge."""
-        return self._checked("control", {"action": action})
+        reply = self.request("control", {"action": action})
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def send_input(
+        self,
+        *,
+        text: str | None = None,
+        key: str | None = None,
+        scroll: dict[str, Any] | None = None,
+        submit: bool = False,
+    ) -> dict:
+        """Send exactly one text, named-key, or scroll input operation."""
+        payload: dict[str, Any] = {
+            "text": text,
+            "key": key,
+            "scroll": scroll,
+            "submit": bool(submit),
+        }
+        # Keep omitted optional modes out of the wire payload so callers can
+        # distinguish an explicit empty text operation from a missing mode.
+        payload = {name: value for name, value in payload.items() if value is not None}
+        reply = self.request("send_input", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def save_slot(self, slot: str, *, extra_info: str = "") -> dict:
+        """Save the current game state under a named slot."""
+        return self._normalize_error_reply(
+            self.request("save_slot", {"slot": slot, "extra_info": extra_info})
+        )
+
+    def load_slot(self, slot: str) -> dict:
+        """Schedule loading a named save slot inside the Ren'Py main loop."""
+        return self._normalize_error_reply(self.request("load_slot", {"slot": slot}))
+
+    def list_slots(self, *, regexp: str | None = None) -> dict:
+        """Return named save slots with compact metadata and no screenshots."""
+        return self._normalize_error_reply(self.request("list_slots", {"regexp": regexp}))
 
     def poll_events(self, since: int = 0) -> dict:
         """Return pushed events with ``seq > since`` plus the current cursor.

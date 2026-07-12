@@ -38,7 +38,8 @@ translations, find orphaned assets, run builds, and search Ren'Py's docs.
   parse lint output.
 - **Live game control** — launch a project with an injected in-game bridge, then
   advance dialogue, list/select choices, evaluate expressions, get/set store
-  variables, poll pushed events, and capture frames the model can literally see.
+  variables, send focused text/key/scroll input, poll pushed events, and capture
+  frames the model can literally see.
 - **Autopilot** — auto-play the game across branches and report label coverage
   and crashes.
 - **Assets & translations** — find orphaned/missing image+audio assets, list
@@ -224,9 +225,11 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_info`, `renforge_context` (discover the project selected in the dashboard)
 - `renforge_find_references`, `renforge_inspect_image`
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, `renforge_stop`
-- `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_list_choices`,
-  `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
-  `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
+- `renforge_game_state`, `renforge_game_state_compact`, `renforge_inspect_screen`, `renforge_advance`, `renforge_control`,
+  `renforge_send_input`, `renforge_saves`,
+  `renforge_list_choices`, `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
+  `renforge_set_var`, `renforge_poll_events`, `renforge_get_errors`, `renforge_wait_until`,
+  `renforge_screenshot`
 - `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
   `renforge_find_image_on_screen`
 - `renforge_get_displayable_bounds`, `renforge_position_element`,
@@ -254,6 +257,10 @@ frame and returns bounds, center, and confidence; its result also includes a
 Ren'Py's logical coordinates are derived correctly even when WSLg scales the
 captured image.
 
+`renforge_game_state` keeps its default response unchanged. Pass
+`include=["metrics", "audio"]` to opt into compact render/cache/window metrics
+and registered-channel audio state; only those two include values are accepted.
+
 ### Live control
 
 `renforge_launch` injects a bridge into `<project>/game/` (removed on teardown)
@@ -267,6 +274,36 @@ registry. Agents can call `renforge_info` or `renforge_context` first instead of
 guessing the game path. `renforge_jump` resolves a label to `file:line` and
 restarts through Ren'Py's supported warp path; `renforge_new_game` starts a
 fresh process at the project's `start` label through that same path.
+
+### GOD-mode edit and branch check
+
+Use real labels and visible choice text from your project in this compact
+launch-to-diagnostics loop:
+
+```text
+project = "/path/to/game"
+renforge_launch(project_path=project)
+edit game/script.rpy
+renforge_control(project_path=project, action="reload_script")
+renforge_wait_until(project_path=project, label="edited_label", timeout=30.0)
+renforge_screenshot(project_path=project)
+renforge_saves(
+    project_path=project,
+    action="save",
+    slot="branch-a",
+    extra_info="after hot reload",
+)
+renforge_list_choices(project_path=project)
+renforge_select_choice(project_path=project, text="Branch B")
+renforge_wait_until(project_path=project, label="branch_b", timeout=30.0)
+renforge_get_errors(project_path=project)
+```
+
+`renforge_screenshot` returns the current frame as an image. The save call
+creates a named checkpoint before selecting Branch B; use
+`renforge_saves(project_path=project, action="load", slot="branch-a")` to return
+to it. `renforge_wait_until` accepts exactly one of `label`, `screen`, or
+`expr`, and `timeout` is capped at 120 seconds.
 
 ### Web dashboard
 

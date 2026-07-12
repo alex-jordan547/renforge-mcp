@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -324,14 +325,23 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
-    def renforge_game_state(project_path: str) -> dict:
-        """Return the complete live state, including variables (backward compatible)."""
+    def renforge_game_state(
+        project_path: str,
+        include: list[str] | None = None,
+    ) -> dict:
+        """Return complete live state; optionally include compact metrics or audio."""
+        def _state() -> dict:
+            # Preserve the no-payload wire shape for existing callers.
+            if include is None:
+                return live.game_state(project_path)
+            return live.game_state(project_path, include=include)
+
         return _log_tool_call(
             name="renforge_game_state",
-            params={"project_path": project_path},
+            params={"project_path": project_path, "include": include},
             project_root=project_path,
-            fn=live.game_state,
-            args=(project_path,),
+            fn=_state,
+            args=(),
             kwargs={},
         )
 
@@ -374,6 +384,18 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_inspect_screen(project_path: str, name: str) -> dict:
+        """Inspect an active screen's layer, JSON-safe scope, and arguments."""
+        return _log_tool_call(
+            name="renforge_inspect_screen",
+            params={"project_path": project_path, "name": name},
+            project_root=project_path,
+            fn=live.inspect_screen,
+            args=(project_path, name),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_advance(project_path: str) -> dict:
         """Advance the current dialogue."""
         return _log_tool_call(
@@ -383,6 +405,83 @@ def _register_tools(app: Any) -> None:
             fn=live.advance,
             args=(project_path,),
             kwargs={},
+        )
+
+    @tool_decorator()
+    def renforge_control(project_path: str, action: str) -> dict:
+        """Run a runtime action: advance, rollback, toggle_skip, toggle_auto,
+        toggle_afm, game_menu, hide_windows, quick_save, quick_load,
+        reload_script, restart_interaction, or quit.
+        """
+        return _log_tool_call(
+            name="renforge_control",
+            params={"project_path": project_path, "action": action},
+            project_root=project_path,
+            fn=live.control,
+            args=(project_path, action),
+            kwargs={},
+        )
+
+    @tool_decorator()
+    def renforge_send_input(
+        project_path: str,
+        text: str | None = None,
+        key: str | None = None,
+        scroll: dict[str, Any] | None = None,
+        submit: bool = False,
+    ) -> dict:
+        """Send exactly one input mode: text, named key, or scroll object.
+
+        ``text`` posts character-by-character TEXTINPUT events to a focused
+        Ren'Py Input; ``submit`` optionally presses Enter after the text.
+        ``key`` accepts readable names such as enter, esc, arrows, pageup,
+        pagedown, backspace, delete, home, end, space, tab, and function keys.
+        ``scroll`` is ``{"x": ..., "y": ..., "direction": "up"|"down"}``
+        in logical game coordinates, with optional integer ``amount``.
+        Exactly one of text, key, and scroll must be supplied.
+        """
+        return _log_tool_call(
+            name="renforge_send_input",
+            params={
+                "project_path": project_path,
+                "text": text,
+                "key": key,
+                "scroll": scroll,
+                "submit": submit,
+            },
+            project_root=project_path,
+            fn=live.send_input,
+            args=(project_path,),
+            kwargs={
+                "text": text,
+                "key": key,
+                "scroll": scroll,
+                "submit": submit,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_saves(
+        project_path: str,
+        action: str,
+        slot: str | None = None,
+        extra_info: str | None = None,
+        regexp: str | None = None,
+    ) -> dict:
+        """Save, load, or list named save slots without screenshot payloads."""
+        return _log_tool_call(
+            name="renforge_saves",
+            params={
+                "project_path": project_path,
+                "action": action,
+                "slot": slot,
+                "extra_info": extra_info,
+                "regexp": regexp,
+            },
+            project_root=project_path,
+            fn=live.saves,
+            args=(project_path, action),
+            kwargs={"slot": slot, "extra_info": extra_info, "regexp": regexp},
         )
 
     @tool_decorator()
@@ -649,6 +748,60 @@ def _register_tools(app: Any) -> None:
             fn=live.poll_events,
             args=(project_path,),
             kwargs={"since": since},
+        )
+
+    @tool_decorator()
+    def renforge_get_errors(project_path: str, since: int = 0) -> dict:
+        """Return recent bridge exceptions or bounded crash-file diagnostics."""
+        return _log_tool_call(
+            name="renforge_get_errors",
+            params={"project_path": project_path, "since": since},
+            project_root=project_path,
+            fn=live.get_errors,
+            args=(project_path,),
+            kwargs={"since": since},
+        )
+
+    @tool_decorator()
+    def renforge_wait_until(
+        project_path: str,
+        label: str | None = None,
+        screen: str | None = None,
+        expr: str | None = None,
+        timeout: float = 30.0,
+        interval: float = 0.5,
+    ) -> dict:
+        """Wait for exactly one label, screen, or expression condition."""
+        def _wait() -> dict:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return {"ok": False, "error": "timeout must be a finite non-negative number"}
+            if not math.isfinite(float(timeout)) or timeout < 0:
+                return {"ok": False, "error": "timeout must be a finite non-negative number"}
+            if timeout > 120:
+                return {"ok": False, "error": "timeout must be <= 120 seconds"}
+            return live.wait_until(
+                project_path,
+                label=label,
+                screen=screen,
+                expr=expr,
+                timeout=timeout,
+                interval=interval,
+            )
+
+        return _log_tool_call(
+            name="renforge_wait_until",
+            params={
+                "project_path": project_path,
+                "label": label,
+                "screen": screen,
+                "expr": expr,
+                "timeout": timeout,
+                "interval": interval,
+            },
+            project_root=project_path,
+            fn=_wait,
+            args=(),
+            kwargs={},
         )
 
     @tool_decorator()
@@ -949,7 +1102,10 @@ def create_app() -> Any:
         "pixel-perfect layout, measure a shown image with "
         "renforge_get_displayable_bounds, nudge it live with "
         "renforge_position_element, overlay a grid or crosshair via "
-        "renforge_screenshot, and compare frames with renforge_diff_screenshots."
+        "renforge_screenshot, and compare frames with renforge_diff_screenshots. "
+        "For live iteration, use renforge_control(action=\"reload_script\") after "
+        "edits, renforge_wait_until for one bounded condition, and "
+        "renforge_get_errors after risky actions or a stopped process."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)

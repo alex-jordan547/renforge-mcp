@@ -40,6 +40,10 @@ class _FakeFocus:
         self.x, self.y, self.w, self.h = x, y, w, h
 
 
+class _FakeInput:
+    pass
+
+
 def _fake_renpy(store):
     config = types.SimpleNamespace(
         basedir="",
@@ -54,6 +58,7 @@ def _fake_renpy(store):
     renpy.screenshot_to_bytes = lambda size: b"\x89PNG\r\n_fake_frame_"
     renpy.get_showing_tags = lambda: ["bg", "eileen"]
     renpy._queued_events = []
+    renpy._pygame_events = []
     renpy._ran_actions = []
     renpy._invoked = []
     renpy.exports = types.SimpleNamespace(
@@ -71,8 +76,13 @@ def _fake_renpy(store):
         _FakeFocus("Alpha choice", 10, 10, 100, 20),
         _FakeFocus("Beta choice", 10, 40, 100, 20),
     ]
+    renpy._focused_widget = None
     renpy.display = types.SimpleNamespace(
-        focus=types.SimpleNamespace(focus_list=focus_list),
+        focus=types.SimpleNamespace(
+            focus_list=focus_list,
+            get_focused=lambda: renpy._focused_widget,
+        ),
+        behavior=types.SimpleNamespace(Input=_FakeInput),
         interface=types.SimpleNamespace(mouse_focused=False, ignore_touch=False),
     )
     renpy._clicks = []
@@ -149,6 +159,37 @@ def running_bridge(tmp_path, monkeypatch):
     renpy = _fake_renpy(store)
     renpy.config.basedir = str(tmp_path)
 
+    class _FakeEvent:
+        def __init__(self, event_type, attributes=None):
+            self.type = event_type
+            for name, value in (attributes or {}).items():
+                setattr(self, name, value)
+
+    pygame = types.ModuleType("pygame_sdl2")
+    pygame.TEXTINPUT = 1
+    pygame.KEYDOWN = 2
+    pygame.KEYUP = 3
+    pygame.MOUSEBUTTONDOWN = 4
+    pygame.MOUSEBUTTONUP = 5
+    pygame.K_F1 = 101
+    pygame.K_F2 = 102
+    pygame.K_F3 = 103
+    pygame.K_F4 = 104
+    pygame.K_F5 = 105
+    pygame.K_F6 = 106
+    pygame.K_F7 = 107
+    pygame.K_F8 = 108
+    pygame.K_F9 = 109
+    pygame.K_F10 = 110
+    pygame.K_F11 = 111
+    pygame.K_F12 = 112
+    pygame.KMOD_NONE = 0
+    pygame.event = types.SimpleNamespace(
+        Event=_FakeEvent,
+        post=lambda event: renpy._pygame_events.append(event),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "pygame_sdl2", pygame)
+
     # Bridge keeps runtime state on a sys.modules entry so saves stay picklable.
     import sys
 
@@ -197,6 +238,108 @@ def test_get_state_reports_variables_and_showing(running_bridge):
     assert state["variables"]["player_name"] == "Rin"
     assert "_hidden" not in state["variables"]  # private names are filtered
     assert state["showing_tags"] == ["bg", "eileen"]
+    assert "metrics" not in state
+    assert "audio" not in state
+
+
+def test_get_state_includes_render_metrics_and_audio_channels_on_request(running_bridge):
+    renpy = running_bridge.renpy
+    renpy.display.interface.frame_times = [index / 10.0 for index in range(11)]
+    renpy.display.im = types.SimpleNamespace(
+        cache=types.SimpleNamespace(cache_size=1234, cache_limit=5678, cache={"a": 1, "b": 2})
+    )
+    renpy.get_physical_size = lambda: (2560, 1440)
+    renpy.audio = types.SimpleNamespace(
+        audio=types.SimpleNamespace(
+            all_channels=[types.SimpleNamespace(name="music"), types.SimpleNamespace(name="custom")],
+            channels={"music": object(), "custom": object()},
+        )
+    )
+    renpy.music = types.SimpleNamespace(
+        get_playing=lambda channel="music": {
+            "music": "audio/theme.ogg",
+            "custom": "audio/blip.wav",
+        }.get(channel),
+        get_volume=lambda channel="music": {"music": 0.75, "custom": 0.25}.get(channel),
+        get_pause=lambda channel="music": channel == "custom",
+    )
+
+    state = running_bridge.client.get_state(include=["metrics", "audio"])
+
+    assert state["metrics"]["render_time_ms"] == pytest.approx(100.0)
+    assert state["metrics"]["fps"] == pytest.approx(10.0)
+    assert state["metrics"]["image_cache_size"] == 1234
+    assert state["metrics"]["window"] == {
+        "logical": {"width": 1920, "height": 1080},
+        "physical": {"width": 2560, "height": 1440},
+    }
+    assert state["audio"]["channels"] == {
+        "music": {"playing": "audio/theme.ogg", "volume": 0.75, "pause": False},
+        "custom": {"playing": "audio/blip.wav", "volume": 0.25, "pause": True},
+    }
+    assert running_bridge.client.get_metrics()["metrics"]["image_cache_size"] == 1234
+    assert running_bridge.client.get_audio_state()["channels"]["music"]["playing"] == "audio/theme.ogg"
+
+
+def test_get_state_rejects_unknown_include_values(running_bridge):
+    reply = running_bridge.client.request("get_state", {"include": ["bogus"]})
+
+    assert reply["ok"] is False
+    assert "metrics" in reply["error"]
+
+
+def test_get_state_include_accepts_wire_lists_when_store_list_is_revertable(running_bridge):
+    # Ren'Py exposes its RevertableList as the unqualified ``list`` name in
+    # store-backed init-python code. JSON decoding still returns a built-in
+    # list, so validation must use builtins.list rather than that shadow.
+    class _RevertableList(list):
+        pass
+
+    running_bridge.globs["list"] = _RevertableList
+
+    reply = running_bridge.client.request("get_state", {"include": []})
+
+    assert reply.get("error") is None
+    assert "metrics" not in reply
+
+
+def test_inspect_screen_reports_active_screen_contract_and_arguments(running_bridge):
+    screen = types.SimpleNamespace(
+        screen_name=("custom",),
+        layer="overlay",
+        scope={
+            "count": 7,
+            "title": "Demo",
+            "_args": ("branch-a",),
+            "_kwargs": {"enabled": True},
+        },
+    )
+    running_bridge.renpy.get_screen = lambda name: screen if name == "custom" else None
+
+    reply = running_bridge.client.inspect_screen("custom")
+
+    assert reply["ok"] is True
+    assert reply["active"] is True
+    assert reply["name"] == "custom"
+    assert reply["layer"] == "overlay"
+    assert reply["scope"] == {"count": 7, "title": "Demo"}
+    assert reply["arguments"] == {
+        "args": ["branch-a"],
+        "kwargs": {"enabled": True},
+    }
+
+
+def test_inspect_screen_reports_inactive_screen_clearly(running_bridge):
+    running_bridge.renpy.get_screen = lambda _name: None
+
+    reply = running_bridge.client.inspect_screen("missing")
+
+    assert reply == {
+        "ok": True,
+        "active": False,
+        "name": "missing",
+        "error": "screen not showing: missing",
+    }
 
 
 def test_eval_and_set_var_mutate_real_store(running_bridge):
@@ -221,6 +364,111 @@ def test_bad_token_is_rejected(running_bridge):
 def test_advance_posts_dismiss_event(running_bridge):
     assert running_bridge.client.advance().get("ok") is True
     assert "dismiss" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_posts_textinput_per_character_and_submits(running_bridge):
+    running_bridge.renpy._focused_widget = _FakeInput()
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert all(event.type == 1 for event in running_bridge.renpy._pygame_events)
+    assert "input_enter" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_reports_missing_focused_input(running_bridge):
+    reply = running_bridge.client.send_input(text="Alex")
+
+    assert reply["ok"] is False
+    assert "focused Ren'Py Input" in reply["error"]
+    assert running_bridge.renpy._pygame_events == []
+
+
+def test_send_input_text_focuses_visible_input_when_engine_has_no_current_focus(running_bridge):
+    input_focus = _FakeFocus(None, 10, 10, 200, 30)
+    input_focus.widget = _FakeInput()
+    running_bridge.renpy.display.focus.focus_list.append(input_focus)
+    running_bridge.renpy.display.focus.change_focus = lambda focus: setattr(
+        running_bridge.renpy, "_focused_widget", focus.widget
+    )
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert "input_enter" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_force_focuses_active_input_screen_widget(running_bridge):
+    input_widget = _FakeInput()
+    running_bridge.renpy.get_screen = lambda name: (
+        types.SimpleNamespace(widgets={"input": input_widget}) if name == "input" else None
+    )
+    running_bridge.renpy.display.focus.force_focus = lambda widget: setattr(
+        running_bridge.renpy, "_focused_widget", widget
+    )
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert "input_enter" in running_bridge.renpy._queued_events
+
+
+def test_send_input_named_key_uses_readable_keymap_and_direct_pair(running_bridge):
+    semantic = running_bridge.client.send_input(key="pageup")
+    direct = running_bridge.client.send_input(key="f1")
+
+    assert semantic == {"ok": True, "mode": "key", "key": "pageup", "event": "rollback"}
+    assert running_bridge.renpy._queued_events[-1] == ["rollback", "viewport_pageup"]
+    assert direct == {"ok": True, "mode": "key", "key": "f1", "keycode": 101}
+    assert [(event.type, event.key) for event in running_bridge.renpy._pygame_events] == [
+        (2, 101),
+        (3, 101),
+    ]
+
+
+def test_send_input_unknown_key_is_explicit(running_bridge):
+    reply = running_bridge.client.send_input(key="not-a-real-key")
+
+    assert reply["ok"] is False
+    assert "unknown key" in reply["error"]
+    assert "pageup" in reply["error"]
+
+
+def test_send_input_scroll_posts_logical_wheel_event(running_bridge):
+    reply = running_bridge.client.send_input(
+        scroll={"x": 123, "y": 456, "direction": "down"}
+    )
+
+    assert reply == {
+        "ok": True,
+        "mode": "scroll",
+        "x": 123,
+        "y": 456,
+        "direction": "down",
+        "amount": 1,
+    }
+    event = running_bridge.renpy._pygame_events[-1]
+    assert event.type == 4
+    assert event.button == 5
+    assert event.pos == (123, 456)
 
 
 def test_poll_events_captures_labels_and_say_lines(running_bridge):
@@ -401,3 +649,153 @@ def test_control_quit_uses_native_renpy_quit(running_bridge):
 
     assert reply == {"ok": True, "action": "quit"}
     assert ("quit",) in running_bridge.renpy._invoked
+
+
+def test_control_unknown_action_preserves_bridge_error_payload(running_bridge):
+    reply = running_bridge.client.control("not_an_action")
+
+    assert reply == {
+        "ok": False,
+        "error": "unknown control action: not_an_action",
+    }
+
+
+def test_save_slot_saves_named_state_with_extra_info(running_bridge):
+    calls = {}
+    running_bridge.renpy.can_save = lambda: True
+
+    def save(slot, extra_info=""):
+        calls.update(slot=slot, extra_info=extra_info)
+
+    running_bridge.renpy.save = save
+
+    reply = running_bridge.client.save_slot("branch-a", extra_info="before menu")
+
+    assert reply == {
+        "ok": True,
+        "slot": "branch-a",
+        "extra_info": "before menu",
+    }
+    assert calls == {"slot": "branch-a", "extra_info": "before menu"}
+
+
+def test_save_slot_rejects_when_renpy_disallows_saving(running_bridge):
+    running_bridge.renpy.can_save = lambda: False
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
+def test_save_slot_fallback_respects_disabled_save_config(running_bridge):
+    running_bridge.renpy.config.save = False
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
+def test_save_slot_fallback_rejects_missing_runtime_objects(running_bridge):
+    running_bridge.renpy.config = None
+    running_bridge.renpy.store = None
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
+def test_load_slot_missing_name_returns_clean_error(running_bridge):
+    running_bridge.renpy.can_load = lambda slot: False
+
+    reply = running_bridge.client.load_slot("missing")
+
+    assert reply == {
+        "ok": False,
+        "error": "save slot not found: missing",
+    }
+
+
+def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
+    scheduled = []
+    calls = {}
+
+    class _LoadControl(Exception):
+        pass
+
+    running_bridge.renpy.can_load = lambda slot: True
+
+    def load(slot):
+        calls["slot"] = slot
+        raise _LoadControl("load transfers control")
+
+    running_bridge.renpy.load = load
+    running_bridge.renpy.invoke_in_main_thread = lambda fn, *args, **kwargs: scheduled.append(
+        (fn, args, kwargs)
+    )
+
+    reply = running_bridge.client.load_slot("branch-a")
+
+    assert reply == {"ok": True, "slot": "branch-a"}
+    assert len(scheduled) == 1
+    with pytest.raises(_LoadControl, match="transfers control"):
+        scheduled[0][0](*scheduled[0][1], **scheduled[0][2])
+    assert calls == {"slot": "branch-a"}
+
+
+def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge):
+    calls = []
+    running_bridge.renpy.list_slots = lambda regexp=None: ["branch-a", "branch-b"]
+    running_bridge.renpy.slot_json = lambda slot: {
+        "_save_name": "before menu" if slot == "branch-a" else "after choice",
+    }
+    running_bridge.renpy.slot_mtime = lambda slot: 12.5 if slot == "branch-a" else 13.5
+    running_bridge.renpy.slot_screenshot = lambda slot: calls.append(slot) or pytest.fail(
+        "list_slots must not load screenshots"
+    )
+
+    reply = running_bridge.client.list_slots(regexp="branch")
+
+    assert reply == {
+        "ok": True,
+        "slots": [
+            {"name": "branch-a", "extra_info": "before menu", "mtime": 12.5},
+            {"name": "branch-b", "extra_info": "after choice", "mtime": 13.5},
+        ],
+    }
+    assert calls == []
+
+
+def test_list_slots_skips_corrupt_metadata_and_keeps_valid_slots(running_bridge):
+    running_bridge.renpy.list_slots = lambda regexp=None: ["broken", "valid"]
+
+    def slot_json(slot):
+        if slot == "broken":
+            raise ValueError("corrupt save metadata")
+        return {"_save_name": "ok"}
+
+    def slot_mtime(slot):
+        if slot == "broken":
+            raise OSError("inaccessible save")
+        return 42.0
+
+    running_bridge.renpy.slot_json = slot_json
+    running_bridge.renpy.slot_mtime = slot_mtime
+
+    reply = running_bridge.client.list_slots()
+
+    assert reply == {
+        "ok": True,
+        "slots": [
+            {"name": "broken", "extra_info": "", "mtime": None},
+            {"name": "valid", "extra_info": "ok", "mtime": 42.0},
+        ],
+    }

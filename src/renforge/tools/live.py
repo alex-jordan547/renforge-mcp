@@ -13,8 +13,11 @@ PNG from :func:`screenshot_png` into an MCP image.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -182,8 +185,21 @@ def stop_all() -> None:
     _SESSIONS.clear()
 
 
-def game_state(project_path: str) -> dict:
-    return _with_client(project_path, lambda c: {"ok": True, **c.get_state()})
+def game_state(project_path: str, include: list[str] | tuple[str, ...] | None = None) -> dict:
+    """Return live state, optionally including compact metrics/audio sections."""
+    if include is None:
+        return _with_client(project_path, lambda c: {"ok": True, **c.get_state()})
+    return _with_client(
+        project_path,
+        lambda c: {"ok": True, **c.get_state(include=include)},
+    )
+
+
+def inspect_screen(project_path: str, name: str) -> dict:
+    """Inspect an active screen's scope and passed arguments."""
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "error": "screen name is required"}
+    return _with_client(project_path, lambda c: c.inspect_screen(name.strip()))
 
 
 def advance(project_path: str) -> dict:
@@ -192,6 +208,83 @@ def advance(project_path: str) -> dict:
 
 def control(project_path: str, action: str) -> dict:
     return _with_client(project_path, lambda c: c.control(action))
+
+
+def send_input(
+    project_path: str,
+    *,
+    text: str | None = None,
+    key: str | None = None,
+    scroll: dict[str, Any] | None = None,
+    submit: bool = False,
+) -> dict:
+    """Send exactly one text, named-key, or logical-coordinate scroll input."""
+    selected = [value is not None for value in (text, key, scroll)]
+    if sum(selected) != 1:
+        return {"ok": False, "error": "exactly one of text, key, or scroll is required"}
+    if not isinstance(submit, bool):
+        return {"ok": False, "error": "submit must be a boolean"}
+    if key is not None and submit:
+        return {"ok": False, "error": "submit is only valid with text input"}
+    if scroll is not None and submit:
+        return {"ok": False, "error": "submit is only valid with text input"}
+    if text is not None and not isinstance(text, str):
+        return {"ok": False, "error": "text must be a string"}
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        return {"ok": False, "error": "key must be a non-empty string"}
+    if scroll is not None and not isinstance(scroll, dict):
+        return {"ok": False, "error": "scroll must be an object with x, y, and direction"}
+    return _with_client(
+        project_path,
+        lambda client: client.send_input(
+            text=text,
+            key=key,
+            scroll=scroll,
+            submit=submit,
+        ),
+    )
+
+
+def saves(
+    project_path: str,
+    action: str,
+    *,
+    slot: str | None = None,
+    extra_info: str | None = None,
+    regexp: str | None = None,
+) -> dict:
+    """Save, load, or list named save slots through the running bridge."""
+    if action not in {"save", "load", "list"}:
+        return {"ok": False, "error": "action must be one of: save, load, list"}
+
+    if action in {"save", "load"}:
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "slot is required for action '%s'" % action}
+    elif slot is not None:
+        return {"ok": False, "error": "slot is only valid for save or load"}
+
+    if action == "save":
+        if regexp is not None:
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
+        if extra_info is not None and not isinstance(extra_info, str):
+            return {"ok": False, "error": "extra_info must be a string"}
+        return _with_client(
+            project_path,
+            lambda client: client.save_slot(slot, extra_info=extra_info or ""),
+        )
+
+    if action == "load":
+        if extra_info is not None:
+            return {"ok": False, "error": "extra_info is only valid for action 'save'"}
+        if regexp is not None:
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
+        return _with_client(project_path, lambda client: client.load_slot(slot))
+
+    if extra_info is not None:
+        return {"ok": False, "error": "extra_info is only valid for action 'save'"}
+    if regexp is not None and not isinstance(regexp, str):
+        return {"ok": False, "error": "regexp must be a string"}
+    return _with_client(project_path, lambda client: client.list_slots(regexp=regexp))
 
 
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -362,6 +455,141 @@ def poll_events(project_path: str, since: int = 0) -> dict:
     return _with_client(project_path, lambda c: {"ok": True, **c.poll_events(since)})
 
 
+def _tail_project_file(project_root: Path, filename: str, max_lines: int = 100) -> dict | None:
+    """Read a bounded tail from a project-root diagnostic file."""
+    path = (project_root / filename).resolve()
+    try:
+        path.relative_to(project_root)
+    except ValueError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = deque(handle, maxlen=max_lines)
+    except OSError:
+        return None
+    return {"name": filename, "tail": "".join(lines), "mtime": mtime}
+
+
+def _error_files(project_path: str) -> dict:
+    project_root = Path(project_path).expanduser().resolve()
+    files = []
+    for filename in ("traceback.txt", "errors.txt", "log.txt"):
+        record = _tail_project_file(project_root, filename)
+        if record is not None:
+            files.append(record)
+
+    result: dict[str, Any] = {"ok": True, "events": [], "files": files}
+    session = _SESSIONS.get(_key(project_root))
+    if session is not None:
+        try:
+            exit_code = session.process.poll()
+        except Exception:
+            exit_code = None
+        if exit_code is not None:
+            result["exit_code"] = exit_code
+    if not files:
+        result["message"] = "no errors found"
+    return result
+
+
+def get_errors(project_path: str, since: int = 0) -> dict:
+    """Return recent bridge errors or bounded crash diagnostics from disk."""
+    try:
+        cursor = int(since)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "since must be an integer"}
+    if cursor < 0:
+        return {"ok": False, "error": "since must be non-negative"}
+
+    try:
+        reply = _client(project_path).poll_events(cursor)
+        events = reply.get("events", [])
+        if not isinstance(events, list):
+            events = []
+        errors = [
+            event
+            for event in events
+            if isinstance(event, dict)
+            and str(event.get("type", "")).lower() in {"error", "exception"}
+        ]
+        return {"ok": True, "events": errors, "cursor": reply.get("cursor", cursor)}
+    except Exception:
+        return _error_files(project_path)
+
+
+def wait_until(
+    project_path: str,
+    *,
+    label: str | None = None,
+    screen: str | None = None,
+    expr: str | None = None,
+    timeout: float = 30.0,
+    interval: float = 0.5,
+) -> dict:
+    """Poll exactly one live-game condition until it matches or times out."""
+    conditions = [("label", label), ("screen", screen), ("expr", expr)]
+    selected = [(name, value) for name, value in conditions if value is not None]
+    if len(selected) != 1:
+        return {"ok": False, "error": "exactly one of label, screen, expr is required"}
+    condition, value = selected[0]
+    if not isinstance(value, str) or not value.strip():
+        return {"ok": False, "error": "%s must be a non-empty string" % condition}
+
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return {"ok": False, "error": "timeout must be a finite non-negative number"}
+    if not math.isfinite(float(timeout)) or timeout < 0 or timeout > 120:
+        return {"ok": False, "error": "timeout must be between 0 and 120 seconds"}
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        return {"ok": False, "error": "interval must be a finite non-negative number"}
+    if not math.isfinite(float(interval)) or interval < 0:
+        return {"ok": False, "error": "interval must be a finite non-negative number"}
+
+    try:
+        client = _client(project_path)
+    except FileNotFoundError:
+        return {"ok": False, "error": "no running game (bridge not found); call renforge_launch first"}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    started = time.monotonic()
+    deadline = started + float(timeout)
+    while True:
+        try:
+            state = client.get_state()
+            if not isinstance(state, dict):
+                return {"ok": False, "error": "bridge state must be an object"}
+            if condition == "label":
+                matched = state.get("current_label") == value
+            elif condition == "screen":
+                matched = bool(client.eval_expr("renpy.get_screen(%r) is not None" % value))
+            else:
+                matched = bool(client.eval_expr(value))
+        except BridgeError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        elapsed = time.monotonic() - started
+        if matched:
+            return {"ok": True, "matched": condition, "elapsed": elapsed, "state": state}
+        if elapsed >= float(timeout):
+            return {"ok": False, "error": "timeout", "elapsed": elapsed, "state": state}
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "ok": False,
+                "error": "timeout",
+                "elapsed": elapsed,
+                "state": state,
+            }
+        sleep_interval = float(interval) if interval > 0 else 0.001
+        time.sleep(min(sleep_interval, remaining))
+
+
 def screenshot_png(project_path: str, width: int = 0, height: int = 0) -> bytes:
     """Return the current frame as PNG bytes (raises if no game is running)."""
     return _client(project_path).screenshot(width, height)
@@ -387,8 +615,11 @@ __all__ = [
     "stop_game",
     "stop_all",
     "game_state",
+    "inspect_screen",
     "advance",
     "control",
+    "send_input",
+    "saves",
     "list_choices",
     "select_choice",
     "list_ui_elements",
@@ -398,6 +629,8 @@ __all__ = [
     "get_var",
     "set_var",
     "poll_events",
+    "get_errors",
+    "wait_until",
     "screenshot_png",
     "run_autopilot",
 ]

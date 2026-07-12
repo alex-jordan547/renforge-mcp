@@ -94,10 +94,23 @@ renforge_launch(project_path)
   -> game and bridge are available
 renforge_game_state_compact(project_path)
   -> current label and bounded state
+renforge_game_state(project_path, include=["metrics", "audio"])
+  -> optional render/cache/window metrics and per-channel audio state
+renforge_inspect_screen(project_path, name="say")
+  -> active layer, JSON-safe scope, and passed screen arguments
 renforge_list_ui_elements(project_path)
   -> visible controls and frame_id
 renforge_click_element(..., expected_frame_id=frame_id)
   -> safe interaction
+```
+
+After editing a running project's `.rpy` file, hot-reload it and inspect the
+result without restarting the game process:
+
+```text
+edit game/script.rpy
+renforge_control(project_path, action="reload_script")
+renforge_screenshot(project_path)
 ```
 
 For image-driven interaction:
@@ -123,6 +136,36 @@ the current frame before trying again.
 by `renforge_find_image_on_screen` use the captured PNG's coordinates, so pass
 its `coordinate_space: "screenshot"` to `renforge_click_at`. RenForge converts
 them to logical coordinates, including when WSLg scales the capture.
+
+## GOD-mode edit and branch check
+
+Use real labels and visible choice text from the project in this compact
+launch-to-diagnostics loop:
+
+```text
+project = "/path/to/game"
+renforge_launch(project_path=project)
+edit game/script.rpy
+renforge_control(project_path=project, action="reload_script")
+renforge_wait_until(project_path=project, label="edited_label", timeout=30.0)
+renforge_screenshot(project_path=project)
+renforge_saves(
+    project_path=project,
+    action="save",
+    slot="branch-a",
+    extra_info="after hot reload",
+)
+renforge_list_choices(project_path=project)
+renforge_select_choice(project_path=project, text="Branch B")
+renforge_wait_until(project_path=project, label="branch_b", timeout=30.0)
+renforge_get_errors(project_path=project)
+```
+
+`renforge_screenshot` returns the current frame as an image. The save call
+creates a named checkpoint before selecting Branch B; use
+`renforge_saves(project_path=project, action="load", slot="branch-a")` to return
+to it. `renforge_wait_until` accepts exactly one of `label`, `screen`, or
+`expr`, and `timeout` is capped at 120 seconds.
 
 ## Pixel-perfect placement
 
@@ -182,9 +225,12 @@ Notes:
 | `renforge_jump` | Restart a game at a label or `file:line` using Ren'Py warp. |
 | `renforge_new_game` | Start a fresh process at the `start` label. |
 | `renforge_stop` | Stop the running game and remove the injected bridge. |
-| `renforge_game_state` | Complete state, including variables. |
+| `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. |
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
+| `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. |
+| `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
+| `renforge_saves` | Run `save`, `load`, or `list` for named slots. Save/load require `slot`; save accepts optional `extra_info`; list accepts optional `regexp` and returns `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
 ### Choices and user interface
@@ -206,9 +252,12 @@ Notes:
 | Tool | Purpose |
 | --- | --- |
 | `renforge_eval` | Evaluate a Python expression in `store`. Use for diagnosis and development only. |
+| `renforge_inspect_screen` | Inspect whether a screen is active and, when shown, return its layer, JSON-safe scope, and passed arguments. |
 | `renforge_get_var` | Read a store variable. |
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
+| `renforge_get_errors` | Read recent bridge errors or bounded crash-file tails with mtimes and exit code when tracked. |
+| `renforge_wait_until` | Wait for exactly one `label`, `screen`, or `expr` condition with bounded `timeout` (maximum 120 seconds) and polling `interval`. |
 | `renforge_autopilot` | Explore branches and report label coverage and crashes. |
 
 ### Project, translation, builds, and Ren'Py documentation
@@ -230,9 +279,30 @@ Notes:
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
+`renforge_control`, `renforge_send_input`, `renforge_saves`,
 `renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
 `renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
+
+`renforge_send_input` is also stateful: supply exactly one mode per call. Text
+input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh
+the screen or focus the field before retrying; a successful response means the
+events were queued on the game thread, not that an unrelated screen consumed
+them.
+
+`renforge_game_state` is read-only. Its optional `include` list accepts only
+`metrics` and `audio`; an unknown value is rejected so a typo cannot silently
+change the response. Metrics report `render_time_ms`, an FPS estimate,
+`image_cache_size`, and logical/physical window sizes. Audio reports every
+registered channel with its playing filename, volume, and pause state when
+Ren'Py exposes them.
+
+`renforge_inspect_screen` is read-only and reports `active=false` clearly when
+the requested screen is not shown. There is intentionally no separate style
+tool yet: use `renforge_eval` as the controlled style-introspection escape
+hatch when the active screen's resolved style needs investigation. Treat
+`renforge_eval` as arbitrary Python execution and use it only on a trusted
+local project.
 
 Recommended practices:
 

@@ -20,6 +20,7 @@ init python:
     # so the client can discover them.
 
     import base64
+    import builtins
     import collections
     import hashlib
     import json
@@ -30,6 +31,15 @@ init python:
     import sys
     import threading
     import types
+
+    try:
+        import pygame_sdl2 as pygame
+    except Exception:
+        # A real Ren'Py SDK always provides pygame_sdl2. Keeping the import
+        # optional lets the bridge's non-engine RPC tests load this file with a
+        # minimal fake runtime; input commands report a clear error if events
+        # cannot be posted.
+        pygame = None
 
     # Keep runtime state off renpy.store / rollback. `init python` top-level
     # names become store fields; a Queue/lock inside the bridge is not picklable
@@ -97,12 +107,244 @@ init python:
             snapshot[name] = value
         return snapshot
 
-    # --- handlers: all run on the MAIN thread -----------------------------
+    _RENFORGE_STATE_INCLUDES = ("metrics", "audio")
 
-    def _renforge_h_ping(payload):
-        return {"ok": True, "pong": True}
+    def _renforge_state_includes(payload):
+        """Validate the optional, compact sections requested with get_state."""
+        payload = payload or {}
+        if "include" not in payload or payload.get("include") is None:
+            return [], None
+        include = payload.get("include")
+        if isinstance(include, str) or not isinstance(include, (builtins.list, tuple)):
+            return [], "include must be a list containing only: metrics, audio"
+        unknown = [name for name in include if name not in _RENFORGE_STATE_INCLUDES]
+        if unknown:
+            return [], "include contains unsupported values: %s (supported: metrics, audio)" % ", ".join(str(name) for name in unknown)
+        return list(dict.fromkeys(include)), None
+
+    def _renforge_size(value):
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+        try:
+            return {"width": int(value[0]), "height": int(value[1])}
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _renforge_physical_size():
+        get_size = getattr(renpy, "get_physical_size", None)
+        if callable(get_size):
+            try:
+                size = _renforge_size(get_size())
+                if size is not None:
+                    return size
+            except Exception:
+                pass
+
+        draw = getattr(getattr(renpy, "display", None), "draw", None)
+        get_size = getattr(draw, "get_physical_size", None)
+        if callable(get_size):
+            try:
+                size = _renforge_size(get_size())
+                if size is not None:
+                    return size
+            except Exception:
+                pass
+
+        preferences = getattr(getattr(renpy, "game", None), "preferences", None)
+        size = _renforge_size(getattr(preferences, "physical_size", None))
+        if size is not None:
+            return size
+
+        config = getattr(renpy, "config", None)
+        width = getattr(config, "physical_width", None)
+        height = getattr(config, "physical_height", None)
+        if width and height:
+            return _renforge_size((width, height))
+        return None
+
+    def _renforge_h_get_metrics(payload):
+        """Return inexpensive frame, image-cache, and window diagnostics."""
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        frame_times = list(getattr(interface, "frame_times", None) or [])
+        intervals = []
+        for previous, current in zip(frame_times, frame_times[1:]):
+            try:
+                delta = float(current) - float(previous)
+            except (TypeError, ValueError):
+                continue
+            if delta > 0:
+                intervals.append(delta)
+
+        fps = 0.0
+        if intervals:
+            recent = intervals[-10:]
+            average = sum(recent) / len(recent)
+            if average > 0:
+                fps = 1.0 / average
+
+        render_time_ms = None
+        get_render_time = getattr(renpy, "get_render_time", None)
+        if callable(get_render_time):
+            try:
+                render_time_ms = float(get_render_time()) * 1000.0
+            except (TypeError, ValueError, OverflowError):
+                render_time_ms = None
+        if render_time_ms is None:
+            render_time_ms = (intervals[-1] * 1000.0) if intervals else 0.0
+
+        image_cache_size = 0
+        image_cache_entries = 0
+        image_cache_limit = None
+        image_module = getattr(getattr(renpy, "display", None), "im", None)
+        image_cache = getattr(image_module, "cache", None)
+        if image_cache is not None:
+            get_total_size = getattr(image_cache, "get_total_size", None)
+            try:
+                if callable(get_total_size):
+                    image_cache_size = get_total_size()
+                else:
+                    image_cache_size = getattr(image_cache, "cache_size", 0)
+                image_cache_entries = len(getattr(image_cache, "cache", {}) or {})
+                image_cache_limit = getattr(image_cache, "cache_limit", None)
+            except Exception:
+                image_cache_size = 0
+
+        config = getattr(renpy, "config", None)
+        logical = _renforge_size((
+            getattr(config, "screen_width", None),
+            getattr(config, "screen_height", None),
+        ))
+        return {
+            "render_time_ms": _renforge_jsonable(render_time_ms),
+            "fps": _renforge_jsonable(fps),
+            "image_cache_size": _renforge_jsonable(image_cache_size),
+            "image_cache_entries": _renforge_jsonable(image_cache_entries),
+            "image_cache_limit": _renforge_jsonable(image_cache_limit),
+            "window": {
+                "logical": logical,
+                "physical": _renforge_physical_size(),
+            },
+        }
+
+    def _renforge_audio_channel_names():
+        names = []
+        audio = getattr(getattr(renpy, "audio", None), "audio", None)
+        for channel in list(getattr(audio, "all_channels", None) or []):
+            name = getattr(channel, "name", channel)
+            if name is not None and str(name) not in names:
+                names.append(str(name))
+        for name in list((getattr(audio, "channels", None) or {}).keys()):
+            if str(name) not in names:
+                names.append(str(name))
+        if not names:
+            names = ["music", "sound", "voice"]
+        return names
+
+    def _renforge_audio_value(music, channel, method_name):
+        method = getattr(music, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            return _renforge_jsonable(method(channel=channel))
+        except TypeError:
+            try:
+                return _renforge_jsonable(method(channel))
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _renforge_h_get_audio_state(payload):
+        """Return one compact record for every registered audio channel."""
+        music = getattr(renpy, "music", None)
+        audio = getattr(getattr(renpy, "audio", None), "audio", None)
+        channels = getattr(audio, "channels", None) or {}
+        result = {}
+        for name in _renforge_audio_channel_names():
+            channel = channels.get(name)
+            playing = _renforge_audio_value(music, name, "get_playing")
+            volume = _renforge_audio_value(music, name, "get_volume")
+            pause = _renforge_audio_value(music, name, "get_pause")
+            if channel is not None:
+                if volume is None:
+                    volume = _renforge_jsonable(getattr(channel, "actual_volume", None))
+                    if volume is None:
+                        volume = _renforge_jsonable(getattr(channel, "chan_volume", None))
+                if pause is None:
+                    context = getattr(channel, "context", None)
+                    pause = _renforge_jsonable(getattr(context, "pause", None))
+            result[name] = {
+                "playing": playing,
+                "volume": volume,
+                "pause": pause,
+            }
+        return result
+
+    def _renforge_screen_display_name(displayable, fallback):
+        raw_name = getattr(displayable, "screen_name", None)
+        if isinstance(raw_name, (list, tuple)):
+            raw_name = " ".join(str(part) for part in raw_name)
+        if raw_name:
+            return str(raw_name)
+        return fallback
+
+    def _renforge_h_inspect_screen(payload):
+        payload = payload or {}
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return {"ok": False, "error": "screen name is required"}
+        name = name.strip()
+        get_screen = getattr(renpy, "get_screen", None)
+        if not callable(get_screen):
+            return {"ok": False, "error": "screen inspection is unavailable"}
+        try:
+            displayable = get_screen(name)
+        except Exception as exc:
+            return {"ok": False, "error": "could not inspect screen %s: %s" % (name, exc)}
+        if displayable is None:
+            return {
+                "ok": True,
+                "active": False,
+                "name": name,
+                "error": "screen not showing: %s" % name,
+            }
+
+        raw_scope = getattr(displayable, "scope", {}) or {}
+        try:
+            scope_items = raw_scope.items()
+        except AttributeError:
+            scope_items = []
+        scope = {}
+        for key, value in scope_items:
+            if str(key) in ("_args", "_kwargs", "_scope", "_name", "_debug"):
+                continue
+            scope[str(key)] = _renforge_jsonable(value)
+
+        raw_args = raw_scope.get("_args", ()) if hasattr(raw_scope, "get") else ()
+        raw_kwargs = raw_scope.get("_kwargs", {}) if hasattr(raw_scope, "get") else {}
+        if raw_args is None:
+            raw_args = ()
+        if not isinstance(raw_args, (list, tuple)):
+            raw_args = (raw_args,)
+        if not isinstance(raw_kwargs, dict):
+            raw_kwargs = {}
+        arguments = {
+            "args": _renforge_jsonable(list(raw_args)),
+            "kwargs": _renforge_jsonable(raw_kwargs),
+        }
+        return {
+            "ok": True,
+            "active": True,
+            "name": _renforge_screen_display_name(displayable, name),
+            "layer": _renforge_jsonable(getattr(displayable, "layer", None)),
+            "scope": scope,
+            "arguments": arguments,
+        }
 
     def _renforge_h_get_state(payload):
+        include, include_error = _renforge_state_includes(payload)
+        if include_error is not None:
+            return {"ok": False, "error": include_error}
         try:
             showing = list(renpy.get_showing_tags())
         except Exception:
@@ -112,12 +354,28 @@ init python:
         except Exception:
             menu_active = False
         bridge = _renforge_runtime.bridge
-        return {
+        result = {
             "current_label": bridge.current_label if bridge is not None else None,
             "showing_tags": showing,
             "menu": menu_active,
             "variables": _renforge_store_snapshot(),
         }
+        if "metrics" in include:
+            result["metrics"] = _renforge_h_get_metrics({})
+        if "audio" in include:
+            result["audio"] = {"channels": _renforge_h_get_audio_state({})}
+        return result
+
+    # --- handlers: all run on the MAIN thread -----------------------------
+
+    def _renforge_h_ping(payload):
+        return {"ok": True, "pong": True}
+
+    def _renforge_h_get_metrics_handler(payload):
+        return {"ok": True, "metrics": _renforge_h_get_metrics(payload)}
+
+    def _renforge_h_get_audio_state_handler(payload):
+        return {"ok": True, "channels": _renforge_h_get_audio_state(payload)}
 
     def _renforge_h_eval(payload):
         expr = (payload or {}).get("expr", "")
@@ -155,6 +413,250 @@ init python:
         # consumes it on the next frame.
         renpy.exports.queue_event("dismiss")
         return {"ok": True}
+
+    # Readable input names that are semantic Ren'Py keymap actions. Keeping
+    # these as names (rather than SDK integer constants) means they continue
+    # to respect a game's customized config.keymap.
+    _RENFORGE_INPUT_KEYMAP = {
+        "enter": ("input_enter", "dismiss", "button_select"),
+        "return": ("input_enter", "dismiss", "button_select"),
+        "esc": ("game_menu",),
+        "escape": ("game_menu",),
+        "up": ("focus_up", "input_up", "viewport_uparrow", "bar_up"),
+        "down": ("focus_down", "input_down", "viewport_downarrow", "bar_down"),
+        "left": ("focus_left", "input_left", "viewport_leftarrow", "bar_left"),
+        "right": ("focus_right", "input_right", "viewport_rightarrow", "bar_right"),
+        "pageup": ("rollback", "viewport_pageup"),
+        "pagedown": ("rollforward", "viewport_pagedown"),
+        "backspace": ("input_backspace",),
+        "delete": ("input_delete", "save_delete"),
+        "home": ("input_home",),
+        "end": ("input_end",),
+        "space": ("dismiss", "button_select"),
+        "tab": ("toggle_skip",),
+    }
+
+    # A small explicit set of keys without a useful Ren'Py semantic action.
+    # These are posted as real KEYDOWN/KEYUP pairs so custom screens can bind
+    # them with a normal key statement.
+    _RENFORGE_DIRECT_KEY_ATTRS = {
+        "f1": "K_F1",
+        "f2": "K_F2",
+        "f3": "K_F3",
+        "f4": "K_F4",
+        "f5": "K_F5",
+        "f6": "K_F6",
+        "f7": "K_F7",
+        "f8": "K_F8",
+        "f9": "K_F9",
+        "f10": "K_F10",
+        "f11": "K_F11",
+        "f12": "K_F12",
+    }
+
+    def _renforge_focused_input():
+        """Return the focused Ren'Py Input, or an explicit diagnostic."""
+        display = getattr(renpy, "display", None)
+        focus = getattr(display, "focus", None)
+        get_focused = getattr(focus, "get_focused", None)
+        if not callable(get_focused):
+            return None, "cannot verify focused Ren'Py Input (focus API unavailable)"
+        try:
+            widget = get_focused()
+        except Exception as exc:
+            return None, "cannot verify focused Ren'Py Input: %s" % exc
+
+        behavior = getattr(display, "behavior", None)
+        input_type = getattr(behavior, "Input", None)
+
+        def _is_input(candidate):
+            if candidate is None:
+                return False
+            if callable(input_type):
+                try:
+                    if isinstance(candidate, input_type):
+                        return True
+                except TypeError:
+                    pass
+            return getattr(getattr(candidate, "__class__", None), "__name__", "") == "Input"
+
+        # Ren'Py can have an active Input screen without assigning keyboard
+        # focus yet (notably after a warp under Xvfb). Select the visible Input
+        # through the engine focus API before posting TEXTINPUT events.
+        if widget is None:
+            change_focus = getattr(focus, "change_focus", None)
+            for candidate in list(getattr(focus, "focus_list", None) or []):
+                candidate_widget = getattr(candidate, "widget", None)
+                if not _is_input(candidate_widget) or not callable(change_focus):
+                    continue
+                try:
+                    change_focus(candidate)
+                    widget = get_focused()
+                except Exception:
+                    widget = None
+                if _is_input(widget):
+                    break
+
+        if widget is None:
+            get_screen = getattr(renpy, "get_screen", None)
+            force_focus = getattr(focus, "force_focus", None)
+            if callable(get_screen) and callable(force_focus):
+                try:
+                    input_screen = get_screen("input")
+                    input_widget = getattr(input_screen, "widgets", {}).get("input")
+                    if _is_input(input_widget):
+                        force_focus(input_widget)
+                        widget = get_focused()
+                except Exception:
+                    widget = None
+
+        if widget is None:
+            return None, "no focused Ren'Py Input; text was not sent"
+        if _is_input(widget):
+            return widget, None
+        return None, "no focused Ren'Py Input; focused widget is %s" % (
+            getattr(getattr(widget, "__class__", None), "__name__", "unknown"),
+        )
+
+    def _renforge_h_send_input(payload):
+        payload = payload or {}
+        supplied = [name for name in ("text", "key", "scroll") if name in payload and payload.get(name) is not None]
+        if len(supplied) != 1:
+            return {
+                "ok": False,
+                "error": "exactly one of text, key, or scroll is required",
+            }
+
+        submit = payload.get("submit", False)
+        if not isinstance(submit, bool):
+            return {"ok": False, "error": "submit must be a boolean"}
+        if supplied[0] != "text" and submit:
+            return {"ok": False, "error": "submit is only valid with text input"}
+
+        if supplied[0] == "text":
+            text = payload.get("text")
+            if not isinstance(text, str):
+                return {"ok": False, "error": "text must be a string"}
+            if pygame is None:
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+            _focused, focus_error = _renforge_focused_input()
+            if focus_error is not None:
+                return {"ok": False, "error": focus_error}
+            for character in text:
+                event = pygame.event.Event(pygame.TEXTINPUT, {"text": character})
+                pygame.event.post(event)
+            if submit:
+                renpy.exports.queue_event("input_enter")
+            return {
+                "ok": True,
+                "mode": "text",
+                "characters": len(text),
+                "submitted": submit,
+            }
+
+        if supplied[0] == "key":
+            key = payload.get("key")
+            if not isinstance(key, str) or not key.strip():
+                return {"ok": False, "error": "key must be a non-empty string"}
+            key = key.strip().casefold()
+            semantic = _RENFORGE_INPUT_KEYMAP.get(key)
+            if semantic is not None:
+                renpy.exports.queue_event(list(semantic))
+                return {"ok": True, "mode": "key", "key": key, "event": semantic[0]}
+
+            attr_name = _RENFORGE_DIRECT_KEY_ATTRS.get(key)
+            keycode = (
+                getattr(pygame, attr_name, None)
+                if pygame is not None and attr_name is not None
+                else None
+            )
+            if keycode is None:
+                supported = sorted(set(_RENFORGE_INPUT_KEYMAP) | set(_RENFORGE_DIRECT_KEY_ATTRS))
+                return {
+                    "ok": False,
+                    "error": "unknown key %r; supported keys: %s" % (key, ", ".join(supported)),
+                }
+            if pygame is None:
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+            mod = getattr(pygame, "KMOD_NONE", 0)
+            for event_type in (pygame.KEYDOWN, pygame.KEYUP):
+                event = pygame.event.Event(
+                    event_type,
+                    {"key": keycode, "mod": mod, "unicode": "", "repeat": 0},
+                )
+                pygame.event.post(event)
+            return {"ok": True, "mode": "key", "key": key, "keycode": keycode}
+
+        scroll = payload.get("scroll")
+        if not isinstance(scroll, dict):
+            return {"ok": False, "error": "scroll must be an object with x, y, and direction"}
+        try:
+            raw_x, raw_y = scroll.get("x"), scroll.get("y")
+            if isinstance(raw_x, bool) or isinstance(raw_y, bool):
+                raise ValueError
+            x, y = int(round(float(raw_x))), int(round(float(raw_y)))
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "error": "scroll requires numeric x and y"}
+        if x < 0 or y < 0:
+            return {"ok": False, "error": "scroll coordinates must be non-negative"}
+
+        direction = scroll.get("direction")
+        if direction is not None:
+            direction = str(direction).casefold()
+            direction = {"wheelup": "up", "wheeldown": "down"}.get(direction, direction)
+            if direction not in ("up", "down"):
+                return {"ok": False, "error": "scroll direction must be up or down"}
+
+        amount = scroll.get("amount", scroll.get("delta", 1))
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        if isinstance(amount, float) and not amount.is_integer():
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        amount = int(amount)
+        if amount == 0:
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        if direction is None:
+            direction = "up" if amount < 0 else "down"
+        amount = abs(amount)
+
+        coordinate_space = str(scroll.get("coordinate_space", "logical") or "logical").casefold()
+        if coordinate_space not in ("logical", "screenshot"):
+            return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+        frame_data = None
+        if coordinate_space == "screenshot":
+            frame_data = renpy.screenshot_to_bytes(None)
+        x, y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+            x, y, coordinate_space, frame_data
+        )
+        if coordinate_error is not None:
+            return {"ok": False, "error": coordinate_error}
+        if pygame is None:
+            return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+        button = 4 if direction == "up" else 5
+        for _ in range(amount):
+            event = pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": button, "pos": (x, y), "x": x, "y": y},
+            )
+            pygame.event.post(event)
+        return {
+            "ok": True,
+            "mode": "scroll",
+            "x": x,
+            "y": y,
+            "direction": direction,
+            "amount": amount,
+        }
 
     def _renforge_invoke(fn):
         # Schedule work for the interaction loop. Prefer invoke_in_main_thread
@@ -223,6 +725,116 @@ init python:
             _renforge_invoke(renpy.quit)
             return {"ok": True, "action": action}
         return {"ok": False, "error": "unknown control action: %s" % action}
+
+    def _renforge_h_save_slot(payload):
+        payload = payload or {}
+        slot = payload.get("slot")
+        extra_info = payload.get("extra_info", "")
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "save slot is required"}
+        if extra_info is None:
+            extra_info = ""
+        if not isinstance(extra_info, str):
+            return {"ok": False, "error": "extra_info must be a string"}
+
+        can_save = getattr(renpy, "can_save", None)
+        if callable(can_save):
+            try:
+                allowed = bool(can_save())
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": "cannot determine whether saving is available: %s" % exc,
+                }
+        else:
+            config = getattr(renpy, "config", None)
+            store = getattr(renpy, "store", None)
+            allowed = bool(config and getattr(config, "save", True))
+            allowed = allowed and not bool(store and getattr(store, "main_menu", False))
+            allowed = allowed and not bool(store and getattr(store, "_in_replay", False))
+
+        if not allowed:
+            return {"ok": False, "error": "saving is unavailable in the current game state"}
+
+        try:
+            renpy.save(slot, extra_info=extra_info)
+        except Exception as exc:
+            return {"ok": False, "error": "save failed: %s" % exc}
+
+        return {"ok": True, "slot": slot, "extra_info": extra_info}
+
+    def _renforge_h_load_slot(payload):
+        payload = payload or {}
+        slot = payload.get("slot")
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "save slot is required"}
+
+        can_load = getattr(renpy, "can_load", None)
+        if callable(can_load):
+            try:
+                exists = bool(can_load(slot))
+            except Exception as exc:
+                return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
+        else:
+            list_slots = getattr(renpy, "list_slots", None)
+            if not callable(list_slots):
+                return {"ok": False, "error": "save slot lookup is unavailable"}
+            try:
+                exists = slot in list_slots()
+            except Exception as exc:
+                return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
+
+        if not exists:
+            return {"ok": False, "error": "save slot not found: %s" % slot}
+
+        load = getattr(renpy, "load", None)
+        if not callable(load):
+            return {"ok": False, "error": "save loading is unavailable"}
+
+        def _do_load():
+            load(slot)
+
+        _renforge_invoke(_do_load)
+        return {"ok": True, "slot": slot}
+
+    def _renforge_h_list_slots(payload):
+        payload = payload or {}
+        regexp = payload.get("regexp")
+        if regexp is not None and not isinstance(regexp, str):
+            return {"ok": False, "error": "regexp must be a string"}
+
+        list_slots = getattr(renpy, "list_slots", None)
+        if not callable(list_slots):
+            return {"ok": False, "error": "save slot listing is unavailable"}
+        try:
+            slot_names = list_slots(regexp=regexp)
+        except Exception as exc:
+            return {"ok": False, "error": "could not list save slots: %s" % exc}
+
+        slot_json = getattr(renpy, "slot_json", None)
+        slot_mtime = getattr(renpy, "slot_mtime", None)
+        slots = []
+        for name in slot_names:
+            try:
+                metadata = slot_json(name) if callable(slot_json) else None
+            except Exception:
+                metadata = None
+            extra_info = ""
+            if isinstance(metadata, dict):
+                extra_info = metadata.get("_save_name", "")
+            try:
+                mtime = slot_mtime(name) if callable(slot_mtime) else None
+            except Exception:
+                mtime = None
+            slots.append(
+                {
+                    "name": str(name),
+                    "extra_info": _renforge_jsonable(extra_info),
+                    "mtime": _renforge_jsonable(mtime),
+                }
+            )
+
+        return {"ok": True, "slots": slots}
 
     def _renforge_h_poll_events(payload):
         payload = payload or {}
@@ -612,6 +1224,23 @@ init python:
         except Exception:
             return None, None
 
+    def _renforge_to_logical_coordinates(x, y, coordinate_space, frame_data=None):
+        """Convert screenshot pixels through the same seam used by click_at."""
+        if coordinate_space == "logical":
+            return x, y, frame_data, None
+        if coordinate_space != "screenshot":
+            return x, y, frame_data, "coordinate_space must be logical or screenshot"
+        if frame_data is None:
+            frame_data = renpy.screenshot_to_bytes(None)
+        pixel_width, pixel_height = _renforge_png_dimensions(frame_data)
+        logical_width = getattr(renpy.config, "screen_width", None)
+        logical_height = getattr(renpy.config, "screen_height", None)
+        if not pixel_width or not pixel_height or not logical_width or not logical_height:
+            return x, y, frame_data, "screenshot coordinate space is unavailable"
+        x = int(round(x * float(logical_width) / float(pixel_width)))
+        y = int(round(y * float(logical_height) / float(pixel_height)))
+        return x, y, frame_data, None
+
     def _renforge_h_click_at(payload):
         payload = payload or {}
         try:
@@ -647,16 +1276,11 @@ init python:
                     "sha256": screenshot_digest,
                 }
 
-        if coordinate_space == "screenshot":
-            if frame_data is None:
-                frame_data = renpy.screenshot_to_bytes(None)
-            pixel_width, pixel_height = _renforge_png_dimensions(frame_data)
-            logical_width = getattr(renpy.config, "screen_width", None)
-            logical_height = getattr(renpy.config, "screen_height", None)
-            if not pixel_width or not pixel_height or not logical_width or not logical_height:
-                return {"ok": False, "error": "screenshot coordinate space is unavailable"}
-            x = int(round(x * float(logical_width) / float(pixel_width)))
-            y = int(round(y * float(logical_height) / float(pixel_height)))
+        x, y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+            x, y, coordinate_space, frame_data
+        )
+        if coordinate_error is not None:
+            return {"ok": False, "error": coordinate_error}
 
         interface = getattr(getattr(renpy, "display", None), "interface", None)
         if interface is not None:
@@ -865,12 +1489,19 @@ init python:
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
+        "get_metrics": _renforge_h_get_metrics_handler,
+        "get_audio_state": _renforge_h_get_audio_state_handler,
+        "inspect_screen": _renforge_h_inspect_screen,
         "eval": _renforge_h_eval,
         "get_var": _renforge_h_get_var,
         "set_var": _renforge_h_set_var,
         "screenshot": _renforge_h_screenshot,
         "advance": _renforge_h_advance,
+        "send_input": _renforge_h_send_input,
         "control": _renforge_h_control,
+        "save_slot": _renforge_h_save_slot,
+        "load_slot": _renforge_h_load_slot,
+        "list_slots": _renforge_h_list_slots,
         "poll_events": _renforge_h_poll_events,
         "list_choices": _renforge_h_list_choices,
         "select_choice": _renforge_h_select_choice,
