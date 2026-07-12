@@ -238,6 +238,54 @@ def test_get_state_reports_variables_and_showing(running_bridge):
     assert state["variables"]["player_name"] == "Rin"
     assert "_hidden" not in state["variables"]  # private names are filtered
     assert state["showing_tags"] == ["bg", "eileen"]
+    assert "metrics" not in state
+    assert "audio" not in state
+
+
+def test_get_state_includes_render_metrics_and_audio_channels_on_request(running_bridge):
+    renpy = running_bridge.renpy
+    renpy.display.interface.frame_times = [index / 10.0 for index in range(11)]
+    renpy.display.im = types.SimpleNamespace(
+        cache=types.SimpleNamespace(cache_size=1234, cache_limit=5678, cache={"a": 1, "b": 2})
+    )
+    renpy.get_physical_size = lambda: (2560, 1440)
+    renpy.audio = types.SimpleNamespace(
+        audio=types.SimpleNamespace(
+            all_channels=[types.SimpleNamespace(name="music"), types.SimpleNamespace(name="custom")],
+            channels={"music": object(), "custom": object()},
+        )
+    )
+    renpy.music = types.SimpleNamespace(
+        get_playing=lambda channel="music": {
+            "music": "audio/theme.ogg",
+            "custom": "audio/blip.wav",
+        }.get(channel),
+        get_volume=lambda channel="music": {"music": 0.75, "custom": 0.25}.get(channel),
+        get_pause=lambda channel="music": channel == "custom",
+    )
+
+    state = running_bridge.client.get_state(include=["metrics", "audio"])
+
+    assert state["metrics"]["render_time_ms"] == pytest.approx(100.0)
+    assert state["metrics"]["fps"] == pytest.approx(10.0)
+    assert state["metrics"]["image_cache_size"] == 1234
+    assert state["metrics"]["window"] == {
+        "logical": {"width": 1920, "height": 1080},
+        "physical": {"width": 2560, "height": 1440},
+    }
+    assert state["audio"]["channels"] == {
+        "music": {"playing": "audio/theme.ogg", "volume": 0.75, "pause": False},
+        "custom": {"playing": "audio/blip.wav", "volume": 0.25, "pause": True},
+    }
+    assert running_bridge.client.get_metrics()["metrics"]["image_cache_size"] == 1234
+    assert running_bridge.client.get_audio_state()["channels"]["music"]["playing"] == "audio/theme.ogg"
+
+
+def test_get_state_rejects_unknown_include_values(running_bridge):
+    reply = running_bridge.client.request("get_state", {"include": ["bogus"]})
+
+    assert reply["ok"] is False
+    assert "metrics" in reply["error"]
 
 
 def test_eval_and_set_var_mutate_real_store(running_bridge):

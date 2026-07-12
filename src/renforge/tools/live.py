@@ -185,8 +185,14 @@ def stop_all() -> None:
     _SESSIONS.clear()
 
 
-def game_state(project_path: str) -> dict:
-    return _with_client(project_path, lambda c: {"ok": True, **c.get_state()})
+def game_state(project_path: str, include: list[str] | tuple[str, ...] | None = None) -> dict:
+    """Return live state, optionally including compact metrics/audio sections."""
+    if include is None:
+        return _with_client(project_path, lambda c: {"ok": True, **c.get_state()})
+    return _with_client(
+        project_path,
+        lambda c: {"ok": True, **c.get_state(include=include)},
+    )
 
 
 def advance(project_path: str) -> dict:

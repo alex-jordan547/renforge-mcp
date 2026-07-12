@@ -96,8 +96,18 @@ class BridgeClient:
     def ping(self) -> dict:
         return self.request("ping")
 
-    def get_state(self) -> dict:
-        return self._checked("get_state")
+    def get_state(self, include: list[str] | tuple[str, ...] | None = None) -> dict:
+        """Return live state, with optional compact metrics/audio sections."""
+        payload = None if include is None else {"include": list(include)}
+        return self._checked("get_state", payload)
+
+    def get_metrics(self) -> dict:
+        """Return render, image-cache, and logical/physical window metrics."""
+        return self._checked("get_metrics")
+
+    def get_audio_state(self) -> dict:
+        """Return the current file, volume, and pause state for each channel."""
+        return self._checked("get_audio_state")
 
     def eval_expr(self, expr: str) -> Any:
         return self._checked("eval", {"expr": expr})["value"]

@@ -324,14 +324,23 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
-    def renforge_game_state(project_path: str) -> dict:
-        """Return the complete live state, including variables (backward compatible)."""
+    def renforge_game_state(
+        project_path: str,
+        include: list[str] | None = None,
+    ) -> dict:
+        """Return complete live state; optionally include compact metrics or audio."""
+        def _state() -> dict:
+            # Preserve the no-payload wire shape for existing callers.
+            if include is None:
+                return live.game_state(project_path)
+            return live.game_state(project_path, include=include)
+
         return _log_tool_call(
             name="renforge_game_state",
-            params={"project_path": project_path},
+            params={"project_path": project_path, "include": include},
             project_root=project_path,
-            fn=live.game_state,
-            args=(project_path,),
+            fn=_state,
+            args=(),
             kwargs={},
         )
 

@@ -69,6 +69,30 @@ def test_bridge_client_ping_helper():
     assert sock.fileno() == -1
 
 
+def test_bridge_client_game_state_forwards_optional_includes():
+    token = "state-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "metrics": {"fps": 60.0}}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).get_state(
+        include=("metrics",)
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "get_state",
+        "payload": {"include": ["metrics"]},
+    }
+    assert reply == {"ok": True, "metrics": {"fps": 60.0}}
+
+
 def test_bridge_client_control_helper():
     token = "control-token"
     captured = {}

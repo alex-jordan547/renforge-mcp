@@ -94,6 +94,8 @@ renforge_launch(project_path)
   -> game and bridge are available
 renforge_game_state_compact(project_path)
   -> current label and bounded state
+renforge_game_state(project_path, include=["metrics", "audio"])
+  -> optional render/cache/window metrics and per-channel audio state
 renforge_list_ui_elements(project_path)
   -> visible controls and frame_id
 renforge_click_element(..., expected_frame_id=frame_id)
@@ -191,7 +193,7 @@ Notes:
 | `renforge_jump` | Restart a game at a label or `file:line` using Ren'Py warp. |
 | `renforge_new_game` | Start a fresh process at the `start` label. |
 | `renforge_stop` | Stop the running game and remove the injected bridge. |
-| `renforge_game_state` | Complete state, including variables. |
+| `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. |
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run engine controls such as rollback, hot reload, quicksave/quickload, skip, or auto-forward. |
@@ -254,6 +256,13 @@ input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh
 the screen or focus the field before retrying; a successful response means the
 events were queued on the game thread, not that an unrelated screen consumed
 them.
+
+`renforge_game_state` is read-only. Its optional `include` list accepts only
+`metrics` and `audio`; an unknown value is rejected so a typo cannot silently
+change the response. Metrics report `render_time_ms`, an FPS estimate,
+`image_cache_size`, and logical/physical window sizes. Audio reports every
+registered channel with its playing filename, volume, and pause state when
+Ren'Py exposes them.
 
 Recommended practices:
 

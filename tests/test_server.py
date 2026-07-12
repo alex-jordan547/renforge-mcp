@@ -927,6 +927,42 @@ def test_game_state_preserves_full_state_and_compact_tool_can_select_variables(t
     assert selected["variables"] == {"score": 7}
 
 
+def test_game_state_tool_dispatches_optional_metrics_and_audio_includes(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_game_state(project_path, include=None):
+        calls.update(project_path=project_path, include=include)
+        return {"ok": True, "metrics": {"fps": 60.0}, "audio": {"channels": {}}}
+
+    monkeypatch.setattr(live, "game_state", fake_game_state)
+
+    async def _call():
+        app = create_app()
+        tools = await app.list_tools()
+        async with Client(app) as client:
+            result = await client.call_tool(
+                "renforge_game_state",
+                {"project_path": str(tmp_path), "include": ["metrics", "audio"]},
+            )
+        return tools, result
+
+    tools, result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    tool = next(tool for tool in tools if tool.name == "renforge_game_state")
+
+    assert payload["metrics"]["fps"] == 60.0
+    assert "audio" in payload
+    assert calls == {"project_path": str(tmp_path), "include": ["metrics", "audio"]}
+    assert tool.parameters["required"] == ["project_path"]
+    assert "include" in tool.parameters["properties"]
+    assert "metrics" in tool.description and "audio" in tool.description
+
+
 def test_screenshot_serializes_to_an_mcp_image_block(tmp_path, monkeypatch) -> None:
     fastmcp = pytest.importorskip("fastmcp", reason="fastmcp not installed")
     import base64

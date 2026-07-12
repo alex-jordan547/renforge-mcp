@@ -106,12 +106,183 @@ init python:
             snapshot[name] = value
         return snapshot
 
-    # --- handlers: all run on the MAIN thread -----------------------------
+    _RENFORGE_STATE_INCLUDES = ("metrics", "audio")
 
-    def _renforge_h_ping(payload):
-        return {"ok": True, "pong": True}
+    def _renforge_state_includes(payload):
+        """Validate the optional, compact sections requested with get_state."""
+        payload = payload or {}
+        if "include" not in payload or payload.get("include") is None:
+            return [], None
+        include = payload.get("include")
+        if isinstance(include, str) or not isinstance(include, (list, tuple)):
+            return [], "include must be a list containing only: metrics, audio"
+        unknown = [name for name in include if name not in _RENFORGE_STATE_INCLUDES]
+        if unknown:
+            return [], "include contains unsupported values: %s (supported: metrics, audio)" % ", ".join(str(name) for name in unknown)
+        return list(dict.fromkeys(include)), None
+
+    def _renforge_size(value):
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+        try:
+            return {"width": int(value[0]), "height": int(value[1])}
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _renforge_physical_size():
+        get_size = getattr(renpy, "get_physical_size", None)
+        if callable(get_size):
+            try:
+                size = _renforge_size(get_size())
+                if size is not None:
+                    return size
+            except Exception:
+                pass
+
+        draw = getattr(getattr(renpy, "display", None), "draw", None)
+        get_size = getattr(draw, "get_physical_size", None)
+        if callable(get_size):
+            try:
+                size = _renforge_size(get_size())
+                if size is not None:
+                    return size
+            except Exception:
+                pass
+
+        preferences = getattr(getattr(renpy, "game", None), "preferences", None)
+        size = _renforge_size(getattr(preferences, "physical_size", None))
+        if size is not None:
+            return size
+
+        config = getattr(renpy, "config", None)
+        width = getattr(config, "physical_width", None)
+        height = getattr(config, "physical_height", None)
+        if width and height:
+            return _renforge_size((width, height))
+        return None
+
+    def _renforge_h_get_metrics(payload):
+        """Return inexpensive frame, image-cache, and window diagnostics."""
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        frame_times = list(getattr(interface, "frame_times", None) or [])
+        intervals = []
+        for previous, current in zip(frame_times, frame_times[1:]):
+            try:
+                delta = float(current) - float(previous)
+            except (TypeError, ValueError):
+                continue
+            if delta > 0:
+                intervals.append(delta)
+
+        fps = 0.0
+        if intervals:
+            recent = intervals[-10:]
+            average = sum(recent) / len(recent)
+            if average > 0:
+                fps = 1.0 / average
+
+        render_time_ms = None
+        get_render_time = getattr(renpy, "get_render_time", None)
+        if callable(get_render_time):
+            try:
+                render_time_ms = float(get_render_time()) * 1000.0
+            except (TypeError, ValueError, OverflowError):
+                render_time_ms = None
+        if render_time_ms is None:
+            render_time_ms = (intervals[-1] * 1000.0) if intervals else 0.0
+
+        image_cache_size = 0
+        image_cache_entries = 0
+        image_cache_limit = None
+        image_module = getattr(getattr(renpy, "display", None), "im", None)
+        image_cache = getattr(image_module, "cache", None)
+        if image_cache is not None:
+            get_total_size = getattr(image_cache, "get_total_size", None)
+            try:
+                if callable(get_total_size):
+                    image_cache_size = get_total_size()
+                else:
+                    image_cache_size = getattr(image_cache, "cache_size", 0)
+                image_cache_entries = len(getattr(image_cache, "cache", {}) or {})
+                image_cache_limit = getattr(image_cache, "cache_limit", None)
+            except Exception:
+                image_cache_size = 0
+
+        config = getattr(renpy, "config", None)
+        logical = _renforge_size((
+            getattr(config, "screen_width", None),
+            getattr(config, "screen_height", None),
+        ))
+        return {
+            "render_time_ms": _renforge_jsonable(render_time_ms),
+            "fps": _renforge_jsonable(fps),
+            "image_cache_size": _renforge_jsonable(image_cache_size),
+            "image_cache_entries": _renforge_jsonable(image_cache_entries),
+            "image_cache_limit": _renforge_jsonable(image_cache_limit),
+            "window": {
+                "logical": logical,
+                "physical": _renforge_physical_size(),
+            },
+        }
+
+    def _renforge_audio_channel_names():
+        names = []
+        audio = getattr(getattr(renpy, "audio", None), "audio", None)
+        for channel in list(getattr(audio, "all_channels", None) or []):
+            name = getattr(channel, "name", channel)
+            if name is not None and str(name) not in names:
+                names.append(str(name))
+        for name in list((getattr(audio, "channels", None) or {}).keys()):
+            if str(name) not in names:
+                names.append(str(name))
+        if not names:
+            names = ["music", "sound", "voice"]
+        return names
+
+    def _renforge_audio_value(music, channel, method_name):
+        method = getattr(music, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            return _renforge_jsonable(method(channel=channel))
+        except TypeError:
+            try:
+                return _renforge_jsonable(method(channel))
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _renforge_h_get_audio_state(payload):
+        """Return one compact record for every registered audio channel."""
+        music = getattr(renpy, "music", None)
+        audio = getattr(getattr(renpy, "audio", None), "audio", None)
+        channels = getattr(audio, "channels", None) or {}
+        result = {}
+        for name in _renforge_audio_channel_names():
+            channel = channels.get(name)
+            playing = _renforge_audio_value(music, name, "get_playing")
+            volume = _renforge_audio_value(music, name, "get_volume")
+            pause = _renforge_audio_value(music, name, "get_pause")
+            if channel is not None:
+                if volume is None:
+                    volume = _renforge_jsonable(getattr(channel, "actual_volume", None))
+                    if volume is None:
+                        volume = _renforge_jsonable(getattr(channel, "chan_volume", None))
+                if pause is None:
+                    context = getattr(channel, "context", None)
+                    pause = _renforge_jsonable(getattr(context, "pause", None))
+            result[name] = {
+                "playing": playing,
+                "volume": volume,
+                "pause": pause,
+            }
+        return result
 
     def _renforge_h_get_state(payload):
+        include, include_error = _renforge_state_includes(payload)
+        if include_error is not None:
+            return {"ok": False, "error": include_error}
         try:
             showing = list(renpy.get_showing_tags())
         except Exception:
@@ -121,12 +292,28 @@ init python:
         except Exception:
             menu_active = False
         bridge = _renforge_runtime.bridge
-        return {
+        result = {
             "current_label": bridge.current_label if bridge is not None else None,
             "showing_tags": showing,
             "menu": menu_active,
             "variables": _renforge_store_snapshot(),
         }
+        if "metrics" in include:
+            result["metrics"] = _renforge_h_get_metrics({})
+        if "audio" in include:
+            result["audio"] = {"channels": _renforge_h_get_audio_state({})}
+        return result
+
+    # --- handlers: all run on the MAIN thread -----------------------------
+
+    def _renforge_h_ping(payload):
+        return {"ok": True, "pong": True}
+
+    def _renforge_h_get_metrics_handler(payload):
+        return {"ok": True, "metrics": _renforge_h_get_metrics(payload)}
+
+    def _renforge_h_get_audio_state_handler(payload):
+        return {"ok": True, "channels": _renforge_h_get_audio_state(payload)}
 
     def _renforge_h_eval(payload):
         expr = (payload or {}).get("expr", "")
@@ -1200,6 +1387,8 @@ init python:
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
+        "get_metrics": _renforge_h_get_metrics_handler,
+        "get_audio_state": _renforge_h_get_audio_state_handler,
         "eval": _renforge_h_eval,
         "get_var": _renforge_h_get_var,
         "set_var": _renforge_h_set_var,
