@@ -224,6 +224,110 @@ init python:
             return {"ok": True, "action": action}
         return {"ok": False, "error": "unknown control action: %s" % action}
 
+    def _renforge_h_save_slot(payload):
+        payload = payload or {}
+        slot = payload.get("slot")
+        extra_info = payload.get("extra_info", "")
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "save slot is required"}
+        if extra_info is None:
+            extra_info = ""
+        if not isinstance(extra_info, str):
+            return {"ok": False, "error": "extra_info must be a string"}
+
+        can_save = getattr(renpy, "can_save", None)
+        if callable(can_save):
+            try:
+                allowed = bool(can_save())
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": "cannot determine whether saving is available: %s" % exc,
+                }
+        else:
+            config = getattr(renpy, "config", None)
+            store = getattr(renpy, "store", None)
+            allowed = bool(getattr(config, "save", True))
+            allowed = allowed and not bool(getattr(store, "main_menu", False))
+            allowed = allowed and not bool(getattr(store, "_in_replay", False))
+
+        if not allowed:
+            return {"ok": False, "error": "saving is unavailable in the current game state"}
+
+        try:
+            renpy.save(slot, extra_info=extra_info)
+        except Exception as exc:
+            return {"ok": False, "error": "save failed: %s" % exc}
+
+        return {"ok": True, "slot": slot, "extra_info": extra_info}
+
+    def _renforge_h_load_slot(payload):
+        payload = payload or {}
+        slot = payload.get("slot")
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "save slot is required"}
+
+        can_load = getattr(renpy, "can_load", None)
+        if callable(can_load):
+            try:
+                exists = bool(can_load(slot))
+            except Exception as exc:
+                return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
+        else:
+            list_slots = getattr(renpy, "list_slots", None)
+            if not callable(list_slots):
+                return {"ok": False, "error": "save slot lookup is unavailable"}
+            try:
+                exists = slot in list_slots()
+            except Exception as exc:
+                return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
+
+        if not exists:
+            return {"ok": False, "error": "save slot not found: %s" % slot}
+
+        load = getattr(renpy, "load", None)
+        if not callable(load):
+            return {"ok": False, "error": "save loading is unavailable"}
+
+        def _do_load():
+            load(slot)
+
+        _renforge_invoke(_do_load)
+        return {"ok": True, "slot": slot}
+
+    def _renforge_h_list_slots(payload):
+        payload = payload or {}
+        regexp = payload.get("regexp")
+        if regexp is not None and not isinstance(regexp, str):
+            return {"ok": False, "error": "regexp must be a string"}
+
+        list_slots = getattr(renpy, "list_slots", None)
+        if not callable(list_slots):
+            return {"ok": False, "error": "save slot listing is unavailable"}
+        try:
+            slot_names = list_slots(regexp=regexp)
+        except Exception as exc:
+            return {"ok": False, "error": "could not list save slots: %s" % exc}
+
+        slot_json = getattr(renpy, "slot_json", None)
+        slot_mtime = getattr(renpy, "slot_mtime", None)
+        slots = []
+        for name in slot_names:
+            metadata = slot_json(name) if callable(slot_json) else None
+            extra_info = ""
+            if isinstance(metadata, dict):
+                extra_info = metadata.get("_save_name", "")
+            mtime = slot_mtime(name) if callable(slot_mtime) else None
+            slots.append(
+                {
+                    "name": str(name),
+                    "extra_info": _renforge_jsonable(extra_info),
+                    "mtime": _renforge_jsonable(mtime),
+                }
+            )
+
+        return {"ok": True, "slots": slots}
+
     def _renforge_h_poll_events(payload):
         payload = payload or {}
         since = int(payload.get("since", 0) or 0)
@@ -871,6 +975,9 @@ init python:
         "screenshot": _renforge_h_screenshot,
         "advance": _renforge_h_advance,
         "control": _renforge_h_control,
+        "save_slot": _renforge_h_save_slot,
+        "load_slot": _renforge_h_load_slot,
+        "list_slots": _renforge_h_list_slots,
         "poll_events": _renforge_h_poll_events,
         "list_choices": _renforge_h_list_choices,
         "select_choice": _renforge_h_select_choice,

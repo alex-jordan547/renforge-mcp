@@ -194,6 +194,48 @@ def control(project_path: str, action: str) -> dict:
     return _with_client(project_path, lambda c: c.control(action))
 
 
+def saves(
+    project_path: str,
+    action: str,
+    *,
+    slot: str | None = None,
+    extra_info: str | None = None,
+    regexp: str | None = None,
+) -> dict:
+    """Save, load, or list named save slots through the running bridge."""
+    if action not in {"save", "load", "list"}:
+        return {"ok": False, "error": "action must be one of: save, load, list"}
+
+    if action in {"save", "load"}:
+        if not isinstance(slot, str) or not slot.strip():
+            return {"ok": False, "error": "slot is required for action '%s'" % action}
+    elif slot is not None:
+        return {"ok": False, "error": "slot is only valid for save or load"}
+
+    if action == "save":
+        if regexp is not None:
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
+        if extra_info is not None and not isinstance(extra_info, str):
+            return {"ok": False, "error": "extra_info must be a string"}
+        return _with_client(
+            project_path,
+            lambda client: client.save_slot(slot, extra_info=extra_info or ""),
+        )
+
+    if action == "load":
+        if extra_info is not None:
+            return {"ok": False, "error": "extra_info is only valid for action 'save'"}
+        if regexp is not None:
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
+        return _with_client(project_path, lambda client: client.load_slot(slot))
+
+    if extra_info is not None:
+        return {"ok": False, "error": "extra_info is only valid for action 'save'"}
+    if regexp is not None and not isinstance(regexp, str):
+        return {"ok": False, "error": "regexp must be a string"}
+    return _with_client(project_path, lambda client: client.list_slots(regexp=regexp))
+
+
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep only choices that come from the active narrative choice screen."""
 
@@ -389,6 +431,7 @@ __all__ = [
     "game_state",
     "advance",
     "control",
+    "saves",
     "list_choices",
     "select_choice",
     "list_ui_elements",

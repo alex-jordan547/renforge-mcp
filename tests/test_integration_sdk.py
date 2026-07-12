@@ -112,6 +112,62 @@ def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
         assert session.client.get_state()["current_label"] == "good"
 
 
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_named_save_state_round_trip(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        choices = []
+        for _ in range(8):
+            choices = [
+                choice
+                for choice in client.list_choices()
+                if choice.get("screen") == "choice"
+            ]
+            if choices:
+                break
+            client.advance()
+            time.sleep(0.5)
+        assert any("Take the lantern" in choice["text"] for choice in choices), choices
+        client.select_choice(text="Take the lantern and go.")
+        time.sleep(1.0)
+        assert client.get_var("courage") == 1
+
+        saved = client.save_slot("branch-a", extra_info="before menu")
+        assert saved == {
+            "ok": True,
+            "slot": "branch-a",
+            "extra_info": "before menu",
+        }
+
+        listed = client.list_slots(regexp="branch")
+        assert listed["ok"] is True
+        branch = next(slot for slot in listed["slots"] if slot["name"] == "branch-a")
+        assert branch["extra_info"] == "before menu"
+        assert isinstance(branch["mtime"], (int, float))
+
+        client.set_var("courage", 99)
+        loaded = client.load_slot("branch-a")
+        assert loaded == {"ok": True, "slot": "branch-a"}
+
+        for _ in range(20):
+            try:
+                if client.get_var("courage") == 1:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.25)
+        assert client.get_var("courage") == 1
+
+        missing = client.load_slot("missing-slot")
+        assert missing == {
+            "ok": False,
+            "error": "save slot not found: missing-slot",
+        }
+
+
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="autopilot needs a display (set DISPLAY, or run under xvfb)")
 def test_autopilot_covers_all_labels(sdk, demo_copy: Path) -> None:
     from renforge.autopilot import autopilot

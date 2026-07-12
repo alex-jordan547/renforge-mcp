@@ -410,3 +410,105 @@ def test_control_unknown_action_preserves_bridge_error_payload(running_bridge):
         "ok": False,
         "error": "unknown control action: not_an_action",
     }
+
+
+def test_save_slot_saves_named_state_with_extra_info(running_bridge):
+    calls = {}
+    running_bridge.renpy.can_save = lambda: True
+
+    def save(slot, extra_info=""):
+        calls.update(slot=slot, extra_info=extra_info)
+
+    running_bridge.renpy.save = save
+
+    reply = running_bridge.client.save_slot("branch-a", extra_info="before menu")
+
+    assert reply == {
+        "ok": True,
+        "slot": "branch-a",
+        "extra_info": "before menu",
+    }
+    assert calls == {"slot": "branch-a", "extra_info": "before menu"}
+
+
+def test_save_slot_rejects_when_renpy_disallows_saving(running_bridge):
+    running_bridge.renpy.can_save = lambda: False
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
+def test_save_slot_fallback_respects_disabled_save_config(running_bridge):
+    running_bridge.renpy.config.save = False
+
+    reply = running_bridge.client.save_slot("branch-a")
+
+    assert reply == {
+        "ok": False,
+        "error": "saving is unavailable in the current game state",
+    }
+
+
+def test_load_slot_missing_name_returns_clean_error(running_bridge):
+    running_bridge.renpy.can_load = lambda slot: False
+
+    reply = running_bridge.client.load_slot("missing")
+
+    assert reply == {
+        "ok": False,
+        "error": "save slot not found: missing",
+    }
+
+
+def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
+    scheduled = []
+    calls = {}
+
+    class _LoadControl(Exception):
+        pass
+
+    running_bridge.renpy.can_load = lambda slot: True
+
+    def load(slot):
+        calls["slot"] = slot
+        raise _LoadControl("load transfers control")
+
+    running_bridge.renpy.load = load
+    running_bridge.renpy.invoke_in_main_thread = lambda fn, *args, **kwargs: scheduled.append(
+        (fn, args, kwargs)
+    )
+
+    reply = running_bridge.client.load_slot("branch-a")
+
+    assert reply == {"ok": True, "slot": "branch-a"}
+    assert len(scheduled) == 1
+    with pytest.raises(_LoadControl, match="transfers control"):
+        scheduled[0][0](*scheduled[0][1], **scheduled[0][2])
+    assert calls == {"slot": "branch-a"}
+
+
+def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge):
+    calls = []
+    running_bridge.renpy.list_slots = lambda regexp=None: ["branch-a", "branch-b"]
+    running_bridge.renpy.slot_json = lambda slot: {
+        "_save_name": "before menu" if slot == "branch-a" else "after choice",
+    }
+    running_bridge.renpy.slot_mtime = lambda slot: 12.5 if slot == "branch-a" else 13.5
+    running_bridge.renpy.slot_screenshot = lambda slot: calls.append(slot) or pytest.fail(
+        "list_slots must not load screenshots"
+    )
+
+    reply = running_bridge.client.list_slots(regexp="branch")
+
+    assert reply == {
+        "ok": True,
+        "slots": [
+            {"name": "branch-a", "extra_info": "before menu", "mtime": 12.5},
+            {"name": "branch-b", "extra_info": "after choice", "mtime": 13.5},
+        ],
+    }
+    assert calls == []

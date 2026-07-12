@@ -195,6 +195,7 @@ Notes:
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run engine controls such as rollback, hot reload, quicksave/quickload, skip, or auto-forward. |
+| `renforge_saves` | Save, load, or list named slots. Save/load require `slot`; list returns `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
 ### Choices and user interface
@@ -240,7 +241,7 @@ Notes:
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
-`renforge_control`,
+`renforge_control`, `renforge_saves`,
 `renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
 `renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.

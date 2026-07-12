@@ -149,6 +149,21 @@ class BridgeClient:
             return result
         return reply
 
+    def save_slot(self, slot: str, *, extra_info: str = "") -> dict:
+        """Save the current game state under a named slot."""
+        return self.request(
+            "save_slot",
+            {"slot": slot, "extra_info": extra_info},
+        )
+
+    def load_slot(self, slot: str) -> dict:
+        """Schedule loading a named save slot inside the Ren'Py main loop."""
+        return self.request("load_slot", {"slot": slot})
+
+    def list_slots(self, *, regexp: str | None = None) -> dict:
+        """Return named save slots with compact metadata and no screenshots."""
+        return self.request("list_slots", {"regexp": regexp})
+
     def poll_events(self, since: int = 0) -> dict:
         """Return pushed events with ``seq > since`` plus the current cursor.
 

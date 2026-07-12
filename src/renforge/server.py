@@ -401,6 +401,30 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_saves(
+        project_path: str,
+        action: str,
+        slot: str | None = None,
+        extra_info: str | None = None,
+        regexp: str | None = None,
+    ) -> dict:
+        """Save, load, or list named save slots without screenshot payloads."""
+        return _log_tool_call(
+            name="renforge_saves",
+            params={
+                "project_path": project_path,
+                "action": action,
+                "slot": slot,
+                "extra_info": extra_info,
+                "regexp": regexp,
+            },
+            project_root=project_path,
+            fn=live.saves,
+            args=(project_path, action),
+            kwargs={"slot": slot, "extra_info": extra_info, "regexp": regexp},
+        )
+
+    @tool_decorator()
     def renforge_list_choices(project_path: str) -> dict:
         """List the on-screen menu choices (text + index)."""
         return _log_tool_call(

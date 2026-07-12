@@ -225,6 +225,7 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_find_references`, `renforge_inspect_image`
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, `renforge_stop`
 - `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_control`,
+  `renforge_saves`,
   `renforge_list_choices`, `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
   `renforge_set_var`, `renforge_poll_events`, `renforge_screenshot`
 - `renforge_list_ui_elements`, `renforge_click_element`, `renforge_click_at`,
@@ -274,6 +275,14 @@ To verify an `.rpy` edit without relaunching the game process:
 edit game/script.rpy
 renforge_control(project_path, action="reload_script")
 renforge_screenshot(project_path)
+```
+
+To create a named checkpoint before exploring a branch, then restore it later:
+
+```text
+renforge_saves(project_path, action="save", slot="branch-a", extra_info="before menu")
+renforge_saves(project_path, action="list", regexp="branch")
+renforge_saves(project_path, action="load", slot="branch-a")
 ```
 
 ### Web dashboard

@@ -25,6 +25,7 @@ EXPECTED_TOOLS = {
     "renforge_game_state_compact",
     "renforge_advance",
     "renforge_control",
+    "renforge_saves",
     "renforge_list_choices",
     "renforge_select_choice",
     "renforge_list_ui_elements",
@@ -351,6 +352,157 @@ def test_control_tool_dispatches_runtime_action_and_documents_valid_actions(
     assert payload == {"ok": True, "action": "reload_script"}
     assert calls == {"project_path": str(tmp_path), "action": "reload_script"}
     assert all(action in description for action in valid_actions)
+
+
+def test_saves_tool_dispatches_grouped_save_action(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None):
+        calls.update(
+            project_path=project_path,
+            action=action,
+            slot=slot,
+            extra_info=extra_info,
+            regexp=regexp,
+        )
+        return {"ok": True, "slot": slot, "extra_info": extra_info}
+
+    monkeypatch.setattr(live, "saves", fake_saves)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_saves",
+                {
+                    "project_path": str(tmp_path),
+                    "action": "save",
+                    "slot": "branch-a",
+                    "extra_info": "before menu",
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+
+    assert payload == {"ok": True, "slot": "branch-a", "extra_info": "before menu"}
+    assert calls == {
+        "project_path": str(tmp_path),
+        "action": "save",
+        "slot": "branch-a",
+        "extra_info": "before menu",
+        "regexp": None,
+    }
+
+
+def test_saves_tool_validates_action_and_required_slot(tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+    from renforge.tools import live
+
+    async def _call(action, slot=None):
+        async with Client(create_app()) as client:
+            payload = {"project_path": str(tmp_path), "action": action}
+            if slot is not None:
+                payload["slot"] = slot
+            result = await client.call_tool("renforge_saves", payload)
+        return json.loads(next(block.text for block in result.content if block.type == "text"))
+
+    invalid_action = asyncio.run(_call("archive"))
+    missing_slot = asyncio.run(_call("save"))
+
+    assert invalid_action == {
+        "ok": False,
+        "error": "action must be one of: save, load, list",
+    }
+    assert missing_slot == {
+        "ok": False,
+        "error": "slot is required for action 'save'",
+    }
+    assert live.saves(str(tmp_path), "list", regexp=123) == {
+        "ok": False,
+        "error": "regexp must be a string",
+    }
+
+
+def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = []
+
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None):
+        calls.append(
+            {
+                "project_path": project_path,
+                "action": action,
+                "slot": slot,
+                "extra_info": extra_info,
+                "regexp": regexp,
+            }
+        )
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr(live, "saves", fake_saves)
+
+    async def _call(payload):
+        async with Client(create_app()) as client:
+            return await client.call_tool("renforge_saves", payload)
+
+    load = asyncio.run(
+        _call({"project_path": str(tmp_path), "action": "load", "slot": "branch-a"})
+    )
+    listed = asyncio.run(
+        _call({"project_path": str(tmp_path), "action": "list", "regexp": "branch"})
+    )
+
+    assert json.loads(next(block.text for block in load.content if block.type == "text")) == {
+        "ok": True,
+        "action": "load",
+    }
+    assert json.loads(next(block.text for block in listed.content if block.type == "text")) == {
+        "ok": True,
+        "action": "list",
+    }
+    assert calls == [
+        {
+            "project_path": str(tmp_path),
+            "action": "load",
+            "slot": "branch-a",
+            "extra_info": None,
+            "regexp": None,
+        },
+        {
+            "project_path": str(tmp_path),
+            "action": "list",
+            "slot": None,
+            "extra_info": None,
+            "regexp": "branch",
+        },
+    ]
+
+
+def test_saves_tool_is_listed_with_grouped_actions() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+
+    tools = asyncio.run(create_app().list_tools())
+    tool = next(tool for tool in tools if tool.name == "renforge_saves")
+
+    assert all(action in tool.description for action in ("save", "load", "list"))
+    assert tool.parameters["required"] == ["project_path", "action"]
+    assert set(tool.parameters["properties"]) == {
+        "project_path",
+        "action",
+        "slot",
+        "extra_info",
+        "regexp",
+    }
 
 
 def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:
