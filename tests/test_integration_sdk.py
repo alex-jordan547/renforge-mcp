@@ -144,6 +144,41 @@ def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_reload_script_keeps_bridge_responsive(sdk, demo_copy: Path) -> None:
+    """reload_script restores renpy.config from backup, wiping the bridge's
+    registered callbacks; the re-run init block must re-register them on the
+    surviving listener so the bridge answers again after the reload."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        assert session.client.ping().get("pong") is True
+
+        reply = session.client.control("reload_script")
+        assert reply.get("ok") is True, reply
+
+        # Requests issued while the engine reloads may time out; the bridge
+        # must come back on its own once init blocks have re-run.
+        deadline = time.time() + 60.0
+        last_error = None
+        while time.time() < deadline:
+            try:
+                if session.client.ping().get("pong") is True:
+                    break
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.5)
+        else:
+            pytest.fail("bridge never answered after reload_script: %r" % (last_error,))
+
+        # Not just alive: requests drain through the re-registered callbacks.
+        state = session.client.get_state()
+        assert "current_label" in state and "variables" in state
+        png = session.client.screenshot()
+        assert png.startswith(b"\x89PNG")
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
 def test_live_screen_introspection_reports_default_say_screen(sdk, demo_copy: Path) -> None:
     """Exercise inspect_screen against Ren'Py's real ScreenDisplayable."""
     from renforge.bridge.launcher import launch_with_bridge

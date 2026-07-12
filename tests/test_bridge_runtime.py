@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from renforge.bridge.client import BridgeClient, BridgeConfig
+from renforge.bridge.client import BridgeClient, BridgeConfig, BridgeProtocolError
 
 
 def _load_bridge_body():
@@ -673,6 +673,74 @@ def test_control_unknown_action_preserves_bridge_error_payload(running_bridge):
         "ok": False,
         "error": "unknown control action: not_an_action",
     }
+
+
+def test_script_reload_reregisters_callbacks_on_surviving_bridge(running_bridge):
+    import sys
+
+    renpy = running_bridge.renpy
+    bridge_before = sys.modules["_renforge_runtime"].bridge
+    listeners_before = sum(
+        1 for t in threading.enumerate() if t.name == "renforge.bridge.listener"
+    )
+
+    # renpy.reload_script() keeps the process — the listener thread, its socket
+    # and the bridge entry in sys.modules all survive — but restores
+    # renpy.config from its post-import backup and re-runs init blocks, wiping
+    # every callback the bridge had registered.
+    renpy.config.label_callbacks = []
+    renpy.config.periodic_callbacks = []
+    renpy.config.all_character_callbacks = []
+    renpy.config.exception_handler = None
+    del renpy.store.renforge_bridge_port
+
+    exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), {"__name__": "bridge_rpy", "renpy": renpy})
+
+    # The live bridge and socket are reused: no second listener, same port.
+    assert sys.modules["_renforge_runtime"].bridge is bridge_before
+    listeners_after = sum(
+        1 for t in threading.enumerate() if t.name == "renforge.bridge.listener"
+    )
+    assert listeners_after == listeners_before
+    assert renpy.store.renforge_bridge_port == bridge_before.port
+
+    # Every callback is back on the fresh config, exactly once.
+    assert [cb.__name__ for cb in renpy.config.periodic_callbacks] == ["renforge_drain_bridge"]
+    assert len(renpy.config.label_callbacks) == 1
+    assert len(renpy.config.all_character_callbacks) == 1
+    assert callable(renpy.config.exception_handler)
+
+    # A second init pass over an intact config must not register duplicates.
+    exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), {"__name__": "bridge_rpy", "renpy": renpy})
+    assert [cb.__name__ for cb in renpy.config.periodic_callbacks] == ["renforge_drain_bridge"]
+    assert len(renpy.config.label_callbacks) == 1
+
+    assert running_bridge.client.ping().get("pong") is True
+
+
+def test_listener_survives_a_client_that_hangs_up_before_the_reply(running_bridge):
+    # A client that times out and closes its socket mid-request (the norm
+    # while reload_script blocks the main thread) makes the reply write blow
+    # up in the listener; that must not kill the accept loop.
+    globs = running_bridge.globs
+    original_reply = globs["_renforge_reply"]
+    calls = {"failed": False}
+
+    def hung_up_reply(conn, obj):
+        if not calls["failed"]:
+            calls["failed"] = True
+            raise OSError("client went away")
+        return original_reply(conn, obj)
+
+    globs["_renforge_reply"] = hung_up_reply
+    try:
+        with pytest.raises(BridgeProtocolError):
+            running_bridge.client.ping()
+    finally:
+        globs["_renforge_reply"] = original_reply
+
+    assert calls["failed"] is True
+    assert running_bridge.client.ping().get("pong") is True
 
 
 def test_save_slot_saves_named_state_with_extra_info(running_bridge):

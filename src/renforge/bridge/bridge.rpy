@@ -1571,50 +1571,39 @@ init python:
                 except socket.timeout:
                     continue
 
-                with conn:
-                    line = conn.makefile("r", encoding="utf-8").readline()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                    except ValueError:
-                        _renforge_reply(conn, {"error": "invalid_json"})
-                        continue
-                    if msg.get("token") != bridge.token:
-                        _renforge_reply(conn, {"error": "bad_token", "ok": False})
-                        continue
+                try:
+                    with conn:
+                        line = conn.makefile("r", encoding="utf-8").readline()
+                        if not line:
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except ValueError:
+                            _renforge_reply(conn, {"error": "invalid_json"})
+                            continue
+                        if msg.get("token") != bridge.token:
+                            _renforge_reply(conn, {"error": "bad_token", "ok": False})
+                            continue
 
-                    req = _RenforgeRequest(msg.get("command"), msg.get("payload"))
-                    bridge.requests.put(req)
-                    if req.event.wait(timeout=15.0):
-                        if req.error is not None:
-                            _renforge_reply(conn, {"error": req.error})
+                        req = _RenforgeRequest(msg.get("command"), msg.get("payload"))
+                        bridge.requests.put(req)
+                        if req.event.wait(timeout=15.0):
+                            if req.error is not None:
+                                _renforge_reply(conn, {"error": req.error})
+                            else:
+                                _renforge_reply(conn, req.result)
                         else:
-                            _renforge_reply(conn, req.result)
-                    else:
-                        _renforge_reply(conn, {"error": "timeout_waiting_for_main_thread"})
+                            _renforge_reply(conn, {"error": "timeout_waiting_for_main_thread"})
+                except Exception:
+                    # One misbehaving connection — typically a client that
+                    # timed out and hung up before the reply (the norm while
+                    # reload_script blocks the main thread) — must never kill
+                    # the accept loop and close the server socket with it.
+                    continue
         finally:
             server.close()
 
-    def renforge_start_bridge():
-        if getattr(_renforge_runtime, "bridge", None) is not None:
-            return
-
-        token = os.environ.get("RENFORGE_BRIDGE_TOKEN", "")
-        token = "" if token is None else str(token).strip()
-        if not token:
-            return
-
-        host = os.environ.get("RENFORGE_BRIDGE_HOST", "127.0.0.1")
-        try:
-            port = int(os.environ.get("RENFORGE_BRIDGE_PORT", "0") or "0")
-        except (TypeError, ValueError):
-            port = 0
-
-        basedir = getattr(renpy.config, "basedir", "") or os.getcwd()
-        bridge = _RenforgeBridge(host, port, token, basedir)
-        _renforge_runtime.bridge = bridge
-
+    def _renforge_install_callbacks(bridge):
         def _renforge_on_label(name, abnormal):
             bridge.current_label = name
             bridge.push_event("label", {"label": name})
@@ -1639,6 +1628,42 @@ init python:
         bridge.prev_exception_handler = renpy.config.exception_handler
         renpy.config.exception_handler = _renforge_exception_handler
         renpy.config.periodic_callbacks.append(renforge_drain_bridge)
+
+    def renforge_start_bridge():
+        existing = getattr(_renforge_runtime, "bridge", None)
+        if existing is not None:
+            # renpy.reload_script() keeps the process — the listener thread,
+            # its socket and this sys.modules entry all survive — but restores
+            # renpy.config from its post-import backup before re-running this
+            # init block. Every callback registered at first start is wiped
+            # with it, so the bridge kept accepting connections that nothing
+            # drained. Re-register on the fresh config and reuse the live
+            # socket; never bind a second one.
+            already_registered = any(
+                getattr(callback, "__name__", "") == "renforge_drain_bridge"
+                for callback in renpy.config.periodic_callbacks
+            )
+            if not already_registered:
+                _renforge_install_callbacks(existing)
+                setattr(renpy.store, "renforge_bridge_port", existing.port)
+            return
+
+        token = os.environ.get("RENFORGE_BRIDGE_TOKEN", "")
+        token = "" if token is None else str(token).strip()
+        if not token:
+            return
+
+        host = os.environ.get("RENFORGE_BRIDGE_HOST", "127.0.0.1")
+        try:
+            port = int(os.environ.get("RENFORGE_BRIDGE_PORT", "0") or "0")
+        except (TypeError, ValueError):
+            port = 0
+
+        basedir = getattr(renpy.config, "basedir", "") or os.getcwd()
+        bridge = _RenforgeBridge(host, port, token, basedir)
+        _renforge_runtime.bridge = bridge
+
+        _renforge_install_callbacks(bridge)
 
         thread = threading.Thread(
             target=_renforge_listener,
