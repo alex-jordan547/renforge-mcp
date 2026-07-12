@@ -73,6 +73,8 @@ def test_create_app_registers_expected_tools() -> None:
     assert EXPECTED_TOOLS <= names
     instructions = getattr(app, "instructions", "") or ""
     assert "renforge_info" in instructions or not hasattr(app, "instructions")
+    for tool in ("renforge_control", "renforge_wait_until", "renforge_get_errors"):
+        assert tool in instructions or not hasattr(app, "instructions")
 
 
 def test_live_tools_error_cleanly_without_a_running_game(tmp_path) -> None:

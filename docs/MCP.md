@@ -137,6 +137,36 @@ by `renforge_find_image_on_screen` use the captured PNG's coordinates, so pass
 its `coordinate_space: "screenshot"` to `renforge_click_at`. RenForge converts
 them to logical coordinates, including when WSLg scales the capture.
 
+## GOD-mode edit and branch check
+
+Use real labels and visible choice text from the project in this compact
+launch-to-diagnostics loop:
+
+```text
+project = "/path/to/game"
+renforge_launch(project_path=project)
+edit game/script.rpy
+renforge_control(project_path=project, action="reload_script")
+renforge_wait_until(project_path=project, label="edited_label", timeout=30.0)
+renforge_screenshot(project_path=project)
+renforge_saves(
+    project_path=project,
+    action="save",
+    slot="branch-a",
+    extra_info="after hot reload",
+)
+renforge_list_choices(project_path=project)
+renforge_select_choice(project_path=project, text="Branch B")
+renforge_wait_until(project_path=project, label="branch_b", timeout=30.0)
+renforge_get_errors(project_path=project)
+```
+
+`renforge_screenshot` returns the current frame as an image. The save call
+creates a named checkpoint before selecting Branch B; use
+`renforge_saves(project_path=project, action="load", slot="branch-a")` to return
+to it. `renforge_wait_until` accepts exactly one of `label`, `screen`, or
+`expr`, and `timeout` is capped at 120 seconds.
+
 ## Pixel-perfect placement
 
 Positioning a sprite, CG, or overlay to the exact pixel is otherwise a blind
@@ -198,9 +228,9 @@ Notes:
 | `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. |
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
-| `renforge_control` | Run engine controls such as rollback, hot reload, quicksave/quickload, skip, or auto-forward. |
+| `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. |
 | `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
-| `renforge_saves` | Save, load, or list named slots. Save/load require `slot`; list returns `name`, `extra_info`, and `mtime` without screenshots. |
+| `renforge_saves` | Run `save`, `load`, or `list` for named slots. Save/load require `slot`; save accepts optional `extra_info`; list accepts optional `regexp` and returns `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
 ### Choices and user interface
@@ -227,7 +257,7 @@ Notes:
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
 | `renforge_get_errors` | Read recent bridge errors or bounded crash-file tails with mtimes and exit code when tracked. |
-| `renforge_wait_until` | Wait for exactly one label, screen, or expression condition with a bounded timeout. |
+| `renforge_wait_until` | Wait for exactly one `label`, `screen`, or `expr` condition with bounded `timeout` (maximum 120 seconds) and polling `interval`. |
 | `renforge_autopilot` | Explore branches and report label coverage and crashes. |
 
 ### Project, translation, builds, and Ren'Py documentation

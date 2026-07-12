@@ -26,3 +26,37 @@ def test_mcp_safety_docs_include_runtime_mutations() -> None:
 
     assert "`renforge_control`" in safety
     assert "`renforge_saves`" in safety
+
+
+def test_public_god_mode_tools_and_workflow_are_documented() -> None:
+    root = Path(__file__).parents[1]
+    docs = (root / "docs" / "MCP.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    public_tools = (
+        "renforge_inspect_screen",
+        "renforge_control",
+        "renforge_send_input",
+        "renforge_saves",
+        "renforge_get_errors",
+        "renforge_wait_until",
+    )
+
+    for tool in public_tools:
+        assert f"`{tool}`" in docs
+        assert f"`{tool}`" in readme
+
+    for marker in (
+        "renforge_launch(project_path=project)",
+        "edit game/script.rpy",
+        'action="reload_script"',
+        "renforge_wait_until",
+        "renforge_screenshot(project_path=project)",
+        'slot="branch-a"',
+        'text="Branch B"',
+        "renforge_get_errors(project_path=project)",
+    ):
+        assert marker in docs
+        assert marker in readme
+
+    assert 'include=["metrics", "audio"]' in docs
+    assert 'include=["metrics", "audio"]' in readme

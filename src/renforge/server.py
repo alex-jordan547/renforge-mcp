@@ -1099,7 +1099,10 @@ def create_app() -> Any:
         "pixel-perfect layout, measure a shown image with "
         "renforge_get_displayable_bounds, nudge it live with "
         "renforge_position_element, overlay a grid or crosshair via "
-        "renforge_screenshot, and compare frames with renforge_diff_screenshots."
+        "renforge_screenshot, and compare frames with renforge_diff_screenshots. "
+        "For live iteration, use renforge_control(action=\"reload_script\") after "
+        "edits, renforge_wait_until for one bounded condition, and "
+        "renforge_get_errors after risky actions or a stopped process."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)
