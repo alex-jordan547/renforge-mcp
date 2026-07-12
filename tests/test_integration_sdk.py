@@ -43,7 +43,15 @@ def demo_copy(tmp_path: Path) -> Path:
 
 
 def _add_sdk_fixtures(demo_copy: Path) -> dict[str, str]:
-    """Add opt-in-only runtime fixtures without changing the public demo."""
+    """Add opt-in-only runtime fixtures without changing the public demo.
+
+    The ``renforge_sdk_custom`` screen is driven directly through the bridge
+    (``renpy.show_screen``) rather than a ``--warp`` target: warping to a
+    standalone label is non-deterministic — Ren'Py intermittently ignores the
+    warp and starts at ``start`` instead — so only the input fixture, which
+    needs a real ``renpy.input`` interaction that cannot be faked, is reached
+    by warp.
+    """
     fixture = demo_copy / "game" / "renforge_sdk_fixtures.rpy"
     fixture.write_text(
         '''default renforge_sdk_input_value = ""
@@ -60,17 +68,12 @@ label renforge_sdk_input_fixture:
     $ renforge_sdk_input_value = renpy.input("SDK name?", default="")
     pause
     return
-
-label renforge_sdk_screen_fixture:
-    show screen renforge_sdk_custom("fixture-title", 7)
-    pause
-    return
 ''',
         encoding="utf-8",
     )
     return {
         "input": "renforge_sdk_input_fixture",
-        "screen": "renforge_sdk_screen_fixture",
+        "screen": "renforge_sdk_custom",
     }
 
 
@@ -199,12 +202,15 @@ def test_live_screen_introspection_reports_default_say_screen(sdk, demo_copy: Pa
         assert inspected["layer"] == "screens", inspected
         assert isinstance(inspected["scope"], dict), inspected
         assert isinstance(inspected["arguments"], dict), inspected
-        # Ren'Py's built-in say screen exposes its resolved parameters as
-        # scope variables; this invocation does not retain _args/_kwargs on
-        # the active ScreenDisplayable, so inspect_screen must not invent them.
+        # Ren'Py's built-in say screen is shown with its resolved parameters as
+        # keyword arguments, so the live ScreenDisplayable retains them in both
+        # its scope and its ``_kwargs``. Their values (``who`` is None for
+        # narration, ``what`` may be empty on the first frame) are transient, so
+        # assert on presence, not content.
         assert "what" in inspected["scope"], inspected
         assert "who" in inspected["scope"], inspected
-        assert inspected["arguments"] == {"args": [], "kwargs": {}}, inspected
+        assert inspected["arguments"]["args"] == [], inspected
+        assert set(inspected["arguments"]["kwargs"]) == {"who", "what"}, inspected
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
@@ -247,10 +253,17 @@ def test_live_send_input_traverses_real_renpy_input(sdk, demo_copy: Path) -> Non
     warp = resolve_warp_target(str(demo_copy), labels["input"])
     assert warp["ok"] is True, warp
 
+    # Ren'Py's --warp intermittently ignores a bare ``label`` node and starts at
+    # ``start`` instead; warping to the first executable statement inside the
+    # label — the ``$ renpy.input(...)`` line, immediately after it — resumes
+    # execution there deterministically.
+    file_part, _, line_part = warp["target"].rpartition(":")
+    warp_target = "%s:%d" % (file_part, int(line_part) + 1)
+
     with launch_with_bridge(
         sdk,
         RenpyProject(demo_copy),
-        warp=warp["target"],
+        warp=warp_target,
         startup_timeout=90,
     ) as session:
         client = session.client
@@ -279,19 +292,18 @@ def test_live_send_input_traverses_real_renpy_input(sdk, demo_copy: Path) -> Non
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
 def test_live_screen_introspection_reports_custom_fixture(sdk, demo_copy: Path) -> None:
     from renforge.bridge.launcher import launch_with_bridge
-    from renforge.navigation import resolve_warp_target
     from renforge.project import RenpyProject
 
     labels = _add_sdk_fixtures(demo_copy)
-    warp = resolve_warp_target(str(demo_copy), labels["screen"])
-    assert warp["ok"] is True, warp
 
-    with launch_with_bridge(
-        sdk,
-        RenpyProject(demo_copy),
-        warp=warp["target"],
-        startup_timeout=90,
-    ) as session:
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        # Show the custom screen deterministically through the bridge with two
+        # positional args and let its interaction restart so it renders.
+        session.client.eval_expr(
+            'renpy.show_screen("%s", "fixture-title", 7)' % labels["screen"]
+        )
+        session.client.eval_expr("renpy.restart_interaction()")
+
         inspected = None
         for _ in range(40):
             inspected = session.client.inspect_screen("renforge_sdk_custom")
