@@ -987,6 +987,8 @@ def _register_tools(app: Any) -> None:
         """
         def _tool() -> Any:
             try:
+                if width < 0 or height < 0:
+                    raise ValueError("width and height must be non-negative")
                 if (crosshair_x < 0) != (crosshair_y < 0):
                     raise ValueError("crosshair_x and crosshair_y must be provided together")
                 if width or height:

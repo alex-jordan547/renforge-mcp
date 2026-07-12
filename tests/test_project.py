@@ -46,3 +46,20 @@ def test_discover_project_ignores_a_game_dir_without_scripts(tmp_path: Path) -> 
 
 def test_discover_project_returns_none_outside_any_project(tmp_path: Path) -> None:
     assert discover_project_from(tmp_path) is None
+
+
+def test_discover_project_finds_scripts_nested_in_subfolders(tmp_path: Path) -> None:
+    project_root = tmp_path / "nested-game"
+    chapters = project_root / "game" / "chapters"
+    chapters.mkdir(parents=True)
+    (chapters / "script.rpy").write_text("label start:\n    return\n")
+
+    assert discover_project_from(project_root) == project_root.resolve()
+
+
+def test_discover_project_survives_a_deleted_start_directory(tmp_path: Path) -> None:
+    doomed = tmp_path / "doomed"
+    doomed.mkdir()
+    doomed.rmdir()
+
+    assert discover_project_from(doomed) is None

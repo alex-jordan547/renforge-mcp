@@ -387,6 +387,26 @@ def test_screenshot_derives_the_missing_dimension_from_the_aspect_ratio(running_
     assert sizes == [(320, 180), (480, 270), None]
 
 
+def test_screenshot_reports_when_the_aspect_ratio_is_unavailable(running_bridge):
+    sizes = []
+
+    def record(size):
+        sizes.append(size)
+        return b"\x89PNG\r\n_fake_frame_"
+
+    running_bridge.renpy.screenshot_to_bytes = record
+    running_bridge.renpy.config.screen_width = 0
+
+    reply = running_bridge.client.request(
+        "screenshot", {"width": 320, "height": 0}
+    )
+
+    # The frame comes back at native resolution, and the reply says so
+    # instead of silently ignoring the requested size.
+    assert sizes == [None]
+    assert reply["note"] == "aspect ratio unavailable; captured at native resolution"
+
+
 def test_bad_token_is_rejected(running_bridge):
     port = running_bridge.client._config.port
     wrong = BridgeClient(BridgeConfig(port=port, token="WRONG"))

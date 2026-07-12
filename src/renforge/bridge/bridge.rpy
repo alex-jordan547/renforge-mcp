@@ -397,6 +397,7 @@ init python:
         width = int(payload.get("width", 0) or 0)
         height = int(payload.get("height", 0) or 0)
         # A single dimension keeps the game's aspect ratio.
+        note = None
         logical_width = getattr(renpy.config, "screen_width", None)
         logical_height = getattr(renpy.config, "screen_height", None)
         if logical_width and logical_height:
@@ -404,9 +405,14 @@ init python:
                 height = max(1, int(round(width * logical_height / float(logical_width))))
             elif height and not width:
                 width = max(1, int(round(height * logical_width / float(logical_height))))
+        elif (width and not height) or (height and not width):
+            # Never silently ignore the requested size: without the logical
+            # ratio the frame comes back at native resolution, so say so.
+            width = height = 0
+            note = "aspect ratio unavailable; captured at native resolution"
         size = (width, height) if (width and height) else None
         data = renpy.screenshot_to_bytes(size)  # PNG bytes
-        return {
+        reply = {
             "format": "png",
             "base64": base64.b64encode(data).decode("ascii"),
             # The digest lets an external client use the exact frame it
@@ -414,6 +420,9 @@ init python:
             # data in the bridge process.
             "sha256": hashlib.sha256(data).hexdigest(),
         }
+        if note:
+            reply["note"] = note
+        return reply
 
     def _renforge_h_advance(payload):
         # Post a "dismiss" event (the keymap action that advances dialogue).

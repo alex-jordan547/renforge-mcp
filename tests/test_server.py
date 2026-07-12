@@ -930,6 +930,27 @@ def test_screenshot_accepts_a_single_dimension(tmp_path, monkeypatch) -> None:
     assert calls == {"width": 1280, "height": 0}
 
 
+def test_screenshot_rejects_negative_dimensions(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    monkeypatch.setattr(live, "screenshot_png", lambda *a, **k: b"fake-png-bytes")
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_screenshot",
+                {"project_path": str(tmp_path), "width": -1},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is False
+    assert "non-negative" in payload["error"]
+
+
 def test_find_references_tool_reports_unused_definitions(tmp_path) -> None:
     pytest.importorskip("fastmcp", reason="fastmcp not installed")
     from fastmcp import Client
