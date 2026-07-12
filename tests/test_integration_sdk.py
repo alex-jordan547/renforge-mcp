@@ -36,8 +36,42 @@ def sdk():
 @pytest.fixture
 def demo_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "demo"
-    shutil.copytree(_DEMO, destination)
+    # Never inherit Ren'Py bytecode/cache from a previous local run: stale
+    # compiled scripts can make ``--warp`` skip a fixture label entirely.
+    shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
     return destination
+
+
+def _add_sdk_fixtures(demo_copy: Path) -> dict[str, str]:
+    """Add opt-in-only runtime fixtures without changing the public demo."""
+    fixture = demo_copy / "game" / "renforge_sdk_fixtures.rpy"
+    fixture.write_text(
+        '''default renforge_sdk_input_value = ""
+
+screen renforge_sdk_custom(title, amount):
+    modal True
+    key "dismiss" action NullAction()
+    default status = "ready"
+    text title
+    text str(amount)
+    text status
+
+label renforge_sdk_input_fixture:
+    $ renforge_sdk_input_value = renpy.input("SDK name?", default="")
+    pause
+    return
+
+label renforge_sdk_screen_fixture:
+    show screen renforge_sdk_custom("fixture-title", 7)
+    pause
+    return
+''',
+        encoding="utf-8",
+    )
+    return {
+        "input": "renforge_sdk_input_fixture",
+        "screen": "renforge_sdk_screen_fixture",
+    }
 
 
 def test_lint_demo_is_clean(sdk, demo_copy: Path) -> None:
@@ -57,7 +91,24 @@ def test_native_dump_returns_authoritative_labels(sdk, demo_copy: Path) -> None:
     raw = run_native_dump(sdk, RenpyProject(demo_copy), timeout=180)
     labels = {d["name"] for d in normalize_definitions(raw) if d["kind"] == "label"}
 
-    assert {"start", "choice", "good", "bad"} <= labels
+    assert labels == {
+        "main_menu",
+        "start",
+        "village_gate",
+        "stay_home",
+        "crossroads",
+        "forest_path",
+        "hidden_shrine",
+        "cave_mouth",
+        "cave_depths",
+        "ridge_path",
+        "wisp_advice",
+        "summit",
+        "ending_light",
+        "ending_ash",
+        "ending_home",
+        "credits",
+    }
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
@@ -86,7 +137,10 @@ def test_live_bridge_ping_state_and_screenshot(sdk, demo_copy: Path) -> None:
                     says.append(event["what"])
             session.client.advance()
             time.sleep(1.0)
-        assert any("Ren'Forge" in s for s in says), says
+        assert any(
+            s == "The village of Emberfall sleeps under a bruised dawn sky."
+            for s in says
+        ), says
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
@@ -127,18 +181,101 @@ def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
         # Advance until the menu's choices appear on screen.
         choices = []
         for _ in range(6):
-            choices = session.client.list_choices()
+            choices = [
+                choice
+                for choice in session.client.list_choices()
+                if choice.get("screen") == "choice"
+            ]
             if choices:
                 break
             session.client.advance()
             time.sleep(1.0)
-        assert any("lumineuse" in c["text"] for c in choices), choices
+        assert any(c["text"] == "Take the lantern and go." for c in choices), choices
 
-        session.client.select_choice(text="lumineuse")
+        session.client.select_choice(text="Take the lantern and go.")
         time.sleep(1.5)
 
-        assert session.client.get_var("renforge_choice") == "good"
-        assert session.client.get_state()["current_label"] == "good"
+        assert session.client.get_var("lantern") is True
+        assert session.client.get_var("courage") == 1
+        # The branch dialogue is still displayed inside ``village_gate``;
+        # the jump to ``crossroads`` follows after that line is dismissed.
+        assert session.client.get_state()["current_label"] == "village_gate"
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_send_input_traverses_real_renpy_input(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.navigation import resolve_warp_target
+    from renforge.project import RenpyProject
+
+    labels = _add_sdk_fixtures(demo_copy)
+    warp = resolve_warp_target(str(demo_copy), labels["input"])
+    assert warp["ok"] is True, warp
+
+    with launch_with_bridge(
+        sdk,
+        RenpyProject(demo_copy),
+        warp=warp["target"],
+        startup_timeout=90,
+    ) as session:
+        client = session.client
+        for _ in range(40):
+            if client.eval_expr("renpy.get_screen('input') is not None"):
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("fixture renpy.input screen never became active")
+
+        sent = client.send_input(text="Alex", submit=True)
+        assert sent == {
+            "ok": True,
+            "mode": "text",
+            "characters": 4,
+            "submitted": True,
+        }
+
+        for _ in range(40):
+            if client.get_var("renforge_sdk_input_value") == "Alex":
+                break
+            time.sleep(0.25)
+        assert client.get_var("renforge_sdk_input_value") == "Alex"
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_screen_introspection_reports_custom_fixture(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.navigation import resolve_warp_target
+    from renforge.project import RenpyProject
+
+    labels = _add_sdk_fixtures(demo_copy)
+    warp = resolve_warp_target(str(demo_copy), labels["screen"])
+    assert warp["ok"] is True, warp
+
+    with launch_with_bridge(
+        sdk,
+        RenpyProject(demo_copy),
+        warp=warp["target"],
+        startup_timeout=90,
+    ) as session:
+        inspected = None
+        for _ in range(40):
+            inspected = session.client.inspect_screen("renforge_sdk_custom")
+            if inspected.get("active"):
+                break
+            time.sleep(0.25)
+
+        assert inspected is not None
+        assert inspected["ok"] is True, inspected
+        assert inspected["active"] is True, inspected
+        assert inspected["name"] == "renforge_sdk_custom", inspected
+        assert inspected["layer"] == "screens", inspected
+        assert inspected["scope"]["title"] == "fixture-title", inspected
+        assert inspected["scope"]["amount"] == 7, inspected
+        assert inspected["scope"]["status"] == "ready", inspected
+        assert inspected["arguments"] == {
+            "args": ["fixture-title", 7],
+            "kwargs": {},
+        }, inspected
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")

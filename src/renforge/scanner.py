@@ -12,6 +12,7 @@ LABEL_RE = re.compile(
 JUMP_RE = re.compile(r"^\s*jump\s+(.+?)\s*(?:#.*)?$")
 CALL_RE = re.compile(r"^\s*call\s+(.+?)\s*(?:#.*)?$")
 MENU_RE = re.compile(r"^\s*menu\b(.*):\s*(?:#.*)?$")
+SCREEN_RE = re.compile(r"^\s*screen\b")
 CHOICE_RE = re.compile(r"^\s*['\"](.+?)['\"]\s*:\s*(?:#.*)?$")
 CHARACTER_RE = re.compile(
     r"^\s*define\s+([A-Za-z_][\w]*)\s*=\s*Character\(\s*([\"'])(.*?)\2"
@@ -96,6 +97,7 @@ def scan_project(project_path: str) -> Dict[str, Any]:
 
             current_label = None
             current_global_label = None
+            screen_indent: int | None = None
 
             current_menu: Dict[str, Any] | None = None
             menu_indent = 0
@@ -109,6 +111,18 @@ def scan_project(project_path: str) -> Dict[str, Any]:
                 if current_menu is not None and _indent(line) <= menu_indent:
                     result["menus"].append(current_menu)
                     current_menu = None
+
+                line_indent = _indent(line)
+                if screen_indent is not None and line_indent <= screen_indent:
+                    screen_indent = None
+                if screen_indent is not None:
+                    # Screen-language ``label`` is a displayable, not a
+                    # story label.  It can contain dynamic expressions such
+                    # as ``label h.who`` and must not inflate story coverage.
+                    continue
+                if SCREEN_RE.match(line):
+                    screen_indent = line_indent
+                    continue
 
                 match = LABEL_RE.match(line)
                 if match:

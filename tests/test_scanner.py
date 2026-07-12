@@ -108,6 +108,19 @@ def test_scan_project_resolves_local_and_dotted_labels(tmp_path: Path) -> None:
     assert result["jumps"][0]["target"] == "route.chapter.detail"
 
 
+def test_scan_project_excludes_screen_language_labels(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "label start:\n    return\n\nscreen history():\n    label h.who:\n        text h.who\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert [item["name"] for item in result["labels"]] == ["start"]
+
+
 def test_scan_project_excludes_embedded_sdks_and_tools(tmp_path: Path) -> None:
     game = tmp_path / "game"
     embedded = tmp_path / "tools" / "renpy-sdk" / "launcher" / "game"
