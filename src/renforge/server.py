@@ -401,6 +401,44 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_send_input(
+        project_path: str,
+        text: str | None = None,
+        key: str | None = None,
+        scroll: dict[str, Any] | None = None,
+        submit: bool = False,
+    ) -> dict:
+        """Send exactly one input mode: text, named key, or scroll object.
+
+        ``text`` posts character-by-character TEXTINPUT events to a focused
+        Ren'Py Input; ``submit`` optionally presses Enter after the text.
+        ``key`` accepts readable names such as enter, esc, arrows, pageup,
+        pagedown, backspace, delete, home, end, space, tab, and function keys.
+        ``scroll`` is ``{"x": ..., "y": ..., "direction": "up"|"down"}``
+        in logical game coordinates, with optional integer ``amount``.
+        Exactly one of text, key, and scroll must be supplied.
+        """
+        return _log_tool_call(
+            name="renforge_send_input",
+            params={
+                "project_path": project_path,
+                "text": text,
+                "key": key,
+                "scroll": scroll,
+                "submit": submit,
+            },
+            project_root=project_path,
+            fn=live.send_input,
+            args=(project_path,),
+            kwargs={
+                "text": text,
+                "key": key,
+                "scroll": scroll,
+                "submit": submit,
+            },
+        )
+
+    @tool_decorator()
     def renforge_saves(
         project_path: str,
         action: str,

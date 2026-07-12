@@ -197,6 +197,41 @@ def control(project_path: str, action: str) -> dict:
     return _with_client(project_path, lambda c: c.control(action))
 
 
+def send_input(
+    project_path: str,
+    *,
+    text: str | None = None,
+    key: str | None = None,
+    scroll: dict[str, Any] | None = None,
+    submit: bool = False,
+) -> dict:
+    """Send exactly one text, named-key, or logical-coordinate scroll input."""
+    selected = [value is not None for value in (text, key, scroll)]
+    if sum(selected) != 1:
+        return {"ok": False, "error": "exactly one of text, key, or scroll is required"}
+    if not isinstance(submit, bool):
+        return {"ok": False, "error": "submit must be a boolean"}
+    if key is not None and submit:
+        return {"ok": False, "error": "submit is only valid with text input"}
+    if scroll is not None and submit:
+        return {"ok": False, "error": "submit is only valid with text input"}
+    if text is not None and not isinstance(text, str):
+        return {"ok": False, "error": "text must be a string"}
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        return {"ok": False, "error": "key must be a non-empty string"}
+    if scroll is not None and not isinstance(scroll, dict):
+        return {"ok": False, "error": "scroll must be an object with x, y, and direction"}
+    return _with_client(
+        project_path,
+        lambda client: client.send_input(
+            text=text,
+            key=key,
+            scroll=scroll,
+            submit=submit,
+        ),
+    )
+
+
 def saves(
     project_path: str,
     action: str,
@@ -568,6 +603,7 @@ __all__ = [
     "game_state",
     "advance",
     "control",
+    "send_input",
     "saves",
     "list_choices",
     "select_choice",

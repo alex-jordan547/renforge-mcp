@@ -195,6 +195,7 @@ Notes:
 | `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run engine controls such as rollback, hot reload, quicksave/quickload, skip, or auto-forward. |
+| `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
 | `renforge_saves` | Save, load, or list named slots. Save/load require `slot`; list returns `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. |
 
@@ -243,10 +244,16 @@ Notes:
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
-`renforge_control`, `renforge_saves`,
+`renforge_control`, `renforge_send_input`, `renforge_saves`,
 `renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
 `renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
+
+`renforge_send_input` is also stateful: supply exactly one mode per call. Text
+input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh
+the screen or focus the field before retrying; a successful response means the
+events were queued on the game thread, not that an unrelated screen consumed
+them.
 
 Recommended practices:
 

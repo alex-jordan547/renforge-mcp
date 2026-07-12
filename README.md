@@ -38,7 +38,8 @@ translations, find orphaned assets, run builds, and search Ren'Py's docs.
   parse lint output.
 - **Live game control** — launch a project with an injected in-game bridge, then
   advance dialogue, list/select choices, evaluate expressions, get/set store
-  variables, poll pushed events, and capture frames the model can literally see.
+  variables, send focused text/key/scroll input, poll pushed events, and capture
+  frames the model can literally see.
 - **Autopilot** — auto-play the game across branches and report label coverage
   and crashes.
 - **Assets & translations** — find orphaned/missing image+audio assets, list
@@ -225,7 +226,7 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - `renforge_find_references`, `renforge_inspect_image`
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, `renforge_stop`
 - `renforge_game_state`, `renforge_game_state_compact`, `renforge_advance`, `renforge_control`,
-  `renforge_saves`,
+  `renforge_send_input`, `renforge_saves`,
   `renforge_list_choices`, `renforge_select_choice`, `renforge_eval`, `renforge_get_var`,
   `renforge_set_var`, `renforge_poll_events`, `renforge_get_errors`, `renforge_wait_until`,
   `renforge_screenshot`

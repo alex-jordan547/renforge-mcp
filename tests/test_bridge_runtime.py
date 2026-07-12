@@ -40,6 +40,10 @@ class _FakeFocus:
         self.x, self.y, self.w, self.h = x, y, w, h
 
 
+class _FakeInput:
+    pass
+
+
 def _fake_renpy(store):
     config = types.SimpleNamespace(
         basedir="",
@@ -54,6 +58,7 @@ def _fake_renpy(store):
     renpy.screenshot_to_bytes = lambda size: b"\x89PNG\r\n_fake_frame_"
     renpy.get_showing_tags = lambda: ["bg", "eileen"]
     renpy._queued_events = []
+    renpy._pygame_events = []
     renpy._ran_actions = []
     renpy._invoked = []
     renpy.exports = types.SimpleNamespace(
@@ -71,8 +76,13 @@ def _fake_renpy(store):
         _FakeFocus("Alpha choice", 10, 10, 100, 20),
         _FakeFocus("Beta choice", 10, 40, 100, 20),
     ]
+    renpy._focused_widget = None
     renpy.display = types.SimpleNamespace(
-        focus=types.SimpleNamespace(focus_list=focus_list),
+        focus=types.SimpleNamespace(
+            focus_list=focus_list,
+            get_focused=lambda: renpy._focused_widget,
+        ),
+        behavior=types.SimpleNamespace(Input=_FakeInput),
         interface=types.SimpleNamespace(mouse_focused=False, ignore_touch=False),
     )
     renpy._clicks = []
@@ -149,6 +159,37 @@ def running_bridge(tmp_path, monkeypatch):
     renpy = _fake_renpy(store)
     renpy.config.basedir = str(tmp_path)
 
+    class _FakeEvent:
+        def __init__(self, event_type, attributes=None):
+            self.type = event_type
+            for name, value in (attributes or {}).items():
+                setattr(self, name, value)
+
+    pygame = types.ModuleType("pygame_sdl2")
+    pygame.TEXTINPUT = 1
+    pygame.KEYDOWN = 2
+    pygame.KEYUP = 3
+    pygame.MOUSEBUTTONDOWN = 4
+    pygame.MOUSEBUTTONUP = 5
+    pygame.K_F1 = 101
+    pygame.K_F2 = 102
+    pygame.K_F3 = 103
+    pygame.K_F4 = 104
+    pygame.K_F5 = 105
+    pygame.K_F6 = 106
+    pygame.K_F7 = 107
+    pygame.K_F8 = 108
+    pygame.K_F9 = 109
+    pygame.K_F10 = 110
+    pygame.K_F11 = 111
+    pygame.K_F12 = 112
+    pygame.KMOD_NONE = 0
+    pygame.event = types.SimpleNamespace(
+        Event=_FakeEvent,
+        post=lambda event: renpy._pygame_events.append(event),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "pygame_sdl2", pygame)
+
     # Bridge keeps runtime state on a sys.modules entry so saves stay picklable.
     import sys
 
@@ -221,6 +262,70 @@ def test_bad_token_is_rejected(running_bridge):
 def test_advance_posts_dismiss_event(running_bridge):
     assert running_bridge.client.advance().get("ok") is True
     assert "dismiss" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_posts_textinput_per_character_and_submits(running_bridge):
+    running_bridge.renpy._focused_widget = _FakeInput()
+
+    reply = running_bridge.client.send_input(text="Alex", submit=True)
+
+    assert reply == {
+        "ok": True,
+        "mode": "text",
+        "characters": 4,
+        "submitted": True,
+    }
+    assert [event.text for event in running_bridge.renpy._pygame_events] == list("Alex")
+    assert all(event.type == 1 for event in running_bridge.renpy._pygame_events)
+    assert "input_enter" in running_bridge.renpy._queued_events
+
+
+def test_send_input_text_reports_missing_focused_input(running_bridge):
+    reply = running_bridge.client.send_input(text="Alex")
+
+    assert reply["ok"] is False
+    assert "focused Ren'Py Input" in reply["error"]
+    assert running_bridge.renpy._pygame_events == []
+
+
+def test_send_input_named_key_uses_readable_keymap_and_direct_pair(running_bridge):
+    semantic = running_bridge.client.send_input(key="pageup")
+    direct = running_bridge.client.send_input(key="f1")
+
+    assert semantic == {"ok": True, "mode": "key", "key": "pageup", "event": "rollback"}
+    assert running_bridge.renpy._queued_events[-1] == ["rollback", "viewport_pageup"]
+    assert direct == {"ok": True, "mode": "key", "key": "f1", "keycode": 101}
+    assert [(event.type, event.key) for event in running_bridge.renpy._pygame_events] == [
+        (2, 101),
+        (3, 101),
+    ]
+
+
+def test_send_input_unknown_key_is_explicit(running_bridge):
+    reply = running_bridge.client.send_input(key="not-a-real-key")
+
+    assert reply["ok"] is False
+    assert "unknown key" in reply["error"]
+    assert "pageup" in reply["error"]
+
+
+def test_send_input_scroll_posts_logical_wheel_event(running_bridge):
+    reply = running_bridge.client.send_input(
+        scroll={"x": 123, "y": 456, "direction": "down"}
+    )
+
+    assert reply == {
+        "ok": True,
+        "mode": "scroll",
+        "x": 123,
+        "y": 456,
+        "direction": "down",
+        "amount": 1,
+    }
+    event = running_bridge.renpy._pygame_events[-1]
+    assert event.type == 4
+    assert event.button == 5
+    assert event.pos == (123, 456)
 
 
 def test_poll_events_captures_labels_and_say_lines(running_bridge):

@@ -31,6 +31,15 @@ init python:
     import threading
     import types
 
+    try:
+        import pygame_sdl2 as pygame
+    except Exception:
+        # A real Ren'Py SDK always provides pygame_sdl2. Keeping the import
+        # optional lets the bridge's non-engine RPC tests load this file with a
+        # minimal fake runtime; input commands report a clear error if events
+        # cannot be posted.
+        pygame = None
+
     # Keep runtime state off renpy.store / rollback. `init python` top-level
     # names become store fields; a Queue/lock inside the bridge is not picklable
     # and would break QuickSave. A dedicated sys.modules entry is never saved.
@@ -155,6 +164,216 @@ init python:
         # consumes it on the next frame.
         renpy.exports.queue_event("dismiss")
         return {"ok": True}
+
+    # Readable input names that are semantic Ren'Py keymap actions. Keeping
+    # these as names (rather than SDK integer constants) means they continue
+    # to respect a game's customized config.keymap.
+    _RENFORGE_INPUT_KEYMAP = {
+        "enter": ("input_enter", "dismiss", "button_select"),
+        "return": ("input_enter", "dismiss", "button_select"),
+        "esc": ("game_menu",),
+        "escape": ("game_menu",),
+        "up": ("focus_up", "input_up", "viewport_uparrow", "bar_up"),
+        "down": ("focus_down", "input_down", "viewport_downarrow", "bar_down"),
+        "left": ("focus_left", "input_left", "viewport_leftarrow", "bar_left"),
+        "right": ("focus_right", "input_right", "viewport_rightarrow", "bar_right"),
+        "pageup": ("rollback", "viewport_pageup"),
+        "pagedown": ("rollforward", "viewport_pagedown"),
+        "backspace": ("input_backspace",),
+        "delete": ("input_delete", "save_delete"),
+        "home": ("input_home",),
+        "end": ("input_end",),
+        "space": ("dismiss", "button_select"),
+        "tab": ("toggle_skip",),
+    }
+
+    # A small explicit set of keys without a useful Ren'Py semantic action.
+    # These are posted as real KEYDOWN/KEYUP pairs so custom screens can bind
+    # them with a normal key statement.
+    _RENFORGE_DIRECT_KEY_ATTRS = {
+        "f1": "K_F1",
+        "f2": "K_F2",
+        "f3": "K_F3",
+        "f4": "K_F4",
+        "f5": "K_F5",
+        "f6": "K_F6",
+        "f7": "K_F7",
+        "f8": "K_F8",
+        "f9": "K_F9",
+        "f10": "K_F10",
+        "f11": "K_F11",
+        "f12": "K_F12",
+    }
+
+    def _renforge_focused_input():
+        """Return the focused Ren'Py Input, or an explicit diagnostic."""
+        display = getattr(renpy, "display", None)
+        focus = getattr(display, "focus", None)
+        get_focused = getattr(focus, "get_focused", None)
+        if not callable(get_focused):
+            return None, "cannot verify focused Ren'Py Input (focus API unavailable)"
+        try:
+            widget = get_focused()
+        except Exception as exc:
+            return None, "cannot verify focused Ren'Py Input: %s" % exc
+        if widget is None:
+            return None, "no focused Ren'Py Input; text was not sent"
+
+        behavior = getattr(display, "behavior", None)
+        input_type = getattr(behavior, "Input", None)
+        if callable(input_type):
+            try:
+                if isinstance(widget, input_type):
+                    return widget, None
+            except TypeError:
+                pass
+        # Older/custom runtimes may not expose behavior.Input, but its concrete
+        # class name remains a reliable last-resort signal.
+        if getattr(getattr(widget, "__class__", None), "__name__", "") == "Input":
+            return widget, None
+        return None, "no focused Ren'Py Input; focused widget is %s" % (
+            getattr(getattr(widget, "__class__", None), "__name__", "unknown"),
+        )
+
+    def _renforge_h_send_input(payload):
+        payload = payload or {}
+        supplied = [name for name in ("text", "key", "scroll") if name in payload and payload.get(name) is not None]
+        if len(supplied) != 1:
+            return {
+                "ok": False,
+                "error": "exactly one of text, key, or scroll is required",
+            }
+
+        submit = payload.get("submit", False)
+        if not isinstance(submit, bool):
+            return {"ok": False, "error": "submit must be a boolean"}
+        if supplied[0] != "text" and submit:
+            return {"ok": False, "error": "submit is only valid with text input"}
+
+        if supplied[0] == "text":
+            text = payload.get("text")
+            if not isinstance(text, str):
+                return {"ok": False, "error": "text must be a string"}
+            if pygame is None:
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+            _focused, focus_error = _renforge_focused_input()
+            if focus_error is not None:
+                return {"ok": False, "error": focus_error}
+            for character in text:
+                event = pygame.event.Event(pygame.TEXTINPUT, {"text": character})
+                pygame.event.post(event)
+            if submit:
+                renpy.exports.queue_event("input_enter")
+            return {
+                "ok": True,
+                "mode": "text",
+                "characters": len(text),
+                "submitted": submit,
+            }
+
+        if supplied[0] == "key":
+            key = payload.get("key")
+            if not isinstance(key, str) or not key.strip():
+                return {"ok": False, "error": "key must be a non-empty string"}
+            key = key.strip().casefold()
+            semantic = _RENFORGE_INPUT_KEYMAP.get(key)
+            if semantic is not None:
+                renpy.exports.queue_event(list(semantic))
+                return {"ok": True, "mode": "key", "key": key, "event": semantic[0]}
+
+            attr_name = _RENFORGE_DIRECT_KEY_ATTRS.get(key)
+            keycode = (
+                getattr(pygame, attr_name, None)
+                if pygame is not None and attr_name is not None
+                else None
+            )
+            if keycode is None:
+                supported = sorted(set(_RENFORGE_INPUT_KEYMAP) | set(_RENFORGE_DIRECT_KEY_ATTRS))
+                return {
+                    "ok": False,
+                    "error": "unknown key %r; supported keys: %s" % (key, ", ".join(supported)),
+                }
+            if pygame is None:
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+            mod = getattr(pygame, "KMOD_NONE", 0)
+            for event_type in (pygame.KEYDOWN, pygame.KEYUP):
+                event = pygame.event.Event(
+                    event_type,
+                    {"key": keycode, "mod": mod, "unicode": "", "repeat": 0},
+                )
+                pygame.event.post(event)
+            return {"ok": True, "mode": "key", "key": key, "keycode": keycode}
+
+        scroll = payload.get("scroll")
+        if not isinstance(scroll, dict):
+            return {"ok": False, "error": "scroll must be an object with x, y, and direction"}
+        try:
+            raw_x, raw_y = scroll.get("x"), scroll.get("y")
+            if isinstance(raw_x, bool) or isinstance(raw_y, bool):
+                raise ValueError
+            x, y = int(round(float(raw_x))), int(round(float(raw_y)))
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "error": "scroll requires numeric x and y"}
+        if x < 0 or y < 0:
+            return {"ok": False, "error": "scroll coordinates must be non-negative"}
+
+        direction = scroll.get("direction")
+        if direction is not None:
+            direction = str(direction).casefold()
+            direction = {"wheelup": "up", "wheeldown": "down"}.get(direction, direction)
+            if direction not in ("up", "down"):
+                return {"ok": False, "error": "scroll direction must be up or down"}
+
+        amount = scroll.get("amount", scroll.get("delta", 1))
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        if isinstance(amount, float) and not amount.is_integer():
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        amount = int(amount)
+        if amount == 0:
+            return {"ok": False, "error": "scroll amount must be a non-zero integer"}
+        if direction is None:
+            direction = "up" if amount < 0 else "down"
+        amount = abs(amount)
+
+        coordinate_space = str(scroll.get("coordinate_space", "logical") or "logical").casefold()
+        if coordinate_space not in ("logical", "screenshot"):
+            return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+        frame_data = None
+        if coordinate_space == "screenshot":
+            frame_data = renpy.screenshot_to_bytes(None)
+        x, y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+            x, y, coordinate_space, frame_data
+        )
+        if coordinate_error is not None:
+            return {"ok": False, "error": coordinate_error}
+        if pygame is None:
+            return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+        button = 4 if direction == "up" else 5
+        for _ in range(amount):
+            event = pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"button": button, "pos": (x, y), "x": x, "y": y},
+            )
+            pygame.event.post(event)
+        return {
+            "ok": True,
+            "mode": "scroll",
+            "x": x,
+            "y": y,
+            "direction": direction,
+            "amount": amount,
+        }
 
     def _renforge_invoke(fn):
         # Schedule work for the interaction loop. Prefer invoke_in_main_thread
@@ -716,6 +935,23 @@ init python:
         except Exception:
             return None, None
 
+    def _renforge_to_logical_coordinates(x, y, coordinate_space, frame_data=None):
+        """Convert screenshot pixels through the same seam used by click_at."""
+        if coordinate_space == "logical":
+            return x, y, frame_data, None
+        if coordinate_space != "screenshot":
+            return x, y, frame_data, "coordinate_space must be logical or screenshot"
+        if frame_data is None:
+            frame_data = renpy.screenshot_to_bytes(None)
+        pixel_width, pixel_height = _renforge_png_dimensions(frame_data)
+        logical_width = getattr(renpy.config, "screen_width", None)
+        logical_height = getattr(renpy.config, "screen_height", None)
+        if not pixel_width or not pixel_height or not logical_width or not logical_height:
+            return x, y, frame_data, "screenshot coordinate space is unavailable"
+        x = int(round(x * float(logical_width) / float(pixel_width)))
+        y = int(round(y * float(logical_height) / float(pixel_height)))
+        return x, y, frame_data, None
+
     def _renforge_h_click_at(payload):
         payload = payload or {}
         try:
@@ -751,16 +987,11 @@ init python:
                     "sha256": screenshot_digest,
                 }
 
-        if coordinate_space == "screenshot":
-            if frame_data is None:
-                frame_data = renpy.screenshot_to_bytes(None)
-            pixel_width, pixel_height = _renforge_png_dimensions(frame_data)
-            logical_width = getattr(renpy.config, "screen_width", None)
-            logical_height = getattr(renpy.config, "screen_height", None)
-            if not pixel_width or not pixel_height or not logical_width or not logical_height:
-                return {"ok": False, "error": "screenshot coordinate space is unavailable"}
-            x = int(round(x * float(logical_width) / float(pixel_width)))
-            y = int(round(y * float(logical_height) / float(pixel_height)))
+        x, y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+            x, y, coordinate_space, frame_data
+        )
+        if coordinate_error is not None:
+            return {"ok": False, "error": coordinate_error}
 
         interface = getattr(getattr(renpy, "display", None), "interface", None)
         if interface is not None:
@@ -974,6 +1205,7 @@ init python:
         "set_var": _renforge_h_set_var,
         "screenshot": _renforge_h_screenshot,
         "advance": _renforge_h_advance,
+        "send_input": _renforge_h_send_input,
         "control": _renforge_h_control,
         "save_slot": _renforge_h_save_slot,
         "load_slot": _renforge_h_load_slot,

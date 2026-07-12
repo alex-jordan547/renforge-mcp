@@ -25,6 +25,7 @@ EXPECTED_TOOLS = {
     "renforge_game_state_compact",
     "renforge_advance",
     "renforge_control",
+    "renforge_send_input",
     "renforge_saves",
     "renforge_list_choices",
     "renforge_select_choice",
@@ -504,6 +505,52 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
         "slot",
         "extra_info",
         "regexp",
+    }
+
+
+def test_send_input_tool_dispatches_one_grouped_mode(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+    from renforge.tools import live
+
+    calls = []
+
+    def fake_send_input(project_path, **kwargs):
+        calls.append((project_path, kwargs))
+        return {"ok": True, "mode": "text", "characters": 4, "submitted": True}
+
+    monkeypatch.setattr(live, "send_input", fake_send_input)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_send_input",
+                {"project_path": str(tmp_path), "text": "Alex", "submit": True},
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload == {"ok": True, "mode": "text", "characters": 4, "submitted": True}
+    assert calls == [
+        (
+            str(tmp_path),
+            {"text": "Alex", "key": None, "scroll": None, "submit": True},
+        )
+    ]
+
+
+def test_send_input_tool_schema_exposes_text_key_and_scroll() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+
+    tools = asyncio.run(create_app().list_tools())
+    tool = next(tool for tool in tools if tool.name == "renforge_send_input")
+    assert tool.parameters["required"] == ["project_path"]
+    assert set(tool.parameters["properties"]) == {
+        "project_path",
+        "text",
+        "key",
+        "scroll",
+        "submit",
     }
 
 

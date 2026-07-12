@@ -149,6 +149,31 @@ class BridgeClient:
             return result
         return reply
 
+    def send_input(
+        self,
+        *,
+        text: str | None = None,
+        key: str | None = None,
+        scroll: dict[str, Any] | None = None,
+        submit: bool = False,
+    ) -> dict:
+        """Send exactly one text, named-key, or scroll input operation."""
+        payload: dict[str, Any] = {
+            "text": text,
+            "key": key,
+            "scroll": scroll,
+            "submit": bool(submit),
+        }
+        # Keep omitted optional modes out of the wire payload so callers can
+        # distinguish an explicit empty text operation from a missing mode.
+        payload = {name: value for name, value in payload.items() if value is not None}
+        reply = self.request("send_input", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
     def save_slot(self, slot: str, *, extra_info: str = "") -> dict:
         """Save the current game state under a named slot."""
         return self.request(

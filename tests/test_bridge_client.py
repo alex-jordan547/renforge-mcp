@@ -164,6 +164,30 @@ def test_bridge_client_list_slots_helper():
     }
 
 
+def test_bridge_client_send_input_helper():
+    token = "input-token"
+    captured = {}
+
+    def handler(line, conn):
+        request = json.loads(line)
+        captured["request"] = request
+        conn.sendall(b'{"ok": true, "mode": "text", "characters": 4, "submitted": true}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).send_input(
+        text="Alex", submit=True
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "send_input",
+        "payload": {"text": "Alex", "submit": True},
+    }
+    assert reply == {"ok": True, "mode": "text", "characters": 4, "submitted": True}
+
+
 def test_bridge_client_invalid_json_response():
     token = "bad-json-token"
 
