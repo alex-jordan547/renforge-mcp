@@ -256,6 +256,65 @@ def test_bridge_client_send_input_helper():
     assert reply == {"ok": True, "mode": "text", "characters": 4, "submitted": True}
 
 
+def test_bridge_client_hover_element_helper():
+    token = "hover-token"
+    captured = {}
+
+    def handler(line, conn):
+        captured["request"] = json.loads(line)
+        conn.sendall(b'{"ok": true, "hovered": true, "x": 10, "y": 20}\n')
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).hover_element(
+        id="menu:button:Save", expected_frame_id="frame-1"
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "hover_element",
+        "payload": {
+            "text": None,
+            "id": "menu:button:Save",
+            "exact": False,
+            "expected_frame_id": "frame-1",
+        },
+    }
+    assert reply["hovered"] is True
+
+
+def test_bridge_client_get_ui_element_bounds_helper():
+    token = "bounds-token"
+    captured = {}
+
+    def handler(line, conn):
+        captured["request"] = json.loads(line)
+        conn.sendall(
+            b'{"ok": true, "focus_bounds": {"x": 1, "y": 2, "width": 3, "height": 4}, '
+            b'"painted_bounds": null, "painted_bounds_available": false}\n'
+        )
+
+    thread, port, sock = _start_test_server(handler)
+    reply = BridgeClient(BridgeConfig(port=port, token=token)).get_ui_element_bounds(
+        id="menu:button:Load", expected_frame_id="frame-1"
+    )
+
+    thread.join(timeout=1.0)
+    assert sock.fileno() == -1
+    assert captured["request"] == {
+        "token": token,
+        "command": "get_ui_element_bounds",
+        "payload": {
+            "text": None,
+            "id": "menu:button:Load",
+            "exact": False,
+            "expected_frame_id": "frame-1",
+        },
+    }
+    assert reply["painted_bounds_available"] is False
+
+
 def test_bridge_client_invalid_json_response():
     token = "bad-json-token"
 

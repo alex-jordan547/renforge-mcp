@@ -185,6 +185,75 @@ def test_annotate_png_rejects_tiny_grid_spacing() -> None:
         annotate_png(_png(20, 10), grid=2)
 
 
+def test_estimate_translation_finds_shifted_sprite() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import estimate_translation
+
+    before = image_module.new("L", (60, 40), 0)
+    after = image_module.new("L", (60, 40), 0)
+    before.paste(255, (10, 8, 20, 18))
+    after.paste(255, (13, 10, 23, 20))
+
+    result = estimate_translation(before, after, max_shift=5)
+
+    assert result["available"] is True
+    assert (result["dx"], result["dy"]) == (3, 2)
+    assert result["support"] == 100
+
+
+def test_estimate_translation_ignores_bright_transparent_padding() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import estimate_translation
+
+    before = image_module.new("RGBA", (80, 60), (255, 255, 255, 0))
+    after = image_module.new("RGBA", (80, 60), (255, 255, 255, 0))
+    for x in range(10, 20):
+        for y in range(8, 18):
+            before.putpixel((x, y), (220, 40, 40, 255))
+    for x in range(13, 23):
+        for y in range(10, 20):
+            after.putpixel((x, y), (220, 40, 40, 255))
+
+    result = estimate_translation(before, after, max_shift=5)
+
+    assert result["available"] is True
+    assert (result["dx"], result["dy"]) == (3, 2)
+
+
+def test_estimate_translation_crops_to_active_bbox_on_large_canvas() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import estimate_translation
+
+    before = image_module.new("L", (400, 300), 0)
+    after = image_module.new("L", (400, 300), 0)
+    before.paste(255, (40, 30, 52, 42))
+    after.paste(255, (45, 34, 57, 46))
+
+    result = estimate_translation(before, after, max_shift=8)
+
+    assert result["available"] is True
+    assert (result["dx"], result["dy"]) == (5, 4)
+
+
+def test_estimate_translation_rejects_excessive_work_budget() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge import image_ops
+    from renforge.image_ops import estimate_translation
+
+    before = image_module.new("L", (500, 500), 0)
+    after = image_module.new("L", (500, 500), 0)
+    before.paste(255, (10, 10, 30, 30))
+    after.paste(255, (20, 20, 40, 40))
+
+    original_budget = image_ops._MAX_ESTIMATE_PIXEL_CHECKS
+    image_ops._MAX_ESTIMATE_PIXEL_CHECKS = 1_000
+    try:
+        with pytest.raises(ValueError, match="work budget"):
+            estimate_translation(before, after, max_shift=64)
+    finally:
+        image_ops._MAX_ESTIMATE_PIXEL_CHECKS = original_budget
+
+
 def test_diff_images_locates_the_changed_region() -> None:
     image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
     from renforge.image_ops import diff_images

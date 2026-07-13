@@ -26,6 +26,11 @@ _MAX_OUTPUT_PIXELS = 50_000_000
 # (20x20) control template while still putting a hard ceiling on CPU work.
 _MAX_SCAN_POSITIONS = 4_000_000
 _MAX_SCORE_PIXELS = 50_000_000
+# Translation search is O(region_pixels * (2*max_shift+1)^2).  Auto-cropping to
+# the union of active masks keeps typical UI captures fast; this ceiling rejects
+# unbounded full-frame scans from an MCP client.
+_MAX_ESTIMATE_PIXEL_CHECKS = 50_000_000
+_ALPHA_VISIBILITY_THRESHOLD = 16
 _MAX_MATCHES = 100
 _MIN_TEMPLATE_PIXELS = 1
 _MAX_TEMPLATE_PIXELS = 4_000_000
@@ -107,6 +112,19 @@ def _normalise_region(
     if x + region_width > width or y + region_height > height:
         raise ValueError(f"region exceeds image bounds {width}x{height}")
     return x, y, region_width, region_height
+
+
+def _stable_visual_mask(image: Image.Image, *, threshold: int) -> Image.Image:
+    """Return a binary mask of opaque, bright pixels for translation scoring."""
+
+    rgba = image.convert("RGBA")
+    red, green, blue, alpha = rgba.split()
+    luma = Image.merge("RGB", (red, green, blue)).convert("L")
+    visible = alpha.point(
+        lambda value: 255 if value >= _ALPHA_VISIBILITY_THRESHOLD else 0
+    )
+    bright = luma.point(lambda value: 255 if value > threshold else 0)
+    return ImageChops.multiply(visible, bright)
 
 
 def _visible_anchor_points(alpha: bytes, width: int, height: int) -> list[tuple[int, int]]:
@@ -683,6 +701,93 @@ def diff_images(
     return result
 
 
+def estimate_translation(
+    before: bytes | bytearray | memoryview | str | Path | Image.Image,
+    after: bytes | bytearray | memoryview | str | Path | Image.Image,
+    *,
+    region: Sequence[int] | dict[str, int] | None = None,
+    threshold: int = 16,
+    max_shift: int = 64,
+) -> dict[str, Any]:
+    """Estimate a stable visual translation between two frames.
+
+    The score uses opaque/bright pixels and ignores isolated pixels, making it
+    less sensitive to glow and particle effects than a raw image diff.
+    """
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or not 0 <= threshold <= 255:
+        raise ValueError("threshold must be an integer between 0 and 255")
+    if isinstance(max_shift, bool) or not isinstance(max_shift, int) or not 0 <= max_shift <= 256:
+        raise ValueError("max_shift must be an integer between 0 and 256")
+    first = _read_image_source(before, name="before")
+    second = _read_image_source(after, name="after")
+    if first.size != second.size:
+        raise ValueError(f"images differ in size: {first.size} vs {second.size}")
+    left, top, width, height = _normalise_region(region, width=first.width, height=first.height)
+    first = first.crop((left, top, left + width, top + height))
+    second = second.crop((left, top, left + width, top + height))
+    first_mask = _stable_visual_mask(first, threshold=threshold)
+    second_mask = _stable_visual_mask(second, threshold=threshold)
+    first_bbox = first_mask.getbbox()
+    second_bbox = second_mask.getbbox()
+    if first_bbox is None or second_bbox is None:
+        return {"ok": True, "available": False, "reason": "insufficient stable visual support", "confidence": 0.0}
+
+    crop_left = max(0, min(first_bbox[0], second_bbox[0]) - max_shift)
+    crop_top = max(0, min(first_bbox[1], second_bbox[1]) - max_shift)
+    crop_right = min(
+        first_mask.width,
+        max(first_bbox[2], second_bbox[2]) + max_shift,
+    )
+    crop_bottom = min(
+        first_mask.height,
+        max(first_bbox[3], second_bbox[3]) + max_shift,
+    )
+    first_mask = first_mask.crop((crop_left, crop_top, crop_right, crop_bottom))
+    second_mask = second_mask.crop((crop_left, crop_top, crop_right, crop_bottom))
+    shift_count = (2 * max_shift + 1) ** 2
+    pixel_checks = first_mask.width * first_mask.height * shift_count
+    if pixel_checks > _MAX_ESTIMATE_PIXEL_CHECKS:
+        raise ValueError(
+            "translation search exceeds the work budget; pass a tighter region "
+            "or reduce max_shift"
+        )
+
+    best = (0, 0, 0)
+    runner_up = 0
+    for dy in range(-max_shift, max_shift + 1):
+        for dx in range(-max_shift, max_shift + 1):
+            shifted = ImageChops.offset(first_mask, dx, dy)
+            overlap = ImageChops.multiply(shifted, second_mask).histogram()[255]
+            if overlap > best[2]:
+                runner_up = best[2]
+                best = (dx, dy, overlap)
+            elif overlap > runner_up:
+                runner_up = overlap
+    support = best[2]
+    if support == 0:
+        return {"ok": True, "available": False, "reason": "insufficient stable visual support", "confidence": 0.0}
+    confidence = round((support - runner_up) / float(max(support, 1)), 4)
+    if confidence < 0.02:
+        return {
+            "ok": True,
+            "available": False,
+            "reason": "translation is ambiguous",
+            "confidence": confidence,
+            "support": support,
+        }
+    return {
+        "ok": True,
+        "available": True,
+        "dx": best[0],
+        "dy": best[1],
+        "confidence": confidence,
+        "support": support,
+        "bounds": {"x": left, "y": top, "width": width, "height": height},
+        "method": "luminance-overlap",
+        "threshold": threshold,
+    }
+
+
 def inspect_image(
     image_path: str | Path,
     *,
@@ -712,6 +817,7 @@ def inspect_image(
 __all__ = [
     "annotate_png",
     "diff_images",
+    "estimate_translation",
     "find_image_matches",
     "find_image_on_screen",
     "inspect_image",

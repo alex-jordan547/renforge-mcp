@@ -1122,7 +1122,7 @@ init python:
         click_mouse(1, x, y)
         return x, y
 
-    def _renforge_h_click_element(payload):
+    def _renforge_resolve_ui_element(payload, action):
         payload = payload or {}
         wanted_id = payload.get("id") or payload.get("element_id")
         wanted_text = payload.get("text")
@@ -1130,9 +1130,8 @@ init python:
             wanted_text = None
         exact = bool(payload.get("exact", False))
         wanted_screen = payload.get("screen")
-        expected_frame_id = payload.get("expected_frame_id") or payload.get("expected_screenshot")
         if wanted_id is None and wanted_text is None:
-            return {"ok": False, "error": "click_element requires text or id"}
+            return None, None, {"ok": False, "error": "%s requires text or id" % action}
         if wanted_id is not None:
             wanted_id = str(wanted_id)
         if wanted_text is not None:
@@ -1148,20 +1147,26 @@ init python:
                 continue
             if wanted_text is not None:
                 actual_text = str(element.get("text") or "")
-                if exact:
-                    if actual_text.casefold() != wanted_text.casefold():
-                        continue
-                elif wanted_text.casefold() not in actual_text.casefold():
+                matches = actual_text.casefold() == wanted_text.casefold() if exact else wanted_text.casefold() in actual_text.casefold()
+                if not matches:
                     continue
             candidates.append((focus, element))
         if not candidates:
-            return {"ok": False, "error": "no UI element matching %r/%r" % (wanted_text, wanted_id)}
+            return None, None, {"ok": False, "error": "no UI element matching %r/%r" % (wanted_text, wanted_id)}
         if len(candidates) > 1:
-            return {
+            return None, None, {
                 "ok": False,
                 "error": "ambiguous UI element; provide an id or exact text",
                 "matches": [item[1] for item in candidates],
             }
+        return candidates[0][0], candidates[0][1], None
+
+    def _renforge_h_click_element(payload):
+        payload = payload or {}
+        expected_frame_id = payload.get("expected_frame_id") or payload.get("expected_screenshot")
+        focus, element, error = _renforge_resolve_ui_element(payload, "click_element")
+        if error is not None:
+            return error
 
         screenshot_digest = None
         if expected_frame_id not in (None, ""):
@@ -1173,7 +1178,6 @@ init python:
                     "error": "expected_frame_id guard failed",
                     "sha256": screenshot_digest,
                 }
-        focus, element = candidates[0]
         if not element.get("enabled", True):
             return {"ok": False, "error": "UI element is disabled", "element": element}
         x, y = _renforge_click_focus(focus)
@@ -1188,6 +1192,204 @@ init python:
             "y": y,
             "element": element,
         }
+        if screenshot_digest is not None:
+            result["sha256"] = screenshot_digest
+        return result
+
+    def _renforge_move_mouse(focus):
+        fx = getattr(focus, "x", None)
+        fy = getattr(focus, "y", None)
+        fw = getattr(focus, "w", None)
+        fh = getattr(focus, "h", None)
+        if fx is not None and fy is not None and fw and fh:
+            x = int(fx + fw // 2)
+            y = int(fy + fh // 2)
+        else:
+            find_position = getattr(getattr(renpy, "test", None), "testfocus", None)
+            find_position = getattr(find_position, "find_position", None)
+            if not callable(find_position):
+                raise RuntimeError("Ren'Py focus position API is unavailable")
+            px, py = find_position(focus, (None, None))
+            x, y = int(px), int(py)
+
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+
+        def _renforge_dispatch_mouse_motion(px, py):
+            """Drive Ren'Py focus/hover state without a player interact loop.
+
+            Posting MOUSEMOTION to pygame is not enough: ImageButton hover uses
+            ``focus.mouse_handler`` during event dispatch. Bridge RPC must call
+            it directly on the main thread after ``testmouse.move_mouse``.
+            """
+            if pygame is None:
+                return False
+            event_type = getattr(pygame, "MOUSEMOTION", None)
+            event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+            post = getattr(getattr(pygame, "event", None), "post", None)
+            if event_type is None or not callable(event_factory):
+                return False
+            event = event_factory(event_type, {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)})
+            if callable(post):
+                post(event)
+            mouse_handler = getattr(getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None)
+            if callable(mouse_handler):
+                mouse_handler(event, px, py, False)
+            return True
+
+        restart_interaction = getattr(renpy, "restart_interaction", None)
+        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+        move_mouse = getattr(testmouse, "move_mouse", None)
+        if callable(move_mouse):
+            try:
+                move_mouse(x, y)
+            except TypeError:
+                pass
+            else:
+                _renforge_dispatch_mouse_motion(x, y)
+                if callable(restart_interaction):
+                    restart_interaction()
+                return x, y, "renpy-test"
+        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
+        if callable(set_mouse_pos):
+            try:
+                set_mouse_pos(x, y)
+            except TypeError:
+                pass
+            else:
+                _renforge_dispatch_mouse_motion(x, y)
+                if callable(restart_interaction):
+                    restart_interaction()
+                return x, y, "renpy"
+        if not _renforge_dispatch_mouse_motion(x, y):
+            raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
+        if callable(restart_interaction):
+            restart_interaction()
+        return x, y, "pygame"
+
+    def _renforge_h_hover_element(payload):
+        payload = payload or {}
+        expected_frame_id = payload.get("expected_frame_id") or payload.get("expected_screenshot")
+        focus, element, error = _renforge_resolve_ui_element(payload, "hover_element")
+        if error is not None:
+            return error
+        screenshot_digest = None
+        if expected_frame_id not in (None, ""):
+            data = renpy.screenshot_to_bytes(None)
+            matches, screenshot_digest = _renforge_screenshot_guard_matches(expected_frame_id, data)
+            if not matches:
+                return {
+                    "ok": False,
+                    "error": "expected_frame_id guard failed",
+                    "sha256": screenshot_digest,
+                }
+        if not element.get("enabled", True):
+            return {"ok": False, "error": "UI element is disabled", "element": element}
+        try:
+            x, y, method = _renforge_move_mouse(focus)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc), "element": element}
+        result = {
+            "ok": True,
+            "hovered": True,
+            "method": method,
+            "id": element.get("id"),
+            "text": element.get("text"),
+            "type": element.get("type"),
+            "screen": element.get("screen"),
+            "bounds": element.get("bounds"),
+            "x": x,
+            "y": y,
+            "element": element,
+        }
+        if screenshot_digest is not None:
+            result["sha256"] = screenshot_digest
+        return result
+
+    def _renforge_rect_components(rect):
+        left = getattr(rect, "left", None)
+        top = getattr(rect, "top", None)
+        width = getattr(rect, "width", None)
+        height = getattr(rect, "height", None)
+        if left is None or top is None or width is None or height is None:
+            try:
+                left, top, width, height = rect[0], rect[1], rect[2], rect[3]
+            except (TypeError, IndexError, ValueError):
+                raise ValueError("unsupported rect type")
+        return int(left), int(top), int(width), int(height)
+
+    def _renforge_h_get_ui_element_bounds(payload):
+        payload = payload or {}
+        expected_frame_id = payload.get("expected_frame_id") or payload.get("expected_screenshot")
+        focus, element, error = _renforge_resolve_ui_element(payload, "get_ui_element_bounds")
+        if error is not None:
+            return error
+        screenshot_digest = None
+        if expected_frame_id not in (None, ""):
+            data = renpy.screenshot_to_bytes(None)
+            matches, screenshot_digest = _renforge_screenshot_guard_matches(expected_frame_id, data)
+            if not matches:
+                return {
+                    "ok": False,
+                    "error": "expected_frame_id guard failed",
+                    "sha256": screenshot_digest,
+                }
+
+        bounds = element.get("bounds")
+        result = {
+            "ok": True,
+            "id": element.get("id"),
+            "text": element.get("text"),
+            "type": element.get("type"),
+            "screen": element.get("screen"),
+            "focus_bounds": bounds,
+            "painted_bounds": None,
+            "painted_bounds_available": False,
+            "coordinate_space": "logical",
+        }
+        widget = getattr(focus, "widget", None)
+        if widget is None or not hasattr(widget, "state_children") or not callable(getattr(widget, "get_child", None)):
+            result["painted_bounds_reason"] = "element does not expose ImageButton state children"
+        else:
+            render_to_surface = getattr(renpy, "render_to_surface", None)
+            if not callable(render_to_surface):
+                result["painted_bounds_reason"] = "renpy.render_to_surface is unavailable"
+            else:
+                try:
+                    child = widget.get_child()
+                    width = int(bounds.get("width", 0))
+                    height = int(bounds.get("height", 0))
+                    surface = render_to_surface(child, width, height, resize=True)
+                    get_bounding_rect = getattr(surface, "get_bounding_rect", None)
+                    if not callable(get_bounding_rect):
+                        raise RuntimeError("rendered surface has no alpha bounds API")
+                    try:
+                        rect = get_bounding_rect(min_alpha=1)
+                    except TypeError:
+                        rect = get_bounding_rect()
+                    left, top, painted_width, painted_height = _renforge_rect_components(rect)
+                    if painted_width > 0 and painted_height > 0:
+                        result["painted_bounds"] = {
+                            "x": int(bounds["x"]) + left,
+                            "y": int(bounds["y"]) + top,
+                            "width": painted_width,
+                            "height": painted_height,
+                        }
+                        result["painted_bounds_available"] = True
+                        result["painted_bounds_source"] = "rendered-alpha"
+                        result["state"] = str(getattr(getattr(widget, "style", None), "prefix", "")).rstrip("_") or None
+                    else:
+                        result["painted_bounds_reason"] = "rendered ImageButton is fully transparent"
+                except Exception as exc:
+                    result["painted_bounds_reason"] = "%s: %s" % (type(exc).__name__, exc)
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
         return result
@@ -1524,6 +1726,8 @@ init python:
         "select_choice": _renforge_h_select_choice,
         "list_ui_elements": _renforge_h_list_ui_elements,
         "click_element": _renforge_h_click_element,
+        "hover_element": _renforge_h_hover_element,
+        "get_ui_element_bounds": _renforge_h_get_ui_element_bounds,
         "click_at": _renforge_h_click_at,
         "get_displayable_bounds": _renforge_h_get_displayable_bounds,
         "show_displayable": _renforge_h_show_displayable,
