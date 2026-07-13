@@ -521,11 +521,8 @@ def test_live_imagebutton_hover_bounds_and_capture(sdk, demo_copy: Path) -> None
       alpha-painted bounds smaller than the focus rectangle.
     - bridge screenshots can be persisted under ``.renforge/captures/``.
 
-    A full idle→hover *visual repaint* plus translation estimate on live frames is
-    intentionally out of scope here: ImageButton hover prefix is decided during
-    render, while screenshots are scaled by the host display (logical 1280×720 vs
-    physical PNG). That pipeline is covered by unit tests (``test_image_ops``,
-    ``test_bridge_runtime``) and by manual MCP runs against a long-lived game process.
+    The idle→hover repaint and painted-bounds translation on real frames are covered
+    by :func:`test_live_imagebutton_idle_hover_pipeline`.
     """
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
@@ -568,6 +565,88 @@ def test_live_imagebutton_hover_bounds_and_capture(sdk, demo_copy: Path) -> None
         assert hovered.get("hovered") is True, hovered
         assert hovered["method"] in {"renpy", "renpy-test", "pygame"}
         assert client.get_var("renforge_sdk_button_clicks") == clicks_before
+
+        errors = live.get_errors(str(demo_copy))
+        assert errors.get("ok") is True, errors
+        assert not errors.get("events"), errors
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_imagebutton_idle_hover_pipeline(sdk, demo_copy: Path) -> None:
+    """Run the MCP idle→hover workflow on a real Ren'Py ImageButton.
+
+    Mirrors the agent recipe documented in ``docs/MCP.md``:
+
+    1. list UI + read ``painted_bounds`` while idle
+    2. persist an idle capture
+    3. ``hover_element`` without clicking
+    4. read ``painted_bounds`` again (hover state) and derive the logical shift
+    5. persist a hover capture and diff the frames
+    6. run ``estimate_translation`` on the fixture art (file-based MCP tool path)
+
+    Ren'Py scales screenshots (logical UI vs physical PNG), so the overlap
+    estimator can be ambiguous on live captures even when the bridge reports an
+    exact shift through ``painted_bounds``. Agents should prefer the bounds delta
+    for UI alignment and reserve ``estimate_translation`` for named PNG captures.
+    """
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.image_ops import diff_images, estimate_translation
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    _add_hover_fixtures(demo_copy)
+    images_dir = demo_copy / "game" / "images"
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr('renpy.show_screen("renforge_sdk_imagebutton_fixture")')
+        client.eval_expr("renpy.restart_interaction()")
+
+        ui_info = None
+        for _ in range(40):
+            ui_info = client.list_ui_elements_info()
+            if ui_info.get("elements"):
+                break
+            time.sleep(0.25)
+        assert ui_info is not None and ui_info.get("elements"), ui_info
+
+        button = ui_info["elements"][0]
+        clicks_before = client.get_var("renforge_sdk_button_clicks")
+
+        bounds_idle = client.get_ui_element_bounds(id=button["id"])
+        assert bounds_idle["ok"] is True, bounds_idle
+        assert bounds_idle["state"] == "idle"
+
+        idle_path = _save_capture(demo_copy, "pipeline-idle", client.screenshot())
+
+        hovered = client.hover_element(id=button["id"])
+        assert hovered["ok"] is True, hovered
+        assert client.get_var("renforge_sdk_button_clicks") == clicks_before
+
+        bounds_hover = client.get_ui_element_bounds(id=button["id"])
+        assert bounds_hover["ok"] is True, bounds_hover
+        assert bounds_hover["state"] == "hover"
+
+        painted_idle = bounds_idle["painted_bounds"]
+        painted_hover = bounds_hover["painted_bounds"]
+        assert painted_idle is not None and painted_hover is not None
+        assert (painted_hover["x"] - painted_idle["x"], painted_hover["y"] - painted_idle["y"]) == (28, 22)
+
+        hover_path = _save_capture(demo_copy, "pipeline-hover", client.screenshot())
+        diff = diff_images(idle_path, hover_path, threshold=16)
+        assert diff["changed"] is True, diff
+        assert diff.get("changed_pixels", 0) > 100
+
+        estimate = estimate_translation(
+            images_dir / "renforge_sdk_idle.png",
+            images_dir / "renforge_sdk_hover.png",
+            region=(0, 0, 100, 100),
+            threshold=16,
+            max_shift=40,
+        )
+        assert estimate["ok"] is True, estimate
+        assert estimate.get("available") is True, estimate
+        assert (estimate["dx"], estimate["dy"]) == (28, 22)
 
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors

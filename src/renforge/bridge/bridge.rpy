@@ -1223,16 +1223,26 @@ init python:
             except Exception:
                 pass
 
-        def _renforge_post_mouse_motion(px, py):
+        def _renforge_dispatch_mouse_motion(px, py):
+            """Drive Ren'Py focus/hover state without a player interact loop.
+
+            Posting MOUSEMOTION to pygame is not enough: ImageButton hover uses
+            ``focus.mouse_handler`` during event dispatch. Bridge RPC must call
+            it directly on the main thread after ``testmouse.move_mouse``.
+            """
             if pygame is None:
                 return False
             event_type = getattr(pygame, "MOUSEMOTION", None)
             event_factory = getattr(getattr(pygame, "event", None), "Event", None)
             post = getattr(getattr(pygame, "event", None), "post", None)
-            if event_type is None or not callable(event_factory) or not callable(post):
+            if event_type is None or not callable(event_factory):
                 return False
             event = event_factory(event_type, {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)})
-            post(event)
+            if callable(post):
+                post(event)
+            mouse_handler = getattr(getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None)
+            if callable(mouse_handler):
+                mouse_handler(event, px, py, False)
             return True
 
         restart_interaction = getattr(renpy, "restart_interaction", None)
@@ -1241,7 +1251,7 @@ init python:
         if callable(move_mouse):
             try:
                 move_mouse(x, y)
-                _renforge_post_mouse_motion(x, y)
+                _renforge_dispatch_mouse_motion(x, y)
                 if callable(restart_interaction):
                     restart_interaction()
                 return x, y, "renpy-test"
@@ -1251,13 +1261,13 @@ init python:
         if callable(set_mouse_pos):
             try:
                 set_mouse_pos(x, y)
-                _renforge_post_mouse_motion(x, y)
+                _renforge_dispatch_mouse_motion(x, y)
                 if callable(restart_interaction):
                     restart_interaction()
                 return x, y, "renpy"
             except TypeError:
                 pass
-        if not _renforge_post_mouse_motion(x, y):
+        if not _renforge_dispatch_mouse_motion(x, y):
             raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
         if callable(restart_interaction):
             restart_interaction()

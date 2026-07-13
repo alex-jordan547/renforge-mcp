@@ -216,6 +216,33 @@ Notes:
   region for `renforge_estimate_translation` when available; otherwise pass an
   explicit region from `focus_bounds`.
 
+## ImageButton idle→hover alignment
+
+For `imagebutton` controls with distinct idle/hover art, prefer measuring the
+logical shift from `painted_bounds` before relying on a screenshot diff alone.
+
+```text
+renforge_list_ui_elements(project_path)
+  -> elements[], frame_id
+renforge_get_ui_element_bounds(project_path, element_id=id)
+  -> focus_bounds, painted_bounds (idle), state="idle"
+renforge_capture_screenshot(project_path, name="idle")
+  -> path under .renforge/captures/   # invalidates the previous frame_id
+renforge_list_ui_elements(project_path)
+  -> fresh frame_id
+renforge_hover_element(project_path, element_id=id, expected_frame_id=frame_id)
+  -> hovered without click
+renforge_get_ui_element_bounds(project_path, element_id=id)
+  -> painted_bounds (hover), state="hover"
+  # dx = hover.painted_bounds.x - idle.painted_bounds.x (logical pixels)
+renforge_capture_screenshot(project_path, name="hover")
+renforge_estimate_translation(before_path=idle.path, after_path=hover.path, ...)
+  # best on named PNG captures; ambiguous on heavily scaled live frames
+```
+
+Re-list UI elements after every capture or screenshot when using `expected_frame_id`
+guards: each capture hashes a new frame.
+
 ## Tool catalogue
 
 ### Discovery and static analysis
