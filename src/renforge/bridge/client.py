@@ -303,6 +303,56 @@ class BridgeClient:
             return result
         return reply
 
+    def hover_element(
+        self,
+        text: str | None = None,
+        id: str | None = None,
+        *,
+        screen: str | None = None,
+        exact: bool = False,
+        element_id: str | None = None,
+        expected_frame_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Move the pointer over a visible control without clicking it."""
+        if id is None:
+            id = element_id
+        payload: dict[str, Any] = {"text": text, "id": id, "exact": bool(exact)}
+        if screen is not None:
+            payload["screen"] = screen
+        if expected_frame_id is not None:
+            payload["expected_frame_id"] = expected_frame_id
+        reply = self.request("hover_element", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def get_ui_element_bounds(
+        self,
+        text: str | None = None,
+        id: str | None = None,
+        *,
+        screen: str | None = None,
+        exact: bool = False,
+        element_id: str | None = None,
+        expected_frame_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return focus and painted bounds for a visible UI element."""
+        if id is None:
+            id = element_id
+        payload: dict[str, Any] = {"text": text, "id": id, "exact": bool(exact)}
+        if screen is not None:
+            payload["screen"] = screen
+        if expected_frame_id is not None:
+            payload["expected_frame_id"] = expected_frame_id
+        reply = self.request("get_ui_element_bounds", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
     def get_displayable_bounds(
         self,
         tag: str,

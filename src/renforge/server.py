@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
+
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -590,6 +591,70 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_hover_element(
+        project_path: str,
+        text: str = "",
+        element_id: str = "",
+        screen: str = "",
+        exact: bool = False,
+        expected_frame_id: str = "",
+    ) -> dict:
+        """Move the pointer over a visible control without clicking it."""
+        return _log_tool_call(
+            name="renforge_hover_element",
+            params={
+                "project_path": project_path,
+                "text": text,
+                "element_id": element_id,
+                "screen": screen,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id,
+            },
+            project_root=project_path,
+            fn=live.hover_element,
+            args=(project_path,),
+            kwargs={
+                "text": text or None,
+                "element_id": element_id or None,
+                "screen": screen or None,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id or None,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_get_ui_element_bounds(
+        project_path: str,
+        text: str = "",
+        element_id: str = "",
+        screen: str = "",
+        exact: bool = False,
+        expected_frame_id: str = "",
+    ) -> dict:
+        """Report focus bounds and rendered painted bounds for a UI element."""
+        return _log_tool_call(
+            name="renforge_get_ui_element_bounds",
+            params={
+                "project_path": project_path,
+                "text": text,
+                "element_id": element_id,
+                "screen": screen,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id,
+            },
+            project_root=project_path,
+            fn=live.get_ui_element_bounds,
+            args=(project_path,),
+            kwargs={
+                "text": text or None,
+                "element_id": element_id or None,
+                "screen": screen or None,
+                "exact": exact,
+                "expected_frame_id": expected_frame_id or None,
+            },
+        )
+
+    @tool_decorator()
     def renforge_click_at(
         project_path: str,
         x: float,
@@ -1048,6 +1113,103 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_capture_screenshot(
+        project_path: str,
+        name: str = "capture",
+        width: int = 0,
+        height: int = 0,
+        crop_x: int = 0,
+        crop_y: int = 0,
+        crop_width: int = 0,
+        crop_height: int = 0,
+        scale: float = 1.0,
+        grid: int = 0,
+        crosshair_x: int = -1,
+        crosshair_y: int = -1,
+        rulers: bool = False,
+    ) -> dict:
+        """Persist a screenshot under the project's controlled capture directory."""
+        def _capture() -> dict:
+            import os
+            import re
+            import tempfile
+            from io import BytesIO
+            from PIL import Image
+
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
+                raise ValueError("name must contain only letters, digits, dot, dash, or underscore")
+            if width < 0 or height < 0:
+                raise ValueError("width and height must be non-negative")
+            if (crosshair_x < 0) != (crosshair_y < 0):
+                raise ValueError("crosshair_x and crosshair_y must be provided together")
+            png = live.screenshot_png(project_path, width=width, height=height)
+            if crop_width or crop_height or crop_x or crop_y or scale != 1.0:
+                from .image_ops import transform_png
+                png = transform_png(png, crop_x=crop_x, crop_y=crop_y,
+                                    crop_width=crop_width, crop_height=crop_height,
+                                    scale=scale)
+            if grid or rulers or crosshair_x >= 0:
+                from .image_ops import annotate_png
+                png = annotate_png(png, grid=grid, rulers=rulers,
+                                   crosshair=(crosshair_x, crosshair_y) if crosshair_x >= 0 else None)
+            project_root = Path(project_path).expanduser().resolve()
+            capture_dir = project_root / ".renforge" / "captures"
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            target = (capture_dir / (name + ".png")).resolve()
+            target.relative_to(capture_dir.resolve())
+            with tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(png)
+            try:
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            with Image.open(BytesIO(png)) as image:
+                size = {"width": image.width, "height": image.height}
+            return {"ok": True, "name": name, "path": str(target),
+                    "relative_path": str(target.relative_to(project_root)),
+                    "sha256": hashlib.sha256(png).hexdigest(), "size": size}
+
+        return _log_tool_call(
+            name="renforge_capture_screenshot",
+            params={"project_path": project_path, "name": name, "width": width, "height": height},
+            project_root=project_path, fn=_capture, args=(), kwargs={})
+
+    @tool_decorator()
+    def renforge_estimate_translation(
+        before_path: str,
+        after_path: str,
+        region_x: int = 0,
+        region_y: int = 0,
+        region_width: int = 0,
+        region_height: int = 0,
+        threshold: int = 16,
+        max_shift: int = 64,
+    ) -> dict:
+        """Estimate stable visual translation between two saved frames."""
+        def _estimate() -> dict:
+            from .image_ops import estimate_translation
+            region = None
+            if region_width or region_height or region_x or region_y:
+                region = (region_x, region_y, region_width, region_height)
+            return estimate_translation(
+                before_path,
+                after_path,
+                region=region,
+                threshold=threshold,
+                max_shift=max_shift,
+            )
+
+        return _log_tool_call(
+            name="renforge_estimate_translation",
+            params={"before_path": before_path, "after_path": after_path},
+            project_root=None,
+            fn=_estimate,
+            args=(),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_find_image_on_screen(
         project_path: str,
         template_path: str,
@@ -1123,10 +1285,13 @@ def create_app() -> Any:
         "display-bound startup to its process automatically. Prefer bounded scan queries and "
         "renforge_game_state_compact for large results. For UI interaction, call "
         "renforge_list_ui_elements first, then pass its frame_id to "
-        "renforge_click_element or renforge_click_at; use "
+        "renforge_hover_element, renforge_click_element, or renforge_click_at; use "
         "renforge_find_image_on_screen for visual template placement. For "
-        "pixel-perfect layout, measure a shown image with "
-        "renforge_get_displayable_bounds, nudge it live with "
+        "idle/hover alignment, capture named frames with renforge_capture_screenshot, "
+        "hover with renforge_hover_element, estimate motion with "
+        "renforge_estimate_translation, and read painted content bounds with "
+        "renforge_get_ui_element_bounds. For pixel-perfect layout, measure a shown "
+        "image with renforge_get_displayable_bounds, nudge it live with "
         "renforge_position_element, overlay a grid or crosshair via "
         "renforge_screenshot, and compare frames with renforge_diff_screenshots. "
         "For live iteration, use renforge_control(action=\"reload_script\") after "

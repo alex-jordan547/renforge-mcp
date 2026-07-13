@@ -32,7 +32,11 @@ EXPECTED_TOOLS = {
     "renforge_select_choice",
     "renforge_list_ui_elements",
     "renforge_click_element",
+    "renforge_hover_element",
+    "renforge_get_ui_element_bounds",
     "renforge_click_at",
+    "renforge_capture_screenshot",
+    "renforge_estimate_translation",
     "renforge_eval",
     "renforge_get_var",
     "renforge_set_var",
@@ -747,11 +751,26 @@ def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monke
         calls["element"] = (path, kwargs)
         return {"ok": True, "id": kwargs["element_id"], "x": 60, "y": 50}
 
+    def fake_hover_element(path, **kwargs):
+        calls["hover"] = (path, kwargs)
+        return {"ok": True, "hovered": True, "id": kwargs["element_id"], "x": 60, "y": 50}
+
+    def fake_get_ui_element_bounds(path, **kwargs):
+        calls["bounds"] = (path, kwargs)
+        return {
+            "ok": True,
+            "focus_bounds": {"x": 20, "y": 30, "width": 80, "height": 40},
+            "painted_bounds": {"x": 24, "y": 34, "width": 72, "height": 32},
+            "painted_bounds_available": True,
+        }
+
     def fake_click_at(path, x, y, **kwargs):
         calls["at"] = (path, x, y, kwargs)
         return {"ok": True, "x": x, "y": y}
 
     monkeypatch.setattr(live, "click_element", fake_click_element)
+    monkeypatch.setattr(live, "hover_element", fake_hover_element)
+    monkeypatch.setattr(live, "get_ui_element_bounds", fake_get_ui_element_bounds)
     monkeypatch.setattr(live, "click_at", fake_click_at)
 
     async def _call():
@@ -761,6 +780,14 @@ def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monke
             )
             clicked = await client.call_tool(
                 "renforge_click_element",
+                {
+                    "project_path": str(tmp_path),
+                    "element_id": "save-1",
+                    "expected_frame_id": "frame-1",
+                },
+            )
+            bounds = await client.call_tool(
+                "renforge_get_ui_element_bounds",
                 {
                     "project_path": str(tmp_path),
                     "element_id": "save-1",
@@ -778,16 +805,20 @@ def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monke
                     "coordinate_space": "screenshot",
                 },
             )
-            return listed, clicked, by_coord
+            return listed, clicked, bounds, by_coord
 
-    listed, clicked, by_coord = asyncio.run(_call())
+    listed, clicked, bounds, by_coord = asyncio.run(_call())
     listed_payload = json.loads(next(block.text for block in listed.content if block.type == "text"))
     clicked_payload = json.loads(next(block.text for block in clicked.content if block.type == "text"))
+    bounds_payload = json.loads(next(block.text for block in bounds.content if block.type == "text"))
     coord_payload = json.loads(next(block.text for block in by_coord.content if block.type == "text"))
     assert listed_payload["elements"][0]["bounds"]["width"] == 80
     assert clicked_payload == {"ok": True, "id": "save-1", "x": 60, "y": 50}
+    assert bounds_payload["painted_bounds_available"] is True
+    assert bounds_payload["painted_bounds"]["width"] == 72
     assert coord_payload == {"ok": True, "x": 60, "y": 50}
     assert calls["element"][1]["expected_frame_id"] == "frame-1"
+    assert calls["bounds"][1]["expected_frame_id"] == "frame-1"
     assert calls["at"][3]["expected_state"] == {"menu": True}
     assert calls["at"][3]["coordinate_space"] == "screenshot"
 

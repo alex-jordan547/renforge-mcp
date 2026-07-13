@@ -412,6 +412,55 @@ def click_at(
     )
 
 
+def hover_element(
+    project_path: str,
+    text: str | None = None,
+    id: str | None = None,
+    *,
+    screen: str | None = None,
+    exact: bool = False,
+    element_id: str | None = None,
+    expected_frame_id: str | None = None,
+) -> dict:
+    """Move the pointer over a visible control without clicking it."""
+
+    def _handler(client: BridgeClient) -> dict:
+        return client.hover_element(
+            text=text,
+            id=id,
+            screen=screen,
+            exact=exact,
+            element_id=element_id,
+            expected_frame_id=expected_frame_id,
+        )
+
+    return _with_client(project_path, _handler)
+
+
+def get_ui_element_bounds(
+    project_path: str,
+    text: str | None = None,
+    id: str | None = None,
+    *,
+    screen: str | None = None,
+    exact: bool = False,
+    element_id: str | None = None,
+    expected_frame_id: str | None = None,
+) -> dict:
+    """Return focus and painted bounds for a visible UI element."""
+    return _with_client(
+        project_path,
+        lambda c: c.get_ui_element_bounds(
+            text=text,
+            id=id,
+            screen=screen,
+            exact=exact,
+            element_id=element_id,
+            expected_frame_id=expected_frame_id,
+        ),
+    )
+
+
 def get_displayable_bounds(
     project_path: str,
     tag: str,
@@ -625,6 +674,8 @@ __all__ = [
     "list_ui_elements",
     "click_element",
     "click_at",
+    "hover_element",
+    "get_ui_element_bounds",
     "eval_expr",
     "get_var",
     "set_var",

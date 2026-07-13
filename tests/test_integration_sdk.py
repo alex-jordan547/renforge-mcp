@@ -42,6 +42,70 @@ def demo_copy(tmp_path: Path) -> Path:
     return destination
 
 
+def _add_hover_fixtures(demo_copy: Path) -> None:
+    """Add an ImageButton screen and offset idle/hover sprites for SDK E2E."""
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+
+    images_dir = demo_copy / "game" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    idle = image_module.new("RGBA", (100, 100), (0, 0, 0, 0))
+    hover = image_module.new("RGBA", (100, 100), (0, 0, 0, 0))
+    for x in range(10, 60):
+        for y in range(10, 60):
+            idle.putpixel((x, y), (220, 40, 40, 255))
+    for x in range(15, 65):
+        for y in range(13, 63):
+            hover.putpixel((x, y), (220, 40, 40, 255))
+    idle.save(images_dir / "renforge_sdk_idle.png")
+    hover.save(images_dir / "renforge_sdk_hover.png")
+
+    fixture = demo_copy / "game" / "renforge_sdk_fixtures.rpy"
+    existing = fixture.read_text(encoding="utf-8") if fixture.exists() else ""
+    if "renforge_sdk_imagebutton_fixture" not in existing:
+        fixture.write_text(
+            existing
+            + '''
+
+default renforge_sdk_button_clicks = 0
+
+screen renforge_sdk_imagebutton_fixture():
+    modal True
+    zorder 200
+    key "dismiss" action NullAction()
+    frame:
+        xalign 0.5
+        yalign 0.5
+        background None
+        imagebutton:
+            idle "renforge_sdk_idle"
+            hover "renforge_sdk_hover"
+            action SetVariable("renforge_sdk_button_clicks", renforge_sdk_button_clicks + 1)
+''',
+            encoding="utf-8",
+        )
+
+
+def _save_capture(project_root: Path, name: str, png: bytes) -> Path:
+    import hashlib
+    import os
+    import tempfile
+
+    capture_dir = project_root / ".renforge" / "captures"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    target = (capture_dir / f"{name}.png").resolve()
+    target.relative_to(capture_dir.resolve())
+    with tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".tmp", delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(png)
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    assert hashlib.sha256(png).hexdigest()
+    return target
+
+
 def _add_sdk_fixtures(demo_copy: Path) -> dict[str, str]:
     """Add opt-in-only runtime fixtures without changing the public demo.
 
@@ -442,3 +506,85 @@ def test_live_displayable_bounds_and_repositioning(sdk, demo_copy: Path) -> None
         diff = diff_images(before_png, after_png, threshold=16)
         assert diff["changed"] is True, diff
         assert diff["bounds"] is not None, diff
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_imagebutton_hover_bounds_capture_and_translation(sdk, demo_copy: Path) -> None:
+    """Prove hover without click, painted bounds, named captures, and translation."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.image_ops import diff_images, estimate_translation
+    from renforge.project import RenpyProject
+
+    _add_hover_fixtures(demo_copy)
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr('renpy.show_screen("renforge_sdk_imagebutton_fixture")')
+        client.eval_expr("renpy.restart_interaction()")
+
+        ui_info = None
+        for _ in range(40):
+            ui_info = client.list_ui_elements_info()
+            if ui_info.get("elements"):
+                break
+            time.sleep(0.25)
+        assert ui_info is not None and ui_info.get("elements"), ui_info
+
+        button = next(
+            (
+                element
+                for element in ui_info["elements"]
+                if "imagebutton" in str(element.get("type", "")).casefold()
+                or "imagebutton" in str(element.get("role", "")).casefold()
+            ),
+            ui_info["elements"][0],
+        )
+        frame_id = ui_info["frame_id"]
+        clicks_before = client.get_var("renforge_sdk_button_clicks")
+
+        idle_path = _save_capture(demo_copy, "sdk-idle", client.screenshot())
+
+        hovered = client.hover_element(id=button["id"], expected_frame_id=frame_id)
+        assert hovered["ok"] is True, hovered
+        assert hovered.get("hovered") is True, hovered
+        assert client.get_var("renforge_sdk_button_clicks") == clicks_before
+
+        client.eval_expr("renpy.restart_interaction()")
+        time.sleep(0.5)
+
+        bounds_idle = client.get_ui_element_bounds(id=button["id"], expected_frame_id=frame_id)
+        assert bounds_idle["ok"] is True, bounds_idle
+        assert bounds_idle["focus_bounds"]["width"] > 0
+        if bounds_idle.get("painted_bounds_available"):
+            painted = bounds_idle["painted_bounds"]
+            focus = bounds_idle["focus_bounds"]
+            assert painted["width"] <= focus["width"]
+            assert painted["height"] <= focus["height"]
+
+        hover_path = _save_capture(demo_copy, "sdk-hover", client.screenshot())
+        assert idle_path.is_file() and hover_path.is_file()
+
+        diff = diff_images(idle_path, hover_path, threshold=16)
+        assert diff["changed"] is True, diff
+
+        region = bounds_idle.get("painted_bounds") or bounds_idle["focus_bounds"]
+        estimate = estimate_translation(
+            idle_path,
+            hover_path,
+            region=(
+                region["x"],
+                region["y"],
+                region["width"],
+                region["height"],
+            ),
+            threshold=16,
+            max_shift=16,
+        )
+        assert estimate["ok"] is True, estimate
+        if estimate.get("available"):
+            assert abs(estimate["dx"]) <= 16
+            assert abs(estimate["dy"]) <= 16
+
+        errors = client.get_errors()
+        assert errors.get("ok") is True, errors
+        assert not errors.get("errors"), errors

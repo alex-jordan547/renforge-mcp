@@ -104,6 +104,8 @@ renforge_inspect_screen(project_path, name="say")
   -> active layer, JSON-safe scope, and passed screen arguments
 renforge_list_ui_elements(project_path)
   -> visible controls and frame_id
+renforge_hover_element(..., expected_frame_id=frame_id)
+  -> move over a control without clicking
 renforge_click_element(..., expected_frame_id=frame_id)
   -> safe interaction
 ```
@@ -165,8 +167,10 @@ renforge_wait_until(project_path=project, label="branch_b", timeout=30.0)
 renforge_get_errors(project_path=project)
 ```
 
-`renforge_screenshot` returns the current frame as an image. The save call
-creates a named checkpoint before selecting Branch B; use
+`renforge_screenshot` returns the current frame as an image. Use
+`renforge_capture_screenshot(name="idle")` when a PNG path is needed for a
+later diff or translation estimate. The save call creates a named checkpoint
+before selecting Branch B; use
 `renforge_saves(project_path=project, action="load", slot="branch-a")` to return
 to it. `renforge_wait_until` accepts exactly one of `label`, `screen`, or
 `expr`, and `timeout` is capped at 120 seconds.
@@ -206,6 +210,11 @@ Notes:
   (pass `width`/`height`) so the labels read as logical coordinates.
 - `renforge_diff_screenshots` needs same-size frames; `threshold` (0..255)
   absorbs anti-aliasing jitter so only real movement is reported.
+- `renforge_get_ui_element_bounds` measures the focus rectangle from
+  `renforge_list_ui_elements` and, when the control is an `ImageButton`, the
+  alpha-painted bounds of its active state. Use `painted_bounds` as the default
+  region for `renforge_estimate_translation` when available; otherwise pass an
+  explicit region from `focus_bounds`.
 
 ## Tool catalogue
 
@@ -244,8 +253,12 @@ Notes:
 | `renforge_list_choices` | Visible narrative choices. |
 | `renforge_select_choice` | Select a choice by text, preferably, or index. |
 | `renforge_list_ui_elements` | Visible focusable controls: ID, text, role, screen, bounds, center, state, and `frame_id`. |
+| `renforge_hover_element` | Move the pointer over a control by ID or text without clicking. Supports `exact`, `screen`, and `expected_frame_id`. |
+| `renforge_get_ui_element_bounds` | Report `focus_bounds` and, for `ImageButton` controls, rendered `painted_bounds` for the active state. Returns `painted_bounds_available: false` with a reason when the painted content cannot be measured. |
 | `renforge_click_element` | Click a control by ID or text. Supports `exact`, `screen`, and `expected_frame_id`. |
 | `renforge_click_at` | Click `logical` or `screenshot` coordinates, with `expected_frame_id` and `expected_state` guards. |
+| `renforge_capture_screenshot` | Persist the current frame as a named PNG under `<project>/.renforge/captures/` and return `path`, `relative_path`, SHA-256, and dimensions for later diff/translation tools. |
+| `renforge_estimate_translation` | Estimate `dx`/`dy` between two saved PNGs with Pillow, returning `confidence`, `support`, and explicit unavailability when the measure is ambiguous. |
 | `renforge_find_image_on_screen` | Locate a local PNG template in the current frame and return confidence, bounds, center, and frame guard. |
 | `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
 | `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |

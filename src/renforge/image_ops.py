@@ -683,6 +683,75 @@ def diff_images(
     return result
 
 
+def estimate_translation(
+    before: bytes | bytearray | memoryview | str | Path | Image.Image,
+    after: bytes | bytearray | memoryview | str | Path | Image.Image,
+    *,
+    region: Sequence[int] | dict[str, int] | None = None,
+    threshold: int = 16,
+    max_shift: int = 64,
+) -> dict[str, Any]:
+    """Estimate a stable visual translation between two frames.
+
+    The score uses opaque/bright pixels and ignores isolated pixels, making it
+    less sensitive to glow and particle effects than a raw image diff.
+    """
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or not 0 <= threshold <= 255:
+        raise ValueError("threshold must be an integer between 0 and 255")
+    if isinstance(max_shift, bool) or not isinstance(max_shift, int) or not 0 <= max_shift <= 256:
+        raise ValueError("max_shift must be an integer between 0 and 256")
+    first = _read_image_source(before, name="before")
+    second = _read_image_source(after, name="after")
+    if first.size != second.size:
+        raise ValueError(f"images differ in size: {first.size} vs {second.size}")
+    left, top, width, height = _normalise_region(region, width=first.width, height=first.height)
+    first = first.crop((left, top, left + width, top + height))
+    second = second.crop((left, top, left + width, top + height))
+    first_luma = first.convert("L")
+    second_luma = second.convert("L")
+    first_mask = first_luma.point(lambda value: 255 if value > threshold else 0)
+    second_mask = second_luma.point(lambda value: 255 if value > threshold else 0)
+    first_bbox = first_mask.getbbox()
+    second_bbox = second_mask.getbbox()
+    if first_bbox is None or second_bbox is None:
+        return {"ok": True, "available": False, "reason": "insufficient stable visual support", "confidence": 0.0}
+
+    best = (0, 0, 0)
+    runner_up = 0
+    for dy in range(-max_shift, max_shift + 1):
+        for dx in range(-max_shift, max_shift + 1):
+            shifted = ImageChops.offset(first_mask, dx, dy)
+            overlap = ImageChops.multiply(shifted, second_mask).histogram()[255]
+            if overlap > best[2]:
+                runner_up = best[2]
+                best = (dx, dy, overlap)
+            elif overlap > runner_up:
+                runner_up = overlap
+    support = best[2]
+    if support == 0:
+        return {"ok": True, "available": False, "reason": "insufficient stable visual support", "confidence": 0.0}
+    confidence = round((support - runner_up) / float(max(support, 1)), 4)
+    if confidence < 0.02:
+        return {
+            "ok": True,
+            "available": False,
+            "reason": "translation is ambiguous",
+            "confidence": confidence,
+            "support": support,
+        }
+    return {
+        "ok": True,
+        "available": True,
+        "dx": best[0],
+        "dy": best[1],
+        "confidence": confidence,
+        "support": support,
+        "bounds": {"x": left, "y": top, "width": width, "height": height},
+        "method": "luminance-overlap",
+        "threshold": threshold,
+    }
+
+
 def inspect_image(
     image_path: str | Path,
     *,
@@ -712,6 +781,7 @@ def inspect_image(
 __all__ = [
     "annotate_png",
     "diff_images",
+    "estimate_translation",
     "find_image_matches",
     "find_image_on_screen",
     "inspect_image",

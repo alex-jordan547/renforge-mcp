@@ -34,9 +34,44 @@ class _FakeWidget:
         return self._text
 
 
+class _FakeRect:
+    def __init__(self, left, top, width, height):
+        self.left = left
+        self.top = top
+        self.width = width
+        self.height = height
+
+
+class _FakeSurface:
+    def __init__(self, rect):
+        self._rect = rect
+
+    def get_bounding_rect(self, min_alpha=1):
+        return self._rect
+
+
+class _FakeImageButtonWidget:
+    state_children = True
+
+    def __init__(self, text, alpha_rect=(4, 6, 80, 14)):
+        self._text = text
+        self._alpha_rect = _FakeRect(*alpha_rect)
+        self._child = object()
+        self.style = types.SimpleNamespace(prefix="idle_")
+
+    def _tts_all(self):
+        return self._text
+
+    def get_child(self):
+        return self._child
+
+
 class _FakeFocus:
-    def __init__(self, text, x, y, w, h):
-        self.widget = _FakeWidget(text) if text is not None else None
+    def __init__(self, text, x, y, w, h, widget=None):
+        if widget is not None:
+            self.widget = widget
+        else:
+            self.widget = _FakeWidget(text) if text is not None else None
         self.x, self.y, self.w, self.h = x, y, w, h
 
 
@@ -71,10 +106,12 @@ def _fake_renpy(store):
     renpy.quit = lambda: renpy._invoked.append(("quit",))
 
     # Minimal focus + input system mirroring Ren'Py's runtime shape.
+    load_button = _FakeImageButtonWidget("Load icon")
     focus_list = [
         _FakeFocus(None, None, None, None, None),  # the "default" whole-screen focus
         _FakeFocus("Alpha choice", 10, 10, 100, 20),
         _FakeFocus("Beta choice", 10, 40, 100, 20),
+        _FakeFocus("Load icon", 200, 100, 100, 30, widget=load_button),
     ]
     renpy._focused_widget = None
     renpy.display = types.SimpleNamespace(
@@ -86,6 +123,7 @@ def _fake_renpy(store):
         interface=types.SimpleNamespace(mouse_focused=False, ignore_touch=False),
     )
     renpy._clicks = []
+    renpy._moves = []
 
     def _find_focus(pattern):
         for focus in focus_list:
@@ -101,7 +139,8 @@ def _fake_renpy(store):
     renpy.test = types.SimpleNamespace(
         testfocus=types.SimpleNamespace(find_focus=_find_focus, find_position=_find_position),
         testmouse=types.SimpleNamespace(
-            click_mouse=lambda button, x, y: renpy._clicks.append((button, x, y))
+            click_mouse=lambda button, x, y: renpy._clicks.append((button, x, y)),
+            move_mouse=lambda x, y: renpy._moves.append((x, y)),
         ),
     )
 
@@ -135,6 +174,17 @@ def _fake_renpy(store):
                 box[1] = int(placement["ypos"])
 
     renpy.show = _show
+
+    def _render_to_surface(child, width, height, resize=True):
+        for focus in focus_list:
+            widget = getattr(focus, "widget", None)
+            if widget is None or not callable(getattr(widget, "get_child", None)):
+                continue
+            if widget.get_child() is child and hasattr(widget, "_alpha_rect"):
+                return _FakeSurface(widget._alpha_rect)
+        return _FakeSurface(_FakeRect(0, 0, 0, 0))
+
+    renpy.render_to_surface = _render_to_surface
     return renpy
 
 
@@ -544,7 +594,7 @@ def test_poll_events_captures_labels_and_say_lines(running_bridge):
 
 def test_list_choices_enumerates_focusable_text(running_bridge):
     texts = [c["text"] for c in running_bridge.client.list_choices()]
-    assert texts == ["Alpha choice", "Beta choice"]  # the default focus is skipped
+    assert texts == ["Alpha choice", "Beta choice", "Load icon"]  # the default focus is skipped
 
 
 def test_select_choice_by_text_clicks_focus_center(running_bridge):
@@ -569,7 +619,11 @@ def test_select_choice_without_match_returns_error(running_bridge):
 
 def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
     elements = running_bridge.client.list_ui_elements()
-    assert [element["text"] for element in elements] == ["Alpha choice", "Beta choice"]
+    assert [element["text"] for element in elements] == [
+        "Alpha choice",
+        "Beta choice",
+        "Load icon",
+    ]
     assert elements[0]["bounds"] == {"x": 10, "y": 10, "width": 100, "height": 20}
     assert elements[0]["center"] == {"x": 60, "y": 20}
     assert elements[0]["enabled"] is True
@@ -579,6 +633,55 @@ def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
     info = running_bridge.client.list_ui_elements_info()
     assert info["elements"] == elements
     assert len(info["frame_id"]) == 64
+
+
+def test_hover_element_moves_without_clicking(running_bridge):
+    element = running_bridge.client.list_ui_elements()[1]
+    hovered = running_bridge.client.hover_element(id=element["id"])
+    assert hovered["ok"] is True
+    assert hovered["hovered"] is True
+    assert hovered["x"] == 60 and hovered["y"] == 50
+    assert running_bridge.renpy._moves == [(60, 50)]
+    assert running_bridge.renpy._clicks == []
+
+
+def test_hover_element_frame_guard_blocks_motion(running_bridge):
+    element = running_bridge.client.list_ui_elements()[1]
+    mismatch = running_bridge.client.hover_element(id=element["id"], expected_frame_id="0" * 64)
+    assert mismatch["ok"] is False
+    assert "expected_frame_id" in mismatch["error"]
+    assert running_bridge.renpy._moves == []
+
+
+def test_get_ui_element_bounds_non_imagebutton_reports_unavailable(running_bridge):
+    element = running_bridge.client.list_ui_elements()[0]
+    reply = running_bridge.client.get_ui_element_bounds(id=element["id"])
+    assert reply["ok"] is True
+    assert reply["focus_bounds"] == element["bounds"]
+    assert reply["painted_bounds"] is None
+    assert reply["painted_bounds_available"] is False
+    assert "ImageButton" in reply["painted_bounds_reason"]
+
+
+def test_get_ui_element_bounds_imagebutton_reports_painted_bounds(running_bridge):
+    element = running_bridge.client.list_ui_elements()[-1]
+    reply = running_bridge.client.get_ui_element_bounds(id=element["id"])
+    assert reply["ok"] is True
+    assert reply["focus_bounds"] == {"x": 200, "y": 100, "width": 100, "height": 30}
+    assert reply["painted_bounds"] == {"x": 204, "y": 106, "width": 80, "height": 14}
+    assert reply["painted_bounds_available"] is True
+    assert reply["painted_bounds_source"] == "rendered-alpha"
+    assert reply["state"] == "idle"
+
+
+def test_get_ui_element_bounds_frame_guard_blocks_lookup(running_bridge):
+    element = running_bridge.client.list_ui_elements()[-1]
+    mismatch = running_bridge.client.get_ui_element_bounds(
+        id=element["id"],
+        expected_frame_id="0" * 64,
+    )
+    assert mismatch["ok"] is False
+    assert "expected_frame_id" in mismatch["error"]
 
 
 def test_click_element_by_id_and_click_at_guards(running_bridge):
