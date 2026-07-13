@@ -5,6 +5,23 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-13
+
+### Added
+
+- Added `renforge_hover_element` to move the pointer over visible controls
+  without clicking, with stale-frame protection.
+- Added `renforge_capture_screenshot` for reusable named PNG captures and
+  `renforge_estimate_translation` for measuring visual movement between them.
+- Added `renforge_get_ui_element_bounds` to report focus bounds and the
+  alpha-painted bounds of the active `ImageButton` state.
+
+### Changed
+
+- ImageButton hover now dispatches Ren'Py's focus mouse handler before
+  restarting the interaction, so hover state updates reliably without a player
+  interaction loop.
+
 ## [0.4.1] - 2026-07-13
 
 ### Added
