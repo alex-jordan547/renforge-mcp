@@ -1223,30 +1223,44 @@ init python:
             except Exception:
                 pass
 
-        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
-        if callable(set_mouse_pos):
-            try:
-                set_mouse_pos(x, y)
-                return x, y, "renpy"
-            except TypeError:
-                pass
+        def _renforge_post_mouse_motion(px, py):
+            if pygame is None:
+                return False
+            event_type = getattr(pygame, "MOUSEMOTION", None)
+            event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+            post = getattr(getattr(pygame, "event", None), "post", None)
+            if event_type is None or not callable(event_factory) or not callable(post):
+                return False
+            event = event_factory(event_type, {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)})
+            post(event)
+            return True
+
+        restart_interaction = getattr(renpy, "restart_interaction", None)
         testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
         move_mouse = getattr(testmouse, "move_mouse", None)
         if callable(move_mouse):
             try:
                 move_mouse(x, y)
+                _renforge_post_mouse_motion(x, y)
+                if callable(restart_interaction):
+                    restart_interaction()
                 return x, y, "renpy-test"
             except TypeError:
                 pass
-        if pygame is None:
-            raise RuntimeError("hover unavailable: pygame_sdl2 event API is unavailable")
-        event_type = getattr(pygame, "MOUSEMOTION", None)
-        event_factory = getattr(getattr(pygame, "event", None), "Event", None)
-        post = getattr(getattr(pygame, "event", None), "post", None)
-        if event_type is None or not callable(event_factory) or not callable(post):
+        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
+        if callable(set_mouse_pos):
+            try:
+                set_mouse_pos(x, y)
+                _renforge_post_mouse_motion(x, y)
+                if callable(restart_interaction):
+                    restart_interaction()
+                return x, y, "renpy"
+            except TypeError:
+                pass
+        if not _renforge_post_mouse_motion(x, y):
             raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
-        event = event_factory(event_type, {"pos": (x, y), "rel": (0, 0), "buttons": (0, 0, 0)})
-        post(event)
+        if callable(restart_interaction):
+            restart_interaction()
         return x, y, "pygame"
 
     def _renforge_h_hover_element(payload):
