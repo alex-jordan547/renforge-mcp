@@ -1251,22 +1251,24 @@ init python:
         if callable(move_mouse):
             try:
                 move_mouse(x, y)
+            except TypeError:
+                pass
+            else:
                 _renforge_dispatch_mouse_motion(x, y)
                 if callable(restart_interaction):
                     restart_interaction()
                 return x, y, "renpy-test"
-            except TypeError:
-                pass
         set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
         if callable(set_mouse_pos):
             try:
                 set_mouse_pos(x, y)
+            except TypeError:
+                pass
+            else:
                 _renforge_dispatch_mouse_motion(x, y)
                 if callable(restart_interaction):
                     restart_interaction()
                 return x, y, "renpy"
-            except TypeError:
-                pass
         if not _renforge_dispatch_mouse_motion(x, y):
             raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
         if callable(restart_interaction):

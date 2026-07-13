@@ -26,6 +26,11 @@ _MAX_OUTPUT_PIXELS = 50_000_000
 # (20x20) control template while still putting a hard ceiling on CPU work.
 _MAX_SCAN_POSITIONS = 4_000_000
 _MAX_SCORE_PIXELS = 50_000_000
+# Translation search is O(region_pixels * (2*max_shift+1)^2).  Auto-cropping to
+# the union of active masks keeps typical UI captures fast; this ceiling rejects
+# unbounded full-frame scans from an MCP client.
+_MAX_ESTIMATE_PIXEL_CHECKS = 50_000_000
+_ALPHA_VISIBILITY_THRESHOLD = 16
 _MAX_MATCHES = 100
 _MIN_TEMPLATE_PIXELS = 1
 _MAX_TEMPLATE_PIXELS = 4_000_000
@@ -107,6 +112,19 @@ def _normalise_region(
     if x + region_width > width or y + region_height > height:
         raise ValueError(f"region exceeds image bounds {width}x{height}")
     return x, y, region_width, region_height
+
+
+def _stable_visual_mask(image: Image.Image, *, threshold: int) -> Image.Image:
+    """Return a binary mask of opaque, bright pixels for translation scoring."""
+
+    rgba = image.convert("RGBA")
+    red, green, blue, alpha = rgba.split()
+    luma = Image.merge("RGB", (red, green, blue)).convert("L")
+    visible = alpha.point(
+        lambda value: 255 if value >= _ALPHA_VISIBILITY_THRESHOLD else 0
+    )
+    bright = luma.point(lambda value: 255 if value > threshold else 0)
+    return ImageChops.multiply(visible, bright)
 
 
 def _visible_anchor_points(alpha: bytes, width: int, height: int) -> list[tuple[int, int]]:
@@ -707,14 +725,32 @@ def estimate_translation(
     left, top, width, height = _normalise_region(region, width=first.width, height=first.height)
     first = first.crop((left, top, left + width, top + height))
     second = second.crop((left, top, left + width, top + height))
-    first_luma = first.convert("L")
-    second_luma = second.convert("L")
-    first_mask = first_luma.point(lambda value: 255 if value > threshold else 0)
-    second_mask = second_luma.point(lambda value: 255 if value > threshold else 0)
+    first_mask = _stable_visual_mask(first, threshold=threshold)
+    second_mask = _stable_visual_mask(second, threshold=threshold)
     first_bbox = first_mask.getbbox()
     second_bbox = second_mask.getbbox()
     if first_bbox is None or second_bbox is None:
         return {"ok": True, "available": False, "reason": "insufficient stable visual support", "confidence": 0.0}
+
+    crop_left = max(0, min(first_bbox[0], second_bbox[0]) - max_shift)
+    crop_top = max(0, min(first_bbox[1], second_bbox[1]) - max_shift)
+    crop_right = min(
+        first_mask.width,
+        max(first_bbox[2], second_bbox[2]) + max_shift,
+    )
+    crop_bottom = min(
+        first_mask.height,
+        max(first_bbox[3], second_bbox[3]) + max_shift,
+    )
+    first_mask = first_mask.crop((crop_left, crop_top, crop_right, crop_bottom))
+    second_mask = second_mask.crop((crop_left, crop_top, crop_right, crop_bottom))
+    shift_count = (2 * max_shift + 1) ** 2
+    pixel_checks = first_mask.width * first_mask.height * shift_count
+    if pixel_checks > _MAX_ESTIMATE_PIXEL_CHECKS:
+        raise ValueError(
+            "translation search exceeds the work budget; pass a tighter region "
+            "or reduce max_shift"
+        )
 
     best = (0, 0, 0)
     runner_up = 0

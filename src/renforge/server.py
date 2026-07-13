@@ -1156,7 +1156,9 @@ def _register_tools(app: Any) -> None:
             capture_dir = project_root / ".renforge" / "captures"
             capture_dir.mkdir(parents=True, exist_ok=True)
             target = (capture_dir / (name + ".png")).resolve()
-            target.relative_to(capture_dir.resolve())
+            capture_relative = target.relative_to(capture_dir.resolve())
+            if capture_relative.name != f"{name}.png":
+                raise ValueError("capture path escaped capture directory")
             with tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".tmp", delete=False) as handle:
                 temporary = Path(handle.name)
                 handle.write(png)
