@@ -801,22 +801,58 @@ def test_control_toggle_skip_queues_keymap_event(running_bridge):
 
 
 def test_control_quick_save_runs_action(running_bridge):
-    reply = running_bridge.client.control("quick_save")
-    assert reply == {"ok": True, "action": "quick_save"}
+    reply = running_bridge.client.control("quick_save", interaction_id="qs-1")
+    assert reply["ok"] is True
+    assert reply["action"] == "quick_save"
+    assert reply["interaction_id"] == "qs-1"
+    assert reply["effect"]["event"] == "quick_save.completed"
     assert ("QuickSave",) in running_bridge.renpy._ran_actions
+    events = running_bridge.client.poll_events()["events"]
+    business = [e for e in events if e.get("type") == "quick_save.completed"]
+    assert business
+    assert business[-1]["correlation_id"] == "qs-1"
 
 
 def test_control_quick_load_runs_action(running_bridge):
-    reply = running_bridge.client.control("quick_load")
-    assert reply == {"ok": True, "action": "quick_load"}
+    reply = running_bridge.client.control("quick_load", interaction_id="ql-1")
+    assert reply["ok"] is True
+    assert reply["action"] == "quick_load"
+    assert reply["effect"]["event"] == "quick_load.completed"
     assert ("QuickLoad", False) in running_bridge.renpy._ran_actions
 
 
 def test_control_quit_uses_native_renpy_quit(running_bridge):
     reply = running_bridge.client.control("quit")
 
-    assert reply == {"ok": True, "action": "quit"}
+    assert reply["ok"] is True
+    assert reply["action"] == "quit"
     assert ("quit",) in running_bridge.renpy._invoked
+
+
+def test_control_rollback_emits_business_event(running_bridge):
+    reply = running_bridge.client.control("rollback", interaction_id="rb-9")
+    assert reply["ok"] is True
+    assert reply["effect"]["event"] == "rollback.completed"
+    events = running_bridge.client.poll_events()["events"]
+    assert any(
+        e.get("type") == "rollback.completed" and e.get("correlation_id") == "rb-9"
+        for e in events
+    )
+
+
+def test_skip_watcher_emits_stopped_reason(running_bridge):
+    import sys
+
+    runtime = sys.modules["_renforge_runtime"]
+    bridge = runtime.bridge
+    bridge.prev_skipping = "slow"
+    running_bridge.renpy.config.skipping = None
+    running_bridge.renpy.get_screen = lambda name: object() if name == "choice" else None
+    running_bridge.globs["renforge_drain_bridge"]()
+    events = running_bridge.client.poll_events()["events"]
+    stopped = [e for e in events if e.get("type") == "skip.stopped"]
+    assert stopped
+    assert stopped[-1]["reason"] in {"choice", "user_click", "explicit_stop", "unseen_dialogue"}
 
 
 def test_control_unknown_action_preserves_bridge_error_payload(running_bridge):
@@ -980,7 +1016,8 @@ def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
 
     reply = running_bridge.client.load_slot("branch-a")
 
-    assert reply == {"ok": True, "slot": "branch-a"}
+    assert reply["ok"] is True
+    assert reply["slot"] == "branch-a"
     assert len(scheduled) == 1
     with pytest.raises(_LoadControl, match="transfers control"):
         scheduled[0][0](*scheduled[0][1], **scheduled[0][2])

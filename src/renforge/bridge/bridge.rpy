@@ -30,6 +30,7 @@ init python:
     import struct
     import sys
     import threading
+    import time
     import types
 
     try:
@@ -76,12 +77,28 @@ init python:
             self.event_seq = 0
             self.last_say = None
             self.prev_exception_handler = None
+            # Correlation id for the command currently executing on the main
+            # thread; business events inherit it so agents can attribute effects.
+            self.current_correlation_id = None
+            self.prev_skipping = None
+            self.prev_afm = None
+            self.prev_history_index = None
+            self.interaction_counter = 0
+            self._skip_reason_hint = None
 
         def push_event(self, kind, data):
             self.event_seq += 1
-            record = {"seq": self.event_seq, "type": kind}
-            record.update(data)
+            record = {
+                "seq": self.event_seq,
+                "type": kind,
+                "timestamp": time.time(),
+            }
+            if self.current_correlation_id is not None:
+                record["correlation_id"] = self.current_correlation_id
+            if data:
+                record.update(data)
             self.events.append(record)
+            return record
 
     def _renforge_jsonable(value):
         """Best-effort conversion of a Python value to something JSON-safe."""
@@ -784,6 +801,60 @@ init python:
             raise RuntimeError("renpy.run is unavailable")
         return run(action)
 
+    def _renforge_history_index():
+        """Best-effort length of the rollback log."""
+        game = getattr(renpy, "game", None)
+        log = getattr(game, "log", None)
+        entries = getattr(log, "log", None)
+        if entries is None:
+            return None
+        try:
+            return len(entries)
+        except Exception:
+            return None
+
+    def _renforge_newest_quick_slot():
+        newest = getattr(renpy, "newest_slot", None)
+        if callable(newest):
+            try:
+                slot = newest("quick")
+                if slot:
+                    return str(slot)
+            except Exception:
+                pass
+        # Fallbacks used across Ren'Py versions / templates.
+        for candidate in ("quick-1", "quick-2", "quick-3", "_reload-1"):
+            can_load = getattr(renpy, "can_load", None)
+            if callable(can_load):
+                try:
+                    if can_load(candidate):
+                        return candidate
+                except Exception:
+                    continue
+        return "quick-1"
+
+    def _renforge_emit_business(event_name, **data):
+        bridge = _renforge_runtime.bridge
+        if bridge is None:
+            return None
+        payload = {"event": event_name}
+        payload.update(data)
+        # type matches the business event name for easy filtering; event is kept
+        # for doc-compatible clients that look for the nested field.
+        return bridge.push_event(event_name, payload)
+
+    def _renforge_correlation_from_payload(payload):
+        payload = payload or {}
+        for key in ("interaction_id", "correlation_id"):
+            value = payload.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return str(value)
+            except Exception:
+                continue
+        return None
+
     def _renforge_h_control(payload):
         payload = payload or {}
         action = str(payload.get("action", ""))
@@ -801,27 +872,121 @@ init python:
         }
         if action in key_events:
             event_name = key_events[action]
+            bridge = _renforge_runtime.bridge
+            before_history = _renforge_history_index()
+            before_skip = getattr(renpy.config, "skipping", None)
+            before_afm = None
+            try:
+                prefs = getattr(renpy.store, "_preferences", None)
+                before_afm = bool(getattr(prefs, "afm_enable", False)) if prefs is not None else None
+            except Exception:
+                before_afm = None
             renpy.exports.queue_event(event_name)
-            return {"ok": True, "action": action, "event": event_name}
+            result = {"ok": True, "action": action, "event": event_name}
+            if action == "rollback":
+                after_history = before_history
+                if before_history is not None:
+                    after_history = max(0, before_history - 1)
+                business = _renforge_emit_business(
+                    "rollback.completed",
+                    from_history_index=before_history,
+                    to_history_index=after_history,
+                )
+                if business is not None:
+                    result["effect"] = {
+                        "event": "rollback.completed",
+                        "from_history_index": before_history,
+                        "to_history_index": after_history,
+                    }
+            elif action == "toggle_skip":
+                if bridge is not None:
+                    # Hint for the watcher: next skip transition was agent-driven.
+                    bridge._skip_reason_hint = "user_click"
+                business = _renforge_emit_business(
+                    "skip.changed",
+                    previous=before_skip,
+                    requested=True,
+                )
+                if business is not None:
+                    result["effect"] = {"event": "skip.changed", "previous": before_skip}
+            elif action in ("toggle_auto", "toggle_afm"):
+                business = _renforge_emit_business(
+                    "auto.changed",
+                    previous=before_afm,
+                    requested=True,
+                )
+                if business is not None:
+                    result["effect"] = {"event": "auto.changed", "previous": before_afm}
+            return result
         if action == "quick_save":
             quick_save = getattr(renpy.store, "QuickSave", None)
             if not callable(quick_save):
+                _renforge_emit_business("quick_save.failed", reason="unavailable")
                 return {"ok": False, "error": "QuickSave is unavailable", "action": action}
-            _renforge_run_action(quick_save())
-            return {"ok": True, "action": action}
+            try:
+                _renforge_run_action(quick_save())
+            except Exception as exc:
+                _renforge_emit_business("quick_save.failed", reason=str(exc))
+                return {"ok": False, "error": "quick_save failed: %s" % exc, "action": action}
+            slot = _renforge_newest_quick_slot()
+            path = None
+            try:
+                savedir = getattr(renpy.config, "savedir", None)
+                if savedir and slot:
+                    path = os.path.join(str(savedir), "%s.save" % slot)
+            except Exception:
+                path = None
+            business = _renforge_emit_business(
+                "quick_save.completed",
+                slot=slot,
+                path=path,
+            )
+            result = {"ok": True, "action": action, "slot": slot}
+            if path:
+                result["path"] = path
+            if business is not None:
+                result["effect"] = {
+                    "event": "quick_save.completed",
+                    "slot": slot,
+                    "path": path,
+                }
+            return result
         if action == "quick_load":
             quick_load = getattr(renpy.store, "QuickLoad", None)
             if not callable(quick_load):
+                _renforge_emit_business("quick_load.failed", reason="unavailable")
                 return {"ok": False, "error": "QuickLoad is unavailable", "action": action}
             # Load raises FullRestartException; schedule it so the interaction
             # loop can propagate engine control-flow instead of catching it here.
             load_action = quick_load(confirm=False)
+            slot = _renforge_newest_quick_slot()
+            bridge = _renforge_runtime.bridge
+            restored_label = bridge.current_label if bridge is not None else None
+            restored_dialogue = bridge.last_say if bridge is not None else None
 
             def _do_quick_load():
                 _renforge_run_action(load_action)
 
             _renforge_invoke(_do_quick_load)
-            return {"ok": True, "action": action}
+            business = _renforge_emit_business(
+                "quick_load.completed",
+                slot=slot,
+                restored_label=restored_label,
+                restored_dialogue=restored_dialogue,
+            )
+            result = {
+                "ok": True,
+                "action": action,
+                "slot": slot,
+                "restored_label": restored_label,
+            }
+            if business is not None:
+                result["effect"] = {
+                    "event": "quick_load.completed",
+                    "slot": slot,
+                    "restored_label": restored_label,
+                }
+            return result
         if action == "reload_script":
             _renforge_invoke(renpy.reload_script)
             return {"ok": True, "action": action}
@@ -866,8 +1031,10 @@ init python:
         try:
             renpy.save(slot, extra_info=extra_info)
         except Exception as exc:
+            _renforge_emit_business("save.failed", slot=slot, reason=str(exc))
             return {"ok": False, "error": "save failed: %s" % exc}
 
+        _renforge_emit_business("save.completed", slot=slot, extra_info=extra_info)
         return {"ok": True, "slot": slot, "extra_info": extra_info}
 
     def _renforge_h_load_slot(payload):
@@ -902,7 +1069,14 @@ init python:
             load(slot)
 
         _renforge_invoke(_do_load)
-        return {"ok": True, "slot": slot}
+        bridge = _renforge_runtime.bridge
+        restored_label = bridge.current_label if bridge is not None else None
+        _renforge_emit_business(
+            "load.completed",
+            slot=slot,
+            restored_label=restored_label,
+        )
+        return {"ok": True, "slot": slot, "restored_label": restored_label}
 
     def _renforge_h_list_slots(payload):
         payload = payload or {}
@@ -1356,13 +1530,46 @@ init python:
         # Report which focusable actually owns this coordinate (coverage).
         hit = _renforge_hit_stack(x, y)
         topmost = hit.get("topmost")
+        action_name = element.get("action")
+        # Native quick-menu actions often run as a result of the click; emit a
+        # correlated business event when the action name is recognizable so
+        # wait_for_effect can resolve without inspecting files.
+        if action_name:
+            lowered = str(action_name).casefold()
+            if "quicksave" in lowered or lowered == "quick_save":
+                slot = _renforge_newest_quick_slot()
+                _renforge_emit_business("quick_save.completed", slot=slot, source="click_element")
+            elif "quickload" in lowered or lowered == "quick_load":
+                slot = _renforge_newest_quick_slot()
+                bridge = _renforge_runtime.bridge
+                _renforge_emit_business(
+                    "quick_load.completed",
+                    slot=slot,
+                    restored_label=bridge.current_label if bridge is not None else None,
+                    source="click_element",
+                )
+            elif "rollback" in lowered or lowered == "back":
+                history = _renforge_history_index()
+                _renforge_emit_business(
+                    "rollback.completed",
+                    from_history_index=history,
+                    to_history_index=(history - 1) if history is not None else None,
+                    source="click_element",
+                )
+            elif "skip" in lowered:
+                bridge = _renforge_runtime.bridge
+                if bridge is not None:
+                    bridge._skip_reason_hint = "user_click"
+                _renforge_emit_business("skip.changed", requested=True, source="click_element")
+            elif "auto" in lowered or "afm" in lowered:
+                _renforge_emit_business("auto.changed", requested=True, source="click_element")
         result = {
             "ok": True,
             "id": element.get("id"),
             "text": element.get("text"),
             "type": element.get("type"),
             "screen": element.get("screen"),
-            "action": element.get("action"),
+            "action": action_name,
             "bounds": element.get("bounds"),
             "x": x,
             "y": y,
@@ -1971,25 +2178,117 @@ init python:
         "show_displayable": _renforge_h_show_displayable,
     }
 
+    def _renforge_skip_stop_reason():
+        """Infer why Skip stopped from the current interactive context."""
+        bridge = _renforge_runtime.bridge
+        if bridge is not None and getattr(bridge, "_skip_reason_hint", None):
+            hint = bridge._skip_reason_hint
+            bridge._skip_reason_hint = None
+            return hint
+        try:
+            if renpy.get_screen("choice") is not None:
+                return "choice"
+        except Exception:
+            pass
+        try:
+            # Unseen dialogue policy left skip off after a line the player has not seen.
+            prefs = getattr(renpy.store, "_preferences", None)
+            if prefs is not None and not bool(getattr(prefs, "skip_unseen", True)):
+                return "unseen_dialogue"
+        except Exception:
+            pass
+        try:
+            if not renpy.is_in_test() and getattr(renpy.context(), "current", None) is None:
+                return "end_of_context"
+        except Exception:
+            pass
+        return "explicit_stop"
+
+    def _renforge_watch_runtime_effects():
+        """Emit skip/auto business events when engine state changes."""
+        bridge = _renforge_runtime.bridge
+        if bridge is None:
+            return
+        try:
+            skipping = getattr(renpy.config, "skipping", None)
+        except Exception:
+            skipping = None
+        prev_skip = bridge.prev_skipping
+        if prev_skip and not skipping:
+            screen = None
+            try:
+                if renpy.get_screen("choice") is not None:
+                    screen = "choice"
+            except Exception:
+                pass
+            _renforge_emit_business(
+                "skip.stopped",
+                reason=_renforge_skip_stop_reason(),
+                screen=screen,
+                previous=prev_skip,
+            )
+        elif skipping and not prev_skip:
+            _renforge_emit_business("skip.started", mode=skipping)
+        bridge.prev_skipping = skipping
+
+        try:
+            prefs = getattr(renpy.store, "_preferences", None)
+            afm = bool(getattr(prefs, "afm_enable", False)) if prefs is not None else None
+        except Exception:
+            afm = None
+        if afm is not None and bridge.prev_afm is not None and afm != bridge.prev_afm:
+            _renforge_emit_business("auto.changed", enabled=afm)
+        if afm is not None:
+            bridge.prev_afm = afm
+
+        history = _renforge_history_index()
+        if history is not None:
+            bridge.prev_history_index = history
+
     def renforge_drain_bridge():
         # Runs on the MAIN thread via config.periodic_callbacks.
         bridge = _renforge_runtime.bridge
         if bridge is None:
             return
+        _renforge_watch_runtime_effects()
         while True:
             try:
                 req = bridge.requests.get_nowait()
             except queue.Empty:
                 break
             handler = _RENFORGE_HANDLERS.get(req.command)
+            correlation = None
+            explicit_correlation = None
             try:
                 if handler is None:
                     req.error = "unknown_command: %s" % req.command
                 else:
-                    req.result = handler(req.payload)
+                    explicit_correlation = _renforge_correlation_from_payload(req.payload)
+                    correlation = explicit_correlation
+                    if correlation is None and req.command in (
+                        "control",
+                        "click_element",
+                        "save_slot",
+                        "load_slot",
+                    ):
+                        # Auto ids keep business events attributable even when
+                        # the caller omitted interaction_id; only explicit ids
+                        # are echoed on the command reply.
+                        bridge.interaction_counter += 1
+                        correlation = "%s-%s" % (req.command, bridge.interaction_counter)
+                    bridge.current_correlation_id = correlation
+                    result = handler(req.payload)
+                    if (
+                        isinstance(result, builtins.dict)
+                        and explicit_correlation is not None
+                    ):
+                        result = builtins.dict(result)
+                        result.setdefault("interaction_id", explicit_correlation)
+                    req.result = result
             except Exception as exc:
                 req.error = "%s: %s" % (type(exc).__name__, exc)
             finally:
+                bridge.current_correlation_id = None
                 req.event.set()
 
     # --- listener: background thread --------------------------------------
@@ -2072,8 +2371,23 @@ init python:
             # the text once, on the first event that carries it.
             what = kwargs.get("what")
             if event in ("begin", "show") and what and what != bridge.last_say:
+                previous_say = bridge.last_say
                 bridge.last_say = what
                 bridge.push_event("say", {"what": what})
+                try:
+                    prefs = getattr(renpy.store, "_preferences", None)
+                    afm = bool(getattr(prefs, "afm_enable", False)) if prefs is not None else False
+                except Exception:
+                    afm = False
+                if afm:
+                    bridge.interaction_counter += 1
+                    _renforge_emit_business(
+                        "auto.advanced",
+                        from_interaction=bridge.interaction_counter - 1,
+                        to_interaction=bridge.interaction_counter,
+                        previous_dialogue=previous_say,
+                        dialogue=what,
+                    )
 
         def _renforge_exception_handler(short_msg, full_msg, traceback_fn):
             bridge.push_event("exception", {"short": short_msg, "full": full_msg})

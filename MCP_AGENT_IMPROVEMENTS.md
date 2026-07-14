@@ -900,11 +900,11 @@ Enfin, RenForge produirait un rapport compact :
 2. [x] Collecter automatiquement les diagnostics à l'échec.
 3. [x] Rapport compact (`passed` / `failed` / `duration_ms` / steps).
 
-### Étape 6 : enrichir la preuve métier — À FAIRE
+### Étape 6 : enrichir la preuve métier — FAIT (noyau)
 
-1. [ ] Normaliser les événements Quick Save, Quick Load, Skip, Auto et rollback.
-2. [ ] Ajouter les identifiants de corrélation.
-3. [ ] Permettre à un clic d'attendre son effet observable.
+1. [x] Normaliser les événements Quick Save, Quick Load, Skip, Auto et rollback.
+2. [x] Ajouter les identifiants de corrélation (`interaction_id` / `correlation_id`).
+3. [x] `wait_for_effect` sur `renforge_control` et `renforge_click_element`.
 
 ## Mesures de succès
 

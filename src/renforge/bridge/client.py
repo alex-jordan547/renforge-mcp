@@ -184,9 +184,17 @@ class BridgeClient:
         """Advance the current dialogue (posts a 'dismiss' event)."""
         return self._checked("advance")
 
-    def control(self, action: str) -> dict:
+    def control(
+        self,
+        action: str,
+        *,
+        interaction_id: str | None = None,
+    ) -> dict:
         """Run a named runtime control action inside the Ren'Py bridge."""
-        reply = self.request("control", {"action": action})
+        payload: dict[str, Any] = {"action": action}
+        if interaction_id is not None:
+            payload["interaction_id"] = interaction_id
+        reply = self.request("control", payload)
         if reply.get("error") is not None:
             result = dict(reply)
             result["ok"] = False
@@ -298,6 +306,7 @@ class BridgeClient:
         exact: bool = False,
         element_id: str | None = None,
         expected_frame_id: str | None = None,
+        interaction_id: str | None = None,
     ) -> dict:
         """Click a visible focusable element by text or its returned ``id``.
 
@@ -313,6 +322,8 @@ class BridgeClient:
             payload["screen"] = screen
         if expected_frame_id is not None:
             payload["expected_frame_id"] = expected_frame_id
+        if interaction_id is not None:
+            payload["interaction_id"] = interaction_id
         reply = self.request("click_element", payload)
         if reply.get("error") is not None:
             result = dict(reply)

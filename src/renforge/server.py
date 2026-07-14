@@ -534,18 +534,37 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
-    def renforge_control(project_path: str, action: str) -> dict:
+    def renforge_control(
+        project_path: str,
+        action: str,
+        interaction_id: str = "",
+        wait_for_effect: bool = False,
+        effect_timeout: float = 5.0,
+    ) -> dict:
         """Run a runtime action: advance, rollback, toggle_skip, toggle_auto,
         toggle_afm, game_menu, hide_windows, quick_save, quick_load,
         reload_script, restart_interaction, or quit.
+
+        Emits correlated business events (quick_save.completed, skip.stopped,
+        …). Set wait_for_effect=true to block until the matching event appears.
         """
         return _log_tool_call(
             name="renforge_control",
-            params={"project_path": project_path, "action": action},
+            params={
+                "project_path": project_path,
+                "action": action,
+                "interaction_id": interaction_id,
+                "wait_for_effect": wait_for_effect,
+                "effect_timeout": effect_timeout,
+            },
             project_root=project_path,
             fn=live.control,
             args=(project_path, action),
-            kwargs={},
+            kwargs={
+                "interaction_id": interaction_id or None,
+                "wait_for_effect": wait_for_effect,
+                "effect_timeout": effect_timeout,
+            },
         )
 
     @tool_decorator()
@@ -668,8 +687,16 @@ def _register_tools(app: Any) -> None:
         screen: str = "",
         exact: bool = False,
         expected_frame_id: str = "",
+        interaction_id: str = "",
+        wait_for_effect: bool = False,
+        effect_timeout: float = 5.0,
     ) -> dict:
-        """Click a visible control by text/id, guarded against a stale frame."""
+        """Click a visible control by text/id, guarded against a stale frame.
+
+        Returns received_by when another control owns the hit point. With
+        wait_for_effect=true, wait for a correlated business event such as
+        quick_save.completed when the clicked action is recognizable.
+        """
         return _log_tool_call(
             name="renforge_click_element",
             params={
@@ -679,6 +706,9 @@ def _register_tools(app: Any) -> None:
                 "screen": screen,
                 "exact": exact,
                 "expected_frame_id": expected_frame_id,
+                "interaction_id": interaction_id,
+                "wait_for_effect": wait_for_effect,
+                "effect_timeout": effect_timeout,
             },
             project_root=project_path,
             fn=live.click_element,
@@ -689,6 +719,9 @@ def _register_tools(app: Any) -> None:
                 "screen": screen or None,
                 "exact": exact,
                 "expected_frame_id": expected_frame_id or None,
+                "interaction_id": interaction_id or None,
+                "wait_for_effect": wait_for_effect,
+                "effect_timeout": effect_timeout,
             },
         )
 

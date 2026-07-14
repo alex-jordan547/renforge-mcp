@@ -15,6 +15,11 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
   report `action`, `zorder`, `covered`, `clickable`, and logical coordinates.
 - `renforge_run_scenario` to batch set/click/wait/assert steps with automatic
   failure diagnostics.
+- Structured business events (`quick_save.completed`, `quick_load.completed`,
+  `skip.started`/`skip.stopped`, `auto.changed`/`auto.advanced`,
+  `rollback.completed`) with `correlation_id` / `interaction_id`.
+- `wait_for_effect` on `renforge_control` and `renforge_click_element` to block
+  until the matching business event is observed.
 
 ### Changed
 
@@ -22,6 +27,8 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
   and a structured `matched` object (`type` + `value`).
 - Clicks report the element that actually received the event (`received_by`)
   when another control covers the target.
+- Bridge `poll_events` entries include `timestamp` and optional
+  `correlation_id` for attribution.
 
 ## [0.5.0] - 2026-07-13
 

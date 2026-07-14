@@ -24,6 +24,8 @@ from typing import Any, Callable
 from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
 from ..bridge.launcher import BridgeSession, launch_with_bridge, remove_bridge_artifacts
+from ..effect_wait import expected_events_for_action
+from ..effect_wait import wait_for_effect as _wait_for_business_effect
 from ..launch_env import LaunchError
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
@@ -327,8 +329,62 @@ def advance(project_path: str) -> dict:
     return _with_client(project_path, lambda c: c.advance())
 
 
-def control(project_path: str, action: str) -> dict:
-    return _with_client(project_path, lambda c: c.control(action))
+def _next_cursor(project_path: str) -> int:
+    try:
+        reply = _client(project_path).poll_events(0)
+        return int(reply.get("cursor") or 0)
+    except Exception:
+        return 0
+
+
+def control(
+    project_path: str,
+    action: str,
+    *,
+    interaction_id: str | None = None,
+    wait_for_effect: bool = False,
+    effect_timeout: float = 5.0,
+) -> dict:
+    """Run a runtime control action, optionally waiting for a business effect."""
+
+    def _handler(client: BridgeClient) -> dict:
+        cursor = 0
+        if wait_for_effect:
+            try:
+                cursor = int(client.poll_events(0).get("cursor") or 0)
+            except Exception:
+                cursor = 0
+        reply = client.control(action, interaction_id=interaction_id)
+        if not isinstance(reply, dict):
+            return {"ok": False, "error": "control reply must be an object"}
+        if reply.get("error") is not None and reply.get("ok") is not False:
+            reply = dict(reply)
+            reply["ok"] = False
+        if wait_for_effect and reply.get("ok", True) and reply.get("error") is None:
+            # Prefer the effect already returned by the bridge when present.
+            if isinstance(reply.get("effect"), dict):
+                return reply
+            iid = reply.get("interaction_id") or interaction_id
+            expected = expected_events_for_action(action)
+            effect = _wait_for_business_effect(
+                lambda since: client.poll_events(since),
+                since=cursor,
+                interaction_id=str(iid) if iid is not None else None,
+                expected_types=expected,
+                timeout=effect_timeout,
+            )
+            result = dict(reply)
+            if effect.get("ok"):
+                result["effect"] = effect.get("effect") or {
+                    "event": effect.get("event"),
+                }
+                result["interaction_id"] = iid
+            else:
+                result["effect_wait"] = effect
+            return result
+        return reply
+
+    return _with_client(project_path, _handler)
 
 
 def send_input(
@@ -482,9 +538,23 @@ def click_element(
     exact: bool = False,
     element_id: str | None = None,
     expected_frame_id: str | None = None,
+    interaction_id: str | None = None,
+    wait_for_effect: bool = False,
+    effect_timeout: float = 5.0,
 ) -> dict:
-    """Click a visible control by semantic text or an ID from list_ui_elements."""
+    """Click a visible control by semantic text or an ID from list_ui_elements.
+
+    When ``wait_for_effect`` is true, poll business events correlated to this
+    click (e.g. ``quick_save.completed``) for up to ``effect_timeout`` seconds.
+    """
+
     def _handler(client: BridgeClient) -> dict:
+        cursor = 0
+        if wait_for_effect:
+            try:
+                cursor = int(client.poll_events(0).get("cursor") or 0)
+            except Exception:
+                cursor = 0
         kwargs: dict[str, Any] = {
             "text": text,
             "id": id,
@@ -494,7 +564,32 @@ def click_element(
         }
         if expected_frame_id is not None:
             kwargs["expected_frame_id"] = expected_frame_id
-        return client.click_element(**kwargs)
+        if interaction_id is not None:
+            kwargs["interaction_id"] = interaction_id
+        reply = client.click_element(**kwargs)
+        if not wait_for_effect or not isinstance(reply, dict) or not reply.get("ok", True):
+            return reply
+        iid = reply.get("interaction_id") or interaction_id
+        action_name = None
+        element = reply.get("element") if isinstance(reply.get("element"), dict) else {}
+        action_name = reply.get("action") or element.get("action")
+        expected = expected_events_for_action(action_name)
+        if not expected:
+            return reply
+        effect = _wait_for_business_effect(
+            lambda since: client.poll_events(since),
+            since=cursor,
+            interaction_id=str(iid) if iid is not None else None,
+            expected_types=expected,
+            timeout=effect_timeout,
+        )
+        result = dict(reply)
+        if effect.get("ok"):
+            result["effect"] = effect.get("effect") or {"event": effect.get("event")}
+            result["interaction_id"] = iid
+        else:
+            result["effect_wait"] = effect
+        return result
 
     return _with_client(
         project_path,

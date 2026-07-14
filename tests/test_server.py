@@ -364,8 +364,9 @@ def test_control_tool_dispatches_runtime_action_and_documents_valid_actions(
 
     calls = {}
 
-    def fake_control(project_path: str, action: str):
+    def fake_control(project_path: str, action: str, **kwargs):
         calls.update(project_path=project_path, action=action)
+        calls["kwargs"] = kwargs
         return {"ok": True, "action": action}
 
     monkeypatch.setattr(live, "control", fake_control)
@@ -399,7 +400,8 @@ def test_control_tool_dispatches_runtime_action_and_documents_valid_actions(
     }
 
     assert payload == {"ok": True, "action": "reload_script"}
-    assert calls == {"project_path": str(tmp_path), "action": "reload_script"}
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["action"] == "reload_script"
     assert all(action in description for action in valid_actions)
 
 
