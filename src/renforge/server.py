@@ -278,7 +278,14 @@ def _register_tools(app: Any) -> None:
 
     @tool_decorator()
     def renforge_launch(project_path: str, warp: str = "", version: str = "stable") -> dict:
-        """Launch or reuse a game; set warp to a Ren'Py file:line target."""
+        """Launch or reuse a game; set warp to a Ren'Py file:line target.
+
+        Needs a display (DISPLAY or WAYLAND_DISPLAY on Linux; WSLg
+        qualifies). Without one, falls back to headless xvfb-run when
+        installed — the result then carries headless=true and no window is
+        visible, but screenshots and input still work — and otherwise fails
+        fast with an actionable error.
+        """
         return _log_tool_call(
             name="renforge_launch",
             params={"project_path": project_path, "warp": warp, "version": version},

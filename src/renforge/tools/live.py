@@ -111,7 +111,12 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
         label = session.client.get_state().get("current_label")
     except Exception:
         pass
-    return {"ok": True, "already_running": False, "current_label": label}
+    result = {"ok": True, "already_running": False, "current_label": label}
+    if session.headless:
+        # Running under xvfb-run: no visible window, but the bridge (state,
+        # screenshots, input) works normally.
+        result["headless"] = True
+    return result
 
 
 def stop_game(project_path: str) -> dict:

@@ -5,6 +5,23 @@ interface TimelinePageProps {
   items: TimelineItem[];
 }
 
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "medium",
+});
+
+function formatTimestamp(timestamp: string): string {
+  try {
+    const date = new Date(timestamp);
+    if (!Number.isFinite(date.getTime())) {
+      return timestamp;
+    }
+    return timeFormatter.format(date);
+  } catch {
+    return timestamp;
+  }
+}
+
 function timeAgo(timestamp: string): string {
   try {
     const diff = Date.now() - new Date(timestamp).getTime();
@@ -129,8 +146,8 @@ export function TimelinePage({ items }: TimelinePageProps) {
               >
                 <div className="ev-card">
                   <div className="ev-main">
-                    <div className="ev-time">
-                      {item.timestamp}
+                    <div className="ev-time" title={item.timestamp}>
+                      <time dateTime={item.timestamp}>{formatTimestamp(item.timestamp)}</time>
                       <span className="rel">{timeAgo(item.timestamp)}</span>
                     </div>
                     <div className="ev-name">{item.title}</div>

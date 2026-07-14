@@ -1,3 +1,4 @@
+import signal
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from renforge.sdk import RenpySdk
 
 class _FakeProcess:
     def __init__(self):
+        self.pid = 424242
         self.returncode = None
         self.stdout = None
         self.stderr = None
@@ -48,10 +50,11 @@ def _make_project(tmp_path: Path) -> tuple[RenpyProject, RenpySdk, Path]:
 
 @pytest.mark.parametrize("warp", [None, "game/script.rpy:123"])
 def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp: str | None) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, project_root = _make_project(tmp_path)
     captured: dict[str, object] = {}
 
-    def fake_popen(command, env=None, stdout=None, stderr=None):
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         captured["command"] = command
         info_path = project_root / ".renforge" / "bridge.json"
         info_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,82 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
         assert command[2:] == ["run"]
     else:
         assert command[2:5] == ["run", "--warp", warp]
+    session.close(timeout=0.1)
+
+
+def test_launch_without_display_nor_xvfb_fails_fast(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("renforge.bridge.launcher.sys.platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr("renforge.bridge.launcher.shutil.which", lambda _name: None)
+    project, sdk, root = _make_project(tmp_path)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("Popen must not be reached without a display")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
+
+    with pytest.raises(RuntimeError, match="No display available"):
+        launch_with_bridge(sdk, project)
+
+    # Fails before injecting anything: no artifacts to clean up.
+    assert not (root / "game" / "renforge_bridge.rpy").exists()
+
+
+def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("renforge.bridge.launcher.sys.platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr("renforge.bridge.launcher.shutil.which", lambda _name: "/usr/bin/xvfb-run")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["command"] = command
+        captured["start_new_session"] = start_new_session
+        info_path = project_root / ".renforge" / "bridge.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text("{}", encoding="utf-8")
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project)
+    command = list(captured["command"])  # type: ignore[arg-type]
+    assert command[:2] == ["xvfb-run", "-a"]
+    assert command[2].endswith("renpy.sh")
+    assert captured["start_new_session"] is True
+    assert session.headless is True
+
+    # close() must target the process group, not just the xvfb-run wrapper.
+    group_kill: dict[str, object] = {}
+    monkeypatch.setattr("renforge.bridge.launcher.os.getpgid", lambda _pid: 4242)
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.os.killpg",
+        lambda pgid, sig: group_kill.update(pgid=pgid, sig=sig),
+    )
+    session.close(timeout=0.1)
+    assert group_kill == {"pgid": 4242, "sig": signal.SIGKILL}
+
+
+def test_launch_accepts_display_provided_via_extra_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("renforge.bridge.launcher.sys.platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    project, sdk, project_root = _make_project(tmp_path)
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        info_path = project_root / ".renforge" / "bridge.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text("{}", encoding="utf-8")
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, extra_env={"DISPLAY": ":99"})
+    assert session is not None
     session.close(timeout=0.1)
 
 
@@ -109,6 +188,7 @@ def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
 
 
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, root = _make_project(tmp_path)
 
     def fake_popen(*_args, **_kwargs):

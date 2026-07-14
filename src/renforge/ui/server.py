@@ -271,6 +271,7 @@ class _ProjectRuntime:
 def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None = None) -> Starlette:
     static_dir = Path(__file__).resolve().parent / "static"
     assets_dir = static_dir / "assets"
+    brand_dir = static_dir / "brand"
     hub = WebSocketHub()
     runtime = _ProjectRuntime(project_root, hub, dashboard_url, ui_token)
 
@@ -580,6 +581,8 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
 
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+    if brand_dir.exists():
+        app.mount("/brand", StaticFiles(directory=str(brand_dir)), name="brand")
 
     return app
 

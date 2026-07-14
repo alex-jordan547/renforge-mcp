@@ -91,6 +91,9 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("renforge-theme") as "light" | "dark") || "light",
   );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem("renforge-sidebar-collapsed") === "true",
+  );
   const [storyMap, setStoryMap] = useState<StoryMapResponse>({ nodes: [], edges: [] });
   const [storyMapLoading, setStoryMapLoading] = useState(true);
   const [storyMapError, setStoryMapError] = useState<string | null>(null);
@@ -105,6 +108,10 @@ export function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("renforge-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("renforge-sidebar-collapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
   const [liveState, setLiveState] = useState<LiveState | null>(null);
   const [liveFrame, setLiveFrame] = useState<LiveScreenshot | null>(null);
   const token = getToken();
@@ -351,8 +358,8 @@ export function App() {
   const [titleText, subText] = SECTION_TITLES[activeSection];
 
   return (
-    <div className="app">
-      <aside className="sidebar">
+    <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className="sidebar" aria-label="Navigation">
         <div className="brand">
           <div className="logo">
             <span className="mark">
@@ -370,10 +377,11 @@ export function App() {
               key={item.id}
               className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
               type="button"
+              title={sidebarCollapsed ? item.label : undefined}
               onClick={() => setActiveSection(item.id as SectionId)}
             >
               {SECTION_ICONS[item.id]}
-              {item.label}
+              <span className="nav-label-text">{item.label}</span>
             </button>
           ))}
 
@@ -383,10 +391,11 @@ export function App() {
               key={item.id}
               className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
               type="button"
+              title={sidebarCollapsed ? item.label : undefined}
               onClick={() => setActiveSection(item.id as SectionId)}
             >
               {SECTION_ICONS[item.id]}
-              {item.label}
+              <span className="nav-label-text">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -394,30 +403,52 @@ export function App() {
         <div className="side-foot">
           <div className="row">
             <span className="k">WS</span>
-            <span className="ws">
-              <span className="dot"></span>
-              {stats.socket}
+            <span
+              className={`ws ws-${stats.socket}`}
+              role="status"
+              aria-live="polite"
+              title={sidebarCollapsed ? `WebSocket: ${stats.socket}` : undefined}
+            >
+              {stats.socket === "connecting" && !sidebarCollapsed ? (
+                <span className="ws-spinner" aria-hidden="true" />
+              ) : (
+                <span className="dot" aria-hidden="true" />
+              )}
+              <span className="side-foot-value">{stats.socket}</span>
             </span>
           </div>
           <div className="row">
             <span className="k">nodes</span>
-            <span className="v">{stats.nodeCount}</span>
+            <span className="v side-foot-value">{stats.nodeCount}</span>
           </div>
           <div className="row">
             <span className="k">edges</span>
-            <span className="v">{stats.edgeCount}</span>
+            <span className="v side-foot-value">{stats.edgeCount}</span>
           </div>
           <div className="row">
             <span className="k">events</span>
-            <span className="v">{stats.messageCount}</span>
+            <span className="v side-foot-value">{stats.messageCount}</span>
           </div>
           {appVersion && (
             <div className="row">
               <span className="k">version</span>
-              <span className="v">v{appVersion}</span>
+              <span className="v side-foot-value">v{appVersion}</span>
             </div>
           )}
         </div>
+
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={() => setSidebarCollapsed((prev) => !prev)}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m14 18-5-6 5-6" />
+          </svg>
+        </button>
       </aside>
 
       <div className="main">
