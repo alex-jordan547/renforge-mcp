@@ -16,5 +16,6 @@ def test_game_state_forwards_optional_include_to_bridge_client(tmp_path, monkeyp
 
     result = live.game_state(str(tmp_path), include=["metrics"])
 
-    assert result == {"ok": True, "metrics": {"fps": 60.0}}
+    assert result["ok"] is True
+    assert result["metrics"] == {"fps": 60.0}
     assert calls == {"include": ["metrics"]}

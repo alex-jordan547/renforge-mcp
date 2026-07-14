@@ -24,8 +24,14 @@ from typing import Any, Callable
 from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
 from ..bridge.launcher import BridgeSession, launch_with_bridge, remove_bridge_artifacts
+from ..launch_env import LaunchError
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
+from ..state_compact import (
+    compact_state,
+    normalize_state_profile,
+    validate_limit_args,
+)
 
 _SESSIONS: dict[str, BridgeSession] = {}
 
@@ -54,12 +60,42 @@ def _with_client(project_path: str | Path, fn: Callable[[BridgeClient], dict]) -
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
-def launch_game(project_path: str, version: str = "stable", warp: str | None = None) -> dict:
-    """Launch the project with the bridge injected, or reuse a live session."""
+def launch_game(
+    project_path: str,
+    version: str = "stable",
+    warp: str | None = None,
+    *,
+    display: str = "auto",
+    audio: str = "auto",
+    savedir: str | None = None,
+    persistent: str = "existing",
+    cleanup_on_stop: bool = True,
+    timeout: float | None = None,
+    session: dict[str, Any] | None = None,
+) -> dict:
+    """Launch the project with the bridge injected, or reuse a live session.
+
+    ``display`` / ``audio`` default to ``auto`` (native when available, else
+    Xvfb + dummy SDL audio). Pass a ``session`` object or individual kwargs to
+    isolate saves (``savedir='temporary'``) and persistent state.
+    """
     try:
         project = RenpyProject(Path(project_path))
     except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "code": "PROJECT_PATH_UNAVAILABLE",
+            "phase": "detecting_environment",
+            "error": f"{type(exc).__name__}: {exc}",
+            "message": f"{type(exc).__name__}: {exc}",
+        }
+
+    session_cfg = dict(session or {})
+    savedir = session_cfg.get("savedir", savedir)
+    persistent = str(session_cfg.get("persistent", persistent) or "existing")
+    if isinstance(session_cfg.get("cleanup_on_stop"), bool):
+        cleanup_on_stop = session_cfg["cleanup_on_stop"]
+    preferences = str(session_cfg.get("preferences", "existing") or "existing")
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
@@ -70,7 +106,12 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
         if warp is None and existing.process.poll() is None:
             try:
                 state = existing.client.get_state()
-                return {"ok": True, "already_running": True, "current_label": state.get("current_label")}
+                return {
+                    "ok": True,
+                    "already_running": True,
+                    "ready": True,
+                    "current_label": state.get("current_label"),
+                }
             except Exception:
                 pass  # unreachable session; fall through and relaunch
         try:
@@ -87,6 +128,7 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
                 "ok": True,
                 "already_running": True,
                 "external": True,
+                "ready": True,
                 "current_label": state.get("current_label"),
             }
         except Exception:
@@ -98,21 +140,54 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
 
     try:
         sdk = get_or_install_sdk(version)
-        launch_kwargs: dict[str, object] = {}
+        launch_kwargs: dict[str, object] = {
+            "display": display,
+            "audio": audio,
+            "persistent": persistent,
+            "cleanup_on_stop": cleanup_on_stop,
+            "preferences": preferences,
+        }
         if warp is not None:
             launch_kwargs["warp"] = warp
-        session = launch_with_bridge(sdk, project, **launch_kwargs)
+        if savedir is not None:
+            launch_kwargs["savedir"] = savedir
+        if timeout is not None:
+            launch_kwargs["startup_timeout"] = float(timeout)
+        session_obj = launch_with_bridge(sdk, project, **launch_kwargs)
+    except LaunchError as exc:
+        return exc.to_dict()
     except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "code": "RENPY_PROCESS_EXITED",
+            "phase": "starting_renpy",
+            "error": f"{type(exc).__name__}: {exc}",
+            "message": f"{type(exc).__name__}: {exc}",
+        }
 
-    _SESSIONS[key] = session
+    _SESSIONS[key] = session_obj
     label = None
     try:
-        label = session.client.get_state().get("current_label")
+        label = session_obj.client.get_state().get("current_label")
     except Exception:
         pass
-    result = {"ok": True, "already_running": False, "current_label": label}
-    if session.headless:
+    result: dict[str, Any] = {
+        "ok": True,
+        "ready": True,
+        "already_running": False,
+        "current_label": label,
+        "display": session_obj.display_mode,
+        "startup_ms": session_obj.startup_ms,
+        "phases": session_obj.phases,
+        "environment": session_obj.environment,
+    }
+    try:
+        result["bridge_port"] = session_obj.client._config.port
+    except Exception:
+        pass
+    if session_obj.temporary_savedir is not None:
+        result["savedir"] = str(session_obj.temporary_savedir)
+    if session_obj.headless:
         # Running under xvfb-run: no visible window, but the bridge (state,
         # screenshots, input) works normally.
         result["headless"] = True
@@ -122,8 +197,8 @@ def launch_game(project_path: str, version: str = "stable", warp: str | None = N
 def stop_game(project_path: str) -> dict:
     session = _SESSIONS.pop(_key(project_path), None)
     if session is not None:
-        session.close()
-        return {"ok": True, "was_running": True}
+        cleaned = session.close()
+        return {"ok": True, "was_running": True, **cleaned}
     # No in-process session: the game may have been launched elsewhere (e.g. the
     # dashboard server). Stop it through the published bridge.json instead.
     return _stop_external(project_path)
@@ -190,14 +265,55 @@ def stop_all() -> None:
     _SESSIONS.clear()
 
 
-def game_state(project_path: str, include: list[str] | tuple[str, ...] | None = None) -> dict:
-    """Return live state, optionally including compact metrics/audio sections."""
-    if include is None:
-        return _with_client(project_path, lambda c: {"ok": True, **c.get_state()})
-    return _with_client(
-        project_path,
-        lambda c: {"ok": True, **c.get_state(include=include)},
+def game_state(
+    project_path: str,
+    include: list[str] | tuple[str, ...] | None = None,
+    *,
+    state_profile: str | None = None,
+    max_depth: int = 3,
+    max_items: int = 50,
+    max_output_bytes: int = 8192,
+) -> dict:
+    """Return live state, optionally filtered by ``state_profile``.
+
+    When ``state_profile`` is omitted the full bridge payload is returned
+    (backward compatible). Pass ``minimal`` / ``interaction`` / ``debug`` to
+    drop the bulk store; ``full`` keeps it with serialization limits applied.
+    """
+    profile = normalize_state_profile(state_profile, default="full")
+    if isinstance(profile, dict):
+        return profile
+    limits = validate_limit_args(
+        max_depth=max_depth,
+        max_items=max_items,
+        max_output_bytes=max_output_bytes,
     )
+    if isinstance(limits, dict):
+        return limits
+    depth, items, budget = limits
+
+    # Metrics/audio remain opt-in via include for the bridge wire format.
+    bridge_include = None
+    if include is not None:
+        sections = [name for name in include if name in ("metrics", "audio")]
+        if sections:
+            bridge_include = sections
+
+    def _handler(client: BridgeClient) -> dict:
+        raw = client.get_state(include=bridge_include)
+        if profile == "full" and not include:
+            return {"ok": True, **raw}
+        state = compact_state(
+            raw,
+            profile=profile,
+            include=include,
+            max_depth=depth,
+            max_items=items,
+            max_output_bytes=budget,
+        )
+        return {"ok": True, "state_profile": profile, **state}
+
+    return _with_client(project_path, _handler)
 
 
 def inspect_screen(project_path: str, name: str) -> dict:
@@ -417,6 +533,24 @@ def click_at(
     )
 
 
+def hit_test(
+    project_path: str,
+    x: int | float,
+    y: int | float,
+    *,
+    coordinate_space: str = "logical",
+) -> dict:
+    """Inspect the interactive focus stack at a logical (or screenshot) point."""
+
+    def _handler(client: BridgeClient) -> dict:
+        hit_method = getattr(client, "hit_test", None)
+        if not callable(hit_method):
+            return {"ok": False, "error": "bridge client does not support hit_test"}
+        return hit_method(x, y, coordinate_space=coordinate_space)
+
+    return _with_client(project_path, _handler)
+
+
 def hover_element(
     project_path: str,
     text: str | None = None,
@@ -582,8 +716,17 @@ def wait_until(
     expr: str | None = None,
     timeout: float = 30.0,
     interval: float = 0.5,
+    state_profile: str = "interaction",
+    include: list[str] | tuple[str, ...] | None = None,
+    max_depth: int = 3,
+    max_items: int = 50,
+    max_output_bytes: int = 8192,
 ) -> dict:
-    """Poll exactly one live-game condition until it matches or times out."""
+    """Poll exactly one live-game condition until it matches or times out.
+
+    Returns a compact ``state`` by default (``state_profile='interaction'``).
+    Pass ``state_profile='full'`` only when the complete store is required.
+    """
     conditions = [("label", label), ("screen", screen), ("expr", expr)]
     selected = [(name, value) for name, value in conditions if value is not None]
     if len(selected) != 1:
@@ -600,6 +743,18 @@ def wait_until(
         return {"ok": False, "error": "interval must be a finite non-negative number"}
     if not math.isfinite(float(interval)) or interval < 0:
         return {"ok": False, "error": "interval must be a finite non-negative number"}
+
+    profile = normalize_state_profile(state_profile, default="interaction")
+    if isinstance(profile, dict):
+        return profile
+    limits = validate_limit_args(
+        max_depth=max_depth,
+        max_items=max_items,
+        max_output_bytes=max_output_bytes,
+    )
+    if isinstance(limits, dict):
+        return limits
+    depth, items, budget = limits
 
     try:
         client = _client(project_path)
@@ -627,10 +782,36 @@ def wait_until(
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         elapsed = time.monotonic() - started
+        compact = compact_state(
+            state,
+            profile=profile,
+            include=include,
+            max_depth=depth,
+            max_items=items,
+            max_output_bytes=budget,
+        )
+        matched_info: dict[str, Any] | str = {
+            "type": condition,
+            "value": value,
+        }
         if matched:
-            return {"ok": True, "matched": condition, "elapsed": elapsed, "state": state}
+            return {
+                "ok": True,
+                "matched": matched_info,
+                "elapsed": elapsed,
+                "elapsed_ms": int(elapsed * 1000),
+                "state_profile": profile,
+                "state": compact,
+            }
         if elapsed >= float(timeout):
-            return {"ok": False, "error": "timeout", "elapsed": elapsed, "state": state}
+            return {
+                "ok": False,
+                "error": "timeout",
+                "elapsed": elapsed,
+                "elapsed_ms": int(elapsed * 1000),
+                "state_profile": profile,
+                "state": compact,
+            }
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -638,7 +819,9 @@ def wait_until(
                 "ok": False,
                 "error": "timeout",
                 "elapsed": elapsed,
-                "state": state,
+                "elapsed_ms": int(elapsed * 1000),
+                "state_profile": profile,
+                "state": compact,
             }
         sleep_interval = float(interval) if interval > 0 else 0.001
         time.sleep(min(sleep_interval, remaining))
@@ -664,6 +847,382 @@ def run_autopilot(project_path: str, version: str = "stable", max_runs: int = 16
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _scenario_collect_failure(
+    project_path: str,
+    *,
+    step_index: int,
+    expected: Any,
+    actual: Any,
+    last_action: str | None,
+) -> dict[str, Any]:
+    """Gather a compact diagnostic payload when a scenario step fails."""
+    diag: dict[str, Any] = {
+        "failed_step": step_index,
+        "expected": expected,
+        "actual": actual,
+        "last_action": last_action,
+    }
+    try:
+        state = game_state(
+            project_path,
+            state_profile="interaction",
+            max_output_bytes=4096,
+        )
+        if state.get("ok"):
+            diag["state"] = {
+                key: state.get(key)
+                for key in (
+                    "current_label",
+                    "menu",
+                    "showing_tags",
+                    "dialogue",
+                    "variables",
+                )
+                if key in state
+            }
+            diag["current_label"] = state.get("current_label")
+    except Exception as exc:
+        diag["state_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        choices = list_choices(project_path)
+        if choices.get("ok"):
+            diag["choices"] = choices.get("choices", [])
+    except Exception:
+        pass
+    try:
+        errors = get_errors(project_path)
+        if errors.get("ok") and errors.get("events"):
+            diag["errors"] = errors.get("events")[:5]
+    except Exception:
+        pass
+    try:
+        events = poll_events(project_path)
+        if events.get("ok"):
+            recent = events.get("events") or []
+            if isinstance(recent, list):
+                diag["recent_events"] = recent[-5:]
+    except Exception:
+        pass
+    try:
+        png = screenshot_png(project_path)
+        path = Path(project_path).expanduser().resolve() / ".renforge" / (
+            "scenario-failure-step-%s.png" % step_index
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
+        diag["screenshot"] = str(path)
+    except Exception as exc:
+        diag["screenshot_error"] = f"{type(exc).__name__}: {exc}"
+    return diag
+
+
+def _scenario_step_timeout(step: dict[str, Any], default: float) -> float:
+    for key in ("timeout", "step_timeout"):
+        if key in step and step[key] is not None:
+            try:
+                return float(step[key])
+            except (TypeError, ValueError):
+                return default
+    return default
+
+
+def run_scenario(
+    project_path: str,
+    steps: list[dict[str, Any]] | None = None,
+    *,
+    name: str = "scenario",
+    timeout: float = 30.0,
+    stop_on_failure: bool = True,
+    state_profile: str = "minimal",
+    capture_on_failure: bool = True,
+) -> dict:
+    """Execute a bounded sequence of live interactions and assertions.
+
+    Supported step keys (exactly one action per step): set, eval, click,
+    click_at, advance, scroll, wait, assert, select_choice, capture, save, load,
+    control, send_input.
+    """
+    if steps is None:
+        steps = []
+    if not isinstance(steps, list):
+        return {"ok": False, "error": "steps must be a list"}
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return {"ok": False, "error": "timeout must be a finite non-negative number"}
+    if not math.isfinite(float(timeout)) or timeout < 0 or timeout > 600:
+        return {"ok": False, "error": "timeout must be between 0 and 600 seconds"}
+
+    profile = normalize_state_profile(state_profile, default="minimal")
+    if isinstance(profile, dict):
+        return profile
+
+    started = time.monotonic()
+    deadline = started + float(timeout)
+    results: list[dict[str, Any]] = []
+    last_action: str | None = None
+    overall_ok = True
+
+    action_keys = (
+        "set",
+        "eval",
+        "click",
+        "click_at",
+        "advance",
+        "scroll",
+        "wait",
+        "assert",
+        "select_choice",
+        "capture",
+        "save",
+        "load",
+        "control",
+        "send_input",
+    )
+
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            return {"ok": False, "error": "each step must be an object", "steps": results}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            overall_ok = False
+            results.append({"index": index, "status": "failed", "error": "global timeout"})
+            break
+
+        present = [key for key in action_keys if key in step]
+        if len(present) != 1:
+            overall_ok = False
+            results.append(
+                {
+                    "index": index,
+                    "status": "failed",
+                    "error": "exactly one action key required: %s" % ", ".join(action_keys),
+                }
+            )
+            if stop_on_failure:
+                break
+            continue
+
+        action = present[0]
+        payload = step[action]
+        step_timeout = min(_scenario_step_timeout(step, min(15.0, remaining)), remaining)
+        step_started = time.monotonic()
+        step_result: dict[str, Any] = {"index": index, "action": action}
+        try:
+            if action == "set":
+                if not isinstance(payload, dict):
+                    raise ValueError("set payload must be an object of name→value")
+                for var_name, var_value in payload.items():
+                    set_var(project_path, str(var_name), var_value)
+                last_action = "set(%s)" % ", ".join(str(k) for k in payload)
+                step_result["status"] = "passed"
+            elif action == "eval":
+                expr = payload if isinstance(payload, str) else (payload or {}).get("expr")
+                if not expr:
+                    raise ValueError("eval requires an expression string")
+                reply = eval_expr(project_path, str(expr))
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "eval failed")
+                step_result["status"] = "passed"
+                step_result["value"] = reply.get("value")
+                last_action = "eval"
+            elif action == "click":
+                target = payload if isinstance(payload, dict) else {"text": payload}
+                reply = click_element(
+                    project_path,
+                    text=target.get("text"),
+                    id=target.get("id") or target.get("target"),
+                    screen=target.get("screen"),
+                    exact=bool(target.get("exact", False)),
+                    element_id=target.get("element_id"),
+                    expected_frame_id=target.get("expected_frame_id"),
+                )
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "click failed")
+                step_result["status"] = "passed"
+                step_result["clicked"] = reply.get("id") or reply.get("text")
+                last_action = "click(%s)" % (step_result["clicked"],)
+            elif action == "click_at":
+                coords = payload if isinstance(payload, dict) else {}
+                reply = click_at(
+                    project_path,
+                    coords.get("x"),
+                    coords.get("y"),
+                    coordinate_space=str(coords.get("coordinate_space") or "logical"),
+                    expected_frame_id=coords.get("expected_frame_id"),
+                )
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "click_at failed")
+                step_result["status"] = "passed"
+                last_action = "click_at(%s,%s)" % (coords.get("x"), coords.get("y"))
+            elif action == "advance":
+                count = 1
+                if isinstance(payload, dict):
+                    count = int(payload.get("count") or 1)
+                elif isinstance(payload, (int, float)) and not isinstance(payload, bool):
+                    count = int(payload)
+                for _ in range(max(1, count)):
+                    reply = advance(project_path)
+                    if not reply.get("ok", True) and reply.get("error"):
+                        raise RuntimeError(reply.get("error"))
+                step_result["status"] = "passed"
+                last_action = "advance(%s)" % count
+            elif action == "scroll":
+                scroll = payload if isinstance(payload, dict) else {}
+                reply = send_input(project_path, scroll=scroll)
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "scroll failed")
+                step_result["status"] = "passed"
+                last_action = "scroll"
+            elif action == "wait":
+                wait_payload = payload if isinstance(payload, dict) else {}
+                reply = wait_until(
+                    project_path,
+                    label=wait_payload.get("label"),
+                    screen=wait_payload.get("screen"),
+                    expr=wait_payload.get("expr"),
+                    timeout=step_timeout,
+                    interval=float(wait_payload.get("interval") or 0.25),
+                    state_profile=str(wait_payload.get("state_profile") or profile),
+                    include=wait_payload.get("include"),
+                )
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "wait failed")
+                step_result["status"] = "passed"
+                step_result["matched"] = reply.get("matched")
+                last_action = "wait"
+            elif action == "assert":
+                assertion = payload if isinstance(payload, dict) else {"expr": payload}
+                expr = assertion.get("expr")
+                if not expr:
+                    raise ValueError("assert requires expr")
+                reply = eval_expr(project_path, str(expr))
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "assert eval failed")
+                actual = reply.get("value")
+                expected = assertion.get("equals", True)
+                message = assertion.get("message") or str(expr)
+                if actual != expected and not (expected is True and bool(actual)):
+                    raise AssertionError("%s (actual=%r expected=%r)" % (message, actual, expected))
+                step_result["status"] = "passed"
+                step_result["actual"] = actual
+                last_action = "assert"
+            elif action == "select_choice":
+                choice = payload if isinstance(payload, dict) else {"text": payload}
+                reply = select_choice(
+                    project_path,
+                    text=choice.get("text"),
+                    index=choice.get("index"),
+                )
+                if not reply.get("ok", True) and reply.get("error"):
+                    raise RuntimeError(reply.get("error"))
+                step_result["status"] = "passed"
+                last_action = "select_choice"
+            elif action == "capture":
+                png = screenshot_png(project_path)
+                label = "scenario-capture"
+                if isinstance(payload, dict) and payload.get("name"):
+                    label = str(payload["name"])
+                elif isinstance(payload, str) and payload:
+                    label = payload
+                path = Path(project_path).expanduser().resolve() / ".renforge" / ("%s.png" % label)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(png)
+                step_result["status"] = "passed"
+                step_result["path"] = str(path)
+                last_action = "capture"
+            elif action == "save":
+                slot = payload if isinstance(payload, str) else (payload or {}).get("slot")
+                if not slot:
+                    raise ValueError("save requires slot")
+                reply = saves(project_path, "save", slot=str(slot))
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "save failed")
+                step_result["status"] = "passed"
+                last_action = "save(%s)" % slot
+            elif action == "load":
+                slot = payload if isinstance(payload, str) else (payload or {}).get("slot")
+                if not slot:
+                    raise ValueError("load requires slot")
+                reply = saves(project_path, "load", slot=str(slot))
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "load failed")
+                step_result["status"] = "passed"
+                last_action = "load(%s)" % slot
+            elif action == "control":
+                act = payload if isinstance(payload, str) else (payload or {}).get("action")
+                if not act:
+                    raise ValueError("control requires action")
+                reply = control(project_path, str(act))
+                if not reply.get("ok", True) and reply.get("error"):
+                    raise RuntimeError(reply.get("error"))
+                step_result["status"] = "passed"
+                last_action = "control(%s)" % act
+            elif action == "send_input":
+                data = payload if isinstance(payload, dict) else {"text": payload}
+                reply = send_input(
+                    project_path,
+                    text=data.get("text"),
+                    key=data.get("key"),
+                    scroll=data.get("scroll"),
+                    submit=bool(data.get("submit", False)),
+                )
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "send_input failed")
+                step_result["status"] = "passed"
+                last_action = "send_input"
+            else:
+                raise ValueError("unsupported action: %s" % action)
+        except Exception as exc:
+            overall_ok = False
+            step_result["status"] = "failed"
+            step_result["error"] = str(exc)
+            if capture_on_failure:
+                step_result["diagnostics"] = _scenario_collect_failure(
+                    project_path,
+                    step_index=index,
+                    expected=payload if action == "assert" else action,
+                    actual=str(exc),
+                    last_action=last_action,
+                )
+            results.append(
+                {
+                    **step_result,
+                    "duration_ms": int((time.monotonic() - step_started) * 1000),
+                }
+            )
+            if stop_on_failure:
+                break
+            continue
+
+        step_result["duration_ms"] = int((time.monotonic() - step_started) * 1000)
+        results.append(step_result)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    passed = sum(1 for item in results if item.get("status") == "passed")
+    failed = sum(1 for item in results if item.get("status") == "failed")
+    report: dict[str, Any] = {
+        "ok": overall_ok and failed == 0,
+        "scenario": name,
+        "passed": passed,
+        "failed": failed,
+        "duration_ms": duration_ms,
+        "steps": results,
+    }
+    if not report["ok"]:
+        for item in results:
+            if item.get("status") == "failed":
+                report["failed_step"] = item.get("index")
+                if "diagnostics" in item:
+                    report.update(
+                        {
+                            key: value
+                            for key, value in item["diagnostics"].items()
+                            if key not in report
+                        }
+                    )
+                break
+    return report
+
+
 __all__ = [
     "launch_game",
     "stop_game",
@@ -679,6 +1238,7 @@ __all__ = [
     "list_ui_elements",
     "click_element",
     "click_at",
+    "hit_test",
     "hover_element",
     "get_ui_element_bounds",
     "eval_expr",
@@ -689,4 +1249,5 @@ __all__ = [
     "wait_until",
     "screenshot_png",
     "run_autopilot",
+    "run_scenario",
 ]

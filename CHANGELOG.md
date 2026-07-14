@@ -5,6 +5,24 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
 
 ## [Unreleased]
 
+### Added
+
+- Compact live-state profiles (`minimal` / `interaction` / `debug` / `full`) with
+  serialization limits on `renforge_wait_until` and `renforge_game_state_compact`.
+- `renforge_launch` strategies: `display=auto`, `audio=auto`, structured launch
+  errors (`code` / `phase` / `suggested_fix`), and `savedir=temporary` isolation.
+- `renforge_hit_test` for interactive focus-stack inspection; UI elements now
+  report `action`, `zorder`, `covered`, `clickable`, and logical coordinates.
+- `renforge_run_scenario` to batch set/click/wait/assert steps with automatic
+  failure diagnostics.
+
+### Changed
+
+- `renforge_wait_until` returns a compact interaction-profile state by default
+  and a structured `matched` object (`type` + `value`).
+- Clicks report the element that actually received the event (`received_by`)
+  when another control covers the target.
+
 ## [0.5.0] - 2026-07-13
 
 ### Added

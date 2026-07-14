@@ -104,10 +104,27 @@ class BridgeClient:
     def ping(self) -> dict:
         return self.request("ping")
 
-    def get_state(self, include: list[str] | tuple[str, ...] | None = None) -> dict:
-        """Return live state, with optional compact metrics/audio sections."""
-        payload = None if include is None else {"include": list(include)}
-        return self._checked("get_state", payload)
+    def get_state(
+        self,
+        include: list[str] | tuple[str, ...] | None = None,
+        *,
+        state_profile: str | None = None,
+        variables: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
+        """Return live state, with optional compact metrics/audio sections.
+
+        ``state_profile`` may be ``minimal``, ``interaction``, ``debug``, or
+        ``full`` (default on the bridge). ``variables`` selects additional store
+        paths when the profile is not full.
+        """
+        payload: dict[str, Any] = {}
+        if include is not None:
+            payload["include"] = list(include)
+        if state_profile is not None:
+            payload["state_profile"] = state_profile
+        if variables is not None:
+            payload["variables"] = list(variables)
+        return self._checked("get_state", payload or None)
 
     def get_metrics(self) -> dict:
         """Return render, image-cache, and logical/physical window metrics."""
@@ -399,6 +416,24 @@ class BridgeClient:
             if value is not None:
                 payload[key] = value
         reply = self.request("show_displayable", payload)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
+    def hit_test(
+        self,
+        x: int | float,
+        y: int | float,
+        *,
+        coordinate_space: str = "logical",
+    ) -> dict:
+        """Inspect the interactive focus stack at a point."""
+        reply = self.request(
+            "hit_test",
+            {"x": x, "y": y, "coordinate_space": coordinate_space},
+        )
         if reply.get("error") is not None:
             result = dict(reply)
             result["ok"] = False

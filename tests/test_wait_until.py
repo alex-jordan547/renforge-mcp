@@ -7,8 +7,8 @@ from renforge.tools import live
 def test_wait_until_matches_label_and_returns_final_state(monkeypatch, tmp_path):
     states = iter(
         [
-            {"current_label": "start", "menu": False},
-            {"current_label": "chapter_two", "menu": True},
+            {"current_label": "start", "menu": False, "variables": {"score": 1}},
+            {"current_label": "chapter_two", "menu": True, "variables": {"score": 2}},
         ]
     )
 
@@ -23,9 +23,30 @@ def test_wait_until_matches_label_and_returns_final_state(monkeypatch, tmp_path)
     )
 
     assert result["ok"] is True
-    assert result["matched"] == "label"
-    assert result["state"] == {"current_label": "chapter_two", "menu": True}
+    assert result["matched"] == {"type": "label", "value": "chapter_two"}
+    assert result["state"]["current_label"] == "chapter_two"
+    assert result["state"]["menu"] is True
+    assert result["state_profile"] == "interaction"
+    assert "variables" not in result["state"] or "score" not in result["state"].get("variables", {})
     assert 0 <= result["elapsed"] < 1.0
+
+
+def test_wait_until_full_profile_keeps_variables(monkeypatch, tmp_path):
+    class FakeClient:
+        def get_state(self):
+            return {"current_label": "done", "menu": False, "variables": {"score": 9}}
+
+    monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
+
+    result = live.wait_until(
+        str(tmp_path),
+        label="done",
+        timeout=0,
+        interval=0,
+        state_profile="full",
+    )
+    assert result["ok"] is True
+    assert result["state"]["variables"]["score"] == 9
 
 
 def test_wait_until_times_out_with_final_state(monkeypatch, tmp_path):
@@ -45,7 +66,8 @@ def test_wait_until_times_out_with_final_state(monkeypatch, tmp_path):
 
     assert result["ok"] is False
     assert result["error"] == "timeout"
-    assert result["state"] == {"current_label": "start", "menu": False}
+    assert result["state"]["current_label"] == "start"
+    assert result["state"]["menu"] is False
     assert result["elapsed"] >= 0
 
 

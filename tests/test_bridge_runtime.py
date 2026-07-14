@@ -630,9 +630,22 @@ def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
     assert elements[0]["visible"] is True
     assert elements[0]["type"] == "_FakeWidget"
     assert elements[0]["id"]
+    assert "covered" in elements[0]
+    assert "clickable" in elements[0]
+    assert elements[0]["coordinate_space"] == "logical"
     info = running_bridge.client.list_ui_elements_info()
     assert info["elements"] == elements
     assert len(info["frame_id"]) == 64
+
+
+def test_hit_test_reports_topmost_focusable(running_bridge):
+    elements = running_bridge.client.list_ui_elements()
+    target = elements[0]
+    center = target["center"]
+    hit = running_bridge.client.hit_test(center["x"], center["y"])
+    assert hit["ok"] is True
+    assert hit["topmost"]["id"] == target["id"]
+    assert hit["coordinate_space"] == "logical"
 
 
 def test_hover_element_moves_without_clicking(running_bridge):

@@ -103,13 +103,32 @@ def _register_tools(app: Any) -> None:
         *,
         version: str = "stable",
         warp: str | None = None,
+        display: str = "auto",
+        audio: str = "auto",
+        savedir: str | None = None,
+        persistent: str = "existing",
+        cleanup_on_stop: bool = True,
+        timeout: float | None = None,
+        session: dict[str, Any] | None = None,
     ) -> dict:
         from .dashboard_client import launch_game as launch_via_dashboard
 
+        # Dashboard owns its own display process; only warp/version are delegated.
         delegated = launch_via_dashboard(project_path, version=version, warp=warp)
         if delegated is not None:
             return delegated
-        return live.launch_game(project_path, version=version, warp=warp)
+        return live.launch_game(
+            project_path,
+            version=version,
+            warp=warp,
+            display=display,
+            audio=audio,
+            savedir=savedir,
+            persistent=persistent,
+            cleanup_on_stop=cleanup_on_stop,
+            timeout=timeout,
+            session=session,
+        )
 
     def _context_payload() -> dict[str, Any]:
         dashboard = session_registry.active_dashboard()
@@ -277,22 +296,54 @@ def _register_tools(app: Any) -> None:
     # --- live game control (requires a display; under WSLg it works directly) ---
 
     @tool_decorator()
-    def renforge_launch(project_path: str, warp: str = "", version: str = "stable") -> dict:
+    def renforge_launch(
+        project_path: str,
+        warp: str = "",
+        version: str = "stable",
+        display: str = "auto",
+        audio: str = "auto",
+        savedir: str = "",
+        persistent: str = "existing",
+        cleanup_on_stop: bool = True,
+        timeout: float = 0,
+    ) -> dict:
         """Launch or reuse a game; set warp to a Ren'Py file:line target.
 
-        Needs a display (DISPLAY or WAYLAND_DISPLAY on Linux; WSLg
-        qualifies). Without one, falls back to headless xvfb-run when
-        installed — the result then carries headless=true and no window is
-        visible, but screenshots and input still work — and otherwise fails
-        fast with an actionable error.
+        display/audio default to auto: use the native session when available,
+        otherwise start Xvfb and a dummy SDL audio driver. Pass
+        savedir='temporary' for an isolated save directory cleaned on stop.
+        timeout=0 keeps the launcher default; set a positive value (seconds)
+        to fail faster. Structured errors include code, phase, and suggested_fix.
         """
+        kwargs: dict[str, Any] = {
+            "version": version,
+            "warp": warp or None,
+            "display": display or "auto",
+            "audio": audio or "auto",
+            "persistent": persistent or "existing",
+            "cleanup_on_stop": cleanup_on_stop,
+        }
+        if savedir:
+            kwargs["savedir"] = savedir
+        if timeout and timeout > 0:
+            kwargs["timeout"] = float(timeout)
         return _log_tool_call(
             name="renforge_launch",
-            params={"project_path": project_path, "warp": warp, "version": version},
+            params={
+                "project_path": project_path,
+                "warp": warp,
+                "version": version,
+                "display": display,
+                "audio": audio,
+                "savedir": savedir,
+                "persistent": persistent,
+                "cleanup_on_stop": cleanup_on_stop,
+                "timeout": timeout,
+            },
             project_root=project_path,
             fn=_launch_game,
             args=(project_path,),
-            kwargs={"version": version, "warp": warp or None},
+            kwargs=kwargs,
         )
 
     @tool_decorator()
@@ -381,24 +432,64 @@ def _register_tools(app: Any) -> None:
         project_path: str,
         variable_names: list[str] | None = None,
         variable_prefix: str = "",
+        state_profile: str = "interaction",
+        max_depth: int = 3,
+        max_items: int = 50,
+        max_output_bytes: int = 8192,
     ) -> dict:
-        """Return bounded live state, optionally with selected variables."""
+        """Return bounded live state, optionally with selected variables.
+
+        Defaults to state_profile='interaction' so the full store is never
+        returned in the payload unless state_profile='full' is requested.
+        """
         def _state() -> dict:
+            from .state_compact import compact_state, normalize_state_profile, validate_limit_args
+
             state = live.game_state(project_path)
             if not state.get("ok"):
                 return state
-            result = dict(state)
-            variables = result.pop("variables", {})
+            profile = normalize_state_profile(state_profile, default="interaction")
+            if isinstance(profile, dict):
+                return profile
+            limits = validate_limit_args(
+                max_depth=max_depth,
+                max_items=max_items,
+                max_output_bytes=max_output_bytes,
+            )
+            if isinstance(limits, dict):
+                return limits
+            depth, items, budget = limits
+
+            variables = state.get("variables", {})
             if not isinstance(variables, dict):
                 variables = {}
-            result["variable_count"] = len(variables)
+            variable_count = len(variables)
             requested = set(variable_names or [])
             if requested or variable_prefix:
-                result["variables"] = {
+                variables = {
                     name: value
                     for name, value in variables.items()
                     if name in requested or (variable_prefix and name.startswith(variable_prefix))
                 }
+            # Rebuild a state object for compact_state with the filtered vars.
+            source = dict(state)
+            source["variables"] = variables
+            include = list(variable_names or [])
+            compacted = compact_state(
+                source,
+                profile=profile if profile != "full" else "full",
+                include=include or None,
+                max_depth=depth,
+                max_items=items,
+                max_output_bytes=budget,
+            )
+            # Historical callers always receive the selected variables map when
+            # variable_names/prefix were provided, even under interaction profile.
+            if requested or variable_prefix:
+                compacted["variables"] = variables
+            result = {"ok": True, "state_profile": profile, "variable_count": variable_count}
+            result.update(compacted)
+            result["variable_count"] = variable_count
             return result
 
         return _log_tool_call(
@@ -407,6 +498,10 @@ def _register_tools(app: Any) -> None:
                 "project_path": project_path,
                 "variable_names": variable_names,
                 "variable_prefix": variable_prefix,
+                "state_profile": state_profile,
+                "max_depth": max_depth,
+                "max_items": max_items,
+                "max_output_bytes": max_output_bytes,
             },
             project_root=project_path,
             fn=_state,
@@ -865,8 +960,18 @@ def _register_tools(app: Any) -> None:
         expr: str | None = None,
         timeout: float = 30.0,
         interval: float = 0.5,
+        state_profile: str = "interaction",
+        include: list[str] | None = None,
+        max_depth: int = 3,
+        max_items: int = 50,
+        max_output_bytes: int = 8192,
     ) -> dict:
-        """Wait for exactly one label, screen, or expression condition."""
+        """Wait for exactly one label, screen, or expression condition.
+
+        Returns a compact state by default (state_profile='interaction').
+        Pass include for extra fields/variables; use state_profile='full'
+        only when the complete store is required.
+        """
         def _wait() -> dict:
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 return {"ok": False, "error": "timeout must be a finite non-negative number"}
@@ -881,6 +986,11 @@ def _register_tools(app: Any) -> None:
                 expr=expr,
                 timeout=timeout,
                 interval=interval,
+                state_profile=state_profile,
+                include=include,
+                max_depth=max_depth,
+                max_items=max_items,
+                max_output_bytes=max_output_bytes,
             )
 
         return _log_tool_call(
@@ -892,11 +1002,82 @@ def _register_tools(app: Any) -> None:
                 "expr": expr,
                 "timeout": timeout,
                 "interval": interval,
+                "state_profile": state_profile,
+                "include": include,
+                "max_depth": max_depth,
+                "max_items": max_items,
+                "max_output_bytes": max_output_bytes,
             },
             project_root=project_path,
             fn=_wait,
             args=(),
             kwargs={},
+        )
+
+    @tool_decorator()
+    def renforge_hit_test(
+        project_path: str,
+        x: float,
+        y: float,
+        coordinate_space: str = "logical",
+    ) -> dict:
+        """Inspect the interactive focus stack at a coordinate.
+
+        Returns topmost and underneath focusable controls so agents can detect
+        transparent overlays that intercept clicks.
+        """
+        return _log_tool_call(
+            name="renforge_hit_test",
+            params={
+                "project_path": project_path,
+                "x": x,
+                "y": y,
+                "coordinate_space": coordinate_space,
+            },
+            project_root=project_path,
+            fn=live.hit_test,
+            args=(project_path, x, y),
+            kwargs={"coordinate_space": coordinate_space},
+        )
+
+    @tool_decorator()
+    def renforge_run_scenario(
+        project_path: str,
+        steps: list[dict[str, Any]],
+        name: str = "scenario",
+        timeout: float = 30.0,
+        stop_on_failure: bool = True,
+        state_profile: str = "minimal",
+        capture_on_failure: bool = True,
+    ) -> dict:
+        """Run a multi-step live scenario (click/wait/assert/...) in one call.
+
+        On failure, captures a screenshot and compact diagnostics automatically.
+        Supported step actions: set, eval, click, click_at, advance, scroll,
+        wait, assert, select_choice, capture, save, load, control, send_input.
+        """
+        return _log_tool_call(
+            name="renforge_run_scenario",
+            params={
+                "project_path": project_path,
+                "name": name,
+                "timeout": timeout,
+                "stop_on_failure": stop_on_failure,
+                "state_profile": state_profile,
+                "capture_on_failure": capture_on_failure,
+                "steps": steps,
+            },
+            project_root=project_path,
+            fn=live.run_scenario,
+            args=(project_path,),
+            kwargs={
+                "steps": steps,
+                "name": name,
+                "timeout": timeout,
+                "stop_on_failure": stop_on_failure,
+                "state_profile": state_profile,
+                "capture_on_failure": capture_on_failure,
+            },
         )
 
     @tool_decorator()
@@ -1292,18 +1473,14 @@ def create_app() -> Any:
         "path; every tool accepts project_path directly and no dashboard is "
         "required. When the dashboard is active, renforge_launch delegates "
         "display-bound startup to its process automatically. Prefer bounded scan queries and "
-        "renforge_game_state_compact for large results. For UI interaction, call "
-        "renforge_list_ui_elements first, then pass its frame_id to "
-        "renforge_hover_element, renforge_click_element, or renforge_click_at; use "
-        "renforge_find_image_on_screen for visual template placement. For "
-        "idle/hover alignment, capture named frames with renforge_capture_screenshot, "
-        "hover with renforge_hover_element, estimate motion with "
-        "renforge_estimate_translation, and read painted content bounds with "
-        "renforge_get_ui_element_bounds. For pixel-perfect layout, measure a shown "
-        "image with renforge_get_displayable_bounds, nudge it live with "
-        "renforge_position_element, overlay a grid or crosshair via "
-        "renforge_screenshot, and compare frames with renforge_diff_screenshots. "
-        "For live iteration, use renforge_control(action=\"reload_script\") after "
+        "renforge_game_state_compact (state_profile=interaction by default) for "
+        "large results. Prefer renforge_run_scenario to batch click/wait/assert "
+        "steps. For UI interaction, call renforge_list_ui_elements first, then "
+        "pass its frame_id to renforge_hover_element, renforge_click_element, or "
+        "renforge_click_at; use renforge_hit_test when a click is intercepted by "
+        "an overlay. renforge_launch uses display/audio=auto (Xvfb + dummy audio "
+        "when needed) and accepts savedir=temporary for isolated sessions. For "
+        "live iteration, use renforge_control(action=\"reload_script\") after "
         "edits, renforge_wait_until for one bounded condition, and "
         "renforge_get_errors after risky actions or a stopped process."
     )

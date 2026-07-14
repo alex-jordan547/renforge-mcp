@@ -110,5 +110,6 @@ def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypat
         "ok": True,
         "already_running": True,
         "external": True,
+        "ready": True,
         "current_label": "dashboard_scene",
     }

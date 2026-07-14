@@ -230,8 +230,9 @@ def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
 
     calls = {}
 
-    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
         calls.update(project_path=project_path, version=version, warp=warp)
+        calls["kwargs"] = kwargs
         return {"ok": True, "current_label": "chapter_two"}
 
     monkeypatch.setattr(live, "launch_game", fake_launch)
@@ -245,11 +246,9 @@ def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
 
     result = asyncio.run(_call())
     assert result.is_error is False
-    assert calls == {
-        "project_path": str(tmp_path),
-        "version": "stable",
-        "warp": "game/script.rpy:42",
-    }
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["version"] == "stable"
+    assert calls["warp"] == "game/script.rpy:42"
 
 
 def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
@@ -303,7 +302,7 @@ def test_jump_tool_resolves_a_label_and_relaunches_at_it(tmp_path, monkeypatch) 
     )
     calls = {}
 
-    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **_kwargs):
         calls.update(project_path=project_path, version=version, warp=warp)
         return {"ok": True, "current_label": "chapter_two"}
 
@@ -333,7 +332,7 @@ def test_new_game_tool_relaunches_a_fresh_process_at_start(tmp_path, monkeypatch
     (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
     calls = {}
 
-    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **_kwargs):
         calls.update(project_path=project_path, version=version, warp=warp)
         return {"ok": True, "current_label": "start"}
 
@@ -669,14 +668,13 @@ def test_wait_until_tool_dispatches_condition(tmp_path, monkeypatch) -> None:
         "elapsed": 0.1,
         "state": {"current_label": "chapter_two"},
     }
-    assert calls == {
-        "project_path": str(tmp_path),
-        "label": "chapter_two",
-        "screen": None,
-        "expr": None,
-        "timeout": 5.0,
-        "interval": 0.1,
-    }
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["label"] == "chapter_two"
+    assert calls["screen"] is None
+    assert calls["expr"] is None
+    assert calls["timeout"] == 5.0
+    assert calls["interval"] == 0.1
+    assert calls["state_profile"] == "interaction"
 
 
 def test_wait_until_tool_enforces_maximum_timeout(tmp_path, monkeypatch) -> None:
@@ -712,14 +710,19 @@ def test_wait_until_tool_schema_covers_conditions_and_polling() -> None:
 
     assert all(condition in tool.description for condition in ("label", "screen", "expr"))
     assert tool.parameters["required"] == ["project_path"]
-    assert set(tool.parameters["properties"]) == {
+    assert {
         "project_path",
         "label",
         "screen",
         "expr",
         "timeout",
         "interval",
-    }
+        "state_profile",
+        "include",
+        "max_depth",
+        "max_items",
+        "max_output_bytes",
+    }.issubset(set(tool.parameters["properties"]))
 
 
 def test_ui_tools_expose_semantic_elements_and_coordinate_guards(tmp_path, monkeypatch) -> None:

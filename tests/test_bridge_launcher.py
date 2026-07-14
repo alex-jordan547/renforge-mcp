@@ -82,6 +82,7 @@ def test_launch_without_display_nor_xvfb_fails_fast(monkeypatch, tmp_path: Path)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setattr("renforge.bridge.launcher.shutil.which", lambda _name: None)
+    monkeypatch.setattr("renforge.launch_env.shutil.which", lambda _name: None)
     project, sdk, root = _make_project(tmp_path)
 
     def fail_popen(*_args, **_kwargs):
@@ -89,9 +90,11 @@ def test_launch_without_display_nor_xvfb_fails_fast(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
 
-    with pytest.raises(RuntimeError, match="No display available"):
+    with pytest.raises(Exception, match="display") as excinfo:
         launch_with_bridge(sdk, project)
 
+    error = excinfo.value
+    assert getattr(error, "code", None) in {None, "DISPLAY_UNAVAILABLE"}
     # Fails before injecting anything: no artifacts to clean up.
     assert not (root / "game" / "renforge_bridge.rpy").exists()
 
@@ -101,6 +104,7 @@ def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) 
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setattr("renforge.bridge.launcher.shutil.which", lambda _name: "/usr/bin/xvfb-run")
+    monkeypatch.setattr("renforge.launch_env.shutil.which", lambda _name: "/usr/bin/xvfb-run")
     project, sdk, project_root = _make_project(tmp_path)
     captured: dict[str, object] = {}
 

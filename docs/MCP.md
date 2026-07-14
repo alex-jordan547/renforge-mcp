@@ -261,12 +261,12 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game and inject the temporary bridge. `warp` accepts `file:line`. |
+| `renforge_launch` | Start or reuse a game and inject the temporary bridge. `warp` accepts `file:line`. `display`/`audio` default to `auto` (Xvfb + dummy SDL audio when needed). Pass `savedir=temporary` for isolated saves cleaned on stop. Structured errors include `code`, `phase`, and `suggested_fix`. |
 | `renforge_jump` | Restart a game at a label or `file:line` using Ren'Py warp. |
 | `renforge_new_game` | Start a fresh process at the `start` label. |
-| `renforge_stop` | Stop the running game and remove the injected bridge. |
-| `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. |
-| `renforge_game_state_compact` | Bounded state; select variables by name or prefix. |
+| `renforge_stop` | Stop the running game and remove the injected bridge; reports what was cleaned. |
+| `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. Optional `state_profile` filters the store. |
+| `renforge_game_state_compact` | Bounded state (`state_profile=interaction` by default); select variables by name or prefix; supports serialization limits. |
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. |
 | `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
@@ -279,11 +279,12 @@ guards: each capture hashes a new frame.
 | --- | --- |
 | `renforge_list_choices` | Visible narrative choices. |
 | `renforge_select_choice` | Select a choice by text, preferably, or index. |
-| `renforge_list_ui_elements` | Visible focusable controls: ID, text, role, screen, bounds, center, state, and `frame_id`. |
+| `renforge_list_ui_elements` | Visible focusable controls: semantic `id`, text, role, screen, `action`, bounds, center, `zorder`, `covered`, `clickable`, and `frame_id`. Coordinates are logical Ren'Py space. |
 | `renforge_hover_element` | Move the pointer over a control by ID or text without clicking. Supports `exact`, `screen`, and `expected_frame_id`. |
 | `renforge_get_ui_element_bounds` | Report `focus_bounds` and, for `ImageButton` controls, rendered `painted_bounds` for the active state. Returns `painted_bounds_available: false` with a reason when the painted content cannot be measured. |
-| `renforge_click_element` | Click a control by ID or text. Supports `exact`, `screen`, and `expected_frame_id`. |
+| `renforge_click_element` | Click a control by ID or text. Supports `exact`, `screen`, and `expected_frame_id`. Returns `received_by` when another control owns the hit point. |
 | `renforge_click_at` | Click `logical` or `screenshot` coordinates, with `expected_frame_id` and `expected_state` guards. |
+| `renforge_hit_test` | Inspect the interactive focus stack at a point (`topmost` + `underneath`) to diagnose overlays that intercept clicks. |
 | `renforge_capture_screenshot` | Persist the current frame as a named PNG under `<project>/.renforge/captures/` and return `path`, `relative_path`, SHA-256, and dimensions for later diff/translation tools. |
 | `renforge_estimate_translation` | Estimate `dx`/`dy` between two saved PNGs with Pillow, returning `confidence`, `support`, and explicit unavailability when the measure is ambiguous. |
 | `renforge_find_image_on_screen` | Locate a local PNG template in the current frame and return confidence, bounds, center, and frame guard. |
@@ -301,7 +302,8 @@ guards: each capture hashes a new frame.
 | `renforge_set_var` | Write a store variable. |
 | `renforge_poll_events` | Read label, dialogue, and exception events from a cursor. |
 | `renforge_get_errors` | Read recent bridge errors or bounded crash-file tails with mtimes and exit code when tracked. |
-| `renforge_wait_until` | Wait for exactly one `label`, `screen`, or `expr` condition with bounded `timeout` (maximum 120 seconds) and polling `interval`. |
+| `renforge_wait_until` | Wait for exactly one `label`, `screen`, or `expr` condition with bounded `timeout` (maximum 120 seconds) and polling `interval`. Returns compact state by default (`state_profile=interaction`); pass `include` for extra fields and `state_profile=full` only when needed. |
+| `renforge_run_scenario` | Execute a multi-step live scenario (`set`, `click`, `wait`, `assert`, …) in one call; captures diagnostics on failure. |
 | `renforge_autopilot` | Explore branches and report label coverage and crashes. |
 
 ### Project, translation, builds, and Ren'Py documentation
@@ -324,8 +326,9 @@ guards: each capture hashes a new frame.
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_new_game`, `renforge_stop`, `renforge_advance`,
 `renforge_control`, `renforge_send_input`, `renforge_saves`,
-`renforge_select_choice`, `renforge_click_*`, `renforge_position_element`,
-`renforge_set_var`, `renforge_generate_translations`, `renforge_web_build`, and
+`renforge_select_choice`, `renforge_click_*`, `renforge_run_scenario`,
+`renforge_position_element`, `renforge_set_var`,
+`renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
 
 `renforge_send_input` is also stateful: supply exactly one mode per call. Text

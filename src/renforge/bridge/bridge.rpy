@@ -341,10 +341,65 @@ init python:
             "arguments": arguments,
         }
 
+    def _renforge_selected_store_variables(names):
+        """Return a compact map of selected store paths (supports dotted names)."""
+        selected = {}
+        if not names:
+            return selected
+        store = renpy.store
+        for raw_name in names:
+            try:
+                name = str(raw_name)
+            except Exception:
+                continue
+            if not name:
+                continue
+            if "." not in name:
+                if hasattr(store, name):
+                    try:
+                        selected[name] = _renforge_jsonable(getattr(store, name))
+                    except Exception:
+                        pass
+                continue
+            # Dotted path: walk attributes from renpy.store / renpy modules.
+            parts = name.split(".")
+            current = store
+            if parts[0] == "config":
+                current = renpy.config
+                parts = parts[1:]
+            elif parts[0] == "_preferences":
+                current = getattr(store, "_preferences", None)
+                parts = parts[1:]
+            ok = current is not None
+            for part in parts:
+                if not ok:
+                    break
+                try:
+                    current = getattr(current, part)
+                except Exception:
+                    ok = False
+            if ok:
+                try:
+                    selected[name] = _renforge_jsonable(current)
+                except Exception:
+                    pass
+        return selected
+
     def _renforge_h_get_state(payload):
         include, include_error = _renforge_state_includes(payload)
         if include_error is not None:
             return {"ok": False, "error": include_error}
+        payload = payload or {}
+        profile = payload.get("state_profile") or "full"
+        try:
+            profile = str(profile).strip().lower()
+        except Exception:
+            profile = "full"
+        if profile not in ("minimal", "interaction", "debug", "full"):
+            return {
+                "ok": False,
+                "error": "state_profile must be one of: minimal, interaction, debug, full",
+            }
         try:
             showing = list(renpy.get_showing_tags())
         except Exception:
@@ -358,8 +413,43 @@ init python:
             "current_label": bridge.current_label if bridge is not None else None,
             "showing_tags": showing,
             "menu": menu_active,
-            "variables": _renforge_store_snapshot(),
+            "state_profile": profile,
         }
+        if bridge is not None and getattr(bridge, "last_say", None):
+            result["dialogue"] = bridge.last_say
+        try:
+            result["skipping"] = _renforge_jsonable(getattr(renpy.config, "skipping", None))
+        except Exception:
+            pass
+        try:
+            prefs = getattr(renpy.store, "_preferences", None)
+            if prefs is not None:
+                result["auto"] = bool(getattr(prefs, "afm_enable", False))
+        except Exception:
+            pass
+
+        extra_vars = payload.get("variables") or payload.get("variable_names") or []
+        if isinstance(extra_vars, str):
+            extra_vars = [extra_vars]
+        if profile == "full":
+            result["variables"] = _renforge_store_snapshot()
+        elif profile in ("interaction", "debug"):
+            names = [
+                "config.skipping",
+                "_preferences.skip_after_choices",
+                "_preferences.skip_unseen",
+                "_preferences.afm_enable",
+            ]
+            if extra_vars:
+                names.extend(list(extra_vars))
+            selected = _renforge_selected_store_variables(names)
+            if selected:
+                result["variables"] = selected
+        elif extra_vars:
+            selected = _renforge_selected_store_variables(list(extra_vars))
+            if selected:
+                result["variables"] = selected
+
         if "metrics" in include:
             result["metrics"] = _renforge_h_get_metrics({})
         if "audio" in include:
@@ -963,7 +1053,7 @@ init python:
         for owner in (focus, widget):
             if owner is None:
                 continue
-            for attr_name in ("id", "widget_id", "focus_id", "name", "key"):
+            for attr_name in ("mcp_id", "id", "widget_id", "focus_id", "name", "key"):
                 value = getattr(owner, attr_name, None)
                 if value is None or callable(value):
                     continue
@@ -975,14 +1065,87 @@ init python:
                     return value
         return None
 
+    def _renforge_focus_action_name(focus, widget):
+        """Best-effort human/action name for a focusable control."""
+        for owner in (widget, focus):
+            if owner is None:
+                continue
+            for attr_name in ("action", "clicked", "alternate", "hovered"):
+                value = getattr(owner, attr_name, None)
+                if value is None:
+                    continue
+                # Flatten single-item lists of actions.
+                if isinstance(value, (list, tuple)) and len(value) == 1:
+                    value = value[0]
+                try:
+                    if hasattr(value, "__class__"):
+                        name = getattr(value.__class__, "__name__", None)
+                        if name and name not in ("list", "tuple", "object"):
+                            return str(name)
+                    return str(value)
+                except Exception:
+                    continue
+        return None
+
+    def _renforge_focus_zorder(focus, widget, ordinal):
+        for owner in (widget, focus):
+            if owner is None:
+                continue
+            for attr_name in ("zorder", "z", "layer_zorder"):
+                value = getattr(owner, attr_name, None)
+                if value is None or callable(value):
+                    continue
+                try:
+                    return int(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        # Focus list order is bottom→top in Ren'Py; higher index wins hits.
+        return ordinal
+
+    def _renforge_bounds_contain(bounds, x, y):
+        try:
+            left = int(bounds.get("x", 0))
+            top = int(bounds.get("y", 0))
+            width = int(bounds.get("width", 0))
+            height = int(bounds.get("height", 0))
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            return False
+        return left <= x < left + width and top <= y < top + height
+
+    def _renforge_mark_coverage(elements):
+        """Annotate each element with whether a higher-z control covers its center."""
+        # elements is a list of (focus, element) sorted by focus list order.
+        for index, (_focus, element) in enumerate(elements):
+            center = element.get("center") or {}
+            try:
+                cx = int(center.get("x"))
+                cy = int(center.get("y"))
+            except (TypeError, ValueError, OverflowError):
+                element["covered"] = False
+                element["clickable"] = bool(element.get("enabled", True)) and bool(element.get("visible", True))
+                continue
+            covered = False
+            for later_focus, later in elements[index + 1 :]:
+                bounds = later.get("bounds") or {}
+                if _renforge_bounds_contain(bounds, cx, cy):
+                    covered = True
+                    break
+            element["covered"] = covered
+            element["clickable"] = (
+                bool(element.get("enabled", True))
+                and bool(element.get("visible", True))
+                and not covered
+            )
+        return elements
+
     def _renforge_focusable_elements():
         """Return ``(focus, element)`` pairs for visible focus rectangles.
 
         ``focus_list`` is Ren'Py's authoritative list of controls that can
         receive pointer/keyboard focus.  It already excludes hidden screens;
-        zero-sized and off-layout entries are omitted here.  IDs are supplied
-        by the displayable when possible and otherwise are deterministic for
-        the current focus list, so an agent can list and immediately click.
+        zero-sized and off-layout entries are omitted here.  IDs prefer an
+        explicit ``mcp_id`` / widget id, then ``screen.action`` form, then a
+        deterministic synthetic path so an agent can list and immediately click.
         """
         elements = []
         used_ids = {}
@@ -1008,11 +1171,17 @@ init python:
             text = _renforge_focus_text(widget)
             screen = _renforge_screen_name(focus)
             role = _renforge_focus_type(focus, widget)
+            action_name = _renforge_focus_action_name(focus, widget)
+            zorder = _renforge_focus_zorder(focus, widget, ordinal)
             element_id = _renforge_explicit_focus_id(focus, widget)
             if not element_id:
-                # Include text/type/screen where available so IDs remain useful
-                # across a redraw; ordinal disambiguates duplicate labels.
-                base = "%s:%s:%s" % (screen or "screen", role, text or ordinal)
+                # Prefer screen.action (semantic) over ordinal-heavy paths.
+                if screen and action_name:
+                    base = "%s.%s" % (screen, action_name)
+                elif screen and text:
+                    base = "%s.%s" % (screen, text)
+                else:
+                    base = "%s:%s:%s" % (screen or "screen", role, text or ordinal)
                 element_id = base
             count = used_ids.get(element_id, 0)
             used_ids[element_id] = count + 1
@@ -1026,14 +1195,17 @@ init python:
                 "type": role,
                 "role": role,
                 "screen": screen,
+                "action": action_name,
                 "bounds": bounds,
                 "center": {"x": x + w // 2, "y": y + h // 2},
+                "zorder": zorder,
                 "enabled": _renforge_focus_enabled(focus, widget),
                 "visible": True,
                 "index": ordinal,
+                "coordinate_space": "logical",
             }
             elements.append((focus, element))
-        return elements
+        return _renforge_mark_coverage(elements)
 
     def _renforge_focusable_choices():
         # Keep the historical choices API (text + compact index) unchanged;
@@ -1181,19 +1353,84 @@ init python:
         if not element.get("enabled", True):
             return {"ok": False, "error": "UI element is disabled", "element": element}
         x, y = _renforge_click_focus(focus)
+        # Report which focusable actually owns this coordinate (coverage).
+        hit = _renforge_hit_stack(x, y)
+        topmost = hit.get("topmost")
         result = {
             "ok": True,
             "id": element.get("id"),
             "text": element.get("text"),
             "type": element.get("type"),
             "screen": element.get("screen"),
+            "action": element.get("action"),
             "bounds": element.get("bounds"),
             "x": x,
             "y": y,
+            "coordinate_space": "logical",
             "element": element,
+            "received_by": topmost,
         }
+        if topmost is not None and topmost.get("id") != element.get("id"):
+            result["warning"] = (
+                "The intended button may be covered by another interactive displayable."
+            )
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
+        return result
+
+    def _renforge_hit_stack(x, y):
+        """Return topmost and underneath focusables containing point (x, y)."""
+        hits = []
+        for _focus, element in _renforge_focusable_elements():
+            bounds = element.get("bounds") or {}
+            if _renforge_bounds_contain(bounds, x, y):
+                hits.append(element)
+        # focus_list is bottom→top; last entry is topmost.
+        topmost = hits[-1] if hits else None
+        underneath = list(reversed(hits[:-1])) if len(hits) > 1 else []
+        result = {
+            "ok": True,
+            "x": x,
+            "y": y,
+            "coordinate_space": "logical",
+            "topmost": topmost,
+            "underneath": underneath,
+        }
+        if topmost is not None and underneath:
+            result["warning"] = (
+                "The intended button is covered by another interactive displayable."
+                if False
+                else "Multiple interactive displayables overlap this point."
+            )
+        return result
+
+    def _renforge_h_hit_test(payload):
+        payload = payload or {}
+        try:
+            raw_x, raw_y = payload.get("x"), payload.get("y")
+            if isinstance(raw_x, bool) or isinstance(raw_y, bool):
+                raise ValueError
+            x, y = int(round(float(raw_x))), int(round(float(raw_y)))
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "error": "hit_test requires numeric x and y"}
+        if x < 0 or y < 0:
+            return {"ok": False, "error": "hit_test coordinates must be non-negative"}
+
+        coordinate_space = str(payload.get("coordinate_space", "logical") or "logical").casefold()
+        if coordinate_space not in ("logical", "screenshot"):
+            return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+
+        frame_data = None
+        x, y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+            x, y, coordinate_space, frame_data
+        )
+        if coordinate_error is not None:
+            return {"ok": False, "error": coordinate_error}
+
+        result = _renforge_hit_stack(x, y)
+        result["coordinate_space"] = "logical"
+        if coordinate_space == "screenshot":
+            result["requested_coordinate_space"] = "screenshot"
         return result
 
     def _renforge_move_mouse(focus):
@@ -1729,6 +1966,7 @@ init python:
         "hover_element": _renforge_h_hover_element,
         "get_ui_element_bounds": _renforge_h_get_ui_element_bounds,
         "click_at": _renforge_h_click_at,
+        "hit_test": _renforge_h_hit_test,
         "get_displayable_bounds": _renforge_h_get_displayable_bounds,
         "show_displayable": _renforge_h_show_displayable,
     }
