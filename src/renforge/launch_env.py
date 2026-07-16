@@ -69,10 +69,11 @@ class EnvironmentCapabilities:
         }
 
 
-def _detect_environment_name() -> str:
-    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+def _detect_environment_name(env: dict[str, str] | None = None) -> str:
+    source = env if env is not None else os.environ
+    if source.get("WSL_DISTRO_NAME") or source.get("WSL_INTEROP"):
         return "wsl"
-    if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"):
+    if source.get("GITHUB_ACTIONS") or source.get("CI"):
         return "ci"
     if sys.platform.startswith("linux"):
         return "linux"
@@ -118,7 +119,7 @@ def detect_environment(env: dict[str, str] | None = None) -> EnvironmentCapabili
 
     return EnvironmentCapabilities(
         platform=sys.platform,
-        environment=_detect_environment_name(),
+        environment=_detect_environment_name(source),
         display_available=bool(display or wayland or native_desktop),
         wayland_available=bool(wayland),
         xvfb_available=xvfb,
