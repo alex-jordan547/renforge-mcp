@@ -235,6 +235,26 @@ def test_estimate_translation_crops_to_active_bbox_on_large_canvas() -> None:
     assert (result["dx"], result["dy"]) == (5, 4)
 
 
+def test_estimate_translation_does_not_wrap_large_shifts() -> None:
+    image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    from renforge.image_ops import estimate_translation
+
+    before = image_module.new("RGBA", (100, 100), (0, 0, 0, 0))
+    after = image_module.new("RGBA", (100, 100), (0, 0, 0, 0))
+    before.paste((220, 40, 40, 255), (12, 12, 36, 36))
+    after.paste((220, 40, 40, 255), (40, 34, 64, 58))
+
+    result = estimate_translation(
+        before,
+        after,
+        region=(8, 8, 60, 54),
+        max_shift=32,
+    )
+
+    assert result["available"] is True
+    assert (result["dx"], result["dy"]) == (28, 22)
+
+
 def test_estimate_translation_rejects_excessive_work_budget() -> None:
     image_module = pytest.importorskip("PIL.Image", reason="Pillow not installed")
     from renforge import image_ops

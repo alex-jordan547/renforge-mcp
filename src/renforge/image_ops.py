@@ -127,6 +127,22 @@ def _stable_visual_mask(image: Image.Image, *, threshold: int) -> Image.Image:
     return ImageChops.multiply(visible, bright)
 
 
+def _translate_mask(mask: Image.Image, dx: int, dy: int) -> Image.Image:
+    """Translate a mask while discarding pixels that leave the image."""
+
+    width, height = mask.size
+    source_left = max(0, -dx)
+    source_top = max(0, -dy)
+    source_right = min(width, width - dx)
+    source_bottom = min(height, height - dy)
+    shifted = Image.new(mask.mode, mask.size, 0)
+    if source_right <= source_left or source_bottom <= source_top:
+        return shifted
+    source = mask.crop((source_left, source_top, source_right, source_bottom))
+    shifted.paste(source, (source_left + dx, source_top + dy))
+    return shifted
+
+
 def _visible_anchor_points(alpha: bytes, width: int, height: int) -> list[tuple[int, int]]:
     """Return a small, deterministic set of opaque template sample points."""
 
@@ -756,7 +772,7 @@ def estimate_translation(
     runner_up = 0
     for dy in range(-max_shift, max_shift + 1):
         for dx in range(-max_shift, max_shift + 1):
-            shifted = ImageChops.offset(first_mask, dx, dy)
+            shifted = _translate_mask(first_mask, dx, dy)
             overlap = ImageChops.multiply(shifted, second_mask).histogram()[255]
             if overlap > best[2]:
                 runner_up = best[2]

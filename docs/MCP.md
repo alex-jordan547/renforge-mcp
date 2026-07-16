@@ -172,8 +172,10 @@ renforge_get_errors(project_path=project)
 later diff or translation estimate. The save call creates a named checkpoint
 before selecting Branch B; use
 `renforge_saves(project_path=project, action="load", slot="branch-a")` to return
-to it. `renforge_wait_until` accepts exactly one of `label`, `screen`, or
-`expr`, and `timeout` is capped at 120 seconds.
+to it. A successful load reply includes `restored_label` so the agent can
+attribute the restored state before polling again. `renforge_wait_until`
+accepts exactly one of `label`, `screen`, or `expr`, and `timeout` is capped at
+120 seconds.
 
 ## Pixel-perfect placement
 
@@ -215,6 +217,9 @@ Notes:
   alpha-painted bounds of its active state. Use `painted_bounds` as the default
   region for `renforge_estimate_translation` when available; otherwise pass an
   explicit region from `focus_bounds`.
+- Translation search is bounded to protect the MCP process. If a large region
+  and `max_shift` exceed the work budget, tighten the region around the painted
+  content or reduce `max_shift`.
 
 ## ImageButton idle→hover alignment
 
@@ -270,7 +275,7 @@ guards: each capture hashes a new frame.
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. Emits correlated business events; `wait_for_effect=true` waits for the matching event. |
 | `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
-| `renforge_saves` | Run `save`, `load`, or `list` for named slots. Save/load require `slot`; save accepts optional `extra_info`; list accepts optional `regexp` and returns `name`, `extra_info`, and `mtime` without screenshots. |
+| `renforge_saves` | Run `save`, `load`, or `list` for named slots. Save/load require `slot`; save accepts optional `extra_info`; load returns `restored_label`; list accepts optional `regexp` and returns `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. Passing only one of `width`/`height` keeps the game's aspect ratio. |
 
 ### Choices and user interface
@@ -286,7 +291,7 @@ guards: each capture hashes a new frame.
 | `renforge_click_at` | Click `logical` or `screenshot` coordinates, with `expected_frame_id` and `expected_state` guards. |
 | `renforge_hit_test` | Inspect the interactive focus stack at a point (`topmost` + `underneath`) to diagnose overlays that intercept clicks. |
 | `renforge_capture_screenshot` | Persist the current frame as a named PNG under `<project>/.renforge/captures/` and return `path`, `relative_path`, SHA-256, and dimensions for later diff/translation tools. |
-| `renforge_estimate_translation` | Estimate `dx`/`dy` between two saved PNGs with Pillow, returning `confidence`, `support`, and explicit unavailability when the measure is ambiguous. |
+| `renforge_estimate_translation` | Estimate `dx`/`dy` between two saved PNGs with Pillow, returning `confidence`, `support`, and explicit unavailability when the measure is ambiguous. Search work is bounded; use a tighter region or lower `max_shift` when needed. |
 | `renforge_find_image_on_screen` | Locate a local PNG template in the current frame and return confidence, bounds, center, and frame guard. |
 | `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
 | `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |

@@ -49,3 +49,6 @@ errors.txt
 .renforge/
 screens
 *.mp4
+
+# Local design source files; runtime copies live under ui/public/brand.
+/assets/

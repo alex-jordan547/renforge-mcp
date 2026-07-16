@@ -1018,6 +1018,7 @@ def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
 
     assert reply["ok"] is True
     assert reply["slot"] == "branch-a"
+    assert "restored_label" in reply
     assert len(scheduled) == 1
     with pytest.raises(_LoadControl, match="transfers control"):
         scheduled[0][0](*scheduled[0][1], **scheduled[0][2])

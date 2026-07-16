@@ -18,6 +18,19 @@ def test_detect_environment_reports_display_flags(monkeypatch):
     assert caps.to_dict()["display"] == ":0"
 
 
+def test_detect_environment_treats_windows_desktop_as_native_display(monkeypatch):
+    monkeypatch.setattr("renforge.launch_env.sys.platform", "win32")
+    monkeypatch.setattr("renforge.launch_env.shutil.which", lambda _name: None)
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.delenv("WSL_INTEROP", raising=False)
+
+    caps = detect_environment({})
+
+    assert caps.environment == "windows"
+    assert caps.display_available is True
+    assert resolve_display_strategy("auto", caps) == ("native", {})
+
+
 def test_resolve_display_auto_falls_back_to_xvfb(monkeypatch):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)

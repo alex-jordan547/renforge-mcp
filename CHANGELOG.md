@@ -5,6 +5,8 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-16
+
 ### Added
 
 - Compact live-state profiles (`minimal` / `interaction` / `debug` / `full`) with
@@ -29,6 +31,13 @@ versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
   when another control covers the target.
 - Bridge `poll_events` entries include `timestamp` and optional
   `correlation_id` for attribution.
+
+### Fixed
+
+- Translation estimation discards pixels shifted outside the search region
+  instead of wrapping them around the opposite edge.
+- Live save/load verification now enforces the documented `restored_label`
+  response contract.
 
 ## [0.5.0] - 2026-07-13
 

@@ -427,7 +427,11 @@ def test_live_named_save_state_round_trip(sdk, demo_copy: Path) -> None:
 
         client.set_var("courage", 99)
         loaded = client.load_slot("branch-a")
-        assert loaded == {"ok": True, "slot": "branch-a"}
+        assert loaded == {
+            "ok": True,
+            "slot": "branch-a",
+            "restored_label": "village_gate",
+        }
 
         for _ in range(20):
             try:
@@ -640,9 +644,9 @@ def test_live_imagebutton_idle_hover_pipeline(sdk, demo_copy: Path) -> None:
         estimate = estimate_translation(
             images_dir / "renforge_sdk_idle.png",
             images_dir / "renforge_sdk_hover.png",
-            region=(0, 0, 100, 100),
+            region=(8, 8, 60, 54),
             threshold=16,
-            max_shift=40,
+            max_shift=32,
         )
         assert estimate["ok"] is True, estimate
         assert estimate.get("available") is True, estimate

@@ -114,11 +114,12 @@ def detect_environment(env: dict[str, str] | None = None) -> EnvironmentCapabili
     audio = _audio_available(source)
     if not audio:
         notes.append("no audio device detected; dummy SDL driver will be used when audio=auto")
+    native_desktop = sys.platform == "darwin" or sys.platform.startswith("win")
 
     return EnvironmentCapabilities(
         platform=sys.platform,
         environment=_detect_environment_name(),
-        display_available=bool(display or wayland),
+        display_available=bool(display or wayland or native_desktop),
         wayland_available=bool(wayland),
         xvfb_available=xvfb,
         audio_available=audio,
