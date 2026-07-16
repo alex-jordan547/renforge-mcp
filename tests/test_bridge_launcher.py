@@ -128,13 +128,24 @@ def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) 
 
     # close() must target the process group, not just the xvfb-run wrapper.
     group_kill: dict[str, object] = {}
-    monkeypatch.setattr("renforge.bridge.launcher.os.getpgid", lambda _pid: 4242)
+    kill_signal = getattr(signal, "SIGKILL", 9)
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.signal.SIGKILL",
+        kill_signal,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.os.getpgid",
+        lambda _pid: 4242,
+        raising=False,
+    )
     monkeypatch.setattr(
         "renforge.bridge.launcher.os.killpg",
         lambda pgid, sig: group_kill.update(pgid=pgid, sig=sig),
+        raising=False,
     )
     session.close(timeout=0.1)
-    assert group_kill == {"pgid": 4242, "sig": signal.SIGKILL}
+    assert group_kill == {"pgid": 4242, "sig": kill_signal}
 
 
 def test_launch_accepts_display_provided_via_extra_env(monkeypatch, tmp_path: Path) -> None:
