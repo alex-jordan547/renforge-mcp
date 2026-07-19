@@ -41,9 +41,10 @@ def test_public_god_mode_tools_and_workflow_are_documented() -> None:
         "renforge_wait_until",
     )
 
+    # Full tool catalogue + workflow live in the MCP guide; the README stays
+    # install-first and only needs a clear pointer to that guide.
     for tool in public_tools:
         assert f"`{tool}`" in docs
-        assert f"`{tool}`" in readme
 
     for marker in (
         "renforge_launch(project_path=project)",
@@ -56,7 +57,7 @@ def test_public_god_mode_tools_and_workflow_are_documented() -> None:
         "renforge_get_errors(project_path=project)",
     ):
         assert marker in docs
-        assert marker in readme
 
     assert 'include=["metrics", "audio"]' in docs
-    assert 'include=["metrics", "audio"]' in readme
+    assert "docs/MCP.md" in readme
+    assert "full tool catalogue" in readme.lower()
