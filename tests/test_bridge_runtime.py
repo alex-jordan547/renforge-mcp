@@ -869,6 +869,7 @@ def test_script_reload_reregisters_callbacks_on_surviving_bridge(running_bridge)
 
     renpy = running_bridge.renpy
     bridge_before = sys.modules["_renforge_runtime"].bridge
+    thread_before = bridge_before.thread
     listeners_before = sum(
         1 for t in threading.enumerate() if t.name == "renforge.bridge.listener"
     )
@@ -885,12 +886,17 @@ def test_script_reload_reregisters_callbacks_on_surviving_bridge(running_bridge)
 
     exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), {"__name__": "bridge_rpy", "renpy": renpy})
 
-    # The live bridge and socket are reused: no second listener, same port.
+    # The live bridge and socket are reused: same thread object, no second bind.
+    # Other fixtures may leave daemon listeners that exit mid-test (especially
+    # on Windows), so only assert this bridge's thread and that we did not
+    # spawn an extra listener.
     assert sys.modules["_renforge_runtime"].bridge is bridge_before
+    assert bridge_before.thread is thread_before
+    assert thread_before is not None and thread_before.is_alive()
     listeners_after = sum(
         1 for t in threading.enumerate() if t.name == "renforge.bridge.listener"
     )
-    assert listeners_after == listeners_before
+    assert listeners_after <= listeners_before
     assert renpy.store.renforge_bridge_port == bridge_before.port
 
     # Every callback is back on the fresh config, exactly once.
@@ -903,6 +909,7 @@ def test_script_reload_reregisters_callbacks_on_surviving_bridge(running_bridge)
     exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), {"__name__": "bridge_rpy", "renpy": renpy})
     assert [cb.__name__ for cb in renpy.config.periodic_callbacks] == ["renforge_drain_bridge"]
     assert len(renpy.config.label_callbacks) == 1
+    assert bridge_before.thread is thread_before
 
     assert running_bridge.client.ping().get("pong") is True
 
