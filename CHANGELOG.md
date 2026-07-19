@@ -1,7 +1,7 @@
 # Changelog
 
 All notable RenForge releases are recorded here. Versions follow semantic
-versioning; the 0.4.0 additions are backwards-compatible with 0.3.0.
+versioning.
 
 ## [Unreleased]
 

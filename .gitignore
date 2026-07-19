@@ -36,6 +36,8 @@ examples/demo_game/game/gui/**/*.png
 # The public MCP reference is versioned alongside the code.
 docs/*
 !docs/MCP.md
+!docs/ARCHITECTURE.md
+MCP_AGENT_IMPROVEMENTS.md
 
 # Ren'Py / RenForge runtime artifacts
 *.rpyc

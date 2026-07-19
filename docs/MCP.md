@@ -81,6 +81,40 @@ For Claude Code:
 claude mcp add renforge -- uvx renforge@latest serve
 ```
 
+For VS Code (GitHub Copilot), in `.vscode/mcp.json` inside your workspace:
+
+```json
+{
+  "servers": {
+    "renforge": {
+      "command": "uvx",
+      "args": ["renforge@latest", "serve"]
+    }
+  }
+}
+```
+
+For Zed, in `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "renforge": {
+      "source": "custom",
+      "command": "uvx",
+      "args": ["renforge@latest", "serve"]
+    }
+  }
+}
+```
+
+> **Windows / GUI clients:** Desktop apps (Claude Desktop, Cursor, etc.) may not
+> inherit your shell `PATH`. If `uvx` is not found, set `command` to the
+> absolute path of `uvx` (for example `C:\Users\you\.local\bin\uvx.exe`).
+
+> Don't have `uv`? Run `pipx install renforge`, then replace `uvx renforge@latest`
+> with `renforge` in your config (and `pipx upgrade renforge` to update).
+
 Every project-related tool takes `project_path`. Call `renforge_info` first
 when possible: it returns `active_project` with a `project_source` explaining
 how it was resolved — the dashboard selection, the `serve --project` default,

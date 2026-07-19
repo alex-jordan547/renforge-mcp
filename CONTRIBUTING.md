@@ -36,4 +36,4 @@ npm run build    # builds into src/renforge/ui/static/ (committed)
 
 ## Project layout
 
-See the [Architecture section of the README](README.md#architecture).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

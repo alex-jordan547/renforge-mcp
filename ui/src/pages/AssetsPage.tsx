@@ -97,7 +97,7 @@ export function AssetsPage() {
       <div className="wrap">
         <div className="page-head reveal in">
           <h2>Assets</h2>
-          <span className="hint">inventaire · /api/assets</span>
+          <span className="hint">inventory · /api/assets</span>
         </div>
         <div className="statusLine">Loading inventory…</div>
       </div>
@@ -109,7 +109,7 @@ export function AssetsPage() {
       <div className="wrap">
         <div className="page-head reveal in">
           <h2>Assets</h2>
-          <span className="hint">inventaire · /api/assets</span>
+          <span className="hint">inventory · /api/assets</span>
         </div>
         <p className="errorText">Unable to load assets: {error}</p>
       </div>
@@ -120,7 +120,7 @@ export function AssetsPage() {
     <div className="wrap">
       <div className="page-head reveal in">
         <h2>Assets</h2>
-        <span className="hint">inventaire · /api/assets</span>
+        <span className="hint">inventory · /api/assets</span>
       </div>
 
       <div className="stat-grid reveal in" style={{ animationDelay: ".05s" }}>

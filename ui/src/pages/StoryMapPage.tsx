@@ -311,7 +311,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
               onClick={() => setShowEdgeLabels((visible) => !visible)}
             >
               <span className="map-toggle-indicator" aria-hidden="true" />
-              {showEdgeLabels ? "Masquer les transitions" : "Afficher les transitions"}
+              {showEdgeLabels ? "Hide transitions" : "Show transitions"}
             </button>
           </div>
         </div>
@@ -380,7 +380,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
       {warpBusy ? (
         <div className="statusLine">Restarting game on "{warpTarget}"…</div>
       ) : layoutBusy ? (
-        <div className="statusLine">Ajustement du graphe…</div>
+        <div className="statusLine">Adjusting graph…</div>
       ) : null}
     </div>
   );
