@@ -4,7 +4,8 @@ Opt-in: these download/use a real Ren'Py SDK and invoke it. Enable with::
 
     RENFORGE_SDK_TESTS=1 pytest tests/test_integration_sdk.py
 
-Optionally pin the version with ``RENFORGE_SDK_VERSION`` (default: 8.3.7).
+Optionally pin the version with ``RENFORGE_SDK_VERSION`` (default: the
+``DEFAULT_RENPY_VERSION`` RenForge ships with).
 Each test runs against a temp copy of the demo so the committed one is never
 polluted with compiled ``.rpyc``/cache artifacts.
 """
@@ -28,9 +29,9 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 
 @pytest.fixture(scope="module")
 def sdk():
-    from renforge.sdk import get_or_install_sdk
+    from renforge.sdk import DEFAULT_RENPY_VERSION, get_or_install_sdk
 
-    return get_or_install_sdk(os.environ.get("RENFORGE_SDK_VERSION", "8.3.7"))
+    return get_or_install_sdk(os.environ.get("RENFORGE_SDK_VERSION", DEFAULT_RENPY_VERSION))
 
 
 @pytest.fixture

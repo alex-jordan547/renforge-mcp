@@ -1140,7 +1140,15 @@ init python:
             return None
 
     def _renforge_focus_text(widget):
-        """Best-effort accessible text for a Ren'Py focus widget."""
+        """Best-effort accessible text for a Ren'Py focus widget.
+
+        Ren'Py 8.5 changed ``Displayable._tts_all`` to require a ``raw``
+        boolean (``_tts_all(self, raw: bool)``). Calling it with no arguments
+        raises ``TypeError``, which earlier code swallowed — every button then
+        looked unlabeled and choice selection / autopilot went blind. Prefer
+        the 8.5 contract (``raw=False`` = spoken text); fall back to a no-arg
+        call only for older displayables / ``get_text``.
+        """
         if widget is None:
             return ""
         text = None
@@ -1149,7 +1157,13 @@ init python:
             if not callable(method):
                 continue
             try:
-                text = method()
+                if method_name == "_tts_all":
+                    try:
+                        text = method(False)
+                    except TypeError:
+                        text = method()
+                else:
+                    text = method()
             except Exception:
                 continue
             if text:
@@ -2098,9 +2112,12 @@ init python:
         return result
 
     def _renforge_h_select_choice(payload):
-        # Select a menu option by visible text (preferred) or by index, by
-        # resolving the focusable and simulating a mouse click on it — the same
-        # path Ren'Py's own test framework uses.
+        # Select a menu option by visible text (preferred) or by index, then
+        # simulate a mouse click on the focus rect. Matching uses our own
+        # focus enumeration + ``_renforge_focus_text`` so we stay aligned with
+        # Ren'Py 8.5's ``_tts_all(raw)`` contract — ``renpy.test.testfocus.find_focus``
+        # also gained a required ``raw`` argument in 8.5 and is intentionally
+        # avoided here.
         #
         # Important: when the Ren'Py window is unfocused (common while driving
         # the game from the dashboard), Interface.mouse_focused is False and
@@ -2112,11 +2129,23 @@ init python:
 
         focus = None
         chosen = None
+        choices = _renforge_focusable_choices()
         if text is not None:
-            focus = renpy.test.testfocus.find_focus(text)
-            chosen = text
+            needle = str(text).casefold()
+            exact = []
+            partial = []
+            for candidate_focus, candidate_text, _screen in choices:
+                hay = str(candidate_text).casefold()
+                if hay == needle:
+                    exact.append((candidate_focus, candidate_text))
+                elif needle in hay:
+                    partial.append((len(hay), candidate_focus, candidate_text))
+            if exact:
+                focus, chosen = exact[0]
+            elif partial:
+                partial.sort(key=lambda item: item[0])
+                _length, focus, chosen = partial[0]
         elif index is not None:
-            choices = _renforge_focusable_choices()
             idx = int(index)
             if 0 <= idx < len(choices):
                 focus, chosen, _screen = choices[idx]

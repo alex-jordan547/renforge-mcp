@@ -58,3 +58,33 @@ def test_get_or_install_sdk_rejects_path_traversal_in_archive(monkeypatch: pytes
 
     with pytest.raises(ValueError, match="path traversal"):
         sdk.get_or_install_sdk(f"8.3.7-{uuid.uuid4().hex}")
+
+
+def test_patch_sdk_json_dump_unwraps_node_keyed_namemap(tmp_path: Path) -> None:
+    dump = tmp_path / "renpy" / "dump.py"
+    dump.parent.mkdir(parents=True)
+    dump.write_text(
+        "def dump(error):\n"
+        "    label = location[\"label\"] = {}\n"
+        "\n"
+        "    for name, n in renpy.game.script.namemap.items():\n"
+        "        filename = n.filename\n"
+        "        line = n.linenumber\n"
+        "\n"
+        "        if not isinstance(name, str):\n"
+        "            continue\n"
+        "\n"
+        "        label[name] = [filename, line]\n",
+        encoding="utf-8",
+    )
+
+    assert sdk._patch_sdk_json_dump(tmp_path) is True
+    patched = dump.read_text(encoding="utf-8")
+    assert "renforge: unwrap Node-keyed namemap" in patched
+    assert "name = getattr(name, \"name\", name)" in patched
+    # Idempotent.
+    assert sdk._patch_sdk_json_dump(tmp_path) is False
+
+
+def test_default_renpy_version_tracks_current_stable() -> None:
+    assert sdk.DEFAULT_RENPY_VERSION == "8.5.3"

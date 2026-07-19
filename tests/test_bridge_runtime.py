@@ -30,7 +30,7 @@ class _FakeWidget:
     def __init__(self, text):
         self._text = text
 
-    def _tts_all(self):
+    def _tts_all(self, raw=False):
         return self._text
 
 
@@ -59,7 +59,7 @@ class _FakeImageButtonWidget:
         self._child = object()
         self.style = types.SimpleNamespace(prefix="idle_")
 
-    def _tts_all(self):
+    def _tts_all(self, raw=False):
         return self._text
 
     def get_child(self):
@@ -125,11 +125,11 @@ def _fake_renpy(store):
     renpy._clicks = []
     renpy._moves = []
 
-    def _find_focus(pattern):
+    def _find_focus(pattern, raw=False):
         for focus in focus_list:
             if focus.widget is None:
                 continue
-            if pattern.lower() in focus.widget._tts_all().lower():
+            if pattern.lower() in focus.widget._tts_all(raw).lower():
                 return focus
         return None
 
@@ -590,6 +590,26 @@ def test_poll_events_captures_labels_and_say_lines(running_bridge):
 
     # `since=cursor` returns only newer events.
     assert running_bridge.client.poll_events(since=reply["cursor"])["events"] == []
+
+
+
+def test_list_choices_reads_renpy_85_tts_raw_signature(running_bridge):
+    """Ren'Py 8.5 requires ``_tts_all(raw: bool)``; no-arg calls must not blank text."""
+
+    class RawOnlyWidget:
+        def __init__(self, text):
+            self._text = text
+
+        def _tts_all(self, raw):
+            if not isinstance(raw, bool):
+                raise TypeError("raw must be bool")
+            return self._text
+
+    focus_list = running_bridge.renpy.display.focus.focus_list
+    # Replace the first real choice widget with an 8.5-style TTS surface.
+    focus_list[1].widget = RawOnlyWidget("Lantern path")
+    texts = [c["text"] for c in running_bridge.client.list_choices()]
+    assert "Lantern path" in texts
 
 
 def test_list_choices_enumerates_focusable_text(running_bridge):

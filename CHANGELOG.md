@@ -5,6 +5,21 @@ versioning.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-19
+
+### Fixed
+
+- Ren'Py **8.5** support: read button/choice labels via `_tts_all(raw=False)`
+  (8.5 made `raw` required; the old no-arg call failed open and blanked every
+  control label, breaking choice selection and autopilot).
+- Repair Ren'Py 8.5 `--json-dump` label emission when discovering/installing an
+  SDK: unwrap Node-keyed `script.namemap` entries that upstream `dump.py` still
+  filters with `isinstance(name, str)`.
+
+### Changed
+
+- Default pinned Ren'Py SDK is now **8.5.3** (was 8.3.7).
+
 ## [0.6.1] - 2026-07-19
 
 ### Changed

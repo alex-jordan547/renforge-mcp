@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 from urllib.error import HTTPError, URLError
 
-DEFAULT_RENPY_VERSION: Final = "8.3.7"
+DEFAULT_RENPY_VERSION: Final = "8.5.3"
 RENPY_SDK_ENV: Final = "RENPY_SDK_HOME"
 RENPY_SDK_CACHE_ENV: Final = "RENPY_SDK_CACHE_DIR"
 RENPY_SDK_STABLE_ENV: Final = "RENPY_SDK_STABLE_VERSION"
@@ -22,6 +22,54 @@ RENPY_SDK_BASE_URL_ENV: Final = "RENPY_SDK_BASE_URL"
 RENPY_SDK_ARCHIVE_URL_ENV: Final = "RENPY_SDK_ARCHIVE_URL"
 RENPY_SDK_BASE_URL_DEFAULT: Final = "https://www.renpy.org/dl"
 
+# Ren'Py 8.5 keyed Script.namemap by Node (Node.__hash__/__eq__ use .name) but
+# left dump.py filtering with ``isinstance(name, str)``, which drops every
+# label from --json-dump. Unwrap Node keys before the type check.
+_DUMP_NAMEMAP_LOOP = (
+    "    for name, n in renpy.game.script.namemap.items():\n"
+    "        filename = n.filename\n"
+    "        line = n.linenumber\n"
+    "\n"
+    "        if not isinstance(name, str):\n"
+    "            continue\n"
+)
+_DUMP_NAMEMAP_LOOP_FIXED = (
+    "    for name, n in renpy.game.script.namemap.items():\n"
+    "        # renforge: unwrap Node-keyed namemap (Ren'Py 8.5+)\n"
+    "        if not isinstance(name, str):\n"
+    "            name = getattr(name, \"name\", name)\n"
+    "        filename = n.filename\n"
+    "        line = n.linenumber\n"
+    "\n"
+    "        if not isinstance(name, str):\n"
+    "            continue\n"
+)
+
+
+def _patch_sdk_json_dump(root: Path) -> bool:
+    """Repair label emission in a cached/downloaded Ren'Py SDK dump.py.
+
+    Returns True when the file was modified.
+    """
+    dump_path = root / "renpy" / "dump.py"
+    if not dump_path.is_file():
+        return False
+    try:
+        text = dump_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "renforge: unwrap Node-keyed namemap" in text:
+        return False
+    if _DUMP_NAMEMAP_LOOP not in text:
+        return False
+    try:
+        dump_path.write_text(
+            text.replace(_DUMP_NAMEMAP_LOOP, _DUMP_NAMEMAP_LOOP_FIXED, 1),
+            encoding="utf-8",
+        )
+    except OSError:
+        return False
+    return True
 
 def _resolve_version(version: str) -> str:
     if version == "stable" or not version:
@@ -242,6 +290,7 @@ def get_or_install_sdk(version: str = "stable") -> RenpySdk:
     """
     resolved_version = _resolve_version(version)
     for sdk_root in _iter_existing_sdk_roots(resolved_version):
+        _patch_sdk_json_dump(sdk_root)
         return RenpySdk(version=resolved_version, root=sdk_root)
 
     cache_root = _cache_version_dir(resolved_version)
@@ -262,4 +311,5 @@ def get_or_install_sdk(version: str = "stable") -> RenpySdk:
             if not _is_sdk_root(cache_root):
                 raise
 
+    _patch_sdk_json_dump(cache_root)
     return RenpySdk(version=resolved_version, root=cache_root)
