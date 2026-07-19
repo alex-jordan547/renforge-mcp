@@ -17,15 +17,18 @@ The `@latest` suffix makes `uvx` fetch the newest published release on each
 start instead of reusing a cached older build, so new tools appear without a
 manual `uv cache clean`. Use `uvx renforge serve` to pin the cached build.
 
-For a persistent installation with the dashboard:
+For a persistent install:
 
 ```bash
+# Full — MCP + CLI + web dashboard
 pipx install "renforge[ui]"
-renforge serve
+
+# Slim — MCP server + CLI only (no dashboard deps)
+pipx install renforge
 ```
 
-Install `renforge` without `[ui]` only when the stdio MCP server is all that is
-needed. The dashboard command requires the optional UI dependencies.
+Then run `renforge serve` (or `renforge ui` with the full install).
+`[ui]` is optional: skip it when the stdio MCP server / CLI is all you need.
 
 To develop RenForge:
 

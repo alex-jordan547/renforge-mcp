@@ -60,9 +60,17 @@ skip the picker with `--project /path/to/your/game`.)
 PATH, use [pipx](https://pipx.pypa.io/):
 
 ```bash
+# Full install — MCP + CLI + web dashboard
 pipx install "renforge[ui]"
 renforge ui
+
+# Slim install — MCP server + CLI only (no dashboard deps)
+pipx install renforge
+renforge serve
 ```
+
+`[ui]` pulls in the optional dashboard stack (Starlette, uvicorn, watchfiles).
+Skip it if you only need the MCP server or CLI.
 
 On managed systems (Debian/Ubuntu), plain `pip install` is blocked by
 [PEP 668](https://peps.python.org/pep-0668/) — use `uvx` or `pipx` instead.
@@ -71,9 +79,9 @@ On managed systems (Debian/Ubuntu), plain `pip install` is blocked by
 
 | Installed with | How to update |
 | --- | --- |
-| `uvx … renforge@latest` | Nothing to do — `@latest` fetches the newest release on each start |
-| pipx | `pipx upgrade renforge` |
-| pip / venv | `pip install -U "renforge[ui]"` |
+| `uvx … @latest` | Nothing to do — `@latest` fetches the newest release on each start |
+| pipx (full or slim) | `pipx upgrade renforge` |
+| pip / venv | `pip install -U "renforge[ui]"` (or `renforge` for slim) |
 
 What's new: [CHANGELOG.md](CHANGELOG.md) ·
 [GitHub releases](https://github.com/alex-jordan547/renforge-mcp/releases).
