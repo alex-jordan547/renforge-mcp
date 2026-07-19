@@ -54,6 +54,37 @@ jobs:
       - name: Publish (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+
+      - name: Sync server.json version with tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg v "$version" '.version = $v | .packages[].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+
+      - name: Publish (GitHub OIDC)
+        run: |
+          ./mcp-publisher login github-oidc
+          # PyPI metadata can lag a few seconds behind the upload
+          for attempt in 1 2 3; do
+            ./mcp-publisher publish && exit 0
+            echo "publish attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          exit 1
+
   github-release:
     name: Create GitHub Release
     needs: publish-pypi
