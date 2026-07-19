@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.alex-jordan547/renforge",
+  "description": "Inspect, drive and debug a running Ren'Py game: state, screenshots, guarded clicks, saves, builds.",
+  "repository": {
+    "url": "https://github.com/alex-jordan547/renforge-mcp",
+    "source": "github"
+  },
+  "version": "0.6.1",
+  "websiteUrl": "https://pypi.org/project/renforge/",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "renforge",
+      "version": "0.6.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve",
+          "description": "Start the MCP server over stdio"
+        }
+      ]
+    }
+  ]
+}

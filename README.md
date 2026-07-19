@@ -1,5 +1,7 @@
 # RenForge
 
+<!-- mcp-name: io.github.alex-jordan547/renforge -->
+
 [![PyPI](https://img.shields.io/pypi/v/renforge)](https://pypi.org/project/renforge/)
 [![Python](https://img.shields.io/pypi/pyversions/renforge)](https://pypi.org/project/renforge/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)

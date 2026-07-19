@@ -5,6 +5,16 @@ versioning.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-19
+
+### Changed
+
+- Public-launch polish: install-first README with light/dark dashboard
+  screenshots, architecture and client-config details moved to `docs/`,
+  English-only dashboard labels.
+- Published to the official MCP Registry (`io.github.alex-jordan547/renforge`):
+  `server.json` manifest and PyPI ownership marker.
+
 ## [0.6.0] - 2026-07-16
 
 ### Added
