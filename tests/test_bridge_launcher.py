@@ -36,7 +36,7 @@ class _FakeProcess:
 
 class _FakeClient:
     def ping(self):
-        return {"ok": True}
+        return {"ok": True, "pong": True}
 
 
 def _make_project(tmp_path: Path) -> tuple[RenpyProject, RenpySdk, Path]:
@@ -224,3 +224,32 @@ def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_
     assert not (root / "game" / "renforge_bridge.rpyc").exists()
     assert not (root / ".renforge" / "bridge.json").exists()
     assert not (root / "traceback.txt").exists()
+
+
+
+def test_launch_retries_until_ping_returns_pong(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+
+    attempts = {"count": 0}
+
+    class _LaggyClient:
+        def ping(self):
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                return {"error": "timeout_waiting_for_main_thread"}
+            return {"ok": True, "pong": True}
+
+    def fake_popen(*_args, **_kwargs):
+        info_path = project_root / ".renforge" / "bridge.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text("{}", encoding="utf-8")
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _LaggyClient())
+
+    session = launch_with_bridge(sdk, project, startup_timeout=5.0)
+    assert session is not None
+    assert attempts["count"] == 3
+    session.close(timeout=0.1)

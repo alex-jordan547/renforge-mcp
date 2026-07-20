@@ -3,6 +3,20 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## [0.6.4] - 2026-07-20
+
+### Fixed
+
+- `launch_with_bridge` no longer returns prematurely when `ping()` returns
+  `{"error": "timeout_waiting_for_main_thread"}`. On Windows or during heavy asset
+  loading / script compilation, Ren'Py can take 30–40s before `periodic_callbacks`
+  starts draining on the main thread. Previously `client.ping()` returned the dict without
+  raising, causing `launcher.py` to declare the session `ready` prematurely while the
+  game was still in `init python`. Subsequent MCP tool calls then timed out or failed.
+  `launch_with_bridge` now strictly verifies `reply.get("pong") is True` and retries
+  until Ren'Py reaches its main interaction loop, with default `startup_timeout`
+  increased from 60s to 90s.
+
 ## [0.6.3] - 2026-07-20
 
 ### Fixed

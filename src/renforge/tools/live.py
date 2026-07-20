@@ -230,8 +230,8 @@ def _stop_external(project_path: str) -> dict:
 
     alive = False
     try:
-        BridgeClient.from_project(project.root, timeout=1.0).ping()
-        alive = True
+        reply = BridgeClient.from_project(project.root, timeout=1.0).ping()
+        alive = isinstance(reply, dict) and reply.get("pong") is True
     except Exception:
         alive = False
 

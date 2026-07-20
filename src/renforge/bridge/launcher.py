@@ -197,7 +197,7 @@ def launch_with_bridge(
     token: str | None = None,
     port: int = 0,
     warp: str | None = None,
-    startup_timeout: float = 60.0,
+    startup_timeout: float = 90.0,
     extra_env: dict[str, str] | None = None,
     display: str = "auto",
     audio: str = "auto",
@@ -346,7 +346,9 @@ def launch_with_bridge(
             if info_path.exists():
                 try:
                     client = BridgeClient.from_project(project.root)
-                    client.ping()
+                    reply = client.ping()
+                    if not isinstance(reply, dict) or reply.get("pong") is not True:
+                        raise RuntimeError(f"bridge ping returned non-pong response: {reply}")
                     startup_ms = int((time.monotonic() - started) * 1000)
                     bridge_port = None
                     try:
