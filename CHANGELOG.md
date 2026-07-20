@@ -3,7 +3,22 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## [0.6.3] - 2026-07-20
+
+### Fixed
+
+- Bridge listener no longer dies with `NameError: name 'socket' is not
+  defined` after `renpy.reload_script()`. The listener thread survives a
+  script reload, but the reload wipes the Ren'Py store — the `__globals__`
+  of `init python:` functions — so the bare `except socket.timeout:` in the
+  accept loop raised `NameError` on the next 0.5s timeout and silently
+  killed the thread. The game kept running with a dead bridge until the
+  process was eventually closed. The listener and its helpers now use
+  function-local imports (read from `sys.modules`, which reload never
+  touches), and the accept loop also tolerates non-timeout `OSError`.
+
 ## [Unreleased]
+
 
 ## [0.6.2] - 2026-07-19
 

@@ -959,6 +959,31 @@ def test_listener_survives_a_client_that_hangs_up_before_the_reply(running_bridg
     assert running_bridge.client.ping().get("pong") is True
 
 
+def test_listener_survives_store_wipe_that_undefines_socket(running_bridge):
+    # renpy.reload_script() keeps the listener thread alive but wipes the
+    # store (the __globals__ of init-python functions). Before the local
+    # imports were added to _renforge_listener, the next accept() timeout
+    # raised NameError on ``except socket.timeout:`` and silently killed the
+    # thread — the bridge died while the game kept running. Simulate the wipe
+    # by deleting the stdlib names from the listener's globals and confirm
+    # the loop keeps accepting connections.
+    globs = running_bridge.globs
+    bridge = __import__("sys").modules["_renforge_runtime"].bridge
+    thread = bridge.thread
+    assert thread is not None and thread.is_alive()
+
+    saved = {name: globs.pop(name) for name in ("socket", "json", "os") if name in globs}
+    try:
+        # Force the listener to hit its accept() timeout path by sleeping
+        # past the 0.5s settimeout window; if the listener depended on the
+        # store-level ``socket`` it would have crashed by now.
+        time.sleep(0.7)
+        assert thread.is_alive(), "listener thread died after store wipe"
+        assert running_bridge.client.ping().get("pong") is True
+    finally:
+        globs.update(saved)
+
+
 def test_save_slot_saves_named_state_with_extra_info(running_bridge):
     calls = {}
     running_bridge.renpy.can_save = lambda: True

@@ -2323,26 +2323,46 @@ init python:
     # --- listener: background thread --------------------------------------
 
     def _renforge_reply(conn, obj):
-        conn.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+        # Local import: the listener thread survives renpy.reload_script(),
+        # which wipes the store (the __globals__ of init-python functions).
+        # A free-var reference to ``json`` would raise NameError mid-reload.
+        # ``import`` reads from sys.modules, which the reload never touches.
+        import json as _json
+        conn.sendall((_json.dumps(obj) + "\n").encode("utf-8"))
 
     def _renforge_publish(bridge, port):
+        import json as _json
+        import os as _os
         try:
-            out_dir = os.path.join(bridge.basedir, ".renforge")
-            os.makedirs(out_dir, exist_ok=True)
-            tmp = os.path.join(out_dir, "bridge.json.tmp")
-            final = os.path.join(out_dir, "bridge.json")
+            out_dir = _os.path.join(bridge.basedir, ".renforge")
+            _os.makedirs(out_dir, exist_ok=True)
+            tmp = _os.path.join(out_dir, "bridge.json.tmp")
+            final = _os.path.join(out_dir, "bridge.json")
             with open(tmp, "w") as fp:
-                json.dump(
-                    {"host": bridge.host, "port": port, "token": bridge.token, "pid": os.getpid()},
+                _json.dump(
+                    {"host": bridge.host, "port": port, "token": bridge.token, "pid": _os.getpid()},
                     fp,
                 )
-            os.replace(tmp, final)
+            _os.replace(tmp, final)
         except Exception:
             pass
 
     def _renforge_listener(bridge):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # The listener thread survives renpy.reload_script(), which restores
+        # renpy.config from its post-import backup and *wipes the store* —
+        # the __globals__ of init-python functions. A free-var reference to
+        # ``socket`` then raises NameError when the 0.5s accept() timeout
+        # fires ``except socket.timeout:``, silently killing the thread and
+        # leaving the game running with a dead bridge. Local imports read
+        # from sys.modules, which reload never touches, so the loop stays
+        # alive across reloads. The helpers (_renforge_reply / _publish /
+        # _RenforgeRequest) are called inside the inner try/except, so a
+        # transient NameError there is caught and only drops one connection;
+        # they too use local imports for their stdlib references.
+        import socket as _socket
+        import json as _json
+        server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        server.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
         try:
             server.bind((bridge.host, bridge.port))
             bridge.port = server.getsockname()[1]
@@ -2355,7 +2375,13 @@ init python:
                 try:
                     server.settimeout(0.5)
                     conn, _ = server.accept()
-                except socket.timeout:
+                except _socket.timeout:
+                    continue
+                except OSError:
+                    # accept() can raise OSError (not just socket.timeout)
+                    # on a recycled socket or a transient kernel error; never
+                    # let it crash the loop the way a NameError on the bare
+                    # ``socket`` name did before the local import.
                     continue
 
                 try:
@@ -2364,7 +2390,7 @@ init python:
                         if not line:
                             continue
                         try:
-                            msg = json.loads(line)
+                            msg = _json.loads(line)
                         except ValueError:
                             _renforge_reply(conn, {"error": "invalid_json"})
                             continue
