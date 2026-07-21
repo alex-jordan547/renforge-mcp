@@ -18,6 +18,7 @@ EXPECTED_TOOLS = {
     "renforge_find_references",
     # live game control
     "renforge_launch",
+    "renforge_launch_status",
     "renforge_jump",
     "renforge_new_game",
     "renforge_stop",
@@ -280,7 +281,10 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
 
     result = asyncio.run(_call())
     payload = json.loads(next(block.text for block in result.content if block.type == "text"))
-    assert payload == {"ok": True, "via": "dashboard"}
+    assert payload["ok"] is True
+    assert payload["ready"] is True
+    assert payload["status"] == "ready"
+    assert payload["via"] == "dashboard"
     assert calls == {
         "project_path": str(tmp_path),
         "version": "stable",

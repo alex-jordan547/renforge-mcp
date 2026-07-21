@@ -3,6 +3,16 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## [0.6.5] - 2026-07-21
+
+### Fixed
+
+- Long Windows startups no longer outlive the MCP request budget.
+  `renforge_launch` returns `status="starting"` after at most 20 seconds while
+  startup continues in the background; `renforge_launch_status` reports the
+  final state, `renforge_stop` cancels an in-progress launch cleanly, and a
+  competing launch returns `LAUNCH_IN_PROGRESS` instead of dropping its parameters.
+
 ## [0.6.4] - 2026-07-20
 
 ### Fixed

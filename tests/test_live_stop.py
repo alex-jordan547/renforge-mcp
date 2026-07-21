@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 from renforge.tools import live
@@ -37,6 +39,21 @@ class _DeadClient:
 class _StateClient(_AliveClient):
     def get_state(self) -> dict:
         return {"current_label": "dashboard_scene"}
+
+
+def _wait_for_launch_status(
+    project: Path,
+    expected: str,
+    *,
+    timeout: float = 1.0,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = live.launch_status(str(project))
+        if result["status"] == expected:
+            return result
+        time.sleep(0.01)
+    raise AssertionError(f"launch status did not become {expected!r}")
 
 
 def test_stop_game_without_bridge_is_noop(tmp_path: Path) -> None:
@@ -113,3 +130,114 @@ def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypat
         "ready": True,
         "current_label": "dashboard_scene",
     }
+
+
+def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    release = threading.Event()
+    started = threading.Event()
+
+    def delayed_launch(_cancel_event: threading.Event) -> dict:
+        started.set()
+        assert release.wait(2.0)
+        return {"ok": True, "ready": True, "current_label": "main_menu"}
+
+    result = live.start_launch(str(project), delayed_launch, wait_timeout=0.0)
+
+    assert started.wait(1.0)
+    assert result["ok"] is True
+    assert result["ready"] is False
+    assert result["status"] == "starting"
+
+    ignored_launch = threading.Event()
+    conflict = live.start_launch(
+        str(project),
+        lambda _cancel_event: ignored_launch.set() or {"ok": True, "ready": True},
+        wait_timeout=0.0,
+    )
+    assert conflict["ok"] is False
+    assert conflict["code"] == "LAUNCH_IN_PROGRESS"
+    assert conflict["status"] == "starting"
+    assert ignored_launch.is_set() is False
+
+    release.set()
+    assert _wait_for_launch_status(project, "ready")["ready"] is True
+    live.stop_game(str(project))
+
+
+def test_launch_status_exposes_a_failed_startup(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+
+    result = live.start_launch(
+        str(project),
+        lambda _cancel_event: {
+            "ok": False,
+            "code": "RENPY_PROCESS_EXITED",
+            "error": "Game exited during startup.",
+        },
+        wait_timeout=1.0,
+    )
+
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["status"] == "failed"
+    live.stop_game(str(project))
+
+
+def test_stop_game_cancels_a_pending_launch(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    started = threading.Event()
+
+    def cancellable_launch(cancel_event: threading.Event) -> dict:
+        started.set()
+        assert cancel_event.wait(2.0)
+        return live.cancelled_launch_result()
+
+    result = live.start_launch(str(project), cancellable_launch, wait_timeout=0.0)
+
+    assert started.wait(1.0)
+    assert result["status"] == "starting"
+    assert live.stop_game(str(project)) == {
+        "ok": True,
+        "was_running": True,
+        "launch_cancelled": True,
+    }
+    idle = live.launch_status(str(project))
+    assert idle["ok"] is True
+    assert idle["status"] == "idle"
+
+
+def test_stop_game_attempts_external_stop_when_cancellation_is_still_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_cancel(_cancel_event: threading.Event) -> dict:
+        started.set()
+        assert release.wait(2.0)
+        return live.cancelled_launch_result()
+
+    live.start_launch(str(project), slow_cancel, wait_timeout=0.0)
+    assert started.wait(1.0)
+    monkeypatch.setattr(live, "_LAUNCH_CANCEL_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(
+        live,
+        "stop_external_game",
+        lambda _project_path: {"ok": True, "was_running": True},
+    )
+
+    result = live.stop_game(str(project))
+
+    assert result["ok"] is True
+    assert result["was_running"] is True
+    assert result["launch_cancel_requested"] is True
+    assert result["external_stopped"] is True
+    pending = live.launch_status(str(project))
+    assert pending["status"] == "starting"
+    assert pending["cancel_requested"] is True
+    release.set()
+    assert _wait_for_launch_status(project, "failed")["code"] == "LAUNCH_CANCELLED"
+    live.stop_game(str(project))

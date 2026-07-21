@@ -16,6 +16,7 @@ import json
 import math
 import os
 import signal
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -36,6 +37,146 @@ from ..state_compact import (
 )
 
 _SESSIONS: dict[str, BridgeSession] = {}
+_LAUNCH_RESPONSE_WAIT_SECONDS = 20.0
+_LAUNCH_CANCEL_WAIT_SECONDS = 5.0
+_LAUNCH_RESULT_TTL_SECONDS = 300.0
+_LAUNCHES: dict[str, "_LaunchTask"] = {}
+_LAUNCH_LOCK = threading.Lock()
+
+
+class _LaunchTask:
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self.finished: float | None = None
+        self.cancel_event = threading.Event()
+        self.done_event = threading.Event()
+        self.result: dict[str, Any] | None = None
+
+
+def _prune_launches(now: float) -> None:
+    stale_keys = [
+        key
+        for key, task in _LAUNCHES.items()
+        if task.finished is not None
+        and now - task.finished >= _LAUNCH_RESULT_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        _LAUNCHES.pop(key, None)
+
+
+def cancelled_launch_result(*, phase: str = "waiting_for_bridge") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "ready": False,
+        "code": "LAUNCH_CANCELLED",
+        "phase": phase,
+        "message": "Launch was cancelled.",
+        "error": "Launch was cancelled.",
+    }
+
+
+def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict]) -> None:
+    try:
+        task.result = launch(task.cancel_event)
+    except Exception as exc:
+        task.result = {
+            "ok": False,
+            "ready": False,
+            "code": "LAUNCH_TASK_FAILED",
+            "phase": "starting_renpy",
+            "message": f"{type(exc).__name__}: {exc}",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        task.finished = time.monotonic()
+        task.done_event.set()
+
+
+def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
+    elapsed_ms = int(((task.finished or time.monotonic()) - task.started) * 1000)
+    if not task.done_event.is_set():
+        cancel_requested = task.cancel_event.is_set()
+        return {
+            "ok": True,
+            "ready": False,
+            "status": "starting",
+            "phase": "waiting_for_bridge",
+            "elapsed_ms": elapsed_ms,
+            "cancel_requested": cancel_requested,
+            "message": (
+                "Cancellation requested; waiting for the launch task to stop."
+                if cancel_requested
+                else "Ren'Py is still starting; call renforge_launch_status."
+            ),
+        }
+
+    result = dict(task.result or {
+        "ok": False,
+        "code": "LAUNCH_TASK_FAILED",
+        "error": "Launch task ended without a result.",
+    })
+    is_ready = bool(result.get("ok") and result.get("ready", True))
+    result["ready"] = is_ready
+    result["status"] = "ready" if is_ready else "failed"
+    result["elapsed_ms"] = elapsed_ms
+    return result
+
+
+def start_launch(
+    project_path: str,
+    launch: Callable[[threading.Event], dict],
+    *,
+    wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
+) -> dict[str, Any]:
+    key = _key(project_path)
+    should_start = False
+    with _LAUNCH_LOCK:
+        _prune_launches(time.monotonic())
+        task = _LAUNCHES.get(key)
+        if task is None or task.done_event.is_set():
+            task = _LaunchTask()
+            _LAUNCHES[key] = task
+            should_start = True
+
+    if not should_start:
+        result = _launch_task_status(task)
+        result.update(
+            ok=False,
+            code="LAUNCH_IN_PROGRESS",
+            message="A launch is already starting; poll status or stop it first.",
+            error="A launch is already starting; poll status or stop it first.",
+        )
+        return result
+
+    threading.Thread(target=_run_launch, args=(task, launch), daemon=True).start()
+
+    task.done_event.wait(max(0.0, wait_timeout))
+    return _launch_task_status(task)
+
+
+def launch_status(project_path: str) -> dict[str, Any]:
+    key = _key(project_path)
+    with _LAUNCH_LOCK:
+        task = _LAUNCHES.get(key)
+    if task is not None:
+        return _launch_task_status(task)
+
+    try:
+        state = _client(project_path).get_state()
+    except Exception:
+        return {
+            "ok": True,
+            "ready": False,
+            "status": "idle",
+            "message": "No launch is active for this project.",
+        }
+    return {
+        "ok": True,
+        "ready": True,
+        "status": "ready",
+        "external": True,
+        "current_label": state.get("current_label"),
+    }
 
 
 def _key(project_path: str | Path) -> str:
@@ -74,6 +215,7 @@ def launch_game(
     cleanup_on_stop: bool = True,
     timeout: float | None = None,
     session: dict[str, Any] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """Launch the project with the bridge injected, or reuse a live session.
 
@@ -138,7 +280,10 @@ def launch_game(
     else:
         # A dashboard or another MCP process may own the live session. A warp
         # needs a single fresh process, so stop that external session first.
-        _stop_external(str(project.root))
+        stop_external_game(str(project.root))
+
+    if cancel_event is not None and cancel_event.is_set():
+        return cancelled_launch_result(phase="detecting_environment")
 
     try:
         sdk = get_or_install_sdk(version)
@@ -155,7 +300,7 @@ def launch_game(
             launch_kwargs["savedir"] = savedir
         if timeout is not None:
             launch_kwargs["startup_timeout"] = float(timeout)
-        session_obj = launch_with_bridge(sdk, project, **launch_kwargs)
+        session_obj = launch_with_bridge(sdk, project, cancel_event=cancel_event, **launch_kwargs)
     except LaunchError as exc:
         return exc.to_dict()
     except Exception as exc:
@@ -197,16 +342,48 @@ def launch_game(
 
 
 def stop_game(project_path: str) -> dict:
-    session = _SESSIONS.pop(_key(project_path), None)
+    key = _key(project_path)
+    with _LAUNCH_LOCK:
+        task = _LAUNCHES.get(key)
+
+    was_starting = task is not None and not task.done_event.is_set()
+    if was_starting:
+        task.cancel_event.set()
+        if not task.done_event.wait(_LAUNCH_CANCEL_WAIT_SECONDS):
+            external = stop_external_game(project_path)
+            return {
+                "ok": True,
+                "was_running": True,
+                "launch_cancel_requested": True,
+                "external_stopped": bool(external.get("was_running")),
+            }
+
+    if task is not None and task.done_event.is_set():
+        with _LAUNCH_LOCK:
+            if _LAUNCHES.get(key) is task:
+                _LAUNCHES.pop(key, None)
+
+    session = _SESSIONS.pop(key, None)
     if session is not None:
         cleaned = session.close()
         return {"ok": True, "was_running": True, **cleaned}
+    if (
+        was_starting
+        and task is not None
+        and task.result
+        and task.result.get("code") == "LAUNCH_CANCELLED"
+    ):
+        return {
+            "ok": True,
+            "was_running": True,
+            "launch_cancelled": True,
+        }
     # No in-process session: the game may have been launched elsewhere (e.g. the
     # dashboard server). Stop it through the published bridge.json instead.
-    return _stop_external(project_path)
+    return stop_external_game(project_path)
 
 
-def _stop_external(project_path: str) -> dict:
+def stop_external_game(project_path: str) -> dict:
     """Stop a game launched by another process, using ``bridge.json``.
 
     Kills the game only after the bridge answers a ``ping`` with the token from
@@ -259,6 +436,14 @@ def _terminate_pid(pid: int) -> bool:
 
 
 def stop_all() -> None:
+    with _LAUNCH_LOCK:
+        tasks = list(_LAUNCHES.values())
+    for task in tasks:
+        task.cancel_event.set()
+    for task in tasks:
+        task.done_event.wait(_LAUNCH_CANCEL_WAIT_SECONDS)
+    with _LAUNCH_LOCK:
+        _LAUNCHES.clear()
     for session in list(_SESSIONS.values()):
         try:
             session.close()

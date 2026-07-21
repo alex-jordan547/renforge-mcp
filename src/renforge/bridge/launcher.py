@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys  # retained for tests that patch renforge.bridge.launcher.sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,15 @@ class BridgeSession:
         return result
 
 
+def _raise_if_cancelled(cancel_event: threading.Event | None, *, phase: str) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise LaunchError(
+            "LAUNCH_CANCELLED",
+            "Launch was cancelled.",
+            phase=phase,
+        )
+
+
 def launch_with_bridge(
     sdk: RenpySdk,
     project: RenpyProject,
@@ -198,6 +208,7 @@ def launch_with_bridge(
     port: int = 0,
     warp: str | None = None,
     startup_timeout: float = 90.0,
+    cancel_event: threading.Event | None = None,
     extra_env: dict[str, str] | None = None,
     display: str = "auto",
     audio: str = "auto",
@@ -217,6 +228,7 @@ def launch_with_bridge(
     """
     started = time.monotonic()
     phases: list[dict[str, Any]] = []
+    _raise_if_cancelled(cancel_event, phase="detecting_environment")
 
     def _phase(name: str, **extra: Any) -> None:
         record = {"phase": name, **extra}
@@ -324,6 +336,7 @@ def launch_with_bridge(
 
     try:
         while time.time() < deadline:
+            _raise_if_cancelled(cancel_event, phase="waiting_for_bridge")
             if process.poll() is not None:
                 out = (process.stdout.read() if process.stdout else b"").decode("utf-8", "replace")
                 err = (process.stderr.read() if process.stderr else b"").decode("utf-8", "replace")

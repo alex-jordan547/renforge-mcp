@@ -1,4 +1,5 @@
 import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -253,3 +254,40 @@ def test_launch_retries_until_ping_returns_pong(monkeypatch, tmp_path: Path) -> 
     assert session is not None
     assert attempts["count"] == 3
     session.close(timeout=0.1)
+
+
+def test_launch_cancellation_stops_process_and_cleans_artifacts(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    cancel_event = threading.Event()
+    process = _FakeProcess()
+
+    class _WaitingClient:
+        def ping(self):
+            cancel_event.set()
+            return {"error": "timeout_waiting_for_main_thread"}
+
+    def fake_popen(*_args, **_kwargs):
+        info_path = project_root / ".renforge" / "bridge.json"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_text("{}", encoding="utf-8")
+        return process
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.BridgeClient.from_project",
+        lambda _project_root: _WaitingClient(),
+    )
+
+    with pytest.raises(Exception) as excinfo:
+        launch_with_bridge(
+            sdk,
+            project,
+            startup_timeout=5.0,
+            cancel_event=cancel_event,
+        )
+
+    assert getattr(excinfo.value, "code", None) == "LAUNCH_CANCELLED"
+    assert process.terminated is True
+    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert not (project_root / ".renforge" / "bridge.json").exists()

@@ -132,8 +132,10 @@ the game's path and continue.
 renforge_info
   -> active_project
 renforge_launch(project_path)
-  -> game and bridge are available
-renforge_game_state_compact(project_path)
+  -> ready, or starting after at most 20 seconds
+renforge_launch_status(project_path)  # while starting
+  -> starting, ready, failed, or idle
+renforge_game_state_compact(project_path)  # once ready
   -> current label and bounded state
 renforge_game_state(project_path, include=["metrics", "audio"])
   -> optional render/cache/window metrics and per-channel audio state
@@ -303,10 +305,11 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game and inject the temporary bridge. `warp` accepts `file:line`. `display`/`audio` default to `auto` (Xvfb + dummy SDL audio when needed). Pass `savedir=temporary` for isolated saves cleaned on stop. Structured errors include `code`, `phase`, and `suggested_fix`. |
-| `renforge_jump` | Restart a game at a label or `file:line` using Ren'Py warp. |
-| `renforge_new_game` | Start a fresh process at the `start` label. |
-| `renforge_stop` | Stop the running game and remove the injected bridge; reports what was cleaned. |
+| `renforge_launch` | Start or reuse a game and inject the temporary bridge. The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; `savedir=temporary` isolates saves. `timeout` controls the background startup deadline. |
+| `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. |
+| `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle. |
+| `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle. |
+| `renforge_stop` | Stop a running game or signal an in-progress launch to cancel, then remove injected bridge artifacts. An uninterruptible startup phase may return `launch_cancel_requested=true`; poll launch status until it becomes `failed`. |
 | `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. Optional `state_profile` filters the store. |
 | `renforge_game_state_compact` | Bounded state (`state_profile=interaction` by default); select variables by name or prefix; supports serialization limits. |
 | `renforge_advance` | Advance the current dialogue. |
@@ -407,7 +410,7 @@ Recommended practices:
 
 | Symptom | Likely cause and resolution |
 | --- | --- |
-| `no running game` | Call `renforge_launch` or start the dashboard with `renforge ui`. |
+| `no running game` | If launch status is `starting`, wait and call `renforge_launch_status` again. Otherwise call `renforge_launch` or start the dashboard with `renforge ui`. |
 | No `active_project` | Provide `project_path` explicitly (every tool accepts it), run the server from the game's directory, or select a project in the dashboard. |
 | `expected_frame_id guard failed` | The screen changed; call `renforge_list_ui_elements` or `renforge_find_image_on_screen` again. |
 | A click lands at the wrong place under WSLg | Reuse the `coordinate_space` returned by visual search. |

@@ -38,6 +38,11 @@ environment; otherwise it launches directly (`display=auto` starts Xvfb and a
 dummy SDL audio driver when no display is available). Fully headless CI can
 wrap direct launches with `xvfb-run`.
 
+MCP launch calls wait no more than 20 seconds. Slow startups continue in a
+daemon launch task tracked per project; `renforge_launch_status` exposes the
+`starting`, `ready`, or `failed` result, and `renforge_stop` signals the launch
+task so the launcher terminates Ren'Py and removes injected artifacts.
+
 The dashboard publishes its selected project in a per-user local runtime
 registry. Agents call `renforge_info` or `renforge_context` first instead of
 guessing the game path. `renforge_jump` resolves a label to `file:line` and

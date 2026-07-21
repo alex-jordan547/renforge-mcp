@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import math
-
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -110,13 +110,22 @@ def _register_tools(app: Any) -> None:
         cleanup_on_stop: bool = True,
         timeout: float | None = None,
         session: dict[str, Any] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict:
+        if cancel_event is not None and cancel_event.is_set():
+            return live.cancelled_launch_result(phase="detecting_environment")
         from .dashboard_client import launch_game as launch_via_dashboard
 
         # Dashboard owns its own display process; only warp/version are delegated.
         delegated = launch_via_dashboard(project_path, version=version, warp=warp)
         if delegated is not None:
+            if cancel_event is not None and cancel_event.is_set():
+                live.stop_external_game(project_path)
+                return live.cancelled_launch_result(phase="starting_renpy")
             return delegated
+        if cancel_event is not None and cancel_event.is_set():
+            live.stop_external_game(project_path)
+            return live.cancelled_launch_result(phase="starting_renpy")
         return live.launch_game(
             project_path,
             version=version,
@@ -128,7 +137,18 @@ def _register_tools(app: Any) -> None:
             cleanup_on_stop=cleanup_on_stop,
             timeout=timeout,
             session=session,
+            cancel_event=cancel_event,
         )
+
+    def _start_launch(project_path: str, **kwargs: Any) -> dict:
+        def _launch(cancel_event: threading.Event) -> dict:
+            return _launch_game(
+                project_path,
+                cancel_event=cancel_event,
+                **kwargs,
+            )
+
+        return live.start_launch(project_path, _launch)
 
     def _context_payload() -> dict[str, Any]:
         dashboard = session_registry.active_dashboard()
@@ -309,11 +329,11 @@ def _register_tools(app: Any) -> None:
     ) -> dict:
         """Launch or reuse a game; set warp to a Ren'Py file:line target.
 
-        display/audio default to auto: use the native session when available,
-        otherwise start Xvfb and a dummy SDL audio driver. Pass
-        savedir='temporary' for an isolated save directory cleaned on stop.
-        timeout=0 keeps the launcher default; set a positive value (seconds)
-        to fail faster. Structured errors include code, phase, and suggested_fix.
+        The call waits at most 20 seconds for readiness, then returns
+        ``status="starting"`` while startup continues in the background. Poll
+        ``renforge_launch_status`` until it reports ``ready`` or ``failed``.
+        display/audio default to auto; savedir='temporary' isolates saves.
+        timeout controls the background startup deadline, not the MCP call.
         """
         kwargs: dict[str, Any] = {
             "version": version,
@@ -341,21 +361,33 @@ def _register_tools(app: Any) -> None:
                 "timeout": timeout,
             },
             project_root=project_path,
-            fn=_launch_game,
+            fn=_start_launch,
             args=(project_path,),
             kwargs=kwargs,
         )
 
     @tool_decorator()
+    def renforge_launch_status(project_path: str) -> dict:
+        """Return starting, ready, failed, or idle for a background launch."""
+        return _log_tool_call(
+            name="renforge_launch_status",
+            params={"project_path": project_path},
+            project_root=project_path,
+            fn=live.launch_status,
+            args=(project_path,),
+            kwargs={},
+        )
+
+    @tool_decorator()
     def renforge_jump(project_path: str, target: str, version: str = "stable") -> dict:
-        """Restart the game at a label or file:line target using Ren'Py warp."""
+        """Restart at a label or file:line; poll launch status when still starting."""
         from .navigation import resolve_warp_target
 
         def _jump() -> dict:
             resolved = resolve_warp_target(project_path, target)
             if not resolved.get("ok"):
                 return resolved
-            return _launch_game(
+            return _start_launch(
                 project_path,
                 version=version,
                 warp=str(resolved["target"]),
@@ -372,14 +404,14 @@ def _register_tools(app: Any) -> None:
 
     @tool_decorator()
     def renforge_new_game(project_path: str, version: str = "stable") -> dict:
-        """Start a fresh process at the project's ``start`` label."""
+        """Start at the ``start`` label; poll launch status when still starting."""
         from .navigation import resolve_warp_target
 
         def _new_game() -> dict:
             resolved = resolve_warp_target(project_path, "start")
             if not resolved.get("ok"):
                 return resolved
-            return _launch_game(
+            return _start_launch(
                 project_path,
                 version=version,
                 warp=str(resolved["target"]),
@@ -396,7 +428,7 @@ def _register_tools(app: Any) -> None:
 
     @tool_decorator()
     def renforge_stop(project_path: str) -> dict:
-        """Stop the running game and clean up the injected bridge."""
+        """Stop a running game or cancel its in-progress launch, then clean up."""
         return _log_tool_call(
             name="renforge_stop",
             params={"project_path": project_path},
@@ -1511,8 +1543,10 @@ def create_app() -> Any:
         "steps. For UI interaction, call renforge_list_ui_elements first, then "
         "pass its frame_id to renforge_hover_element, renforge_click_element, or "
         "renforge_click_at; use renforge_hit_test when a click is intercepted by "
-        "an overlay. renforge_launch uses display/audio=auto (Xvfb + dummy audio "
-        "when needed) and accepts savedir=temporary for isolated sessions. For "
+        "an overlay. renforge_launch returns status=starting after 20 seconds "
+        "instead of exceeding common MCP timeouts; poll renforge_launch_status "
+        "until ready or failed. It uses display/audio=auto and accepts "
+        "savedir=temporary for isolated sessions. For "
         "live iteration, use renforge_control(action=\"reload_script\") after "
         "edits, renforge_wait_until for one bounded condition, and "
         "renforge_get_errors after risky actions or a stopped process."
