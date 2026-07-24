@@ -3,6 +3,16 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## [0.6.6] - 2026-07-24
+
+### Fixed
+
+- Runtime discovery now prefers validated project-local Ren'Py SDKs and safely
+  falls back to compatible managed SDKs with locked, atomic cache repair.
+- Concurrent RenForge servers now isolate bridge ownership per project,
+  preserve dashboard-owned sessions, and retain locks through incomplete
+  teardown so one launch cannot overwrite another session's artifacts.
+
 ## [0.6.5] - 2026-07-21
 
 ### Fixed
