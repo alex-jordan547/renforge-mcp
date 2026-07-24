@@ -1,5 +1,6 @@
 import errno
 import json
+import os
 import signal
 import threading
 import time
@@ -16,6 +17,9 @@ from renforge.bridge.launcher import (
 from renforge.launch_env import LaunchError
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
+
+
+_LAUNCHER_NAME = "renpy.exe" if os.name == "nt" else "renpy.sh"
 
 
 class _FakeProcess:
@@ -72,7 +76,7 @@ def _make_project(
     (project_root / "game").mkdir(parents=True)
     sdk_root = tmp_path / f"sdk-{name}"
     sdk_root.mkdir(parents=True)
-    (sdk_root / "renpy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (sdk_root / _LAUNCHER_NAME).write_text("#!/bin/sh\n", encoding="utf-8")
     return RenpyProject(project_root), RenpySdk(version="8.3.7", root=sdk_root), project_root
 
 
@@ -100,7 +104,7 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
     assert session is not None
     command = list(captured["command"])  # type: ignore[arg-type]
     assert len(command) >= 3
-    assert command[0].endswith("renpy.sh")
+    assert command[0].endswith(_LAUNCHER_NAME)
     assert command[1] == str(project_root.resolve())
     if warp is None:
         assert command[2:] == ["run"]
@@ -152,7 +156,7 @@ def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) 
     session = launch_with_bridge(sdk, project)
     command = list(captured["command"])  # type: ignore[arg-type]
     assert command[:2] == ["xvfb-run", "-a"]
-    assert command[2].endswith("renpy.sh")
+    assert command[2].endswith(_LAUNCHER_NAME)
     assert captured["start_new_session"] is True
     assert session.headless is True
 
