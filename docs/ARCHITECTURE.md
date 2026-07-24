@@ -51,11 +51,13 @@ fresh process at the project's `start` label through that same path.
 
 ## Ren'Py SDK resolution
 
-RenForge does not require a pre-installed Ren'Py. `sdk.py` discovers an
-existing SDK (`RENPY_SDK_HOME`, `~/.renpy`, `~/.cache/renpy`,
-`~/.local/share/renpy`, …) or downloads the pinned stable version into
-`~/.cache/renforge/sdks/` on first launch. Override with `RENPY_SDK_HOME` or
-`RENPY_SDK_STABLE_VERSION`.
+RenForge does not require a pre-installed Ren'Py. `sdk.py` first checks
+conventional SDK locations inside the detected project and uses one only when
+its launcher and version are compatible. It then checks the explicit
+`RENPY_SDK_HOME` override before falling back to the managed
+`~/.cache/renforge/sdks/` cache. Missing or invalid cached SDKs are installed
+under an inter-process lock and published atomically. Override the stable
+version with `RENPY_SDK_STABLE_VERSION`.
 
 ## Packaging
 

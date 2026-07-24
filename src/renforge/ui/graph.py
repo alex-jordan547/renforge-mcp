@@ -139,7 +139,7 @@ def build_story_map(project_root: str) -> dict:
     native_locations: dict[str, dict] = {}
     try:
         project = RenpyProject(root)
-        sdk = get_or_install_sdk()
+        sdk = get_or_install_sdk(project_root=project.abs_root)
         raw_dump = run_native_dump(sdk, project)
         for definition in normalize_definitions(raw_dump):
             if definition.get("kind") == "label" and definition.get("name"):

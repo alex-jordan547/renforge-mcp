@@ -2,10 +2,23 @@ import asyncio
 import base64
 import io
 import json
+import threading
 
 import pytest
 
-from renforge.server import _FallbackServer, create_app
+from renforge.server import _FallbackServer, _register_tools, create_app
+
+
+class _ToolRegistry:
+    def __init__(self) -> None:
+        self.tools = {}
+
+    def tool(self):
+        def register(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+
+        return register
 
 EXPECTED_TOOLS = {
     # static
@@ -290,6 +303,199 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
         "version": "stable",
         "warp": "game/script.rpy:42",
     }
+
+
+def test_stop_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_dashboard_stop(project_path: str):
+        calls["project_path"] = project_path
+        return {"ok": True, "was_running": True, "via": "dashboard"}
+
+    monkeypatch.setattr(dashboard_client, "stop_game", fake_dashboard_stop)
+    monkeypatch.setattr(
+        live,
+        "stop_game",
+        lambda *_args, **_kwargs: pytest.fail("direct stop should not run"),
+    )
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_stop"](str(tmp_path))
+
+    assert result == {
+        "ok": True,
+        "was_running": True,
+        "via": "dashboard",
+    }
+    assert calls == {"project_path": str(tmp_path)}
+
+
+def test_stop_tool_falls_back_when_dashboard_is_unavailable(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setattr(dashboard_client, "stop_game", lambda _project_path: None)
+
+    def fake_direct_stop(project_path: str):
+        calls["project_path"] = project_path
+        return {"ok": True, "was_running": False}
+
+    monkeypatch.setattr(live, "stop_game", fake_direct_stop)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_stop"](str(tmp_path))
+
+    assert result == {"ok": True, "was_running": False}
+    assert calls == {"project_path": str(tmp_path)}
+
+
+def test_cancelled_dashboard_launch_stops_through_its_owner(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    cancel_event = threading.Event()
+    calls = {"stops": 0}
+
+    def fake_dashboard_launch(*_args, **_kwargs):
+        cancel_event.set()
+        return {"ok": True, "via": "dashboard"}
+
+    def fake_dashboard_stop(project_path: str):
+        calls["stops"] += 1
+        calls["project_path"] = project_path
+        return {"ok": True, "via": "dashboard"}
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
+    monkeypatch.setattr(dashboard_client, "stop_game", fake_dashboard_stop)
+    monkeypatch.setattr(
+        live,
+        "start_launch",
+        lambda _project_path, launch: launch(cancel_event),
+    )
+    monkeypatch.setattr(
+        live,
+        "stop_external_game",
+        lambda *_args, **_kwargs: pytest.fail("must stop through the dashboard owner"),
+    )
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path))
+
+    assert result["code"] == "LAUNCH_CANCELLED"
+    assert calls == {"stops": 1, "project_path": str(tmp_path)}
+
+
+@pytest.mark.parametrize(
+    ("stop_result", "expected_code"),
+    [
+        (None, "DASHBOARD_STOP_UNAVAILABLE"),
+        (
+            {
+                "ok": False,
+                "code": "DASHBOARD_STOP_REJECTED",
+                "error": "owner refused stop",
+                "details": {"owner": "dashboard"},
+            },
+            "DASHBOARD_STOP_REJECTED",
+        ),
+    ],
+)
+def test_cancelled_dashboard_launch_reports_owner_stop_failure(
+    tmp_path,
+    monkeypatch,
+    stop_result,
+    expected_code,
+) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    cancel_event = threading.Event()
+
+    def fake_dashboard_launch(*_args, **_kwargs):
+        cancel_event.set()
+        return {"ok": True, "via": "dashboard"}
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
+    monkeypatch.setattr(
+        dashboard_client,
+        "stop_game",
+        lambda _project_path: stop_result,
+    )
+    monkeypatch.setattr(
+        live,
+        "start_launch",
+        lambda _project_path, launch: launch(cancel_event),
+    )
+    monkeypatch.setattr(
+        live,
+        "stop_external_game",
+        lambda *_args, **_kwargs: pytest.fail("must not bypass dashboard ownership"),
+    )
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["code"] == expected_code
+    assert result["launch_cancel_requested"] is True
+    if stop_result is not None:
+        assert result["error"] == "owner refused stop"
+        assert result["details"] == {"owner": "dashboard"}
+
+
+def test_cancelled_launch_propagates_external_lock_conflict(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    cancel_event = threading.Event()
+
+    def unavailable_dashboard(*_args, **_kwargs):
+        cancel_event.set()
+        return None
+
+    monkeypatch.setattr(dashboard_client, "launch_game", unavailable_dashboard)
+    monkeypatch.setattr(
+        dashboard_client,
+        "stop_game",
+        lambda *_args, **_kwargs: pytest.fail("dashboard did not own this launch"),
+    )
+    monkeypatch.setattr(
+        live,
+        "start_launch",
+        lambda _project_path, launch: launch(cancel_event),
+    )
+    monkeypatch.setattr(
+        live,
+        "stop_external_game",
+        lambda _project_path: {
+            "ok": False,
+            "ready": False,
+            "code": "BRIDGE_PROJECT_LOCKED",
+            "phase": "acquiring_project_lock",
+            "error": "another owner holds the lock",
+            "details": {"owner": "external"},
+        },
+    )
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["code"] == "BRIDGE_PROJECT_LOCKED"
+    assert result["phase"] == "acquiring_project_lock"
+    assert result["launch_cancel_requested"] is True
+    assert result["details"] == {"owner": "external"}
 
 
 def test_jump_tool_resolves_a_label_and_relaunches_at_it(tmp_path, monkeypatch) -> None:

@@ -24,7 +24,12 @@ from typing import Any, Callable
 
 from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
-from ..bridge.launcher import BridgeSession, launch_with_bridge, remove_bridge_artifacts
+from ..bridge.launcher import (
+    BridgeSession,
+    ProjectBridgeLock,
+    launch_with_bridge,
+    remove_bridge_artifacts,
+)
 from ..effect_wait import expected_events_for_action
 from ..effect_wait import wait_for_effect as _wait_for_business_effect
 from ..launch_env import LaunchError
@@ -259,10 +264,33 @@ def launch_game(
             except Exception:
                 pass  # unreachable session; fall through and relaunch
         try:
-            existing.close()
-        except Exception:
-            pass
-        _SESSIONS.pop(key, None)
+            cleaned = existing.close()
+        except Exception as exc:
+            message = f"Could not stop the existing bridge session: {type(exc).__name__}: {exc}"
+            return {
+                "ok": False,
+                "ready": False,
+                "code": "BRIDGE_TEARDOWN_INCOMPLETE",
+                "phase": "stopping_existing_session",
+                "message": message,
+                "error": message,
+                "cleaned": {},
+                "failed": ["close"],
+            }
+        if not existing.closed:
+            message = "The existing bridge session did not stop completely; retry stop or launch."
+            return {
+                "ok": False,
+                "ready": False,
+                "code": "BRIDGE_TEARDOWN_INCOMPLETE",
+                "phase": "stopping_existing_session",
+                "message": message,
+                "error": message,
+                "cleaned": cleaned.get("cleaned", {}),
+                "failed": cleaned.get("failed", []),
+            }
+        if _SESSIONS.get(key) is existing:
+            _SESSIONS.pop(key, None)
 
     if warp is None:
         try:
@@ -278,15 +306,29 @@ def launch_game(
         except Exception:
             pass
     else:
-        # A dashboard or another MCP process may own the live session. A warp
-        # needs a single fresh process, so stop that external session first.
-        stop_external_game(str(project.root))
+        try:
+            _client(project.root).get_state()
+        except Exception:
+            pass
+        else:
+            message = (
+                "Another RenForge bridge session is active for this project. "
+                "Stop it from the owning RenForge session before launching with warp."
+            )
+            return {
+                "ok": False,
+                "ready": False,
+                "code": "BRIDGE_PROJECT_LOCKED",
+                "phase": "acquiring_project_lock",
+                "message": message,
+                "error": message,
+            }
 
     if cancel_event is not None and cancel_event.is_set():
         return cancelled_launch_result(phase="detecting_environment")
 
     try:
-        sdk = get_or_install_sdk(version)
+        sdk = get_or_install_sdk(version, project_root=project.abs_root)
         launch_kwargs: dict[str, object] = {
             "display": display,
             "audio": audio,
@@ -351,6 +393,8 @@ def stop_game(project_path: str) -> dict:
         task.cancel_event.set()
         if not task.done_event.wait(_LAUNCH_CANCEL_WAIT_SECONDS):
             external = stop_external_game(project_path)
+            if not external.get("ok"):
+                return {**external, "launch_cancel_requested": True}
             return {
                 "ok": True,
                 "was_running": True,
@@ -363,9 +407,13 @@ def stop_game(project_path: str) -> dict:
             if _LAUNCHES.get(key) is task:
                 _LAUNCHES.pop(key, None)
 
-    session = _SESSIONS.pop(key, None)
+    session = _SESSIONS.get(key)
     if session is not None:
-        cleaned = session.close()
+        try:
+            cleaned = session.close()
+        finally:
+            if session.closed and _SESSIONS.get(key) is session:
+                _SESSIONS.pop(key, None)
         return {"ok": True, "was_running": True, **cleaned}
     if (
         was_starting
@@ -396,29 +444,38 @@ def stop_external_game(project_path: str) -> dict:
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    info_path = project.root / ".renforge" / "bridge.json"
-    if not info_path.exists():
-        return {"ok": True, "was_running": False}
+    project_lock = ProjectBridgeLock(project.root / ".renforge" / "bridge.lock")
+    try:
+        project_lock.acquire()
+    except LaunchError as exc:
+        return {**exc.to_dict(), "ready": False}
 
     try:
-        info = json.loads(info_path.read_text(encoding="utf-8"))
-    except Exception:
-        info = {}
+        info_path = project.root / ".renforge" / "bridge.json"
+        if not info_path.exists():
+            return {"ok": True, "was_running": False}
 
-    alive = False
-    try:
-        reply = BridgeClient.from_project(project.root, timeout=1.0).ping()
-        alive = isinstance(reply, dict) and reply.get("pong") is True
-    except Exception:
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+        except Exception:
+            info = {}
+
         alive = False
+        try:
+            reply = BridgeClient.from_project(project.root, timeout=1.0).ping()
+            alive = isinstance(reply, dict) and reply.get("pong") is True
+        except Exception:
+            alive = False
 
-    was_running = False
-    pid = info.get("pid")
-    if alive and isinstance(pid, int):
-        was_running = _terminate_pid(pid)
+        was_running = False
+        pid = info.get("pid")
+        if alive and isinstance(pid, int):
+            was_running = _terminate_pid(pid)
 
-    remove_bridge_artifacts(project.root)
-    return {"ok": True, "was_running": was_running}
+        remove_bridge_artifacts(project.root)
+        return {"ok": True, "was_running": was_running}
+    finally:
+        project_lock.release()
 
 
 def _terminate_pid(pid: int) -> bool:
@@ -444,12 +501,13 @@ def stop_all() -> None:
         task.done_event.wait(_LAUNCH_CANCEL_WAIT_SECONDS)
     with _LAUNCH_LOCK:
         _LAUNCHES.clear()
-    for session in list(_SESSIONS.values()):
+    for key, session in list(_SESSIONS.items()):
         try:
             session.close()
         except Exception:
             pass
-    _SESSIONS.clear()
+        if session.closed and _SESSIONS.get(key) is session:
+            _SESSIONS.pop(key, None)
 
 
 def game_state(
@@ -1116,7 +1174,7 @@ def run_autopilot(project_path: str, version: str = "stable", max_runs: int = 16
     """Explore the game's branches and return a coverage/crash report."""
     try:
         project = RenpyProject(Path(project_path))
-        sdk = get_or_install_sdk(version)
+        sdk = get_or_install_sdk(version, project_root=project.abs_root)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     # Autopilot launches its own throwaway sessions; free any manual one first.

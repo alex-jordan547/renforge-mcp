@@ -168,7 +168,7 @@ def run_lint(project_root: str | Path, *, version: str = "stable", timeout: int 
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     try:
-        sdk = get_or_install_sdk(version)
+        sdk = get_or_install_sdk(version, project_root=project.abs_root)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
