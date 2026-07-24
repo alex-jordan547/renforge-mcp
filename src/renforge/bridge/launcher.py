@@ -8,6 +8,8 @@ the game and removes the injected file.
 
 from __future__ import annotations
 
+import errno
+import json
 import os
 import secrets
 import shutil
@@ -35,13 +37,98 @@ _INJECTED_NAME: str = "renforge_bridge.rpy"
 _SESSION_INIT_NAME: str = "00renforge_session.rpy"
 
 
+class ProjectBridgeLock:
+    """A non-blocking, process-wide lock for one project's bridge artifacts."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._file: Any | None = None
+        self.is_deferred = False
+
+    def acquire(self) -> None:
+        if self._file is not None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = self.path.open("a+b")
+        except OSError as exc:
+            raise LaunchError(
+                "BRIDGE_PROJECT_LOCK_FAILED",
+                f"Could not open the project bridge lock: {exc}",
+                phase="acquiring_project_lock",
+                suggested_fix="Check write permissions under .renforge/.",
+            ) from exc
+        try:
+            self._lock_file(lock_file)
+        except OSError as exc:
+            try:
+                lock_file.close()
+            except OSError:
+                pass
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise LaunchError(
+                    "BRIDGE_PROJECT_LOCKED",
+                    f"Another RenForge bridge session is active for {self.path.parent.parent}.",
+                    phase="acquiring_project_lock",
+                    suggested_fix="Stop the existing session before launching another for this project.",
+                ) from exc
+            raise LaunchError(
+                "BRIDGE_PROJECT_LOCK_FAILED",
+                f"Could not lock the project bridge: {exc}",
+                phase="acquiring_project_lock",
+                suggested_fix="Check write permissions under .renforge/.",
+            ) from exc
+        self._file = lock_file
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        lock_file, self._file = self._file, None
+        try:
+            self._unlock_file(lock_file)
+        finally:
+            lock_file.close()
+
+    @staticmethod
+    def _lock_file(lock_file: Any) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            if not lock_file.read(1):
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @staticmethod
+    def _unlock_file(lock_file: Any) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+_DEFERRED_LOCKS: set[ProjectBridgeLock] = set()
+
+
 def remove_bridge_artifacts(project_root: Path) -> None:
     """Delete every file the bridge injects or leaves behind on ``project_root``.
 
-    Safe to call more than once and whether or not the game is running; missing
-    files are ignored. Shared by :meth:`BridgeSession.close` and the
-    cross-process stop path so a session torn down from another process cleans
-    up the same set of files.
+    The caller must hold the project's :class:`ProjectBridgeLock` unless this is
+    a legacy maintenance or test cleanup. Missing files are ignored, so cleanup
+    remains idempotent.
     """
     game_dir = project_root / "game"
     for path in (
@@ -107,6 +194,7 @@ class BridgeSession:
         environment: dict[str, Any] | None = None,
         startup_ms: int | None = None,
         phases: list[dict[str, Any]] | None = None,
+        project_lock: ProjectBridgeLock | None = None,
     ):
         self.process = process
         self.client = client
@@ -119,6 +207,10 @@ class BridgeSession:
         self.phases = phases or []
         self._project_root = project_root
         self._cleaned: dict[str, Any] = {}
+        self._project_lock = project_lock
+        self._close_lock = threading.Lock()
+        self._closed = False
+        self._close_result: dict[str, Any] | None = None
 
     def __enter__(self) -> "BridgeSession":
         return self
@@ -126,8 +218,27 @@ class BridgeSession:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    @property
+    def closed(self) -> bool:
+        """Whether teardown completed and project ownership was released."""
+        return self._closed
+
     def close(self, timeout: float = 10.0) -> dict[str, Any]:
         """Stop the game, Xvfb group if any, and temporary session files."""
+        with self._close_lock:
+            if self._closed:
+                return self._close_result or {"cleaned": self._cleaned, "failed": ["close"]}
+            self._close_result = self._close_resources(timeout)
+            ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir"}
+            if ownership_failures.intersection(self._close_result.get("failed", [])):
+                return self._close_result
+            if self._project_lock is not None:
+                self._project_lock.release()
+                self._project_lock = None
+            self._closed = True
+            return self._close_result
+
+    def _close_resources(self, timeout: float) -> dict[str, Any]:
         cleaned: dict[str, Any] = {
             "renpy_process": False,
             "process_group": False,
@@ -144,23 +255,25 @@ class BridgeSession:
                 try:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
                     cleaned["process_group"] = True
-                    cleaned["renpy_process"] = True
                 except (ProcessLookupError, PermissionError):
                     try:
                         self.process.kill()
-                        cleaned["renpy_process"] = True
                     except Exception:
                         failed.append("renpy_process")
             else:
                 try:
                     self.process.kill()
-                    cleaned["renpy_process"] = True
                 except Exception:
                     failed.append("renpy_process")
             try:
                 self.process.wait(timeout=timeout)
             except Exception:
                 failed.append("renpy_wait")
+            if self.process.poll() is None:
+                failed.append("process_alive")
+                self._cleaned = cleaned
+                return {"cleaned": cleaned, "failed": failed}
+            cleaned["renpy_process"] = True
         else:
             # Already exited: reap it so it does not linger as a zombie.
             try:
@@ -200,10 +313,11 @@ def _raise_if_cancelled(cancel_event: threading.Event | None, *, phase: str) -> 
         )
 
 
-def launch_with_bridge(
+def _launch_after_project_lock(
     sdk: RenpySdk,
     project: RenpyProject,
     *,
+    project_lock: ProjectBridgeLock,
     token: str | None = None,
     port: int = 0,
     warp: str | None = None,
@@ -358,6 +472,10 @@ def launch_with_bridge(
                 )
             if info_path.exists():
                 try:
+                    manifest = json.loads(info_path.read_text(encoding="utf-8"))
+                    if not isinstance(manifest, dict) or manifest.get("token") != token:
+                        time.sleep(0.3)
+                        continue
                     client = BridgeClient.from_project(project.root)
                     reply = client.ping()
                     if not isinstance(reply, dict) or reply.get("pong") is not True:
@@ -386,27 +504,37 @@ def launch_with_bridge(
                         environment=capabilities.to_dict(),
                         startup_ms=startup_ms,
                         phases=phases,
+                        project_lock=project_lock,
                     )
                 except Exception:
                     pass  # bridge.json not fully written yet, retry
             time.sleep(0.3)
     except LaunchError:
-        _terminate(process, headless)
-        remove_bridge_artifacts(project.root)
-        if cleanup_savedir and temporary_savedir is not None:
-            shutil.rmtree(temporary_savedir, ignore_errors=True)
+        _teardown_failed_launch(
+            process,
+            headless,
+            project.root,
+            temporary_savedir if cleanup_savedir else None,
+            project_lock,
+        )
         raise
     except BaseException:
-        _terminate(process, headless)
-        remove_bridge_artifacts(project.root)
-        if cleanup_savedir and temporary_savedir is not None:
-            shutil.rmtree(temporary_savedir, ignore_errors=True)
+        _teardown_failed_launch(
+            process,
+            headless,
+            project.root,
+            temporary_savedir if cleanup_savedir else None,
+            project_lock,
+        )
         raise
 
-    _terminate(process, headless)
-    remove_bridge_artifacts(project.root)
-    if cleanup_savedir and temporary_savedir is not None:
-        shutil.rmtree(temporary_savedir, ignore_errors=True)
+    _teardown_failed_launch(
+        process,
+        headless,
+        project.root,
+        temporary_savedir if cleanup_savedir else None,
+        project_lock,
+    )
     raise LaunchError(
         "BRIDGE_CONNECTION_TIMEOUT",
         f"Bridge did not come up within {startup_timeout}s",
@@ -416,19 +544,147 @@ def launch_with_bridge(
     )
 
 
-def _terminate(process: subprocess.Popen, headless: bool) -> None:
-    """Terminate the launched process; in headless mode, its whole group.
+def launch_with_bridge(
+    sdk: RenpySdk,
+    project: RenpyProject,
+    *,
+    token: str | None = None,
+    port: int = 0,
+    warp: str | None = None,
+    startup_timeout: float = 90.0,
+    cancel_event: threading.Event | None = None,
+    extra_env: dict[str, str] | None = None,
+    display: str = "auto",
+    audio: str = "auto",
+    savedir: str | None = None,
+    persistent: str = "existing",
+    cleanup_on_stop: bool = True,
+    preferences: str = "existing",
+) -> BridgeSession:
+    """Launch a bridge while exclusively owning this project's artifacts."""
+    project_lock = ProjectBridgeLock(project.root / ".renforge" / "bridge.lock")
+    project_lock.acquire()
+    try:
+        remove_bridge_artifacts(project.root)
+        session = _launch_after_project_lock(
+            sdk,
+            project,
+            project_lock=project_lock,
+            token=token,
+            port=port,
+            warp=warp,
+            startup_timeout=startup_timeout,
+            cancel_event=cancel_event,
+            extra_env=extra_env,
+            display=display,
+            audio=audio,
+            savedir=savedir,
+            persistent=persistent,
+            cleanup_on_stop=cleanup_on_stop,
+            preferences=preferences,
+        )
+        return session
+    except BaseException:
+        if project_lock.is_deferred:
+            raise
+        try:
+            remove_bridge_artifacts(project.root)
+        finally:
+            project_lock.release()
+        raise
+
+
+def _terminate(process: subprocess.Popen, headless: bool, timeout: float = 1.0) -> bool:
+    """Stop a process with bounded TERM/KILL escalation and confirm its death.
 
     Under ``xvfb-run`` the tracked process is the wrapper — signalling it alone
     would orphan the game and the Xvfb server.
     """
+    if process.poll() is not None:
+        try:
+            process.wait(timeout=0)
+        except Exception:
+            pass
+        return process.poll() is not None
+
+    _signal_process(process, headless, force=False)
+    try:
+        process.wait(timeout=timeout)
+    except Exception:
+        pass
+    if process.poll() is not None:
+        return True
+
+    _signal_process(process, headless, force=True)
+    try:
+        process.wait(timeout=timeout)
+    except Exception:
+        pass
+    return process.poll() is not None
+
+
+def _signal_process(process: subprocess.Popen, headless: bool, *, force: bool) -> None:
     if headless:
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            signal_number = signal.SIGKILL if force else signal.SIGTERM
+            os.killpg(os.getpgid(process.pid), signal_number)
             return
         except (ProcessLookupError, PermissionError):
             pass
-    process.terminate()
+    try:
+        process.kill() if force else process.terminate()
+    except Exception:
+        pass
 
 
-__all__ = ["BridgeSession", "launch_with_bridge", "remove_bridge_artifacts"]
+def _teardown_failed_launch(
+    process: subprocess.Popen,
+    headless: bool,
+    project_root: Path,
+    temporary_savedir: Path | None,
+    project_lock: ProjectBridgeLock,
+) -> None:
+    if _terminate(process, headless):
+        try:
+            remove_bridge_artifacts(project_root)
+            if temporary_savedir is not None:
+                shutil.rmtree(temporary_savedir, ignore_errors=False)
+            return
+        except FileNotFoundError:
+            return
+        except Exception:
+            pass
+
+    project_lock.is_deferred = True
+    _DEFERRED_LOCKS.add(project_lock)
+
+    def reap() -> None:
+        while process.poll() is None:
+            try:
+                process.wait(timeout=1.0)
+            except Exception:
+                time.sleep(0.1)
+        while True:
+            try:
+                remove_bridge_artifacts(project_root)
+                if temporary_savedir is not None:
+                    shutil.rmtree(temporary_savedir, ignore_errors=False)
+                project_lock.release()
+                _DEFERRED_LOCKS.discard(project_lock)
+                return
+            except FileNotFoundError:
+                project_lock.release()
+                _DEFERRED_LOCKS.discard(project_lock)
+                return
+            except Exception:
+                time.sleep(0.1)
+
+    threading.Thread(target=reap, name="renforge-bridge-reaper", daemon=True).start()
+
+
+__all__ = [
+    "BridgeSession",
+    "ProjectBridgeLock",
+    "launch_with_bridge",
+    "remove_bridge_artifacts",
+]

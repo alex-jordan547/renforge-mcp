@@ -114,17 +114,46 @@ def _register_tools(app: Any) -> None:
     ) -> dict:
         if cancel_event is not None and cancel_event.is_set():
             return live.cancelled_launch_result(phase="detecting_environment")
-        from .dashboard_client import launch_game as launch_via_dashboard
+        from .dashboard_client import (
+            launch_game as launch_via_dashboard,
+            stop_game as stop_via_dashboard,
+        )
 
         # Dashboard owns its own display process; only warp/version are delegated.
         delegated = launch_via_dashboard(project_path, version=version, warp=warp)
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
-                live.stop_external_game(project_path)
+                stopped = stop_via_dashboard(project_path)
+                if stopped is None:
+                    message = (
+                        "The dashboard launch was cancelled, but its owning "
+                        "dashboard is unavailable to stop it."
+                    )
+                    return {
+                        "ok": False,
+                        "ready": False,
+                        "code": "DASHBOARD_STOP_UNAVAILABLE",
+                        "phase": "stopping_cancelled_dashboard_launch",
+                        "message": message,
+                        "error": message,
+                        "launch_cancel_requested": True,
+                    }
+                if not stopped.get("ok"):
+                    return {
+                        **stopped,
+                        "ready": False,
+                        "launch_cancel_requested": True,
+                    }
                 return live.cancelled_launch_result(phase="starting_renpy")
             return delegated
         if cancel_event is not None and cancel_event.is_set():
-            live.stop_external_game(project_path)
+            stopped = live.stop_external_game(project_path)
+            if not stopped.get("ok"):
+                return {
+                    **stopped,
+                    "ready": False,
+                    "launch_cancel_requested": True,
+                }
             return live.cancelled_launch_result(phase="starting_renpy")
         return live.launch_game(
             project_path,
@@ -139,6 +168,12 @@ def _register_tools(app: Any) -> None:
             session=session,
             cancel_event=cancel_event,
         )
+
+    def _stop_game(project_path: str) -> dict:
+        from .dashboard_client import stop_game as stop_via_dashboard
+
+        delegated = stop_via_dashboard(project_path)
+        return delegated if delegated is not None else live.stop_game(project_path)
 
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
         def _launch(cancel_event: threading.Event) -> dict:
@@ -433,7 +468,7 @@ def _register_tools(app: Any) -> None:
             name="renforge_stop",
             params={"project_path": project_path},
             project_root=project_path,
-            fn=live.stop_game,
+            fn=_stop_game,
             args=(project_path,),
             kwargs={},
         )

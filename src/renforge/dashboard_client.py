@@ -12,14 +12,7 @@ from urllib.request import Request, urlopen
 from .session_registry import dashboard_connection
 
 
-def launch_game(
-    project_path: str,
-    *,
-    version: str = "stable",
-    warp: str | None = None,
-) -> dict[str, Any] | None:
-    """Launch through the active dashboard, or return ``None`` when unavailable."""
-
+def _post(project_path: str, route: str, body: dict[str, Any]) -> dict[str, Any] | None:
     connection = dashboard_connection()
     if not connection:
         return None
@@ -31,12 +24,11 @@ def launch_game(
     if Path(selected_project).expanduser().resolve() != Path(project_path).expanduser().resolve():
         return None
 
-    endpoint = urljoin(url.rstrip("/") + "/", "api/live/launch")
+    endpoint = urljoin(url.rstrip("/") + "/", route)
     endpoint = f"{endpoint}?{urlencode({'token': token})}"
-    body = json.dumps({"version": version, "warp": warp}).encode("utf-8")
     request = Request(
         endpoint,
-        data=body,
+        data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -51,4 +43,23 @@ def launch_game(
     return payload
 
 
-__all__ = ["launch_game"]
+def launch_game(
+    project_path: str,
+    *,
+    version: str = "stable",
+    warp: str | None = None,
+) -> dict[str, Any] | None:
+    """Launch through the active dashboard, or return ``None`` when unavailable."""
+    return _post(
+        project_path,
+        "api/live/launch",
+        {"version": version, "warp": warp},
+    )
+
+
+def stop_game(project_path: str) -> dict[str, Any] | None:
+    """Stop through the active dashboard, or return ``None`` when unavailable."""
+    return _post(project_path, "api/live/stop", {})
+
+
+__all__ = ["launch_game", "stop_game"]

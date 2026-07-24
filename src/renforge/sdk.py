@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Iterable
 
-import errno
 import os
+import re
 import shutil
 import sys
 import tarfile
 import tempfile
 import urllib.request
+import uuid
 import zipfile
 from urllib.error import HTTPError, URLError
 
@@ -21,6 +23,9 @@ RENPY_SDK_STABLE_ENV: Final = "RENPY_SDK_STABLE_VERSION"
 RENPY_SDK_BASE_URL_ENV: Final = "RENPY_SDK_BASE_URL"
 RENPY_SDK_ARCHIVE_URL_ENV: Final = "RENPY_SDK_ARCHIVE_URL"
 RENPY_SDK_BASE_URL_DEFAULT: Final = "https://www.renpy.org/dl"
+_VERSION_IDENTIFIER_RE: Final = re.compile(
+    r"\d+\.\d+\.\d+(?:[._+-][A-Za-z0-9]+)*\Z"
+)
 
 # Ren'Py 8.5 keyed Script.namemap by Node (Node.__hash__/__eq__ use .name) but
 # left dump.py filtering with ``isinstance(name, str)``, which drops every
@@ -77,6 +82,17 @@ def _resolve_version(version: str) -> str:
     return version
 
 
+def _validate_version_identifier(version: str) -> str:
+    if (
+        not _VERSION_IDENTIFIER_RE.fullmatch(version)
+        or ".." in version
+        or "/" in version
+        or "\\" in version
+    ):
+        raise ValueError(f"Invalid Ren'Py version identifier: {version!r}")
+    return version
+
+
 def _cache_dir() -> Path:
     cache_root = Path(os.environ.get(RENPY_SDK_CACHE_ENV, Path.home() / ".cache" / "renforge" / "sdks"))
     return cache_root.expanduser()
@@ -86,51 +102,84 @@ def _cache_version_dir(version: str) -> Path:
     return _cache_dir() / version
 
 
+def _managed_cache_child(path: Path) -> Path:
+    cache_root = _cache_dir().resolve(strict=False)
+    candidate = path.expanduser().absolute()
+    try:
+        parent = candidate.parent.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"Invalid managed cache path: {path}") from exc
+    if parent != cache_root or candidate.name in {"", ".", ".."}:
+        raise ValueError(f"Managed cache path is not a direct cache child: {path}")
+    return cache_root / candidate.name
+
+
 def _unique_paths(candidates: Iterable[Path]) -> list[Path]:
     seen: list[Path] = []
     for path in candidates:
-        normalized = path.expanduser().resolve()
+        try:
+            normalized = path.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
         if normalized not in seen:
             seen.append(normalized)
     return seen
 
 
-def _discover_candidate_roots(version: str) -> list[Path]:
-    env_root = os.environ.get(RENPY_SDK_ENV)
-    bases = [
-        Path(env_root) if env_root else None,
-        Path.home() / ".renpy",
-        Path.home() / ".cache" / "renpy",
-        Path.home() / ".local" / "share" / "renpy",
-        Path("/opt") / "renpy",
-        Path("/usr/local") / "renpy",
+def _versioned_candidates(base: Path, version: str) -> list[Path]:
+    return [
+        base,
+        base / version,
+        base / f"renpy-{version}",
+        base / f"renpy-{version}-sdk",
     ]
-    candidates: list[Path] = []
-    for base in bases:
-        if base is None:
-            continue
-        candidates.extend(
-            [
-                base,
-                base / version,
-                base / f"renpy-{version}",
-                base / "renpy" / version,
-                base / "renpy" / f"renpy-{version}",
-            ]
-        )
-    return _unique_paths(candidates)
+
+
+def _project_candidate_roots(project_root: Path, version: str) -> list[Path]:
+    project = project_root.expanduser().resolve()
+    bases = [
+        project,
+        project / "renpy",
+        project / "renpy-sdk",
+        project / ".renpy",
+        project / ".renforge" / "sdk",
+    ]
+    candidates = _unique_paths(
+        candidate
+        for base in bases
+        for candidate in _versioned_candidates(base, version)
+    )
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.is_relative_to(project)
+    ]
+
+
+def _explicit_candidate_roots(version: str) -> list[Path]:
+    env_root = os.environ.get(RENPY_SDK_ENV)
+    if not env_root:
+        return []
+    root = Path(env_root)
+    return _unique_paths(
+        [
+            *_versioned_candidates(root, version),
+            *_versioned_candidates(root / "renpy", version),
+        ]
+    )
 
 
 def _find_entrypoint(path: Path) -> Path:
     # Prefer the platform launcher scripts: they bootstrap Ren'Py's *bundled*
     # Python (which ships every dependency). `renpy.py` run with an arbitrary
     # system Python fails on missing deps, so it is only a last resort.
-    # renpy.sh is not runnable on native Windows, so prefer renpy.exe there.
-    scripts = ("renpy.exe", "renpy.sh") if os.name == "nt" else ("renpy.sh", "renpy.exe")
+    # Native launchers are platform-specific; a PE file is not runnable on
+    # POSIX even when its executable permission bit is set.
+    scripts = ("renpy.exe",) if os.name == "nt" else ("renpy.sh",)
     options = [
         *(path / script for script in scripts),
         path / "renpy.py",
-        path / "renpy-sdk" / "renpy.sh",
+        *(path / "renpy-sdk" / script for script in scripts),
         path / "renpy-sdk" / "renpy.py",
         path / "lib" / "renpy" / "renpy.py",
     ]
@@ -148,14 +197,141 @@ def _is_sdk_root(path: Path) -> bool:
     return True
 
 
-def _iter_existing_sdk_roots(version: str) -> Iterable[Path]:
-    for candidate in [*_discover_candidate_roots(version), _cache_version_dir(version)]:
-        if candidate.exists():
+def _version_tuple(version: str) -> tuple[int, int, int] | None:
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    return tuple(int(component) for component in match.groups())
+
+
+def _sdk_internal_version(root: Path) -> str | None:
+    version_file = root / "renpy" / "vc_version.py"
+    try:
+        text = version_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = re.search(
+        r"(?m)^\s*version\s*=\s*(['\"])(?P<version>\d+\.\d+\.\d+[^'\"]*)\1",
+        text,
+    )
+    return match.group("version") if match else None
+
+
+def _compatible_sdk_version(installed: str, required: str) -> bool:
+    installed_tuple = _version_tuple(installed)
+    required_tuple = _version_tuple(required)
+    if installed_tuple is None or required_tuple is None:
+        return False
+    return (
+        installed_tuple[0] == required_tuple[0]
+        and installed_tuple >= required_tuple
+    )
+
+
+def _validated_sdk_version(root: Path, required_version: str) -> str | None:
+    try:
+        launcher = _find_entrypoint(root)
+        real_root = root.resolve(strict=True)
+        real_launcher = launcher.resolve(strict=True)
+    except (FileNotFoundError, OSError, RuntimeError):
+        return None
+    if not real_launcher.is_file() or not os.access(real_launcher, os.R_OK):
+        return None
+    if not real_launcher.is_relative_to(real_root):
+        return None
+    if real_launcher.suffix != ".py" and os.name != "nt" and not os.access(real_launcher, os.X_OK):
+        return None
+    installed_version = _sdk_internal_version(real_root)
+    if installed_version is None or not _compatible_sdk_version(installed_version, required_version):
+        return None
+    return installed_version
+
+
+def _first_valid_sdk(candidates: Iterable[Path], version: str) -> Path | None:
+    for candidate in candidates:
+        if _validated_sdk_version(candidate, version) is not None:
+            return candidate.resolve()
+    return None
+
+
+def _cache_candidates(version: str) -> list[Path]:
+    cache_root = _cache_dir()
+    exact = _cache_version_dir(version)
+    resolved_cache_root = cache_root.resolve(strict=False)
+    compatible: list[tuple[tuple[int, int, int], Path]] = []
+    try:
+        children = list(cache_root.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if child.name.startswith(".") or _version_tuple(child.name) is None:
+            continue
+        try:
+            resolved_child = child.resolve(strict=False)
+            admissible = resolved_child.is_relative_to(resolved_cache_root)
+            is_directory = child.is_dir()
+        except (OSError, RuntimeError):
+            continue
+        if not admissible or not is_directory or child == exact:
+            continue
+        installed = _validated_sdk_version(child, version)
+        installed_tuple = _version_tuple(installed or "")
+        if installed_tuple is not None:
+            compatible.append((installed_tuple, child))
+    compatible.sort(key=lambda item: item[0])
+    candidates = [path for _, path in compatible]
+    try:
+        if exact.resolve(strict=False).is_relative_to(resolved_cache_root):
+            candidates.insert(0, exact)
+    except (OSError, RuntimeError):
+        pass
+    return candidates
+
+
+def _directory_entry_exists(path: Path) -> bool:
+    try:
+        expected_name = os.path.normcase(path.name)
+        return any(
+            os.path.normcase(entry.name) == expected_name
+            for entry in path.parent.iterdir()
+        )
+    except OSError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
+
+@contextmanager
+def _sdk_install_lock(version: str) -> Iterable[None]:
+    lock_path = _cache_dir() / f".{version.replace(os.sep, '_')}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            if lock_file.read(1) == b"":
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
             try:
-                _ = _find_entrypoint(candidate)
-            except FileNotFoundError:
-                continue
-            yield candidate
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _archive_base_url() -> str:
@@ -284,32 +460,77 @@ class RenpySdk:
         return self.command(str(project_root), *args)
 
 
-def get_or_install_sdk(version: str = "stable") -> RenpySdk:
+def get_or_install_sdk(
+    version: str = "stable",
+    *,
+    project_root: Path | None = None,
+) -> RenpySdk:
     """
     Discover or prepare a Ren'Py SDK directory.
     """
-    resolved_version = _resolve_version(version)
-    for sdk_root in _iter_existing_sdk_roots(resolved_version):
-        _patch_sdk_json_dump(sdk_root)
-        return RenpySdk(version=resolved_version, root=sdk_root)
+    resolved_version = _validate_version_identifier(_resolve_version(version))
+    if project_root is not None:
+        local_root = _first_valid_sdk(
+            _project_candidate_roots(project_root, resolved_version),
+            resolved_version,
+        )
+        if local_root is not None:
+            return RenpySdk(version=resolved_version, root=local_root)
 
-    cache_root = _cache_version_dir(resolved_version)
-    cache_root.parent.mkdir(parents=True, exist_ok=True)
+    explicit_root = _first_valid_sdk(
+        _explicit_candidate_roots(resolved_version),
+        resolved_version,
+    )
+    if explicit_root is not None:
+        _patch_sdk_json_dump(explicit_root)
+        return RenpySdk(version=resolved_version, root=explicit_root)
 
-    with tempfile.TemporaryDirectory(dir=_cache_dir()) as scratch:
-        scratch_dir = Path(scratch)
-        archive_path = _download_archive(_archive_url(resolved_version), scratch_dir)
-        extraction_root = scratch_dir / "extracted"
-        extraction_root.mkdir(parents=True, exist_ok=True)
-        _extract_archive(archive_path, extraction_root)
-        discovered_root = _find_sdk_root(extraction_root)
-        try:
-            os.replace(discovered_root, cache_root)
-        except OSError as exc:
-            if exc.errno != errno.EEXIST:
+    cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
+    if cached_root is not None:
+        _patch_sdk_json_dump(cached_root)
+        return RenpySdk(version=resolved_version, root=cached_root)
+
+    with _sdk_install_lock(resolved_version):
+        cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
+        if cached_root is not None:
+            _patch_sdk_json_dump(cached_root)
+            return RenpySdk(version=resolved_version, root=cached_root)
+
+        cache_root = _managed_cache_child(_cache_version_dir(resolved_version))
+        cache_root.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{cache_root.name}.install-",
+            dir=cache_root.parent,
+        ) as scratch:
+            scratch_dir = Path(scratch)
+            archive_path = _download_archive(_archive_url(resolved_version), scratch_dir)
+            extraction_root = scratch_dir / "extracted"
+            extraction_root.mkdir(parents=True, exist_ok=True)
+            _extract_archive(archive_path, extraction_root)
+            discovered_root = _find_sdk_root(extraction_root)
+            if _validated_sdk_version(discovered_root, resolved_version) is None:
+                raise ValueError(
+                    f"Downloaded Ren'Py SDK is invalid or incompatible with {resolved_version}."
+                )
+            _patch_sdk_json_dump(discovered_root)
+
+            quarantine = _managed_cache_child(
+                cache_root.with_name(
+                    f".{cache_root.name}.corrupt-{os.getpid()}-{uuid.uuid4().hex}"
+                )
+            )
+            quarantined = False
+            if _directory_entry_exists(cache_root):
+                os.replace(cache_root, quarantine)
+                quarantined = True
+            try:
+                os.replace(discovered_root, cache_root)
+            except BaseException:
+                if quarantined and not _directory_entry_exists(cache_root):
+                    os.replace(quarantine, cache_root)
                 raise
-            if not _is_sdk_root(cache_root):
-                raise
+            else:
+                if quarantined:
+                    shutil.rmtree(quarantine, ignore_errors=True)
 
-    _patch_sdk_json_dump(cache_root)
     return RenpySdk(version=resolved_version, root=cache_root)

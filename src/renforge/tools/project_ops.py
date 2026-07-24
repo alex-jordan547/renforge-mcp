@@ -28,7 +28,7 @@ def _sdk_project(project_path: str, version: str) -> tuple[RenpySdk | None, Renp
     if err:
         return None, None, err
     try:
-        return get_or_install_sdk(version), project, None
+        return get_or_install_sdk(version, project_root=project.abs_root), project, None
     except Exception as exc:
         return None, None, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

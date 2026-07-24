@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -501,8 +502,12 @@ def test_story_map_caches_after_first_build(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(graph, "scan_project", fake_scan)
     monkeypatch.setattr(graph, "run_native_dump", fake_run_native)
     monkeypatch.setattr(graph, "normalize_definitions", fake_normalize)
-    monkeypatch.setattr(graph, "RenpyProject", lambda _root: object())
-    monkeypatch.setattr(graph, "get_or_install_sdk", lambda: "sdk")
+    monkeypatch.setattr(
+        graph,
+        "RenpyProject",
+        lambda root: SimpleNamespace(abs_root=Path(root).resolve()),
+    )
+    monkeypatch.setattr(graph, "get_or_install_sdk", lambda **_kwargs: "sdk")
 
     first = graph.build_story_map(project)
     second = graph.build_story_map(project)
