@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18next from "../i18n";
 import type { SocketEnvelope } from "../types";
 
 const MAX_EVENTS = 300;
@@ -88,7 +89,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     };
 
     socket.onerror = () => {
-      setError("WebSocket error");
+      setError(i18next.t("ws.offline"));
     };
 
     socket.onclose = () => {

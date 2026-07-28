@@ -15,6 +15,8 @@ import type {
   StoryMapResponse,
   TranslationStats,
 } from "./types";
+import i18next from "./i18n";
+import { dashboardApiError, isDashboardApiError } from "./i18n/errors";
 
 type JsonPayload = Record<string, unknown>;
 type LanguageCandidate = Record<string, unknown>;
@@ -43,11 +45,6 @@ function withToken(path: string): string {
 
   return `${API_BASE}${url.pathname}${url.search}`;
 }
-
-type BackendFailure = {
-  ok: boolean;
-  error?: string;
-};
 
 type LiveScreenshotPayload = {
   format?: string;
@@ -117,21 +114,9 @@ function timelineFallbackId(message: SocketEnvelope): string {
   return makeTimelineId(["socket", message.kind, message.type, message.source, message.event, message.payload, message.timestamp]);
 }
 
-function isBackendFailure(payload: unknown): payload is BackendFailure {
-  return (
-    isObject(payload) &&
-    payload.ok === false &&
-    (typeof payload.error === "undefined" || typeof payload.error === "string")
-  );
-}
-
-function extractError(payload: BackendFailure): string {
-  return payload.error ?? "Unexpected response";
-}
-
 function parseTimelineSeedPayload(payload: unknown): SocketEnvelope[] {
-  if (isBackendFailure(payload)) {
-    throw new Error(extractError(payload));
+  if (isDashboardApiError(payload)) {
+    throw dashboardApiError(payload, "errors.unexpected");
   }
   if (Array.isArray(payload)) {
     return payload.filter(isObject) as SocketEnvelope[];
@@ -165,8 +150,8 @@ function parseTimelineSeedPayload(payload: unknown): SocketEnvelope[] {
 }
 
 function parseLiveStatePayload(payload: unknown): LiveState {
-  if (isBackendFailure(payload)) {
-    throw new Error(extractError(payload));
+  if (isDashboardApiError(payload)) {
+    throw dashboardApiError(payload, "errors.unexpected");
   }
   if (!isObject(payload)) {
     return { current_label: "", menu: false, showing_tags: [], variables: {} };
@@ -187,8 +172,8 @@ function parseLiveStatePayload(payload: unknown): LiveState {
 }
 
 function parseLiveChoicesPayload(payload: unknown): { choices: LiveChoice[] } {
-  if (isBackendFailure(payload)) {
-    throw new Error(extractError(payload));
+  if (isDashboardApiError(payload)) {
+    throw dashboardApiError(payload, "errors.unexpected");
   }
   if (!isObject(payload)) {
     return { choices: [] };
@@ -233,8 +218,8 @@ function parseLiveChoicesPayload(payload: unknown): { choices: LiveChoice[] } {
 }
 
 function parseDebugEventsPayload(payload: unknown): DebugEventsResponse {
-  if (isBackendFailure(payload)) {
-    throw new Error(extractError(payload));
+  if (isDashboardApiError(payload)) {
+    throw dashboardApiError(payload, "errors.unexpected");
   }
   if (!isObject(payload)) {
     return { ok: true, events: [] };
@@ -252,8 +237,8 @@ function parseDebugEventsPayload(payload: unknown): DebugEventsResponse {
 }
 
 function parseScreenshotPayload(payload: unknown): LiveScreenshot {
-  if (isBackendFailure(payload)) {
-    throw new Error(extractError(payload));
+  if (isDashboardApiError(payload)) {
+    throw dashboardApiError(payload, "errors.unexpected");
   }
   if (!isObject(payload)) {
     throw new Error("Invalid screenshot payload");
@@ -278,17 +263,30 @@ function checkBooleanResponse(payload: unknown, action: string): void {
     return;
   }
   if (payload.ok === false) {
-    throw new Error((payload as { error?: string }).error ?? `${action} failed`);
+    throw dashboardApiError(
+      isDashboardApiError(payload) ? payload : { ok: false, error: `${action} failed` },
+      "errors.unexpected",
+    );
   }
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
-    if (isBackendFailure(body)) {
-      throw new Error(extractError(body));
+    if (isDashboardApiError(body)) {
+      throw dashboardApiError(body, "errors.unexpected");
     }
-    throw new Error(`HTTP ${response.status}`);
+    throw dashboardApiError(
+      {
+        ok: false,
+        details: {
+          status: response.status,
+          statusText: response.statusText,
+          body,
+        },
+      },
+      "errors.unexpected",
+    );
   }
   return (await response.json()) as T;
 }
@@ -431,7 +429,7 @@ export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: st
     const category = String(activity.category ?? "tool");
     const result = safeRecord(activity.result);
     const failed = activity.ok === false || typeof result?.error === "string";
-    const details = `${failed ? "Failed" : "Completed"} ${tool} • ${String(activity.duration_ms ?? "n/a")}ms`;
+    const details = `${failed ? i18next.t("timeline.failed") : i18next.t("timeline.completed")} ${tool} • ${String(activity.duration_ms ?? "n/a")}ms`;
     return {
       id: makeTimelineId(["activity", normalizedTimestamp, tool, category, activity, fallbackId]),
       source: "activity",
@@ -462,8 +460,8 @@ export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: st
       source: "bridge",
       timestamp: toSafe(event.timestamp, messageTimestamp),
       type: eventType,
-      title: "Label",
-      details: `Entered ${String(event.label ?? "unknown")}`,
+      title: i18next.t("timeline.label"),
+      details: `${i18next.t("timeline.entered")} ${String(event.label ?? "unknown")}`,
       payload: event,
       level: "info",
     };
@@ -474,7 +472,7 @@ export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: st
       source: "bridge",
       timestamp: toSafe(event.timestamp, messageTimestamp),
       type: eventType,
-      title: "Say",
+      title: i18next.t("timeline.say"),
       details: String(event.what ?? ""),
       payload: event,
       level: "info",
@@ -486,23 +484,23 @@ export function socketMessageToTimeline(message: SocketEnvelope, fallbackAt?: st
       source: "bridge",
       timestamp: toSafe(event.timestamp, messageTimestamp),
       type: eventType,
-      title: "Exception",
-      details: String(event.full ?? event.short ?? "Runtime error"),
+      title: i18next.t("timeline.exception"),
+      details: String(event.full ?? event.short ?? i18next.t("timeline.runtimeError")),
       payload: event,
       level: "error",
     };
   }
 
   return {
-    id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event, fallbackId]),
-    source: "bridge",
-    timestamp: toSafe(event.timestamp, messageTimestamp),
-    type: eventType,
-    title: String(event.type ?? "Bridge event"),
-    details: JSON.stringify(event),
-    payload: event,
-    level: "info",
-  };
+      id: makeTimelineId(["bridge", toSafe(event.timestamp, messageTimestamp), eventType, event, fallbackId]),
+      source: "bridge",
+      timestamp: toSafe(event.timestamp, messageTimestamp),
+      type: eventType,
+      title: i18next.t("timeline.bridgeEvent"),
+      details: JSON.stringify(event),
+      payload: event,
+      level: "info",
+    };
 }
 
 export function normalizeTimelineEntries(messages: SocketEnvelope[]): TimelineItem[] {
