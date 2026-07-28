@@ -797,3 +797,9 @@ pre.report .dim { color: var(--meta); }
 /* ── Debugger ── */
 .note { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-pill); padding: 6px 13px; margin-top: 14px; }
 .note svg { flex: none; }
+
+/* ── Language switcher ── */
+.lang-toggle { display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 12px; border-radius: var(--radius-pill, 999px); border: 1px solid var(--border, #e2e8f0); background: var(--surface, #fff); color: var(--fg, #1a202c); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .14s, border-color .14s, color .14s; letter-spacing: .04em; }
+.lang-toggle:hover { background: var(--accent-ghost, rgba(99,102,241,.08)); border-color: var(--accent, #6366f1); color: var(--accent, #6366f1); }
+:root[data-theme="dark"] .lang-toggle { background: var(--surface, #1e2330); border-color: var(--border, #2d3654); color: var(--fg, #e2e8f0); }
+:root[data-theme="dark"] .lang-toggle:hover { background: rgba(99,102,241,.15); border-color: var(--accent, #818cf8); color: var(--accent, #818cf8); }

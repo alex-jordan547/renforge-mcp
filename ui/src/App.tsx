@@ -1,5 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { api, getToken, normalizeTimelineEntries, socketMessageToTimeline } from "./api";
 import type { LiveScreenshot, LiveState, SocketEnvelope, StoryMapResponse, TimelineItem } from "./types";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -11,6 +12,7 @@ import { StoryMapPage } from "./pages/StoryMapPage";
 import { TimelinePage } from "./pages/TimelinePage";
 import { TranslationPage } from "./pages/TranslationPage";
 import { ProjectPicker } from "./components/ProjectPicker";
+import { LanguageSwitcher } from "./components/LanguageSwitcher";
 
 const SECTIONS = [
   { id: "live", label: "Live" },
@@ -87,6 +89,7 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
 }
 
 export function App() {
+  const { t } = useTranslation();
   const [activeSection, setActiveSection] = useState<SectionId>("live");
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("renforge-theme") as "light" | "dark") || "light",
@@ -299,13 +302,13 @@ export function App() {
   }, [activeSection, storyMap, storyMapLoading, storyMapError, handleJump, timelineEvents, liveState, liveFrame]);
 
   const SECTION_TITLES: Record<SectionId, [string, string]> = {
-    "story-map": ["Story Map", "Graph of labels and transitions"],
-    live: ["Live", "Operational console — live execution"],
-    timeline: ["Timeline", "Runtime event history"],
-    assets: ["Assets", "Inventory of the Ren'Py project"],
-    translation: ["Translation", "Translation progress per language"],
-    diagnostics: ["Diagnostics", "Lint report and static checks"],
-    editor: ["Script Reader", "Read-only project source"],
+    "story-map": [t("section.storyMap"), t("subtitle.storyMap")],
+    live: [t("section.live"), t("subtitle.live")],
+    timeline: [t("section.timeline"), t("subtitle.timeline")],
+    assets: [t("section.assets"), t("subtitle.assets")],
+    translation: [t("section.translation"), t("subtitle.translation")],
+    diagnostics: [t("section.diagnostics"), t("subtitle.diagnostics")],
+    editor: [t("section.editor"), t("subtitle.editor")],
   };
 
   const SECTION_ICONS: Record<SectionId, ReactNode> = {
@@ -371,67 +374,67 @@ export function App() {
         </div>
 
         <nav className="nav">
-          <div className="nav-label">Workspace</div>
+          <div className="nav-label">{t("nav.workspace")}</div>
           {SECTIONS.slice(0, 5).map((item) => (
             <button
               key={item.id}
               className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
               type="button"
-              title={sidebarCollapsed ? item.label : undefined}
+              title={sidebarCollapsed ? t(`nav.${item.id === "story-map" ? "storyMap" : item.id}`) : undefined}
               onClick={() => setActiveSection(item.id as SectionId)}
             >
               {SECTION_ICONS[item.id]}
-              <span className="nav-label-text">{item.label}</span>
+              <span className="nav-label-text">{t(`nav.${item.id === "story-map" ? "storyMap" : item.id}`)}</span>
             </button>
           ))}
 
-          <div className="nav-label">Project</div>
+          <div className="nav-label">{t("nav.project")}</div>
           {SECTIONS.slice(5).map((item) => (
             <button
               key={item.id}
               className={`nav-btn ${activeSection === item.id ? "active" : ""}`}
               type="button"
-              title={sidebarCollapsed ? item.label : undefined}
+              title={sidebarCollapsed ? t(`nav.${item.id}`) : undefined}
               onClick={() => setActiveSection(item.id as SectionId)}
             >
               {SECTION_ICONS[item.id]}
-              <span className="nav-label-text">{item.label}</span>
+              <span className="nav-label-text">{t(`nav.${item.id}`)}</span>
             </button>
           ))}
         </nav>
 
         <div className="side-foot">
           <div className="row">
-            <span className="k">WS</span>
+            <span className="k">{t("sidebar.wsLabel")}</span>
             <span
               className={`ws ws-${stats.socket}`}
               role="status"
               aria-live="polite"
-              title={sidebarCollapsed ? `WebSocket: ${stats.socket}` : undefined}
+              title={sidebarCollapsed ? `WebSocket: ${t(`ws.${stats.socket}`)}` : undefined}
             >
               {stats.socket === "connecting" && !sidebarCollapsed ? (
                 <span className="ws-spinner" aria-hidden="true" />
               ) : (
                 <span className="dot" aria-hidden="true" />
               )}
-              <span className="side-foot-value">{stats.socket}</span>
+              <span className="side-foot-value">{t(`ws.${stats.socket}`)}</span>
             </span>
           </div>
           <div className="row">
-            <span className="k">nodes</span>
+            <span className="k">{t("sidebar.nodesLabel")}</span>
             <span className="v side-foot-value">{stats.nodeCount}</span>
           </div>
           <div className="row">
-            <span className="k">edges</span>
+            <span className="k">{t("sidebar.edgesLabel")}</span>
             <span className="v side-foot-value">{stats.edgeCount}</span>
           </div>
           <div className="row">
-            <span className="k">events</span>
+            <span className="k">{t("sidebar.eventsLabel")}</span>
             <span className="v side-foot-value">{stats.messageCount}</span>
           </div>
           {appVersion && (
             <div className="row">
-              <span className="k">version</span>
+              <span className="k">{t("sidebar.versionLabel")}</span>
               <span className="v side-foot-value">v{appVersion}</span>
             </div>
           )}
@@ -441,9 +444,9 @@ export function App() {
           className="sidebar-toggle"
           type="button"
           onClick={() => setSidebarCollapsed((prev) => !prev)}
-          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={sidebarCollapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
           aria-expanded={!sidebarCollapsed}
-          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={sidebarCollapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m14 18-5-6 5-6" />
@@ -478,7 +481,7 @@ export function App() {
                 )}
               </div>
               <span>
-                <span className="k">Current label</span>
+                <span className="k">{t("toolbar.currentLabel")}</span>
                 <br />
                 <span className="v">{liveState?.current_label || "—"}</span>
               </span>
@@ -488,14 +491,14 @@ export function App() {
               className="project-switcher"
               type="button"
               onClick={() => setProjectPickerOpen(true)}
-              title="Switch project"
+              title={t("toolbar.switchProject")}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3.5 6.5h6l1.7 2h9.3v9.3a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2z" />
                 <path d="M3.5 8.5h17" />
               </svg>
               <span className="project-switcher-copy">
-                <span className="k">Switch project</span>
+                <span className="k">{t("toolbar.switchProject")}</span>
                 <span className="v">{projectName(projectPath)}</span>
               </span>
               <svg className="project-switcher-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -503,12 +506,14 @@ export function App() {
               </svg>
             </button>
 
+            <LanguageSwitcher />
+
             <button
               className="theme-toggle"
               type="button"
               onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
-              aria-label="Toggle light / dark"
-              title="Toggle light / dark"
+              aria-label={t("toolbar.toggleTheme")}
+              title={t("toolbar.toggleTheme")}
             >
               <svg className="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
