@@ -109,10 +109,9 @@ class TestIndexTsUsesESM:
         content = INDEX_FILE.read_text(encoding="utf-8")
         assert "react-i18next" in content
 
-    def test_index_has_fallback_language_en(self):
+    def test_partial_locale_displays_missing_key_instead_of_english(self):
         content = INDEX_FILE.read_text(encoding="utf-8")
-        assert "fallbackLng" in content
-        assert "'en'" in content or '"en"' in content
+        assert re.search(r"fallbackLng\s*:\s*false", content)
 
 
 class TestHtmlLangAttribute:
