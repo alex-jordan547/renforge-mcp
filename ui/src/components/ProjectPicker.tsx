@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { ProjectBrowserResponse } from "../types";
 
@@ -13,6 +14,12 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
   const [loading, setLoading] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useTranslation();
+  const renpyLabel = "Ren'Py";
+  const folderMarker = "□";
+  const closeGlyph = "×";
+  const loadErrorLabel = t("projectPicker.loadError");
+  const switchErrorLabel = t("projectPicker.switchError");
 
   const load = async (rootId?: string, path = "") => {
     setLoading(true);
@@ -20,7 +27,8 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
     try {
       setBrowser(await api.browseProjects(rootId, path));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not browse folders");
+      const detail = reason instanceof Error ? reason.message : null;
+      setError(detail ? `${loadErrorLabel}: ${detail}` : loadErrorLabel);
     } finally {
       setLoading(false);
     }
@@ -46,7 +54,8 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
       const result = await api.selectProject(browser.root_id, browser.path);
       onSelected(result.project);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not switch projects");
+      const detail = reason instanceof Error ? reason.message : null;
+      setError(detail ? `${switchErrorLabel}: ${detail}` : switchErrorLabel);
     } finally {
       setSelecting(false);
     }
@@ -63,15 +72,15 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
       >
         <header className="project-picker-header">
           <div>
-            <p className="eyebrow">Project</p>
-            <h2 id="project-picker-title">Open Ren&apos;Py project</h2>
+            <p className="eyebrow">{t("projectPicker.title")}</p>
+            <h2 id="project-picker-title">{`${t("projectPicker.open")} ${renpyLabel} ${t("projectPicker.project")}`}</h2>
           </div>
-          <button className="project-picker-close" type="button" onClick={onClose} aria-label="Close project picker">
-            <span aria-hidden="true">×</span>
+          <button className="project-picker-close" type="button" onClick={onClose} aria-label={t("projectPicker.close")}>
+            <span aria-hidden="true">{closeGlyph}</span>
           </button>
         </header>
 
-        <div className="project-picker-roots" aria-label="Browse roots">
+        <div className="project-picker-roots" aria-label={t("projectPicker.browseRoots")}>
           {browser?.roots.map((root) => (
             <button
               key={root.id}
@@ -91,17 +100,17 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
             type="button"
             disabled={!browser?.path || loading || selecting}
             onClick={() => browser && void load(browser.root_id, browser.parent_path)}
-          >
-            Up
+            >
+            {t("projectPicker.parent")}
           </button>
-          <code>{browser ? (browser.path || browser.roots.find((root) => root.id === browser.root_id)?.path) : "Loading…"}</code>
+          <code>{browser ? (browser.path || browser.roots.find((root) => root.id === browser.root_id)?.path) : t("projectPicker.loadingPath")}</code>
         </div>
 
         {error && <p className="project-picker-error" role="alert">{error}</p>}
 
         <div className="project-picker-list" aria-busy={loading}>
-          {loading && <p className="muted">Loading folders…</p>}
-          {!loading && browser?.entries.length === 0 && <p className="muted">No folders here.</p>}
+          {loading && <p className="muted">{t("projectPicker.loadingFolders")}</p>}
+          {!loading && browser?.entries.length === 0 && <p className="muted">{t("projectPicker.noFolders")}</p>}
           {!loading && browser?.entries.map((entry) => (
             <button
               key={entry.path}
@@ -110,26 +119,28 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
               disabled={selecting}
               onClick={() => void load(browser.root_id, entry.path)}
             >
-              <span className="project-picker-folder" aria-hidden="true">□</span>
+              <span className="project-picker-folder" aria-hidden="true">{folderMarker}</span>
               <span className="project-picker-entry-name">{entry.name}</span>
-              {entry.project && <span className="project-picker-badge">Ren&apos;Py</span>}
+              {entry.project && <span className="project-picker-badge">{renpyLabel}</span>}
             </button>
           ))}
         </div>
 
         <footer className="project-picker-footer">
           <span className="muted">
-            {browser?.project ? "This folder contains game/." : "Choose a folder containing game/."}
+            {browser?.project ? t("projectPicker.containsGame") : t("projectPicker.chooseGame")}
           </span>
           <div>
-            <button className="btn btn-ghost" type="button" onClick={onClose} disabled={selecting}>Cancel</button>
+            <button className="btn btn-ghost" type="button" onClick={onClose} disabled={selecting}>
+              {t("app.cancel")}
+            </button>
             <button
               className="btn btn-primary"
               type="button"
               disabled={!browser?.project || loading || selecting}
               onClick={() => void selectCurrent()}
             >
-              {selecting ? "Opening…" : "Open project"}
+              {selecting ? t("projectPicker.opening") : t("projectPicker.openProject")}
             </button>
           </div>
         </footer>
