@@ -11,6 +11,9 @@ LABEL_RE = re.compile(
 )
 JUMP_RE = re.compile(r"^\s*jump\s+(.+?)\s*(?:#.*)?$")
 CALL_RE = re.compile(r"^\s*call\s+(.+?)\s*(?:#.*)?$")
+CALL_FROM_RE = re.compile(
+    r"\s+from\s+(?:(?:[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)|(?:\.[A-Za-z_][\w]*))\s*$"
+)
 MENU_RE = re.compile(r"^\s*menu\b(.*):\s*(?:#.*)?$")
 SCREEN_RE = re.compile(r"^\s*screen\s+[A-Za-z_][\w]*")
 CHOICE_RE = re.compile(r"^\s*['\"](.+?)['\"]\s*:\s*(?:#.*)?$")
@@ -187,7 +190,7 @@ def scan_project(project_path: str) -> Dict[str, Any]:
 
                 match = CALL_RE.match(line)
                 if match:
-                    target = match.group(1).strip()
+                    target = CALL_FROM_RE.sub("", match.group(1)).strip()
                     if target.startswith(".") and current_global_label:
                         target = current_global_label + target
                     item_fields = {"target": target}
