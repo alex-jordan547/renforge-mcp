@@ -1,4 +1,5 @@
 import { FormEvent, PointerEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { FileContent } from "../types";
 
@@ -143,6 +144,7 @@ function TreeFolder({
 }
 
 export function EditorPage() {
+  const { t } = useTranslation();
   const [pathInput, setPathInput] = useState(DEFAULT_PATH);
   const [activePath, setActivePath] = useState(DEFAULT_PATH);
   const [file, setFile] = useState<FileContent | null>(null);
@@ -161,7 +163,7 @@ export function EditorPage() {
           setScriptFiles(response.files);
         }
       })
-      .catch((err) => console.error("Failed to list project scripts", err));
+      .catch((err) => console.error(t("pages.editor.errors.listScripts"), err));
     return () => {
       mounted = false;
     };
@@ -219,7 +221,7 @@ export function EditorPage() {
         if (!mounted) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load file");
+        setError(err instanceof Error ? err.message : t("errors.unavailable"));
         setFile(null);
       } finally {
         if (mounted) {
@@ -257,7 +259,7 @@ export function EditorPage() {
     setActivePath(pathInput.trim());
   };
 
-  const codeLines = file?.content ? file.content.split("\n") : ["Content unavailable."];
+  const codeLines = file?.content ? file.content.split("\n") : [t("pages.editor.fallbacks.contentUnavailable")];
 
   const handleScrollbarPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     const code = codeRef.current;
@@ -289,13 +291,13 @@ export function EditorPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Script Reader</h2>
-        <span className="hint">read-only · backend project scope</span>
+        <h2>{t("pages.editor.title")}</h2>
+        <span className="hint">{t("pages.editor.hint")}</span>
       </div>
 
       <form className="path-row reveal in" style={{ animationDelay: ".05s" }} onSubmit={handleLoad}>
         <div className="field">
-          <label className="field-label" htmlFor="fpath">File path</label>
+          <label className="field-label" htmlFor="fpath">{t("pages.editor.pathLabel")}</label>
           <input
             className="input"
             id="fpath"
@@ -303,7 +305,7 @@ export function EditorPage() {
             onChange={(e) => setPathInput(e.target.value)}
           />
         </div>
-        <button type="submit" className="btn btn-primary btn-pill">Load</button>
+        <button type="submit" className="btn btn-primary btn-pill">{t("pages.editor.loadButton")}</button>
       </form>
 
       <div className="ed-note reveal in" style={{ animationDelay: ".08s" }}>
@@ -311,13 +313,13 @@ export function EditorPage() {
           <rect x="5" y="11" width="14" height="9" rx="2" />
           <path d="M8 11V8a4 4 0 0 1 8 0v3" />
         </svg>
-        Read-only view of the project&apos;s scripts. Pick a file on the left or type a path under <code>game/</code>.
+        {t("pages.editor.noteText")}
       </div>
 
       <div className="ed-cols reveal in" style={{ animationDelay: ".10s" }}>
         <aside className="tree" aria-label="Project scripts">
           {scriptFiles.length === 0 ? (
-            <div className="tree-empty">No .rpy files found.</div>
+            <div className="tree-empty">{t("pages.editor.treeNoScripts")}</div>
           ) : (
             <TreeFolder
               node={buildTree(scriptFiles)}
@@ -340,11 +342,11 @@ export function EditorPage() {
 
           {loading ? (
             <div className="code" style={{ padding: "20px", color: "var(--muted)" }}>
-              Loading {activePath}…
+              {t("pages.editor.loading", { path: activePath })}
             </div>
           ) : error ? (
             <div className="code" style={{ padding: "20px", color: "var(--danger)" }}>
-              Could not load {activePath}: {error}
+              {t("pages.editor.loadError", { path: activePath, error })}
             </div>
           ) : (
             <div className="code-shell">
