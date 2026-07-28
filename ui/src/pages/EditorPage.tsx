@@ -317,7 +317,7 @@ export function EditorPage() {
       </div>
 
       <div className="ed-cols reveal in" style={{ animationDelay: ".10s" }}>
-        <aside className="tree" aria-label="Project scripts">
+        <aside className="tree" aria-label={t("pages.editor.projectScriptsAria")}>
           {scriptFiles.length === 0 ? (
             <div className="tree-empty">{t("pages.editor.treeNoScripts")}</div>
           ) : (
@@ -336,7 +336,7 @@ export function EditorPage() {
           <div className="ed-tabbar">
             <span className="ed-tab">
               {activePath}
-              <span className="ro">RO</span>
+              <span className="ro">{t("pages.editor.readOnlyBadge")}</span>
             </span>
           </div>
 

@@ -54,6 +54,6 @@
   },
   "error": {
     "sectionError": "模块错误",
-    "isolated": "此模块已被隔离，以保证应用程序的响应性。"
+    "sectionErrorMessage": "此模块已被隔离，以保证应用程序的响应性。"
   }
 }

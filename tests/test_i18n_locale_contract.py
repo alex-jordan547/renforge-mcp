@@ -236,6 +236,70 @@ class TestScannerFixtureContract:
         assert payload["summary"]["unknownTKeyCount"] == 0
         assert payload["summary"]["hardcodedTextCount"] == 0
 
+    def test_scanner_ignores_css_classes_and_symbol_only_placeholders(self, tmp_path: Path) -> None:
+        source = """
+          export function Example() {
+            const active = true;
+            return <div className={active ? "on" : ""}>{"—"}</div>;
+          }
+        """
+        project = _build_temp_project(tmp_path, source=source, en={}, zh={})
+
+        code, payload = _run_scanner(project, src_dir=project / "src")
+        assert code == 0
+        assert payload["summary"]["hardcodedTextCount"] == 0
+
+    def test_scanner_accepts_allowlisted_dynamic_key_families(self, tmp_path: Path) -> None:
+        source = """
+          import { useTranslation } from "react-i18next";
+          export function Example() {
+            const { t } = useTranslation();
+            const status = "ready";
+            return <span>{t(`pages.status.${status}`)}</span>;
+          }
+        """
+        project = _build_temp_project(
+            tmp_path,
+            source=source,
+            en={"pages": {"status": {"ready": "Ready", "failed": "Failed"}}},
+            zh={},
+            allowlist={
+                "version": 1,
+                "allowlist": [
+                    {
+                        "type": "key-pattern",
+                        "pattern": r"^pages\.status\.[a-z]+$",
+                        "reason": "Runtime status selects one of the canonical status keys.",
+                    }
+                ],
+            },
+        )
+
+        code, payload = _run_scanner(project, src_dir=project / "src")
+        assert code == 0
+        assert payload["summary"]["unknownTKeyCount"] == 0
+        assert payload["summary"]["unusedKeyCount"] == 0
+
+    def test_scanner_tracks_i18n_inside_camel_case_aria_label_props(self, tmp_path: Path) -> None:
+        source = """
+          import { useTranslation } from "react-i18next";
+          function Widget(_props: { ariaLabel: string }) { return null; }
+          export function Example() {
+            const { t } = useTranslation();
+            return <Widget ariaLabel={t("a11y.minimap")} />;
+          }
+        """
+        project = _build_temp_project(
+            tmp_path,
+            source=source,
+            en={"a11y": {"minimap": "Minimap"}},
+            zh={},
+        )
+
+        code, payload = _run_scanner(project, src_dir=project / "src")
+        assert code == 0
+        assert payload["summary"]["unusedKeyCount"] == 0
+
     def test_scanner_allowlist_reduces_unused_keys(self, tmp_path: Path) -> None:
         source = """
           import { useTranslation } from \"react-i18next\";
@@ -281,9 +345,10 @@ class TestI18nScannerOnRealSource:
             assert f'<span className="lbl">{raw_label}</span>' not in source
             assert source.count(f't("{translation_key}")') == 1
 
-    def test_real_ui_scan_reports_violations(self):
+    def test_real_ui_scan_is_green(self):
         code, payload = _run_scanner(REPO_ROOT / "ui")
-        assert code == 1
-        assert payload["status"] == "RED"
-        assert payload["summary"]["hardcodedTextCount"] > 0
-        assert payload["summary"]["hardcodedTextCount"] > 0
+        assert code == 0
+        assert payload["status"] == "GREEN"
+        assert payload["summary"]["hardcodedTextCount"] == 0
+        assert payload["summary"]["unknownTKeyCount"] == 0
+        assert payload["summary"]["unusedKeyCount"] == 0

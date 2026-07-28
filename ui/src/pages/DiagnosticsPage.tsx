@@ -155,8 +155,8 @@ export function DiagnosticsPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Diagnostics</h2>
-        <span className="hint">file:line / severity / message</span>
+        <h2>{t("pages.diagnostics.title")}</h2>
+        <span className="hint">{t("pages.diagnostics.hint")}</span>
       </div>
 
         <div className="diag-grid reveal in" style={{ animationDelay: ".05s" }}>

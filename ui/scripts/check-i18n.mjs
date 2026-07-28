@@ -57,7 +57,7 @@ function collectFiles(rootDir) {
 }
 
 function isTargetAttribute(name) {
-  return ["placeholder", "title", "alt", "aria-label"].includes(name);
+  return ["placeholder", "title", "alt", "aria-label", "ariaLabel"].includes(name);
 }
 
 function collectLeafKeys(data, prefix = "") {
@@ -84,7 +84,7 @@ function recordNodeText(node, state, filePath, kind) {
     return;
   }
   const text = String(node.text || "").trim();
-  if (!text) {
+  if (!text || !/[\p{L}\p{N}]/u.test(text)) {
     return;
   }
   let line = 1;
@@ -174,6 +174,14 @@ function collectStringExpression(expr, state, filePath) {
 }
 
 function extractDynamicFamily(expression) {
+  while (
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isParenthesizedExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    expression = expression.expression;
+  }
   if (!ts.isTemplateExpression(expression) || expression.templateSpans.length !== 1) {
     return null;
   }
@@ -181,14 +189,21 @@ function extractDynamicFamily(expression) {
     return null;
   }
   const prefix = expression.head.text;
-  if (prefix === "nav." || prefix === "ws.") {
+  if (prefix.endsWith(".") && prefix.length > 1) {
     return prefix.slice(0, -1);
   }
   return null;
 }
 
 function collectFromNode(node, state, filePath) {
-  const { sourceFile, usedLiteralKeys, usedFamilies, unknownKeys, enLeafKeys } = state;
+  const { sourceFile, usedLiteralKeys, usedFamilies, unknownKeys, enLeafKeys, allowlist } = state;
+
+  if (ts.isJsxAttribute(node)) {
+    const name = node.name?.getText(sourceFile);
+    if (!isTargetAttribute(name)) {
+      return;
+    }
+  }
 
   if (ts.isCallExpression(node)) {
     const callee = node.expression;
@@ -211,8 +226,18 @@ function collectFromNode(node, state, filePath) {
         return;
       }
       const family = extractDynamicFamily(arg);
-      if (family === "nav" || family === "ws") {
+      const familyKeys = family
+        ? [...enLeafKeys].filter((key) => key.startsWith(`${family}.`))
+        : [];
+      const isBuiltInFamily = family === "nav" || family === "ws";
+      const isAllowlistedFamily =
+        familyKeys.length > 0 && familyKeys.every((key) => isUnusedAllowed(key, allowlist));
+      if (family && (isBuiltInFamily || isAllowlistedFamily)) {
         usedFamilies.add(family);
+        return;
+      }
+      const argumentText = arg ? arg.getText() : "<empty>";
+      if (isUnusedAllowed(argumentText, allowlist)) {
         return;
       }
       const loc = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -220,7 +245,7 @@ function collectFromNode(node, state, filePath) {
         file: filePath,
         line: loc.line + 1,
         column: loc.character + 1,
-        key: arg ? arg.getText() : "<empty>",
+        key: argumentText,
         type: "nonliteral-t-key",
       });
       return;
@@ -293,6 +318,7 @@ function detectDefaultPaths(rootPath, relativeFile) {
 
 function scanDirectory(srcDir, enLeafKeys, allowlistFile) {
   const files = collectFiles(srcDir);
+  const allowlist = readAllowlist(allowlistFile);
   const findings = [];
   const unknownKeys = [];
   const usedLiteralKeys = new Set();
@@ -309,20 +335,20 @@ function scanDirectory(srcDir, enLeafKeys, allowlistFile) {
       usedLiteralKeys,
       usedFamilies,
       enLeafKeys,
+      allowlist,
     };
     ts.forEachChild(sourceFile, (node) => collectFromNode(node, state, filePath));
   }
 
   const allUsed = new Set(usedLiteralKeys);
-  if (usedFamilies.has("nav") || usedFamilies.has("ws")) {
+  for (const family of usedFamilies) {
     for (const key of enLeafKeys) {
-      if ((usedFamilies.has("nav") && key.startsWith("nav.")) || (usedFamilies.has("ws") && key.startsWith("ws."))) {
+      if (key.startsWith(`${family}.`)) {
         allUsed.add(key);
       }
     }
   }
 
-  const allowlist = readAllowlist(allowlistFile);
   const unusedKeys = [...enLeafKeys].filter((key) => !allUsed.has(key) && !isUnusedAllowed(key, allowlist)).sort();
 
   return {

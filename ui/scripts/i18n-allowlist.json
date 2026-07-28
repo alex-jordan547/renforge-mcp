@@ -1,4 +1,40 @@
 {
   "version": 1,
-  "allowlist": []
+  "allowlist": [
+    {
+      "type": "key",
+      "key": "status.key ?? \"errors.untranslated\"",
+      "reason": "Dynamic status key fallback expression cannot be statically evaluated by the scanner."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.diagnostics\\.severity\\.[a-z]+$",
+      "reason": "Dynamic diagnostics severity token from runtime status; values are defined from API payloads."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.translation\\.status\\.[a-z]+$",
+      "reason": "Dynamic translation status token family generated from backend translation state values."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.translation\\.badge\\.[a-z]+$",
+      "reason": "Dynamic translation badge family generated from translation status values."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^errors\\.[a-z_]+$",
+      "reason": "Backend error_code keys are looked up via `errors.<code>` at runtime; not all are statically referenced."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^timeline\\.[a-zA-Z]+$",
+      "reason": "Timeline keys are used via i18next in api.ts and not part of the `t(...)` scanner family."
+    },
+    {
+      "type": "key",
+      "key": "pages.assets.inventory",
+      "reason": "Shared scope label used for string interpolation in the assets page UI."
+    }
+  ]
 }
