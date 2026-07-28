@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { LintDiagnostic } from "../types";
 
@@ -70,6 +71,7 @@ function renderColorizedReport(rawReport: string) {
 }
 
 export function DiagnosticsPage() {
+  const { t } = useTranslation();
   const [diagnostics, setDiagnostics] = useState<LintDiagnostic[]>([]);
   const [rawReport, setRawReport] = useState("");
   const [loading, setLoading] = useState(true);
@@ -91,7 +93,7 @@ export function DiagnosticsPage() {
         if (!mounted) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load diagnostics");
+        setError(err instanceof Error ? err.message : t("errors.unavailable"));
         setRawReport("");
       } finally {
         if (mounted) {
@@ -130,10 +132,10 @@ export function DiagnosticsPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Diagnostics</h2>
-          <span className="hint">file:line / severity / message</span>
+          <h2>{t("pages.diagnostics.title")}</h2>
+          <span className="hint">{t("pages.diagnostics.hint")}</span>
         </div>
-        <div className="statusLine">Analyzing diagnostics…</div>
+        <div className="statusLine">{t("pages.diagnostics.loading")}</div>
       </div>
     );
   }
@@ -142,10 +144,10 @@ export function DiagnosticsPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Diagnostics</h2>
-          <span className="hint">file:line / severity / message</span>
+          <h2>{t("pages.diagnostics.title")}</h2>
+          <span className="hint">{t("pages.diagnostics.hint")}</span>
         </div>
-        <p className="errorText">Unable to load /api/lint: {error}</p>
+        <p className="errorText">{t("pages.diagnostics.loadError", { route: "/api/lint", error })}</p>
       </div>
     );
   }
@@ -153,11 +155,11 @@ export function DiagnosticsPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Diagnostics</h2>
-        <span className="hint">file:line / severity / message</span>
+        <h2>{t("pages.diagnostics.title")}</h2>
+        <span className="hint">{t("pages.diagnostics.hint")}</span>
       </div>
 
-      <div className="diag-grid reveal in" style={{ animationDelay: ".05s" }}>
+        <div className="diag-grid reveal in" style={{ animationDelay: ".05s" }}>
         <div className="sev err">
           <span className="ic">
             <svg viewBox="0 0 24 24" width="20" fill="none" stroke="currentColor" strokeWidth="2">
@@ -167,7 +169,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.errors}</div>
-            <div className="lbl">Errors</div>
+            <div className="lbl">{t("pages.diagnostics.metrics.errors")}</div>
           </div>
         </div>
 
@@ -180,7 +182,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.warnings}</div>
-            <div className="lbl">Warnings</div>
+            <div className="lbl">{t("pages.diagnostics.metrics.warnings")}</div>
           </div>
         </div>
 
@@ -193,7 +195,7 @@ export function DiagnosticsPage() {
           </span>
           <div>
             <div className="num">{counts.screens}</div>
-            <div className="lbl">Screens analyzed</div>
+            <div className="lbl">{t("pages.diagnostics.metrics.screens")}</div>
           </div>
         </div>
       </div>
@@ -203,23 +205,23 @@ export function DiagnosticsPage() {
           <svg viewBox="0 0 24 24" width="18" fill="none" stroke="currentColor" strokeWidth="2.2">
             <path d="M20 6 9 17l-5-5" />
           </svg>
-          No blocking structured diagnostic. The raw lint report is available below.
+          {t("pages.diagnostics.emptyBanner", { count: diagnostics.length })}
         </div>
       )}
 
       {diagnostics.length > 0 && (
         <section className="card reveal in" style={{ animationDelay: ".08s", marginBottom: "20px" }}>
           <div className="card-head">
-            <h3>Structured diagnostics</h3>
+            <h3>{t("pages.diagnostics.structuredTitle")}</h3>
             <span className="badge info">{diagnostics.length}</span>
           </div>
           <div className="card-body" style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
-                  <th>File:Line</th>
-                  <th>Severity</th>
-                  <th>Message</th>
+                  <th>{t("pages.diagnostics.table.fileLine")}</th>
+                  <th>{t("pages.diagnostics.table.severity")}</th>
+                  <th>{t("pages.diagnostics.table.message")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -231,7 +233,7 @@ export function DiagnosticsPage() {
                     </td>
                     <td>
                       <span className={`st ${severityClass(item.severity) === "diagError" ? "todo" : "orphan"}`}>
-                        {String(item.severity || "info").toUpperCase()}
+                        {t(`pages.diagnostics.severity.${(item.severity || "info").toLowerCase()}` as const)}
                       </span>
                     </td>
                     <td style={{ fontSize: "13px" }}>{item.message || item.details || "—"}</td>
@@ -246,8 +248,8 @@ export function DiagnosticsPage() {
       {rawReport && (
         <section className="card reveal in" style={{ animationDelay: ".12s" }}>
           <div className="card-head">
-            <h3>Ren’Py lint report</h3>
-            <span className="badge off">brut</span>
+            <h3>{t("pages.diagnostics.rawReportTitle")}</h3>
+            <span className="badge off">{t("pages.diagnostics.rawReportBadge")}</span>
           </div>
           <div className="card-body">
             <pre className="report">

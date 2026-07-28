@@ -1,14 +1,14 @@
 {
   "nav": {
+    "workspace": "Workspace",
+    "project": "Project",
     "live": "Live",
     "storyMap": "Story Map",
     "timeline": "Timeline",
     "assets": "Assets",
     "translation": "Translation",
     "diagnostics": "Diagnostics",
-    "editor": "Script Reader",
-    "workspace": "Workspace",
-    "project": "Project"
+    "editor": "Script Reader"
   },
   "section": {
     "live": "Live",
@@ -43,9 +43,10 @@
     "versionLabel": "version"
   },
   "ws": {
-    "connected": "connected",
-    "connecting": "connecting",
-    "offline": "offline"
+    "offline": "offline",
+    "statusLabel": "Socket",
+    "connected": "Connected",
+    "connecting": "connecting"
   },
   "lang": {
     "switchLanguage": "Language",
@@ -54,6 +55,370 @@
   },
   "error": {
     "sectionError": "Section error",
-    "isolated": "This section was isolated to keep the app responsive."
+    "sectionErrorMessage": "This section was isolated to keep the app responsive.",
+    "storyMapFailed": "Unable to load story map data"
+  },
+  "a11y": {
+    "empty": "Unavailable",
+    "largeLivePreview": "Large live preview",
+    "navigation": "Main navigation"
+  },
+  "app": {
+    "cancel": "Cancel",
+    "jump": "Jump",
+    "jumpFailed": "Jump failed",
+    "jumpRequested": "Jump requested",
+    "runtimeConsoleSuffix": "console",
+    "versionPrefix": "RenForge"
+  },
+  "errors": {
+    "translationLoad": "Unable to load translation data",
+    "translationStringsError": "Unable to load translation strings",
+    "translationUnavailableReason": "Unable to load translation data: {{error}}",
+    "unavailable": "Service unavailable",
+    "unexpected": "Unexpected error",
+    "assets_game_root_missing": "Assets game root missing",
+    "assets_read_failed": "Assets read failed",
+    "coverage_file_missing": "Coverage file missing",
+    "coverage_read_failed": "Coverage read failed",
+    "debug_events_since_invalid": "Debug events since invalid",
+    "file_access_failed": "File access failed",
+    "file_not_found": "File not found",
+    "file_path_out_of_bounds": "File path out of bounds",
+    "invalid_token": "Invalid token",
+    "launch_version_invalid": "Launch version invalid",
+    "live_action_missing": "Live action missing",
+    "live_warp_invalid": "Live warp invalid",
+    "project_browser_failed": "Project browser failed",
+    "project_browser_unknown_root": "Project browser unknown root",
+    "project_folder_invalid": "Project folder invalid",
+    "project_folder_not_accessible": "Project folder not accessible",
+    "project_folder_not_found": "Project folder not found",
+    "project_folder_outside_root": "Project folder outside root",
+    "project_not_renpy_project": "Project not renpy project",
+    "project_selection_payload_invalid": "Project selection payload invalid",
+    "project_switch_blocked": "Project switch blocked",
+    "screenshot_failed": "Screenshot failed",
+    "story_map_failed": "Story map failed",
+    "story_map_root_missing": "Story map root missing",
+    "timeline_limit_invalid": "Timeline limit invalid",
+    "translation_language_missing": "Translation language missing",
+    "warp_target_invalid": "Invalid warp target",
+    "warp_target_missing": "Warp target missing",
+    "warp_target_unknown": "Warp target unknown",
+    "untranslated": "Missing translation"
+  },
+  "pages": {
+    "assets": {
+      "cards": {
+        "missingFiles": "Missing files",
+        "orphans": "Orphans",
+        "projectFiles": "Project files",
+        "undefinedImages": "Undefined images"
+      },
+      "descriptions": {
+        "missingFiles": "Files referenced in scripts but missing from disk.",
+        "orphans": "Assets on disk never referenced by the script.",
+        "undefinedImages": "Images used by scripts but not declared with image statements."
+      },
+      "empty": {
+        "noFiles": "No file matches this filter.",
+        "noOrphans": "No orphaned assets."
+      },
+      "filters": {
+        "all": "All",
+        "audio": "Audio",
+        "images": "Images",
+        "videos": "Videos"
+      },
+      "hint": "Inventory · {{route}}",
+      "loadError": "Unable to load assets: {{error}}",
+      "loading": "Loading inventory",
+      "projectFiles": "Project files",
+      "sectionMissingFiles": "Missing files",
+      "sectionOrphans": "Orphans",
+      "sectionUndefinedImages": "Undefined images",
+      "title": "Assets",
+      "inventory": "Inventory"
+    },
+    "diagnostics": {
+      "emptyBanner": "{{count}} diagnostic entries",
+      "hint": "Health and static checks for the selected project.",
+      "loadError": "Unable to load diagnostics: {{route}} — {{error}}",
+      "loading": "Loading diagnostics",
+      "metrics": {
+        "errors": "Errors",
+        "screens": "Screens",
+        "warnings": "Warnings"
+      },
+      "severity": {
+        "critical": "Critical",
+        "error": "Error",
+        "hint": "Hint",
+        "info": "Info",
+        "warning": "Warning"
+      },
+      "rawReportBadge": "Raw report",
+      "rawReportTitle": "Raw diagnostics report",
+      "structuredTitle": "Structured diagnostics",
+      "table": {
+        "fileLine": "file:line",
+        "message": "message",
+        "severity": "severity"
+      },
+      "title": "Diagnostics"
+    },
+    "editor": {
+      "errors": {
+        "listScripts": "Failed to list scripts"
+      },
+      "fallbacks": {
+        "contentUnavailable": "Content unavailable"
+      },
+      "hint": "Read-only project files and navigation.",
+      "loadButton": "Load",
+      "loadError": "Unable to load file: {{path}} ({{error}})",
+      "loading": "Loading file",
+      "noteText": "Enter a relative path under game/ to view file content.",
+      "pathLabel": "Path",
+      "projectScriptsAria": "Project scripts",
+      "readOnlyBadge": "RO",
+      "title": "Script Reader",
+      "treeNoScripts": "No scripts found"
+    },
+    "live": {
+      "actions": {
+        "advance": "Advance",
+        "auto": "Auto",
+        "back": "Back",
+        "choose": "Choose",
+        "launch": "Launch",
+        "load": "Load",
+        "quit": "Quit",
+        "reload": "Reload",
+        "save": "Save",
+        "skip": "Skip",
+        "stop": "Stop"
+      },
+      "choices": {
+        "badge": "Choices",
+        "title": "Choices"
+      },
+      "console": {
+        "advanced": {
+          "events": "{{count}} events",
+          "refresh": "Refresh",
+          "restart": "Restart",
+          "restartAria": "Restart game",
+          "title": "Advanced"
+        },
+        "badge": "Console",
+        "eval": {
+          "empty": "No expression result",
+          "expressionLabel": "Expression",
+          "submit": "Run"
+        },
+        "events": {
+          "empty": "No events"
+        },
+        "title": "Console",
+        "watch": {
+          "nameLabel": "Name",
+          "set": "Set",
+          "title": "Watch",
+          "valueLabel": "Value"
+        }
+      },
+      "event": {
+        "exception": "Exception",
+        "label": "Label",
+        "say": "Say"
+      },
+      "header": {
+        "hint": "Monitor and control live execution on port {{port}}"
+      },
+      "preview": {
+        "alt": "Live preview screenshot",
+        "empty": "No live screenshot available",
+        "title": "Live preview"
+      },
+      "state": {
+        "badge": "State",
+        "label": "Current label",
+        "labelFallback": "No current label",
+        "menu": {
+          "active": "Active",
+          "inactive": "Inactive",
+          "label": "Menu"
+        },
+        "port": {
+          "label": "Port"
+        },
+        "tags": {
+          "label": "Tags"
+        },
+        "title": "State",
+        "variables": {
+          "empty": "No variables",
+          "title": "Variables"
+        }
+      },
+      "status": {
+        "actionFailed": "Action failed",
+        "eval": {
+          "failed": "Failed"
+        },
+        "launch": {
+          "failed": "Launch failed"
+        },
+        "launching": "Launching",
+        "live": "Live",
+        "stop": {
+          "failed": "Stop failed"
+        },
+        "stopped": "Stopped",
+        "stopping": "Stopping",
+        "syncing": "Syncing"
+      },
+      "title": "Live"
+    },
+    "storyMap": {
+      "current": {
+        "empty": "No label selected",
+        "title": "Current label"
+      },
+      "empty": {
+        "body": "No story map data was found for this project.",
+        "title": "No story map data"
+      },
+      "error": {
+        "load": "Unable to load story map: {{error}}"
+      },
+      "hint": "Graph navigation and transitions by label.",
+      "loading": "Loading story map",
+      "minimap": {
+        "aria": "Toggle minimap"
+      },
+      "status": {
+        "layout": "Applying layout",
+        "warp": "Warp to {{target}}"
+      },
+      "title": "Story Map",
+      "transitions": {
+        "hide": "Hide transitions",
+        "show": "Show transitions"
+      },
+      "zoom": {
+        "fit": "Fit",
+        "fitTitle": "Fit viewport",
+        "in": "Zoom in",
+        "out": "Zoom out"
+      }
+    },
+    "timeline": {
+      "badge": {
+        "activity": "activity",
+        "bridge": "bridge",
+        "ui": "ui"
+      },
+      "emptyDescription": "No timeline entries are available yet.",
+      "emptyTitle": "No timeline events",
+      "filesTouched": "{{count}} file(s) touched",
+      "filesTouchedHeader": "Files touched",
+      "filteredEvents": "Filtered events: {{visible}} of {{total}}",
+      "hideDetails": "Hide details",
+      "hint": "Runtime bridge and activity history.",
+      "parameters": "Parameters",
+      "result": "Result",
+      "searchPlaceholder": "Search timeline",
+      "showDetails": "Show details",
+      "sourceActivity": "activity",
+      "sourceBridge": "bridge",
+      "timeAgo": {
+        "days": "{{count}} days ago",
+        "hours": "{{count}} hours ago",
+        "justNow": "just now",
+        "minutes": "{{count}} minutes ago",
+        "seconds": "{{count}} seconds ago"
+      },
+      "title": "Timeline"
+    },
+    "translation": {
+      "emptyDescription": "No translation data.",
+      "emptyTitle": "No translations yet",
+      "hint": "Translation status and coverage across supported locales.",
+      "languageSummary": "{{language}}: {{status}}",
+      "loading": "Loading translations",
+      "noSearchMatch": "No search match",
+      "ratioLabel": "{{ratio}}%",
+      "scriptSummaryTitle": "Script summary",
+      "searchPlaceholder": "Search strings",
+      "stringHeader": "{{language}} translation",
+      "badge": {
+        "complete": "Complete",
+        "incomplete": "Incomplete",
+        "partial": "Partial",
+        "unavailable": "Unavailable"
+      },
+      "status": {
+        "complete": "Complete",
+        "incomplete": "Incomplete",
+        "partial": "Partial",
+        "unavailable": "Unavailable"
+      },
+      "summary": {
+        "missing": "Missing: {{count}}",
+        "missingDialogue": "Missing dialogue: {{count}}",
+        "missingStrings": "Missing strings: {{count}}",
+        "none": "No summary",
+        "orphans": "Orphaned strings: {{count}}",
+        "sourceDialogues": "Source dialogues",
+        "total": "Total: {{count}}",
+        "translated": "{{language}} • {{ratio}}% translated",
+        "unavailable": "Unavailable"
+      },
+      "table": {
+        "sourceHeader": "Original",
+        "stateHeader": "State",
+        "translationHeader": "{{language}}"
+      },
+      "title": "Translation",
+      "translatedBadge": "{{ratio}}% translated",
+      "untranslatedMarker": "—"
+    }
+  },
+  "projectPicker": {
+    "browseRoots": "Browse roots",
+    "chooseGame": "Choose this game",
+    "close": "Close",
+    "containsGame": "Contains game",
+    "fallback": "Untitled project",
+    "loadError": "Failed to load project browser",
+    "loadingFolders": "Loading folders…",
+    "loadingPath": "Resolving path…",
+    "noFolders": "No folders found",
+    "open": "Open",
+    "openProject": "Open project",
+    "opening": "Opening",
+    "parent": "Parent folder",
+    "project": "Project",
+    "switchError": "Failed to switch project",
+    "title": "Open project"
+  },
+  "status": {
+    "failed": "Failed",
+    "incomplete": "Incomplete",
+    "ok": "OK",
+    "warning": "Warning"
+  },
+  "timeline": {
+    "failed": "Failed",
+    "completed": "Completed",
+    "label": "Label",
+    "entered": "Entered",
+    "say": "Say",
+    "exception": "Exception",
+    "runtimeError": "Runtime error",
+    "bridgeEvent": "Bridge event"
   }
 }

@@ -25,7 +25,8 @@ i18next
   .use(initReactI18next)
   .init({
     lng: detectLanguage(),
-    fallbackLng: 'en',
+    // Une traduction manquante doit rester visible sous forme de clé.
+    fallbackLng: false,
     resources,
     interpolation: {
       // React se charge déjà de l'échappement XSS

@@ -1,8 +1,38 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { DebugBridgeEvent, LiveChoice, LiveScreenshot, LiveState } from "../types";
 
 const POLL_MS = 1800;
+const BRIDGE_PORT = 42547;
+const DASH = "—";
+const PROMPT_ARROW = "›";
+const EXPR_PLACEHOLDER = "store.persistent.score + 1";
+const VAR_NAME_PLACEHOLDER = "money";
+const VAR_VALUE_PLACEHOLDER = '"hello" or 42';
+
+interface Translator {
+  (key: string, options?: Record<string, unknown>): string;
+}
+
+type LiveStatus = {
+  key?: string;
+  params?: Record<string, unknown>;
+  raw?: string;
+};
+
+function formatStatus(status: LiveStatus | null, t: Translator) {
+  if (!status) {
+    return "";
+  }
+  if (status.raw) {
+    return status.raw;
+  }
+  if (status.key) {
+    return t(status.key, status.params ?? {});
+  }
+  return t("errors.untranslated", status.params ?? {});
+}
 
 const formatUnknown = (value: unknown) => {
   if (value === null || value === undefined) {
@@ -32,15 +62,15 @@ function parseVariableValue(value: string): unknown {
   }
 }
 
-function describeEvent(event: DebugBridgeEvent): string {
+function describeEvent(event: DebugBridgeEvent, t: Translator): string {
   if (event.type === "label") {
-    return `Label: ${String(event.label ?? "unknown")}`;
+    return t("pages.live.event.label", { label: String(event.label ?? "unknown") });
   }
   if (event.type === "say") {
-    return `Say: ${String(event.what ?? "")}`;
+    return t("pages.live.event.say", { text: String(event.what ?? "") });
   }
   if (event.type === "exception") {
-    return `Exception: ${String(event.short ?? event.full ?? "runtime error")}`;
+    return t("pages.live.event.exception", { message: String(event.short ?? event.full ?? "runtime error") });
   }
   return formatUnknown(event);
 }
@@ -51,6 +81,8 @@ interface LivePageProps {
 }
 
 export function LivePage({ liveState = null, liveFrame = null }: LivePageProps = {}) {
+  const { t } = useTranslation();
+
   const [state, setState] = useState<LiveState | null>(null);
   const [screenshot, setScreenshot] = useState<LiveScreenshot | null>(null);
   const [choices, setChoices] = useState<LiveChoice[]>([]);
@@ -59,7 +91,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const [evalResult, setEvalResult] = useState<string>("");
   const [setVarName, setSetVarName] = useState("");
   const [setVarValue, setSetVarValue] = useState("");
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<LiveStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [stoppedByUser, setStoppedByUser] = useState(false);
@@ -86,10 +118,10 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       } else {
         setScreenshot(null);
       }
-      setStatus("live");
+      setStatus({ key: "pages.live.status.live" });
     } catch (_error) {
       if (!stoppedByUser) {
-        setStatus("stopped");
+        setStatus({ key: "pages.live.status.stopped" });
       }
       setState(null);
       setChoices([]);
@@ -105,7 +137,11 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const runAction = async (action: () => Promise<unknown>, successMsg = "action ok", actionId = "action") => {
+  const runAction = async (
+    action: () => Promise<unknown>,
+    successKey = "pages.live.status.actionOk",
+    actionId = "action",
+  ) => {
     if (busyAction) {
       return;
     }
@@ -116,12 +152,14 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
         const error = (result as { error?: string }).error;
         throw new Error(error || "action failed");
       }
-      setStatus(successMsg);
+      setStatus({ key: successKey });
       window.setTimeout(() => {
         void refresh();
       }, 250);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "action failed");
+      setStatus({
+        raw: error instanceof Error ? error.message : t("pages.live.status.actionFailed"),
+      });
     } finally {
       setBusyAction(null);
     }
@@ -137,10 +175,14 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     setEvents([]);
     try {
       const result = await api.launchGame();
-      setStatus(result.already_running ? "already running" : "launched");
+      setStatus({
+        key: result.already_running ? "pages.live.status.launch.alreadyRunning" : "pages.live.status.launch.success",
+      });
       await refresh();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "launch failed");
+      setStatus({
+        raw: error instanceof Error ? error.message : t("pages.live.status.launch.failed"),
+      });
     } finally {
       setBusyAction(null);
     }
@@ -159,52 +201,56 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       setChoices([]);
       eventCursor.current = 0;
       setEvents([]);
-      setStatus(result.was_running ? "stopped" : "already stopped");
+      setStatus({
+        key: result.was_running ? "pages.live.status.stop.success" : "pages.live.status.stop.alreadyStopped",
+      });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "stop failed");
+      setStatus({
+        raw: error instanceof Error ? error.message : t("pages.live.status.stop.failed"),
+      });
     } finally {
       setBusyAction(null);
     }
   };
 
-  const onAdvance = async () => runAction(() => api.control("advance"), "advanced", "advance");
+  const onAdvance = async () => runAction(() => api.control("advance"), "pages.live.status.advance.success", "advance");
 
   const onRollback = async () => {
-    runAction(() => api.control("rollback"), "rollback ok", "rollback");
+    runAction(() => api.control("rollback"), "pages.live.status.rollback.success", "rollback");
   };
 
   const onToggleSkip = async () => {
-    runAction(() => api.control("toggle_skip"), "skip ok", "skip");
+    runAction(() => api.control("toggle_skip"), "pages.live.status.skip.success", "skip");
   };
 
   const onToggleAuto = async () => {
-    runAction(() => api.control("toggle_auto"), "auto ok", "auto");
+    runAction(() => api.control("toggle_auto"), "pages.live.status.auto.success", "auto");
   };
   const onQuickSave = async () => {
-    runAction(() => api.control("quick_save"), "save ok", "save");
+    runAction(() => api.control("quick_save"), "pages.live.status.save.success", "save");
   };
 
   const onQuickLoad = async () => {
-    runAction(() => api.control("quick_load"), "load ok", "load");
+    runAction(() => api.control("quick_load"), "pages.live.status.load.success", "load");
   };
 
   const onQuit = async () => {
-    await runAction(() => api.control("quit"), "quit", "quit");
+    await runAction(() => api.control("quit"), "pages.live.status.quit.success", "quit");
     setStoppedByUser(true);
     setState(null);
     setScreenshot(null);
     setChoices([]);
     eventCursor.current = 0;
     setEvents([]);
-    setStatus("stopped");
+    setStatus({ key: "pages.live.status.stopped" });
   };
 
   const onReloadGame = async () => {
-    runAction(() => api.control("reload_script"), "reload ok", "reload");
+    runAction(() => api.control("reload_script"), "pages.live.status.reload.success", "reload");
   };
 
   const onRestartInteraction = async () => {
-    runAction(() => api.control("restart_interaction"), "interface restarted", "restart-ui");
+    runAction(() => api.control("restart_interaction"), "pages.live.status.restartInteraction.success", "restart-ui");
   };
 
   const onEval = async (submitEvent: FormEvent<HTMLFormElement>) => {
@@ -215,10 +261,12 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     try {
       const response = await api.evaluate(expr);
       setEvalResult(`${expr}  =  ${formatUnknown(response.value)}`);
-      setStatus("evaluation ok");
+      setStatus({ key: "pages.live.status.eval.success" });
     } catch (error) {
       setEvalResult("");
-      setStatus(error instanceof Error ? error.message : "evaluation failed");
+      setStatus({
+        raw: error instanceof Error ? error.message : t("pages.live.status.eval.failed"),
+      });
     }
   };
 
@@ -227,11 +275,15 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     if (!setVarName.trim()) {
       return;
     }
-    await runAction(() => api.setVariable(setVarName, parseVariableValue(setVarValue)), `defined: ${setVarName}`, "set-var");
+    await runAction(
+      () => api.setVariable(setVarName, parseVariableValue(setVarValue)),
+      "pages.live.status.setVar.success",
+      "set-var",
+    );
   };
 
   const onSelectChoice = async (index: number, text: string) => {
-    await runAction(() => api.selectChoice(index, text), "choice selected", "choice");
+    await runAction(() => api.selectChoice(index, text), "pages.live.status.choice.selected", "choice");
     await refresh();
   };
 
@@ -240,14 +292,14 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const isRunning = Boolean(displayedState);
   const controlsDisabled = Boolean(busyAction) || !isRunning;
   const statusLabel = stoppedByUser
-    ? "stopped"
+    ? t("pages.live.status.stopped")
     : busyAction === "launch"
-      ? "launching..."
+      ? t("pages.live.status.launching")
       : busyAction === "stop"
-        ? "stopping..."
+        ? t("pages.live.status.stopping")
         : loading
-          ? "syncing..."
-          : status || (isRunning ? "live" : "stopped");
+          ? t("pages.live.status.syncing")
+          : formatStatus(status, t) || (isRunning ? t("pages.live.status.live") : t("pages.live.status.stopped"));
   const statusClass = isRunning ? "ok" : busyAction ? "warn" : "off";
   const tags = displayedState?.showing_tags ?? [];
   const variables = displayedState?.variables ?? {};
@@ -258,14 +310,14 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Live</h2>
-        <span className="hint">bridge · port 42547</span>
+        <h2>{t("pages.live.title")}</h2>
+        <span className="hint">{t("pages.live.header.hint", { port: BRIDGE_PORT })}</span>
       </div>
 
       <div className="live-grid">
         <section className="card preview-card reveal in" style={{ animationDelay: ".02s" }}>
           <div className="card-head">
-            <h3>Preview</h3>
+            <h3>{t("pages.live.preview.title")}</h3>
             <span className={`badge ${statusClass}`}>
               <span className="dot" style={{ width: "6px", height: "6px" }} />
               {statusLabel}
@@ -276,10 +328,10 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               {displayedFrame ? (
                 <img
                   src={`data:image/${displayedFrame.format};base64,${displayedFrame.base64}`}
-                  alt="Live preview"
+                  alt={t("pages.live.preview.alt")}
                 />
               ) : (
-                <div className="empty-box">No image — waiting for bridge</div>
+                <div className="empty-box">{t("pages.live.preview.empty")}</div>
               )}
             </div>
             <div className="transport">
@@ -287,71 +339,71 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
-                Launch game
+                {t("pages.live.actions.launch")}
               </button>
               <button className="tctl warn" type="button" onClick={onStopGame} disabled={Boolean(busyAction)}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <rect x="6" y="6" width="12" height="12" rx="2" />
                 </svg>
-                Stop game
+                {t("pages.live.actions.stop")}
               </button>
               <button className="tctl" type="button" onClick={onRollback} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M15 6 9 12l6 6" />
                 </svg>
-                Back
+                {t("pages.live.actions.back")}
               </button>
               <button className="tctl primary" type="button" onClick={onAdvance} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
-                Advance
+                {t("pages.live.actions.advance")}
               </button>
               <button className="tctl" type="button" onClick={onToggleSkip} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M5 5v14l9-7zM15 5h3v14h-3z" />
                 </svg>
-                Skip
+                {t("pages.live.actions.skip")}
               </button>
               <button className="tctl" type="button" onClick={onToggleAuto} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M4 12a8 8 0 1 1 3 6.2" />
                   <path d="M4 20v-4h4" />
                 </svg>
-                Auto
+                {t("pages.live.actions.auto")}
               </button>
               <button className="tctl" type="button" onClick={onQuickSave} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M5 3h11l3 3v15H5z" />
                   <path d="M8 3v5h7M8 14h8v7H8z" />
                 </svg>
-                Save
+                {t("pages.live.actions.save")}
               </button>
               <button className="tctl" type="button" onClick={onQuickLoad} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M3 7h6l2 2h10v10H3z" />
                 </svg>
-                Load
+                {t("pages.live.actions.load")}
               </button>
               <button className="tctl" type="button" onClick={onReloadGame} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
                   <path d="M21 12a9 9 0 1 1-2.6-6.3" />
                   <path d="M21 4v4h-4" />
                 </svg>
-                Reload
+                {t("pages.live.actions.reload")}
               </button>
               <button className="tctl warn" type="button" onClick={onQuit} disabled={controlsDisabled}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M6 6l12 12M18 6 6 18" />
                 </svg>
-                Quit
+                {t("pages.live.actions.quit")}
               </button>
             </div>
             {narrativeChoices.length > 0 && (
               <div className="live-choices">
                 <div className="live-choices-head">
-                  <h4>Narrative choice</h4>
-                  <span className="badge warn">interactive</span>
+                <h4>{t("pages.live.choices.title")}</h4>
+                <span className="badge warn">{t("pages.live.choices.badge")}</span>
                 </div>
                 <div className="choice-list">
                   {narrativeChoices.map((choice) => (
@@ -362,7 +414,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                         onClick={() => onSelectChoice(choice.index, choice.text)}
                         disabled={Boolean(busyAction)}
                       >
-                        Choose
+                        {t("pages.live.actions.choose")}
                       </button>
                     </div>
                   ))}
@@ -374,28 +426,30 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
 
         <section className="card reveal in" style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>Current state</h3>
-            <span className="badge info">runtime</span>
+            <h3>{t("pages.live.state.title")}</h3>
+            <span className="badge info">{t("pages.live.state.badge")}</span>
           </div>
           <div className="card-body">
             <div className="state-row">
-              <span className="k">Label</span>
-              <span className="v">{displayedState?.current_label || "start"}</span>
+              <span className="k">{t("pages.live.state.label")}</span>
+              <span className="v">{displayedState?.current_label || t("pages.live.state.labelFallback")}</span>
             </div>
             <div className="state-row">
-              <span className="k">Menu</span>
-              <span className="v">{displayedState?.menu ? "active" : "inactive"}</span>
+              <span className="k">{t("pages.live.state.menu.label")}</span>
+              <span className="v">
+                {displayedState?.menu ? t("pages.live.state.menu.active") : t("pages.live.state.menu.inactive")}
+              </span>
             </div>
             <div className="state-row">
-              <span className="k">Tags</span>
-              <span className="v">{tags.length ? tags.join(", ") : "—"}</span>
+              <span className="k">{t("pages.live.state.tags.label")}</span>
+              <span className="v">{tags.length ? tags.join(", ") : DASH}</span>
             </div>
             <div className="state-row">
-              <span className="k">Bridge port</span>
-              <span className="v">42547</span>
+              <span className="k">{t("pages.live.state.port.label")}</span>
+              <span className="v">{BRIDGE_PORT}</span>
             </div>
             <div className="vars">
-              <div className="vhead">Store variables</div>
+              <div className="vhead">{t("pages.live.state.variables.title")}</div>
               {Object.entries(variables)
                 .filter(([key]) => !key.startsWith("_") && !key.startsWith("IMG_"))
                 .slice(0, 12)
@@ -414,7 +468,11 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   );
                 })}
               {Object.keys(variables).length === 0 && (
-                <div className="var"><span className="name" style={{ color: "var(--meta)" }}>No variables</span></div>
+                <div className="var">
+                  <span className="name" style={{ color: "var(--meta)" }}>
+                    {t("pages.live.state.variables.empty")}
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -422,84 +480,100 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
 
         <section className="card reveal in" style={{ animationDelay: ".16s" }}>
           <div className="card-head">
-            <h3>Console</h3>
-            <span className="badge off">eval</span>
+            <h3>{t("pages.live.console.title")}</h3>
+            <span className="badge off">{t("pages.live.console.badge")}</span>
           </div>
           <div className="card-body">
             <form onSubmit={onEval}>
-              <label className="field-label" htmlFor="expr">Python expression</label>
+              <label className="field-label" htmlFor="expr">
+                {t("pages.live.console.eval.expressionLabel")}
+              </label>
               <div className="console-row">
                 <input
                   className="input"
                   id="expr"
                   value={expr}
                   onChange={(e) => setExpr(e.target.value)}
-                  placeholder="store.persistent.score + 1"
+                  placeholder={EXPR_PLACEHOLDER}
                 />
-                <button type="submit" className="btn btn-primary" disabled={controlsDisabled}>Eval</button>
+                <button type="submit" className="btn btn-primary" disabled={controlsDisabled}>
+                  {t("pages.live.console.eval.submit")}
+                </button>
               </div>
             </form>
             <div className="console-out">
               {evalResult ? (
                 <>
-                  <span className="pf">›</span>
+                  <span className="pf">{PROMPT_ARROW}</span>
                   <span className="rs">{evalResult}</span>
                 </>
               ) : (
-                "→ The evaluation result appears here."
+                t("pages.live.console.eval.empty")
               )}
             </div>
 
             <form onSubmit={onSetVar} className="vars" style={{ marginTop: "16px" }}>
-              <div className="vhead">Variable watch</div>
+              <div className="vhead">{t("pages.live.console.watch.title")}</div>
               <div className="two-col">
                 <div>
-                  <label className="field-label" htmlFor="wname">Variable</label>
+                  <label className="field-label" htmlFor="wname">
+                    {t("pages.live.console.watch.nameLabel")}
+                  </label>
                   <input
                     className="input"
                     id="wname"
                     value={setVarName}
                     onChange={(e) => setSetVarName(e.target.value)}
-                    placeholder="money"
+                    placeholder={VAR_NAME_PLACEHOLDER}
                   />
                 </div>
                 <div>
-                  <label className="field-label" htmlFor="wval">JSON or text value</label>
+                  <label className="field-label" htmlFor="wval">
+                    {t("pages.live.console.watch.valueLabel")}
+                  </label>
                   <input
                     className="input"
                     id="wval"
                     value={setVarValue}
                     onChange={(e) => setSetVarValue(e.target.value)}
-                    placeholder='"hello" or 42'
+                    placeholder={VAR_VALUE_PLACEHOLDER}
                   />
                 </div>
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "11px" }}>
-                <button type="submit" className="btn btn-ghost" disabled={controlsDisabled}>Set</button>
+                <button type="submit" className="btn btn-ghost" disabled={controlsDisabled}>
+                  {t("pages.live.console.watch.set")}
+                </button>
               </div>
             </form>
 
             <details className="live-advanced">
               <summary>
-                Advanced runtime
-                <span>{events.length} events</span>
+                <span>{t("pages.live.console.advanced.title")}</span>
+                <span>{t("pages.live.console.advanced.events", { count: events.length })}</span>
               </summary>
               <div className="live-advanced-actions">
-                <button type="button" className="btn btn-ghost" onClick={onRestartInteraction} disabled={controlsDisabled}>
-                  Restart UI
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={onRestartInteraction}
+                  disabled={controlsDisabled}
+                  aria-label={t("pages.live.console.advanced.restartAria")}
+                >
+                  {t("pages.live.console.advanced.restart")}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={() => void refresh()} disabled={Boolean(busyAction)}>
-                  Refresh
+                  {t("pages.live.console.advanced.refresh")}
                 </button>
               </div>
               <div className="live-events">
                 {events.length > 0 ? [...events].reverse().map((event, index) => (
                   <div className={`live-event ${event.type === "exception" ? "error" : ""}`} key={`${event.seq ?? index}-${event.type ?? "event"}`}>
                     <span>{event.seq ?? "-"}</span>
-                    <p>{describeEvent(event)}</p>
+                    <p>{describeEvent(event, t)}</p>
                   </div>
                 )) : (
-                  <p className="muted">No runtime event received yet.</p>
+                  <p className="muted">{t("pages.live.console.events.empty")}</p>
                 )}
               </div>
             </details>

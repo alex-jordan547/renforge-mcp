@@ -30,6 +30,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend scanner dependencies
+        working-directory: ui
+        run: npm ci
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

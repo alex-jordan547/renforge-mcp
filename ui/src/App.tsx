@@ -28,6 +28,8 @@ type SectionId = (typeof SECTIONS)[number]["id"];
 
 interface ErrorBoundaryProps {
   children: ReactNode;
+  title: string;
+  fallbackMessage: string;
 }
 
 interface ErrorBoundaryState {
@@ -52,12 +54,12 @@ function mergeTimelineItems(current: TimelineItem[], incoming: TimelineItem[]): 
     .slice(0, 250);
 }
 
-function projectName(path: string | null): string {
+function projectName(path: string | null, fallbackName: string): string {
   if (!path) {
-    return "Project";
+    return fallbackName;
   }
   const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "Project";
+  return parts[parts.length - 1] ?? fallbackName;
 }
 
 class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
@@ -66,7 +68,7 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
   static getDerivedStateFromError(error: unknown) {
     return {
       hasError: true,
-      error: error instanceof Error ? error.message : "An error occurred",
+      error: error instanceof Error ? error.message : null,
     };
   }
 
@@ -78,9 +80,9 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
     if (this.state.hasError) {
       return (
         <div className="errorBoundaryPanel">
-          <h3>Section error</h3>
-          <p className="muted">{this.state.error}</p>
-          <p className="muted">This section was isolated to keep the app responsive.</p>
+          <h3>{this.props.title}</h3>
+          <p className="muted">{this.props.fallbackMessage}</p>
+          {this.state.error ? <p className="muted">{this.state.error}</p> : null}
         </div>
       );
     }
@@ -118,6 +120,21 @@ export function App() {
   const [liveState, setLiveState] = useState<LiveState | null>(null);
   const [liveFrame, setLiveFrame] = useState<LiveScreenshot | null>(null);
   const token = getToken();
+  const wsStatusLabel = t("ws.statusLabel");
+  const sidebarNavigationLabel = t("a11y.navigation");
+  const appRuntimeConsoleSuffix = t("app.runtimeConsoleSuffix");
+  const versionPrefix = t("app.versionPrefix");
+  const sectionErrorTitle = t("error.sectionError");
+  const sectionErrorMessage = t("error.sectionErrorMessage");
+  const emptyValue = t("a11y.empty");
+  const fallbackProjectName = t("projectPicker.fallback");
+  const largeLivePreview = t("a11y.largeLivePreview");
+  const jumpTitle = t("app.jump");
+  const jumpDetails = t("app.jumpRequested");
+  const jumpFailed = t("app.jumpFailed");
+  const storyMapFailed = t("error.storyMapFailed");
+  const renpyBrand = "Ren'Py";
+  const appName = "RenForge";
 
   const updateProject = useCallback((project: string) => {
     if (projectPathRef.current === project) {
@@ -169,7 +186,7 @@ export function App() {
         }
       } catch (error) {
         if (mounted) {
-          setStoryMapError(error instanceof Error ? error.message : "Failed to load story map");
+          setStoryMapError(error instanceof Error ? error.message : storyMapFailed);
         }
       } finally {
         if (mounted) {
@@ -227,7 +244,7 @@ export function App() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [jumpTitle, jumpDetails, jumpFailed]);
 
   const handleJump = useCallback(async (target: string) => {
     try {
@@ -238,8 +255,8 @@ export function App() {
           source: "ui",
           timestamp: new Date().toISOString(),
           type: "ui",
-          title: "Jump",
-          details: `Requested jump to ${target}`,
+          title: jumpTitle,
+          details: `${jumpDetails} ${target}`,
           level: "info",
           payload: { target },
         };
@@ -252,8 +269,8 @@ export function App() {
           source: "ui",
           timestamp: new Date().toISOString(),
           type: "ui",
-          title: "Jump",
-          details: error instanceof Error ? error.message : "Jump failed",
+          title: jumpTitle,
+          details: error instanceof Error ? error.message : jumpFailed,
           level: "error",
           payload: { target },
         };
@@ -362,15 +379,15 @@ export function App() {
 
   return (
     <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className="sidebar" aria-label="Navigation">
+      <aside className="sidebar" aria-label={sidebarNavigationLabel}>
         <div className="brand">
           <div className="logo">
             <span className="mark">
               <img src="/brand/renforge-mark.png" alt="" aria-hidden="true" />
             </span>
-            <span className="name">RenForge</span>
+            <span className="name">{appName}</span>
           </div>
-          <div className="sub">Ren’Py runtime console · MCP</div>
+          <div className="sub">{renpyBrand} {appRuntimeConsoleSuffix}</div>
         </div>
 
         <nav className="nav">
@@ -410,7 +427,7 @@ export function App() {
               className={`ws ws-${stats.socket}`}
               role="status"
               aria-live="polite"
-              title={sidebarCollapsed ? `WebSocket: ${t(`ws.${stats.socket}`)}` : undefined}
+              title={sidebarCollapsed ? `${wsStatusLabel} ${t(`ws.${stats.socket}`)}` : undefined}
             >
               {stats.socket === "connecting" && !sidebarCollapsed ? (
                 <span className="ws-spinner" aria-hidden="true" />
@@ -435,7 +452,7 @@ export function App() {
           {appVersion && (
             <div className="row">
               <span className="k">{t("sidebar.versionLabel")}</span>
-              <span className="v side-foot-value">v{appVersion}</span>
+              <span className="v side-foot-value">{`${versionPrefix}${appVersion}`}</span>
             </div>
           )}
         </div>
@@ -475,7 +492,7 @@ export function App() {
                   <div className="thumb-popover">
                     <img
                       src={`data:image/${liveFrame.format};base64,${liveFrame.base64}`}
-                      alt="Large live preview"
+                      alt={largeLivePreview}
                     />
                   </div>
                 )}
@@ -483,7 +500,7 @@ export function App() {
               <span>
                 <span className="k">{t("toolbar.currentLabel")}</span>
                 <br />
-                <span className="v">{liveState?.current_label || "—"}</span>
+                <span className="v">{liveState?.current_label || emptyValue}</span>
               </span>
             </div>
 
@@ -499,7 +516,7 @@ export function App() {
               </svg>
               <span className="project-switcher-copy">
                 <span className="k">{t("toolbar.switchProject")}</span>
-                <span className="v">{projectName(projectPath)}</span>
+                <span className="v">{projectName(projectPath, fallbackProjectName)}</span>
               </span>
               <svg className="project-switcher-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="m9 18 6-6-6-6" />
@@ -527,7 +544,11 @@ export function App() {
         </header>
 
         <main className="content">
-          <DashboardErrorBoundary key={`${activeSection}-${projectRevision}`}>
+          <DashboardErrorBoundary
+            key={`${activeSection}-${projectRevision}`}
+            title={sectionErrorTitle}
+            fallbackMessage={sectionErrorMessage}
+          >
             {dashboard}
           </DashboardErrorBoundary>
         </main>

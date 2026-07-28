@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { SocketEnvelope } from "../types";
 
 const MAX_EVENTS = 300;
@@ -20,9 +21,10 @@ interface UseWebSocketState {
 
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketState {
   const { enabled = true, path = "/ws", onMessage } = options;
+  const { t } = useTranslation();
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const [messages, setMessages] = useState<SocketEnvelope[]>([]);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
@@ -73,7 +75,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
       }
       setConnected(true);
       setConnecting(false);
-      setError(null);
+      setOffline(false);
       reconnectAttemptsRef.current = 0;
       setReconnectAttempts(0);
     };
@@ -88,7 +90,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     };
 
     socket.onerror = () => {
-      setError("WebSocket error");
+      setOffline(true);
     };
 
     socket.onclose = () => {
@@ -132,7 +134,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketSta
     messages,
     connected,
     connecting,
-    error,
+    error: offline ? t("ws.offline") : null,
     reconnectAttempts,
     send,
   };

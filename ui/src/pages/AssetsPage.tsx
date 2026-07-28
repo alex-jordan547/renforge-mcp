@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import type { AssetsResponse } from "../types";
 
@@ -20,6 +21,7 @@ function getFileType(path: string): "image" | "audio" | "video" | "other" {
 }
 
 export function AssetsPage() {
+  const { t } = useTranslation();
   const [assets, setAssets] = useState<AssetsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +43,7 @@ export function AssetsPage() {
         if (!mounted) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load assets");
+        setError(err instanceof Error ? err.message : t("errors.unavailable"));
       } finally {
         if (mounted) {
           setLoading(false);
@@ -92,14 +94,14 @@ export function AssetsPage() {
     });
   };
 
-  if (loading) {
+    if (loading) {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Assets</h2>
-          <span className="hint">inventory · /api/assets</span>
+          <h2>{t("pages.assets.title")}</h2>
+          <span className="hint">{t("pages.assets.hint", { scope: t("pages.assets.inventory"), route: "/api/assets" })}</span>
         </div>
-        <div className="statusLine">Loading inventory…</div>
+        <div className="statusLine">{t("pages.assets.loading", { target: t("pages.assets.inventory") })}</div>
       </div>
     );
   }
@@ -108,10 +110,10 @@ export function AssetsPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Assets</h2>
-          <span className="hint">inventory · /api/assets</span>
+          <h2>{t("pages.assets.title")}</h2>
+          <span className="hint">{t("pages.assets.hint", { scope: t("pages.assets.inventory"), route: "/api/assets" })}</span>
         </div>
-        <p className="errorText">Unable to load assets: {error}</p>
+        <p className="errorText">{t("pages.assets.loadError", { error })}</p>
       </div>
     );
   }
@@ -119,8 +121,8 @@ export function AssetsPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Assets</h2>
-        <span className="hint">inventory · /api/assets</span>
+        <h2>{t("pages.assets.title")}</h2>
+        <span className="hint">{t("pages.assets.hint", { scope: t("pages.assets.inventory"), route: "/api/assets" })}</span>
       </div>
 
       <div className="stat-grid reveal in" style={{ animationDelay: ".05s" }}>
@@ -130,7 +132,7 @@ export function AssetsPage() {
           aria-pressed={selectedStat === "files"}
           onClick={() => selectStat("files")}
         >
-          <span className="lbl">Project files</span>
+          <span className="lbl">{t("pages.assets.cards.projectFiles")}</span>
           <span className="num">{assetFiles.length}</span>
         </button>
         <button
@@ -139,7 +141,7 @@ export function AssetsPage() {
           aria-pressed={selectedStat === "orphans"}
           onClick={() => selectStat("orphans")}
         >
-          <span className="lbl">Orphans</span>
+          <span className="lbl">{t("pages.assets.cards.orphans")}</span>
           <span className="num">{orphans.length}</span>
         </button>
         <button
@@ -149,7 +151,7 @@ export function AssetsPage() {
           onClick={() => selectStat("missing")}
           disabled={missingFiles.length === 0}
         >
-          <span className="lbl">Missing files</span>
+          <span className="lbl">{t("pages.assets.cards.missingFiles")}</span>
           <span className="num">{missingFiles.length}</span>
         </button>
         <button
@@ -159,7 +161,7 @@ export function AssetsPage() {
           onClick={() => selectStat("undef")}
           disabled={undefinedImages.length === 0}
         >
-          <span className="lbl">Undefined images</span>
+          <span className="lbl">{t("pages.assets.cards.undefinedImages")}</span>
           <span className="num">{undefinedImages.length}</span>
         </button>
       </div>
@@ -167,7 +169,7 @@ export function AssetsPage() {
       <div className="cols">
         <section id="assets-files" className={`card reveal in ${selectedStat === "files" ? "asset-focus" : ""}`} style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>Project files</h3>
+            <h3>{t("pages.assets.projectFiles")}</h3>
             <span className="badge info">{assetFiles.length}</span>
           </div>
           <div className="card-body">
@@ -177,25 +179,25 @@ export function AssetsPage() {
                   className={fileFilter === "all" ? "on" : ""}
                   onClick={() => setFileFilter("all")}
                 >
-                  All
+                  {t("pages.assets.filters.all")}
                 </button>
                 <button
                   className={fileFilter === "image" ? "on" : ""}
                   onClick={() => setFileFilter("image")}
                 >
-                  Images
+                  {t("pages.assets.filters.images")}
                 </button>
                 <button
                   className={fileFilter === "audio" ? "on" : ""}
                   onClick={() => setFileFilter("audio")}
                 >
-                  Audio
+                  {t("pages.assets.filters.audio")}
                 </button>
                 <button
                   className={fileFilter === "video" ? "on" : ""}
                   onClick={() => setFileFilter("video")}
                 >
-                  Videos
+                  {t("pages.assets.filters.videos")}
                 </button>
               </div>
             </div>
@@ -238,28 +240,28 @@ export function AssetsPage() {
                 );
               })}
               {filteredFiles.length === 0 && (
-                <p className="empty">No file matches this filter.</p>
+                <p className="empty">{t("pages.assets.empty.noFiles", { count: filteredFiles.length })}</p>
               )}
             </div>
           </div>
         </section>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <section id="assets-orphans" className={`card reveal in ${selectedStat === "orphans" ? "asset-focus" : ""}`} style={{ animationDelay: ".15s" }}>
-            <div className="card-head">
-              <h3>Orphans</h3>
-              <span className="badge warn">{orphans.length}</span>
-            </div>
+        <section id="assets-orphans" className={`card reveal in ${selectedStat === "orphans" ? "asset-focus" : ""}`} style={{ animationDelay: ".15s" }}>
+          <div className="card-head">
+            <h3>{t("pages.assets.sectionOrphans")}</h3>
+            <span className="badge warn">{orphans.length}</span>
+          </div>
              <div className="card-body">
                <p className="empty" style={{ marginBottom: "12px" }}>
-                  Assets on disk never referenced in the script.
+                  {t("pages.assets.descriptions.orphans")}
                </p>
                <div className="orphans" style={{ maxHeight: orphansMaxHeight }}>
                 {orphans.map((orphan) => (
                   <span key={orphan} className="orphan">{orphan}</span>
                 ))}
                 {orphans.length === 0 && (
-                  <p className="empty">No orphaned asset.</p>
+                  <p className="empty">{t("pages.assets.empty.noOrphans", { count: orphans.length })}</p>
                 )}
               </div>
             </div>
@@ -268,14 +270,14 @@ export function AssetsPage() {
           {missingFiles.length > 0 && (
             <section id="assets-missing" className={`card reveal in ${selectedStat === "missing" ? "asset-focus" : ""}`} style={{ animationDelay: ".20s" }}>
               <div className="card-head">
-                <h3>Missing files</h3>
+                <h3>{t("pages.assets.sectionMissingFiles")}</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
                   {missingFiles.length}
                 </span>
               </div>
               <div className="card-body">
                 <p className="empty" style={{ marginBottom: "12px" }}>
-                  Files referenced in the script but missing on disk.
+                  {t("pages.assets.descriptions.missingFiles")}
                 </p>
                 <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {missingFiles.map((file) => (
@@ -299,14 +301,14 @@ export function AssetsPage() {
           {undefinedImages.length > 0 && (
             <section id="assets-undef" className={`card reveal in ${selectedStat === "undef" ? "asset-focus" : ""}`} style={{ animationDelay: ".25s" }}>
               <div className="card-head">
-                <h3>Undefined images</h3>
+                <h3>{t("pages.assets.sectionUndefinedImages")}</h3>
                 <span className="badge warn" style={{ color: "var(--danger)", background: "var(--danger-soft)" }}>
                   {undefinedImages.length}
                 </span>
               </div>
               <div className="card-body">
                 <p className="empty" style={{ marginBottom: "12px" }}>
-                  Images used in dialogue scripts but never declared with an image statement.
+                  {t("pages.assets.descriptions.undefinedImages")}
                 </p>
                 <div className="orphans" style={{ maxHeight: secondaryMaxHeight }}>
                   {undefinedImages.map((img) => (

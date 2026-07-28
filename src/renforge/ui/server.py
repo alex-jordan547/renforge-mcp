@@ -26,6 +26,7 @@ from ..tools import project_ops
 from ..lint import run_lint
 from .activity import read_recent_activity, tail_activity
 from .graph import build_story_map, resolve_game_file_path, resolve_warp_target
+from .errors import error_response
 from .poller import poll_bridge
 from .ws import WebSocketHub, build_ws_envelope
 
@@ -37,8 +38,13 @@ def _renforge_version() -> str:
         return "dev"
 
 
-def _unauthorized() -> JSONResponse:
-    return JSONResponse({"ok": False, "error": "invalid token"}, status_code=401)
+def _unauthorized(_request: Request) -> JSONResponse:
+    return error_response(
+        code="invalid_token",
+        error="invalid token",
+        status_code=401,
+        details={},
+    )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -48,11 +54,11 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _read_autopilot(project_root: Path) -> dict[str, Any]:
     path = project_root / ".renforge" / "autopilot.json"
     if not path.exists():
-        return {"ok": False, "error": f"coverage file not found: {path}"}
+        return {"ok": False, "error": "coverage file not found"}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {"ok": False, "error": f"cannot read coverage: {type(exc).__name__}: {exc}"}
+    except Exception:
+        return {"ok": False, "error": "cannot read coverage"}
     if isinstance(payload, dict):
         return {"ok": True, "path": str(path), "coverage": payload}
     return {"ok": False, "error": "coverage file has invalid JSON format"}
@@ -286,61 +292,193 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
 
     async def health(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse({"ok": True, "project": str(runtime.root)})
 
     async def project(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse({"ok": True, "project": str(runtime.root), "version": _renforge_version()})
 
     async def project_browser(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         result = await asyncio.to_thread(
             _browse_project_directories,
             runtime.root,
             request.query_params.get("root_id"),
             request.query_params.get("path", ""),
         )
-        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+        if not result.get("ok"):
+            error = str(result.get("error", "unknown"))
+            if error == "unknown browse root":
+                return error_response(
+                    code="project_browser_unknown_root",
+                    error=error,
+                    status_code=400,
+                    details={
+                        "root_id": request.query_params.get("root_id"),
+                        "path": request.query_params.get("path", ""),
+                    },
+                )
+            if error == "folder path must stay inside the selected root":
+                return error_response(
+                    code="project_folder_outside_root",
+                    error=error,
+                    status_code=400,
+                    details={
+                        "root_id": request.query_params.get("root_id"),
+                        "path": request.query_params.get("path", ""),
+                    },
+                )
+            if error == "folder not found":
+                return error_response(
+                    code="project_folder_not_found",
+                    error=error,
+                    status_code=400,
+                    details={
+                        "root_id": request.query_params.get("root_id"),
+                        "path": request.query_params.get("path", ""),
+                    },
+                )
+            if error == "folder is not accessible":
+                return error_response(
+                    code="project_folder_not_accessible",
+                    error=error,
+                    status_code=400,
+                    details={
+                        "root_id": request.query_params.get("root_id"),
+                        "path": request.query_params.get("path", ""),
+                    },
+                )
+            return error_response(
+                code="project_browser_failed",
+                error=error,
+                status_code=400,
+                details={
+                    "root_id": request.query_params.get("root_id"),
+                    "path": request.query_params.get("path", ""),
+                },
+            )
+        return JSONResponse(result)
 
     async def select_project(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         root_id = payload.get("root_id")
         raw_path = payload.get("path")
         if not isinstance(root_id, str) or not isinstance(raw_path, str):
-            return JSONResponse({"ok": False, "error": "root_id and path are required"}, status_code=400)
+            return error_response(
+                code="project_selection_payload_invalid",
+                error="root_id and path are required",
+                status_code=400,
+                details={"root_id": root_id, "path": raw_path},
+            )
         roots = _project_browser_roots(runtime.root)
         selected = roots.get(root_id)
         if selected is None:
-            return JSONResponse({"ok": False, "error": "unknown browse root"}, status_code=400)
+            return error_response(
+                code="project_browser_unknown_root",
+                error="unknown browse root",
+                status_code=400,
+                details={"root_id": root_id},
+            )
         try:
             target = _resolve_browser_path(selected[1], raw_path)
         except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+            error = str(exc)
+            if error == "folder path must stay inside the selected root":
+                return error_response(
+                    code="project_folder_outside_root",
+                    error=error,
+                    status_code=400,
+                    details={"root_id": root_id, "path": raw_path},
+                )
+            return error_response(
+                code="project_folder_invalid",
+                error=error,
+                status_code=400,
+                details={"root_id": root_id, "path": raw_path},
+            )
         if not target.is_dir():
-            return JSONResponse({"ok": False, "error": "folder not found"}, status_code=404)
+            return error_response(
+                code="project_folder_not_found",
+                error="folder not found",
+                status_code=404,
+                details={"root_id": root_id, "path": raw_path},
+            )
         if not _is_renpy_project(target):
-            return JSONResponse({"ok": False, "error": "selected folder is not a Ren'Py project (missing game/)"}, status_code=422)
+            return error_response(
+                code="project_not_renpy_project",
+                error="selected folder is not a Ren'Py project (missing game/)",
+                status_code=422,
+                details={"root_id": root_id, "path": raw_path},
+            )
         result = await runtime.switch(target)
-        return JSONResponse(result, status_code=200 if result.get("ok") else 409)
+        if not result.get("ok"):
+            running = bool(result.get("running"))
+            return error_response(
+                code="project_switch_blocked",
+                error=(
+                    "stop the running game before switching projects"
+                    if running
+                    else "project switch blocked"
+                ),
+                status_code=409,
+                details={
+                    "root_id": root_id,
+                    "path": raw_path,
+                    "running": running,
+                },
+            )
+        return JSONResponse(result)
 
     async def story_map(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
-        return JSONResponse(build_story_map(str(runtime.root)))
+            return _unauthorized(request)
+        result = build_story_map(str(runtime.root))
+        if not result.get("ok"):
+            message = str(result.get("error", "unknown"))
+            if message.startswith("Project root does not exist"):
+                return error_response(
+                    code="story_map_root_missing",
+                    error="project root does not exist",
+                    status_code=200,
+                    details={},
+                )
+            return error_response(
+                code="story_map_failed",
+                error="story map failed",
+                status_code=200,
+                details={},
+            )
+        return JSONResponse(result)
 
     async def coverage(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
-        return JSONResponse(_read_autopilot(runtime.root))
+            return _unauthorized(request)
+        result = _read_autopilot(runtime.root)
+        if not result.get("ok"):
+            message = str(result.get("error", "unknown"))
+            if message.startswith("coverage file not found"):
+                return error_response(
+                    code="coverage_file_missing",
+                    error=message,
+                    status_code=200,
+                    details={},
+                )
+            return error_response(
+                code="coverage_read_failed",
+                error="cannot read coverage",
+                status_code=200,
+                details={},
+            )
+        return JSONResponse(result)
 
     async def activity_recent(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
 
         raw_limit = request.query_params.get("n", "20")
         try:
@@ -348,113 +486,202 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             if limit < 0:
                 limit = 0
         except (TypeError, ValueError):
-            return JSONResponse({"ok": False, "error": "n must be a non-negative integer"}, status_code=400)
+            return error_response(
+                code="timeline_limit_invalid",
+                error="n must be a non-negative integer",
+                status_code=400,
+                details={"n": raw_limit},
+            )
 
         return JSONResponse({"ok": True, "events": read_recent_activity(runtime.root, limit=limit)})
 
     async def assets(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
-        return JSONResponse(project_ops.assets(str(runtime.root)))
+            return _unauthorized(request)
+        result = project_ops.assets(str(runtime.root))
+        if (not result.get("ok") and result.get("error") is not None) or ("ok" not in result and "error" in result):
+            message = str(result.get("error", "unknown"))
+            if message.startswith("no game/"):
+                return error_response(
+                    code="assets_game_root_missing",
+                    error="no game/ directory found",
+                    status_code=200,
+                    details={},
+                )
+            return error_response(
+                code="assets_read_failed",
+                error="assets read failed",
+                status_code=200,
+                details={},
+            )
+        return JSONResponse(result)
 
     async def languages(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(project_ops.languages(str(runtime.root)))
 
     async def translation_stats(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         language = request.query_params.get("language")
         if not language:
-            return JSONResponse({"ok": False, "error": "language is required"}, status_code=400)
+            return error_response(
+                code="translation_language_missing",
+                error="language is required",
+                status_code=400,
+                details={"parameter": "language"},
+            )
         return JSONResponse(project_ops.translation_stats(str(runtime.root), language))
 
     async def translation_strings(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         language = request.query_params.get("language")
         if not language:
-            return JSONResponse({"ok": False, "error": "language is required"}, status_code=400)
+            return error_response(
+                code="translation_language_missing",
+                error="language is required",
+                status_code=400,
+                details={"parameter": "language"},
+            )
         from ..translation import list_translation_strings
         return JSONResponse({"ok": True, "strings": list_translation_strings(runtime.root, language)})
 
     async def file(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         raw_path = request.query_params.get("path", "")
         result = resolve_game_file_path(str(runtime.root), raw_path)
+        if not result.get("ok"):
+            message = str(result.get("error", "unknown"))
+            if (
+                message == "path must be inside game/"
+                or message == "path is required"
+                or message == "path is required to point to a file inside game/"
+                or message == "path must be relative to game/"
+            ):
+                return error_response(
+                    code="file_path_out_of_bounds",
+                    error=message,
+                    status_code=400,
+                    details={"path": raw_path},
+                )
+            if message.startswith("path does not point to a file"):
+                return error_response(
+                    code="file_not_found",
+                    error="path does not point to a file",
+                    status_code=400,
+                    details={"path": raw_path},
+                )
+            return error_response(
+                code="file_access_failed",
+                error="file access failed",
+                status_code=400,
+                details={"path": raw_path},
+            )
         status = 200 if result.get("ok") else 400
         return JSONResponse(result, status_code=status)
 
     async def files(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(await asyncio.to_thread(_list_script_files, runtime.root))
 
     async def lint(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(run_lint(str(runtime.root)))
 
     async def live_state(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(live.game_state(str(runtime.root)))
 
     async def live_choices(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(live.list_choices(str(runtime.root)))
 
     async def debug_events(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         raw_since = request.query_params.get("since", "0")
         try:
             since = int(raw_since)
         except (TypeError, ValueError):
-            return JSONResponse({"ok": False, "error": "since must be an integer"}, status_code=400)
+            return error_response(
+                code="debug_events_since_invalid",
+                error="since must be an integer",
+                status_code=400,
+                details={"since": raw_since},
+            )
         if since < 0:
             since = 0
         return JSONResponse(live.poll_events(str(runtime.root), since=since))
 
     async def warp(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         target = payload.get("target")
         if not isinstance(target, str) or not target:
-            return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+            return error_response(
+                code="warp_target_missing",
+                error="target is required",
+                status_code=400,
+                details={"target": target},
+            )
         resolved = resolve_warp_target(str(runtime.root), target)
         if not resolved.get("ok"):
-            return JSONResponse({"ok": False, "error": resolved.get("error", "invalid warp target")}, status_code=400)
+            error = str(resolved.get("error", "invalid warp target"))
+            return error_response(
+                code="warp_target_unknown" if error.startswith("unknown label") else "warp_target_invalid",
+                error=error,
+                status_code=400,
+                details={"target": target},
+            )
         return JSONResponse(live.launch_game(str(runtime.root), warp=str(resolved["target"])))
 
     async def advance(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         return JSONResponse(live.advance(str(runtime.root)))
 
     async def control(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         action = payload.get("action")
         if not isinstance(action, str) or not action:
-            return JSONResponse({"ok": False, "error": "action is required"}, status_code=400)
+            return error_response(
+                code="live_action_missing",
+                error="action is required",
+                status_code=400,
+                details={"action": action},
+            )
         return JSONResponse(live.control(str(runtime.root), action))
 
     async def launch(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         version = payload.get("version", "stable")
         warp = payload.get("warp")
         if not isinstance(version, str) or not version:
-            return JSONResponse({"ok": False, "error": "version must be a non-empty string"}, status_code=400)
+            return error_response(
+                code="launch_version_invalid",
+                error="version must be a non-empty string",
+                status_code=400,
+                details={"version": version},
+            )
         if warp is not None and not isinstance(warp, str):
-            return JSONResponse({"ok": False, "error": "warp must be a string"}, status_code=400)
+            return error_response(
+                code="live_warp_invalid",
+                error="warp must be a string",
+                status_code=400,
+                details={"warp": warp},
+            )
         result = await asyncio.to_thread(
             live.launch_game,
             str(runtime.root),
@@ -465,13 +692,13 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
 
     async def stop(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         result = await asyncio.to_thread(live.stop_game, str(runtime.root))
         return JSONResponse(result)
 
     async def select_choice(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         return JSONResponse(
             live.select_choice(
@@ -483,13 +710,13 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
 
     async def eval_route(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         return JSONResponse(live.eval_expr(str(runtime.root), str(payload.get("expr", ""))))
 
     async def set_var(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         return JSONResponse(
             live.set_var(
@@ -501,14 +728,19 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
 
     async def screenshot(request: Request):
         if not await _check_token(request):
-            return _unauthorized()
+            return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
         try:
             width = int(payload.get("width", 0) or 0)
             height = int(payload.get("height", 0) or 0)
             png = live.screenshot_png(str(runtime.root), width=width, height=height)
-        except Exception as exc:
-            return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status_code=200)
+        except Exception:
+            return error_response(
+                code="screenshot_failed",
+                error="screenshot failed",
+                status_code=200,
+                details={},
+            )
         return JSONResponse(
             {
                 "ok": True,

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "allowlist": [
+    {
+      "type": "key",
+      "key": "status.key",
+      "reason": "Live runtime status objects carry a validated translation key; the fallback is scanned as a literal key."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.diagnostics\\.severity\\.[a-z]+$",
+      "reason": "Dynamic diagnostics severity token from runtime status; values are defined from API payloads."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.translation\\.status\\.[a-z]+$",
+      "reason": "Dynamic translation status token family generated from backend translation state values."
+    },
+    {
+      "type": "key-pattern",
+      "pattern": "^pages\\.translation\\.badge\\.[a-z]+$",
+      "reason": "Dynamic translation badge family generated from translation status values."
+    },
+
+    {
+      "type": "key",
+      "key": "pages.assets.inventory",
+      "reason": "Shared scope label used for string interpolation in the assets page UI."
+    }
+  ]
+}

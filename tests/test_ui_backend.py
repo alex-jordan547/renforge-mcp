@@ -143,8 +143,14 @@ def test_api_screenshot_handles_missing_bridge_as_json_error(tmp_path: Path, mon
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ok"] is False
-    assert "RuntimeError" in payload["error"]
+    assert payload == {
+        "ok": False,
+        "error_code": "screenshot_failed",
+        "details": {},
+        "error": "screenshot failed",
+    }
+    assert "RuntimeError" not in response.text
+    assert "bridge unavailable" not in response.text
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")

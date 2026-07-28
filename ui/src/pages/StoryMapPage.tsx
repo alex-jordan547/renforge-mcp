@@ -1,5 +1,6 @@
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ReactFlow,
   Background,
@@ -14,6 +15,10 @@ import {
 } from "@xyflow/react";
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { StoryMapResponse } from "../types";
+
+const ZOOM_IN = "+";
+const ZOOM_OUT = "−";
+const ZOOM_FIT = "⊡";
 
 interface StoryMapPageProps {
   data: StoryMapResponse;
@@ -60,6 +65,7 @@ function edgeTouchesNode(edge: Pick<StoryMapResponse["edges"][number], "source" 
 }
 
 function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapPageProps) {
+  const { t } = useTranslation();
   const [layoutBusy, setLayoutBusy] = useState(false);
   const [warpBusy, setWarpBusy] = useState(false);
   const [warpTarget, setWarpTarget] = useState<string | null>(null);
@@ -268,19 +274,23 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
   );
 
   if (loading) {
-    return <section className="panel empty">Loading Story Map…</section>;
+    return <section className="panel empty">{t("pages.storyMap.loading")}</section>;
   }
 
   if (error) {
-    return <section className="panel empty">Could not load Story Map: {error}</section>;
+    return (
+      <section className="panel empty">
+        {t("pages.storyMap.error.load", { error })}
+      </section>
+    );
   }
 
   if (!data.nodes.length) {
     return (
       <section className="panel empty">
         <img className="emptyState-mascot" src="/brand/renforge-mascot.png" alt="" aria-hidden="true" />
-        <h2>Empty Story Map</h2>
-        <p>The backend has not exposed data yet.</p>
+        <h2>{t("pages.storyMap.empty.title")}</h2>
+        <p>{t("pages.storyMap.empty.body")}</p>
       </section>
     );
   }
@@ -288,19 +298,23 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Story Map</h2>
+        <h2>{t("pages.storyMap.title")}</h2>
         <span className="hint">
-        {data.nodes.length} labels · {data.edges.length} transitions · hover to focus, click to replay
+          {t("pages.storyMap.hint", {
+            labels: data.nodes.length,
+            transitions: data.edges.length,
+            defaultValue: `${data.nodes.length} labels · ${data.edges.length} transitions · hover to focus, click to replay`,
+          })}
         </span>
       </div>
 
       <div className="map-wrap reveal in" style={{ animationDelay: ".06s" }}>
         <div className="map-meta">
           <div className="map-current">
-            <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>Current position</span>
+            <span style={{ color: "var(--muted)", fontSize: "12.5px" }}>{t("pages.storyMap.current.title")}</span>
             <span className="pill-label">
               <span className="dot" />
-              {currentLabel || "—"}
+              {currentLabel || t("pages.storyMap.current.empty")}
             </span>
           </div>
           <div className="map-actions">
@@ -311,7 +325,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
               onClick={() => setShowEdgeLabels((visible) => !visible)}
             >
               <span className="map-toggle-indicator" aria-hidden="true" />
-              {showEdgeLabels ? "Hide transitions" : "Show transitions"}
+              {showEdgeLabels ? t("pages.storyMap.transitions.hide") : t("pages.storyMap.transitions.show")}
             </button>
           </div>
         </div>
@@ -365,22 +379,28 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
               maskStrokeColor="var(--minimap-mask-stroke)"
               maskStrokeWidth={1.5}
               bgColor="var(--minimap-bg)"
-              ariaLabel="Story map overview"
+              ariaLabel={t("pages.storyMap.minimap.aria")}
             />
           </ReactFlow>
 
           <div className="zoom">
-            <button id="zin" onClick={() => zoomIn()}>+</button>
-            <button id="zout" onClick={() => zoomOut()}>−</button>
-            <button id="zfit" title="Fit" onClick={() => fitView()}>⊡</button>
+            <button id="zin" onClick={() => zoomIn()} aria-label={t("pages.storyMap.zoom.in")}>{ZOOM_IN}</button>
+            <button id="zout" onClick={() => zoomOut()} aria-label={t("pages.storyMap.zoom.out")}>{ZOOM_OUT}</button>
+            <button id="zfit" title={t("pages.storyMap.zoom.fitTitle")} onClick={() => fitView()} aria-label={t("pages.storyMap.zoom.fit")}>
+              {ZOOM_FIT}
+            </button>
           </div>
         </div>
       </div>
 
       {warpBusy ? (
-        <div className="statusLine">Restarting game on "{warpTarget}"…</div>
+        <div className="statusLine">
+          {t("pages.storyMap.status.warp", {
+            target: warpTarget ?? t("pages.storyMap.current.empty"),
+          })}
+        </div>
       ) : layoutBusy ? (
-        <div className="statusLine">Adjusting graph…</div>
+        <div className="statusLine">{t("pages.storyMap.status.layout")}</div>
       ) : null}
     </div>
   );

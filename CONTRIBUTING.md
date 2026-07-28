@@ -34,6 +34,36 @@ npm run build    # builds into src/renforge/ui/static/ (committed)
 - If you touch the frontend, run `npm run build` and commit the updated
   `src/renforge/ui/static/` assets.
 
+## Locale and i18n integration
+
+- Canonical UI copy lives in `ui/src/i18n/locales/en.json`.
+- `zh-CN` is a partial locale. A missing translation intentionally displays its
+  raw i18n key instead of falling back to English, making untranslated copy easy
+  to identify in the dashboard.
+- Keep key paths stable. Prefer adding keys only when code needs new copy; do not
+  rename existing keys unless there is duplicated/conflicting usage.
+- Use interpolated values (`{{count}}`, `{{error}}`, `{{language}}`, etc.) for
+  dynamic fragments and pass data through t()-calls.
+- Scanner command:
+  - `npm --prefix ui run i18n:check`
+  - The repository enforces hardcoded text / unknown key checks and should be green
+    before merge.
+- Allowlist policy (in `ui/scripts/i18n-allowlist.json`):
+  - Dynamic families only (`pages.translation.status.*`,
+    `pages.translation.badge.*`, `pages.diagnostics.severity.*`).
+  - Runtime backend `errors.<code>` translations.
+  - Non-user-facing or structurally unavailable keys only.
+  - Each allowlist entry requires a reason.
+- `zh-CN` contribution steps:
+  - Only add real Chinese translations for missing keys when available.
+  - Preserve existing `zh-CN` values exactly.
+  - Do not modify `zh-CN` with fake English/placeholder content.
+  - Issue `#13` remains the dedicated follow-up for full Chinese coverage.
+- Backend API error handling uses `errors.<error_code>` in
+  `src/renforge/ui/errors.py`; add matching canonical English entries in
+  `ui/src/i18n/locales/en.json` for all stable backend codes and
+  `errors.unexpected`.
+
 ## Project layout
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
