@@ -1,10 +1,17 @@
 import { useEffect, useState, useMemo } from "react";
 import { api } from "../api";
 import type { TranslationStats } from "../types";
+import { useTranslation } from "react-i18next";
+
+const SOURCE_DIALOGUE_COUNT = 6;
+const ORPHAN_COUNT = 1;
+const TRANSLATION_PREFIX = "tl/";
+
+type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
 interface TranslationRow {
   language: string;
-  status: string;
+  status: "complete" | "partial" | "incomplete" | "unavailable";
   ratio: string;
   files: string;
   percent: number | null;
@@ -17,7 +24,6 @@ interface TranslationString {
   src: string;
   tr: string;
   status: "orphan" | "todo" | "ok";
-  statusLabel: string;
 }
 
 function toNumber(value: unknown): number | null {
@@ -41,13 +47,23 @@ function readValue(stats: TranslationStats, keys: string[]): number | null {
   return null;
 }
 
-function formatRow(language: string, stats: TranslationStats | null, error?: string): TranslationRow {
+function formatRatio(percent: number | null, done: number | null, total: number | null): string {
+  if (percent !== null) {
+    return `${percent.toFixed(0)}%`;
+  }
+  if (done !== null && total !== null) {
+    return `${done}/${total}`;
+  }
+  return "—";
+}
+
+function formatRow(language: string, stats: TranslationStats | null, t: TranslateFn, error?: string): TranslationRow {
   if (!stats) {
     return {
       language,
-      status: error || "Stats unavailable",
+      status: "unavailable",
       ratio: "—",
-      files: "—",
+      files: error ? t("errors.translationUnavailableReason", { error }) : t("pages.translation.summary.unavailable"),
       percent: null,
       showProgress: false,
       rawStats: null,
@@ -65,32 +81,33 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
   const calculatedPercent =
     percent !== null ? percent : done !== null && total !== null && total > 0 ? (done / total) * 100 : null;
 
-  const ratio =
-    calculatedPercent !== null
-      ? `${calculatedPercent.toFixed(0)}%`
-      : done !== null && total !== null
-        ? `${done}/${total}`
-        : "—";
+  const ratio = formatRatio(calculatedPercent, done, total);
 
-  const fileParts = [
-    missingDialogue !== null ? `${missingDialogue} missing dialogues` : null,
-    missingStrings !== null ? `${missingStrings} missing strings` : null,
-    missing !== null && missingDialogue === null && missingStrings === null ? `${missing} missing` : null,
-    total !== null && missingDialogue === null && missingStrings === null && missing === null ? `${total} files` : null,
-  ].filter((entry): entry is string => entry !== null);
+  const fileSummary: string[] = [];
+  if (missingDialogue !== null) {
+    fileSummary.push(t("pages.translation.summary.missingDialogue", { count: missingDialogue }));
+  }
+  if (missingStrings !== null) {
+    fileSummary.push(t("pages.translation.summary.missingStrings", { count: missingStrings }));
+  }
+  if (missing !== null && missingDialogue === null && missingStrings === null) {
+    fileSummary.push(t("pages.translation.summary.missing", { count: missing }));
+  }
+  if (total !== null && missingDialogue === null && missingStrings === null && missing === null) {
+    fileSummary.push(t("pages.translation.summary.total", { count: total }));
+  }
+  const files = fileSummary.length > 0 ? fileSummary.join(" / ") : t("pages.translation.summary.none");
 
-  const files = fileParts.length > 0 ? fileParts.join(" / ") : "—";
+  let status: TranslationRow["status"] = "partial";
+  if (calculatedPercent !== null && calculatedPercent >= 100) {
+    status = "complete";
+  } else if (showProgress && calculatedPercent === 0) {
+    status = "incomplete";
+  }
 
   return {
     language,
-    status:
-      calculatedPercent !== null && calculatedPercent >= 100
-        ? "Complete"
-        : showProgress
-          ? "Partial"
-          : missingDialogue !== null || missingStrings !== null || missing !== null
-            ? "Incomplete"
-            : "Partial",
+    status,
     ratio,
     files,
     percent: calculatedPercent,
@@ -99,7 +116,22 @@ function formatRow(language: string, stats: TranslationStats | null, error?: str
   };
 }
 
+function statusLabel(t: TranslateFn, status: TranslationString["status"]): string {
+  if (status === "ok") {
+    return t("status.ok");
+  }
+  if (status === "todo") {
+    return t("status.incomplete");
+  }
+  return t("status.warning");
+}
+
+function defaultPageHint(t: TranslateFn): string {
+  return t("pages.translation.hint", { apiLanguages: "/api/languages", apiStats: "/api/translation-stats" });
+}
+
 export function TranslationPage() {
+  const { t } = useTranslation();
   const [languages, setLanguages] = useState<string[]>([]);
   const [rows, setRows] = useState<TranslationRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -147,11 +179,12 @@ export function TranslationPage() {
         setRows(
           results.map((result, index) =>
             result.status === "fulfilled"
-              ? formatRow(languageList[index], result.value.stats)
+              ? formatRow(languageList[index], result.value.stats, t)
               : formatRow(
                   languageList[index],
                   null,
-                   result.reason instanceof Error ? result.reason.message : "Endpoint error",
+                  t,
+                  result.reason instanceof Error ? result.reason.message : "Endpoint error",
                 ),
           ),
         );
@@ -159,7 +192,7 @@ export function TranslationPage() {
         if (!mounted) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load translation data");
+        setError(err instanceof Error ? t("errors.translationLoad") : t("errors.translationLoad"));
         setLanguages([]);
         setRows([]);
       } finally {
@@ -173,10 +206,12 @@ export function TranslationPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
-    if (!selectedLanguage) return;
+    if (!selectedLanguage) {
+      return;
+    }
     let mounted = true;
     const loadStrings = async () => {
       try {
@@ -185,32 +220,36 @@ export function TranslationPage() {
           setRealStrings(res.strings);
         }
       } catch (err) {
-        console.error("Failed to load translation strings", err);
+        console.error(t("errors.translationStringsError"), err);
       }
     };
     loadStrings();
     return () => {
       mounted = false;
     };
-  }, [selectedLanguage]);
+  }, [selectedLanguage, t]);
 
   const activeRow = useMemo(() => {
     return rows.find((r) => r.language === selectedLanguage) || null;
   }, [rows, selectedLanguage]);
 
   const stringsList = useMemo(() => {
-    if (!selectedLanguage) return [];
+    if (!selectedLanguage) {
+      return [];
+    }
     return realStrings;
   }, [selectedLanguage, realStrings]);
 
   const filteredStrings = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return stringsList;
+    if (!q) {
+      return stringsList;
+    }
     return stringsList.filter(
       (s) =>
         s.id.toLowerCase().includes(q) ||
         s.src.toLowerCase().includes(q) ||
-        s.tr.toLowerCase().includes(q)
+        s.tr.toLowerCase().includes(q),
     );
   }, [stringsList, searchQuery]);
 
@@ -218,10 +257,10 @@ export function TranslationPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Translation</h2>
-          <span className="hint">/api/languages · /api/translation-stats</span>
+          <h2>{t("pages.translation.title")}</h2>
+          <span className="hint">{defaultPageHint(t)}</span>
         </div>
-        <div className="statusLine">Loading translation statistics…</div>
+        <div className="statusLine">{t("pages.translation.loading")}</div>
       </div>
     );
   }
@@ -230,8 +269,8 @@ export function TranslationPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Translation</h2>
-          <span className="hint">/api/languages · /api/translation-stats</span>
+          <h2>{t("pages.translation.title")}</h2>
+          <span className="hint">{defaultPageHint(t)}</span>
         </div>
         <p className="errorText">{error}</p>
       </div>
@@ -242,16 +281,13 @@ export function TranslationPage() {
     return (
       <div className="wrap">
         <div className="page-head reveal in">
-          <h2>Translation</h2>
-          <span className="hint">/api/languages · /api/translation-stats</span>
+          <h2>{t("pages.translation.title")}</h2>
+          <span className="hint">{defaultPageHint(t)}</span>
         </div>
         <div className="emptyState">
           <img className="emptyState-mascot" src="/brand/renforge-mascot.png" alt="" aria-hidden="true" />
-          <h3>No language detected</h3>
-          <p>
-            Configure languages in your Ren'Py project to see translation statistics here.
-            Languages are detected automatically via <code>/api/languages</code>.
-          </p>
+          <h3>{t("pages.translation.emptyTitle")}</h3>
+          <p>{t("pages.translation.emptyDescription", { apiLanguages: "/api/languages" })}</p>
         </div>
       </div>
     );
@@ -260,8 +296,8 @@ export function TranslationPage() {
   return (
     <div className="wrap">
       <div className="page-head reveal in">
-        <h2>Translation</h2>
-        <span className="hint">/api/languages · /api/translation-stats</span>
+        <h2>{t("pages.translation.title")}</h2>
+        <span className="hint">{defaultPageHint(t)}</span>
       </div>
 
       <div className="cols">
@@ -270,7 +306,8 @@ export function TranslationPage() {
             const isFr = row.language.toLowerCase() === "french" || row.language.toLowerCase() === "fr";
             const percentVal = row.percent !== null ? row.percent : 0;
             const isSelected = row.language === selectedLanguage;
-            
+            const rowStatusText = t(`pages.translation.status.${row.status}`);
+
             return (
               <div key={row.language} className="card" style={{ marginBottom: "14px" }}>
                 <div className="card-body">
@@ -281,20 +318,17 @@ export function TranslationPage() {
                     <span className={`flag ${isFr ? "fr" : "generic"}`} />
                     <div>
                       <div className="nm">{row.language}</div>
-                      <div className="sub">{row.language} · {row.status.toLowerCase()}</div>
+                      <div className="sub">{t("pages.translation.languageSummary", { language: row.language, status: rowStatusText })}</div>
                     </div>
-                    <span
-                      className={`st ${row.status === "Complete" ? "ok" : "todo"}`}
-                      style={{ marginLeft: "auto" }}
-                    >
-                      {row.status.toUpperCase()}
+                    <span className={`st ${row.status === "complete" ? "ok" : "todo"}`} style={{ marginLeft: "auto" }}>
+                      {t(`pages.translation.badge.${row.status}`)}
                     </span>
                   </div>
                   <div className="progress">
                     <i style={{ width: `${percentVal}%` }} />
                   </div>
                   <div className="prog-meta">
-                    <span>{row.ratio} progress</span>
+                    <span>{t("pages.translation.ratioLabel", { ratio: row.ratio })}</span>
                     <span>{row.files}</span>
                   </div>
                 </div>
@@ -304,22 +338,24 @@ export function TranslationPage() {
 
           <div className="card">
             <div className="card-body">
-              <div className="vhead">Script summary</div>
+              <div className="vhead">{t("pages.translation.scriptSummaryTitle")}</div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Source dialogues</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>6</span>
+                <span style={{ color: "var(--muted)" }}>{t("pages.translation.summary.sourceDialogues")}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{SOURCE_DIALOGUE_COUNT}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Translated ({selectedLanguage || "—"})</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                <span style={{ color: "var(--muted)" }}>
+                  {t("pages.translation.summary.translated", { language: selectedLanguage || "—" })}
+                </span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                   {activeRow && activeRow.rawStats
-                    ? (6 - (toNumber(activeRow.rawStats.missing_dialogue) ?? 0))
+                    ? (SOURCE_DIALOGUE_COUNT - (toNumber(activeRow.rawStats.missing_dialogue) ?? 0))
                     : 0}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: "12.5px" }}>
-                <span style={{ color: "var(--muted)" }}>Orphans</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--warn)" }}>1</span>
+                <span style={{ color: "var(--muted)" }}>{t("pages.translation.summary.orphans")}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--warn)" }}>{ORPHAN_COUNT}</span>
               </div>
             </div>
           </div>
@@ -327,10 +363,8 @@ export function TranslationPage() {
 
         <section className="card reveal in" style={{ animationDelay: ".10s" }}>
           <div className="card-head">
-            <h3>Strings — {selectedLanguage}</h3>
-            {activeRow && (
-              <span className="badge warn">{activeRow.ratio} traduites</span>
-            )}
+            <h3>{t("pages.translation.stringHeader", { language: selectedLanguage })}</h3>
+            {activeRow && <span className="badge warn">{t("pages.translation.translatedBadge", { ratio: activeRow.ratio })}</span>}
           </div>
           <div className="card-body">
             <div className="tbl-tools">
@@ -339,16 +373,16 @@ export function TranslationPage() {
                 id="tr-search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search a string…"
+                placeholder={t("pages.translation.searchPlaceholder")}
               />
             </div>
             <div className="translation-table">
               <table>
                 <thead>
                   <tr>
-                    <th style={{ width: "44%" }}>Source (en)</th>
-                    <th style={{ width: "44%" }}>Translation ({selectedLanguage})</th>
-                    <th>State</th>
+                    <th style={{ width: "44%" }}>{t("pages.translation.table.sourceHeader")}</th>
+                    <th style={{ width: "44%" }}>{t("pages.translation.table.translationHeader", { language: selectedLanguage })}</th>
+                    <th>{t("pages.translation.table.stateHeader")}</th>
                   </tr>
                 </thead>
                 <tbody id="tr-body">
@@ -359,18 +393,18 @@ export function TranslationPage() {
                         {str.src}
                       </td>
                       <td className={`tr ${!str.tr ? "miss" : ""}`}>
-                        {str.tr ? (
+                            {str.tr ? (
                           <>
-                            <span className="id">tl/{selectedLanguage}</span>
+                            <span className="id">{TRANSLATION_PREFIX}{selectedLanguage}</span>
                             {str.tr}
                           </>
                         ) : (
-                          "— untranslated —"
+                          t("pages.translation.untranslatedMarker")
                         )}
                       </td>
                       <td>
                         <span className={`st ${str.status}`}>
-                          {str.statusLabel}
+                          {statusLabel(t, str.status)}
                         </span>
                       </td>
                     </tr>
@@ -378,7 +412,7 @@ export function TranslationPage() {
                   {filteredStrings.length === 0 && (
                     <tr>
                       <td colSpan={3} style={{ textAlign: "center", color: "var(--meta)" }}>
-                         No string matches your search.
+                        {t("pages.translation.noSearchMatch")}
                       </td>
                     </tr>
                   )}
