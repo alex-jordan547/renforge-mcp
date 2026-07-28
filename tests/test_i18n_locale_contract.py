@@ -31,11 +31,18 @@ def _leaf_keys(data: object, prefix: str = "") -> set[str]:
     return keys
 
 
-def _run_scanner(root: Path, *, src_dir: Path | None = None) -> tuple[int, dict]:
+def _run_scanner(
+    root: Path,
+    *,
+    src_dir: Path | None = None,
+    allowlist: str | None = None,
+) -> tuple[int, dict]:
     script = REPO_ROOT / "ui" / "scripts" / "check-i18n.mjs"
     command = ["node", str(script), "--root", str(root), "--json"]
     if src_dir is not None:
         command.extend(["--src-dir", str(src_dir)])
+    if allowlist is not None:
+        command.extend(["--allowlist", allowlist])
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     payload = json.loads(result.stdout) if result.stdout else {}
     return result.returncode, payload
@@ -381,4 +388,14 @@ class TestI18nScannerOnRealSource:
         assert payload["status"] == "GREEN"
         assert payload["summary"]["hardcodedTextCount"] == 0
         assert payload["summary"]["unknownTKeyCount"] == 0
+        assert payload["summary"]["unusedKeyCount"] == 0
+
+    def test_real_ui_scan_accepts_windows_style_default_allowlist_path(self):
+        code, payload = _run_scanner(
+            REPO_ROOT / "ui",
+            allowlist=r"ui\scripts\i18n-allowlist.json",
+        )
+
+        assert code == 0
+        assert payload["status"] == "GREEN"
         assert payload["summary"]["unusedKeyCount"] == 0

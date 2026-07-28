@@ -102,6 +102,8 @@ export function translateDashboardApiError(payload: DashboardApiError, messageKe
       return i18next.t("errors.timeline_limit_invalid");
     case "translation_language_missing":
       return i18next.t("errors.translation_language_missing");
+    case "warp_target_invalid":
+      return i18next.t("errors.warp_target_invalid");
     case "warp_target_missing":
       return i18next.t("errors.warp_target_missing");
     case "warp_target_unknown":

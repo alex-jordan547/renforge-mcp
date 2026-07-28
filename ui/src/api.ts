@@ -532,7 +532,9 @@ export const api = {
   },
 
   async fetchStoryMap(): Promise<StoryMapResponse> {
-    return apiGet<StoryMapResponse>("/api/story-map");
+    const response = await apiGet<unknown>("/api/story-map");
+    checkBooleanResponse(response, "Story map");
+    return response as StoryMapResponse;
   },
 
   async fetchLiveState(): Promise<LiveState> {

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 API_FILE = REPO_ROOT / "ui" / "src" / "api.ts"
 WS_FILE = REPO_ROOT / "ui" / "src" / "hooks" / "useWebSocket.ts"
 I18N_ERRORS_FILE = REPO_ROOT / "ui" / "src" / "i18n" / "errors.ts"
+TRANSLATION_PAGE_FILE = REPO_ROOT / "ui" / "src" / "pages" / "TranslationPage.tsx"
+TIMELINE_PAGE_FILE = REPO_ROOT / "ui" / "src" / "pages" / "TimelinePage.tsx"
+EN_FILE = REPO_ROOT / "ui" / "src" / "i18n" / "locales" / "en.json"
 
 
 def _load(path: Path) -> str:
@@ -76,3 +80,34 @@ def test_no_raw_backend_message_is_user_visible_text():
     content = _load(API_FILE)
     assert "Unexpected response" not in content
     assert "Could not parse" not in content
+
+
+def test_story_map_rejects_http_200_error_payloads():
+    content = _load(API_FILE)
+
+    assert 'checkBooleanResponse(response, "Story map")' in content
+
+
+def test_translation_missing_counts_are_incomplete():
+    content = _load(TRANSLATION_PAGE_FILE)
+
+    assert "const hasMissing = [missing, missingDialogue, missingStrings].some" in content
+    assert "hasMissing || (showProgress && calculatedPercent === 0)" in content
+
+
+def test_timeline_preserves_ui_source_badge():
+    content = _load(TIMELINE_PAGE_FILE)
+    en = json.loads(_load(EN_FILE))
+
+    assert 'item.source === "ui"' in content
+    assert 't("pages.timeline.badge.ui")' in content
+    assert en["pages"]["timeline"]["badge"]["ui"] == "ui"
+
+
+def test_invalid_warp_target_is_translated():
+    content = _load(I18N_ERRORS_FILE)
+    en = json.loads(_load(EN_FILE))
+
+    assert 'case "warp_target_invalid"' in content
+    assert 'i18next.t("errors.warp_target_invalid")' in content
+    assert en["errors"]["warp_target_invalid"] == "Invalid warp target"

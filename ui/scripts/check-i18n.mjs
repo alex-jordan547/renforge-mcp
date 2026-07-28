@@ -307,7 +307,8 @@ function detectDefaultPaths(rootPath, relativeFile) {
     return direct;
   }
 
-  const trimmed = relativeFile.startsWith("ui/") ? relativeFile.slice(3) : null;
+  const normalizedRelative = relativeFile.replaceAll("\\", "/");
+  const trimmed = normalizedRelative.startsWith("ui/") ? normalizedRelative.slice(3) : null;
   if (trimmed) {
     const trimmedPath = path.resolve(rootPath, trimmed);
     if (fs.existsSync(trimmedPath)) {

@@ -170,7 +170,11 @@ export function TimelinePage({ items }: TimelinePageProps) {
                     )}
                   </div>
                   <span className={`tag-lg ${item.source}`}>
-                    {item.source === "bridge" ? t("pages.timeline.badge.bridge") : t("pages.timeline.badge.activity")}
+                    {item.source === "bridge"
+                      ? t("pages.timeline.badge.bridge")
+                      : item.source === "ui"
+                        ? t("pages.timeline.badge.ui")
+                        : t("pages.timeline.badge.activity")}
                   </span>
                   {payload && (
                     <button

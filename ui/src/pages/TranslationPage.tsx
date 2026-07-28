@@ -97,11 +97,12 @@ function formatRow(language: string, stats: TranslationStats | null, t: Translat
     fileSummary.push(t("pages.translation.summary.total", { count: total }));
   }
   const files = fileSummary.length > 0 ? fileSummary.join(" / ") : t("pages.translation.summary.none");
+  const hasMissing = [missing, missingDialogue, missingStrings].some((value) => value !== null && value > 0);
 
   let status: TranslationRow["status"] = "partial";
   if (calculatedPercent !== null && calculatedPercent >= 100) {
     status = "complete";
-  } else if (showProgress && calculatedPercent === 0) {
+  } else if (hasMissing || (showProgress && calculatedPercent === 0)) {
     status = "incomplete";
   }
 

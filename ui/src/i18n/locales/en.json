@@ -103,6 +103,7 @@
     "story_map_root_missing": "Story map root missing",
     "timeline_limit_invalid": "Timeline limit invalid",
     "translation_language_missing": "Translation language missing",
+    "warp_target_invalid": "Invalid warp target",
     "warp_target_missing": "Warp target missing",
     "warp_target_unknown": "Warp target unknown",
     "untranslated": "Missing translation"
@@ -317,7 +318,8 @@
     "timeline": {
       "badge": {
         "activity": "activity",
-        "bridge": "bridge"
+        "bridge": "bridge",
+        "ui": "ui"
       },
       "emptyDescription": "No timeline entries are available yet.",
       "emptyTitle": "No timeline events",
