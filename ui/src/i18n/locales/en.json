@@ -1,0 +1,59 @@
+{
+  "nav": {
+    "live": "Live",
+    "storyMap": "Story Map",
+    "timeline": "Timeline",
+    "assets": "Assets",
+    "translation": "Translation",
+    "diagnostics": "Diagnostics",
+    "editor": "Script Reader",
+    "workspace": "Workspace",
+    "project": "Project"
+  },
+  "section": {
+    "live": "Live",
+    "storyMap": "Story Map",
+    "timeline": "Timeline",
+    "assets": "Assets",
+    "translation": "Translation",
+    "diagnostics": "Diagnostics",
+    "editor": "Script Reader"
+  },
+  "subtitle": {
+    "live": "Operational console — live execution",
+    "storyMap": "Graph of labels and transitions",
+    "timeline": "Runtime event history",
+    "assets": "Inventory of the Ren'Py project",
+    "translation": "Translation progress per language",
+    "diagnostics": "Lint report and static checks",
+    "editor": "Read-only project source"
+  },
+  "toolbar": {
+    "currentLabel": "Current label",
+    "switchProject": "Switch project",
+    "toggleTheme": "Toggle light / dark"
+  },
+  "sidebar": {
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "wsLabel": "WS",
+    "nodesLabel": "nodes",
+    "edgesLabel": "edges",
+    "eventsLabel": "events",
+    "versionLabel": "version"
+  },
+  "ws": {
+    "connected": "connected",
+    "connecting": "connecting",
+    "offline": "offline"
+  },
+  "lang": {
+    "switchLanguage": "Language",
+    "en": "EN",
+    "zhCN": "中文"
+  },
+  "error": {
+    "sectionError": "Section error",
+    "isolated": "This section was isolated to keep the app responsive."
+  }
+}

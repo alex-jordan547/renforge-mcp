@@ -1,0 +1,59 @@
+{
+  "nav": {
+    "live": "直播",
+    "storyMap": "故事地图",
+    "timeline": "时间线",
+    "assets": "资产",
+    "translation": "翻译",
+    "diagnostics": "诊断",
+    "editor": "脚本阅读器",
+    "workspace": "工作区",
+    "project": "项目"
+  },
+  "section": {
+    "live": "直播",
+    "storyMap": "故事地图",
+    "timeline": "时间线",
+    "assets": "资产",
+    "translation": "翻译",
+    "diagnostics": "诊断",
+    "editor": "脚本阅读器"
+  },
+  "subtitle": {
+    "live": "操作控制台 — 实时执行",
+    "storyMap": "标签和转换的图形",
+    "timeline": "运行时事件历史",
+    "assets": "Ren'Py 项目的资产清单",
+    "translation": "每种语言的翻译进度",
+    "diagnostics": "代码检查报告和静态检查",
+    "editor": "只读项目源码"
+  },
+  "toolbar": {
+    "currentLabel": "当前标签",
+    "switchProject": "切换项目",
+    "toggleTheme": "切换亮色/暗色"
+  },
+  "sidebar": {
+    "expandSidebar": "展开侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "wsLabel": "WS",
+    "nodesLabel": "节点",
+    "edgesLabel": "边",
+    "eventsLabel": "事件",
+    "versionLabel": "版本"
+  },
+  "ws": {
+    "connected": "已连接",
+    "connecting": "连接中",
+    "offline": "离线"
+  },
+  "lang": {
+    "switchLanguage": "语言",
+    "en": "EN",
+    "zhCN": "中文"
+  },
+  "error": {
+    "sectionError": "模块错误",
+    "isolated": "此模块已被隔离，以保证应用程序的响应性。"
+  }
+}
