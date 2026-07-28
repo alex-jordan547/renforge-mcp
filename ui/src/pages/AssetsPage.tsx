@@ -132,7 +132,6 @@ export function AssetsPage() {
           aria-pressed={selectedStat === "files"}
           onClick={() => selectStat("files")}
         >
-          <span className="lbl">Project files</span>
           <span className="lbl">{t("pages.assets.cards.projectFiles")}</span>
           <span className="num">{assetFiles.length}</span>
         </button>
@@ -142,7 +141,6 @@ export function AssetsPage() {
           aria-pressed={selectedStat === "orphans"}
           onClick={() => selectStat("orphans")}
         >
-          <span className="lbl">Orphans</span>
           <span className="lbl">{t("pages.assets.cards.orphans")}</span>
           <span className="num">{orphans.length}</span>
         </button>
@@ -153,7 +151,6 @@ export function AssetsPage() {
           onClick={() => selectStat("missing")}
           disabled={missingFiles.length === 0}
         >
-          <span className="lbl">Missing files</span>
           <span className="lbl">{t("pages.assets.cards.missingFiles")}</span>
           <span className="num">{missingFiles.length}</span>
         </button>
@@ -164,7 +161,6 @@ export function AssetsPage() {
           onClick={() => selectStat("undef")}
           disabled={undefinedImages.length === 0}
         >
-          <span className="lbl">Undefined images</span>
           <span className="lbl">{t("pages.assets.cards.undefinedImages")}</span>
           <span className="num">{undefinedImages.length}</span>
         </button>

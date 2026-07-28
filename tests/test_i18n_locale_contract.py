@@ -269,6 +269,19 @@ class TestScannerFixtureContract:
 
 
 class TestI18nScannerOnRealSource:
+    def test_assets_kpis_render_one_translated_label_each(self):
+        source = (REPO_ROOT / "ui" / "src" / "pages" / "AssetsPage.tsx").read_text(encoding="utf-8")
+        labels = {
+            "Project files": "pages.assets.cards.projectFiles",
+            "Orphans": "pages.assets.cards.orphans",
+            "Missing files": "pages.assets.cards.missingFiles",
+            "Undefined images": "pages.assets.cards.undefinedImages",
+        }
+
+        for raw_label, translation_key in labels.items():
+            assert f'<span className="lbl">{raw_label}</span>' not in source
+            assert source.count(f't("{translation_key}")') == 1
+
     def test_real_ui_scan_reports_violations(self):
         code, payload = _run_scanner(REPO_ROOT / "ui")
         assert code == 1
