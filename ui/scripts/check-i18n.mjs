@@ -195,6 +195,18 @@ function extractDynamicFamily(expression) {
   return null;
 }
 
+function isTranslationCall(callee) {
+  if (ts.isIdentifier(callee) && callee.text === "t") {
+    return true;
+  }
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    ts.isIdentifier(callee.expression) &&
+    callee.expression.text === "i18next" &&
+    callee.name.text === "t"
+  );
+}
+
 function collectFromNode(node, state, filePath) {
   const { sourceFile, usedLiteralKeys, usedFamilies, unknownKeys, enLeafKeys, allowlist } = state;
 
@@ -207,7 +219,7 @@ function collectFromNode(node, state, filePath) {
 
   if (ts.isCallExpression(node)) {
     const callee = node.expression;
-    if (ts.isIdentifier(callee) && callee.text === "t" && node.arguments.length >= 1) {
+    if (isTranslationCall(callee) && node.arguments.length >= 1) {
       const arg = node.arguments[0];
       if (isStaticText(arg)) {
         const key = String(arg.text);

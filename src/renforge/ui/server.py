@@ -54,11 +54,11 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _read_autopilot(project_root: Path) -> dict[str, Any]:
     path = project_root / ".renforge" / "autopilot.json"
     if not path.exists():
-        return {"ok": False, "error": f"coverage file not found: {path}"}
+        return {"ok": False, "error": "coverage file not found"}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {"ok": False, "error": f"cannot read coverage: {type(exc).__name__}: {exc}"}
+    except Exception:
+        return {"ok": False, "error": "cannot read coverage"}
     if isinstance(payload, dict):
         return {"ok": True, "path": str(path), "coverage": payload}
     return {"ok": False, "error": "coverage file has invalid JSON format"}
@@ -457,13 +457,13 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                     code="coverage_file_missing",
                     error=message,
                     status_code=200,
-                    details={"project_root": str(runtime.root)},
+                    details={},
                 )
             return error_response(
                 code="coverage_read_failed",
-                error=message,
+                error="cannot read coverage",
                 status_code=200,
-                details={"project_root": str(runtime.root)},
+                details={},
             )
         return JSONResponse(result)
 
@@ -725,10 +725,10 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             width = int(payload.get("width", 0) or 0)
             height = int(payload.get("height", 0) or 0)
             png = live.screenshot_png(str(runtime.root), width=width, height=height)
-        except Exception as exc:
+        except Exception:
             return error_response(
                 code="screenshot_failed",
-                error=f"{type(exc).__name__}: {exc}",
+                error="screenshot failed",
                 status_code=200,
                 details={},
             )

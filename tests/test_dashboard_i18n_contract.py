@@ -28,8 +28,10 @@ def test_dashboard_errors_translate_known_and_unknown_code_keys():
 
     assert "errors.unexpected" in content
     assert "translateDashboardApiError(payload" in content
-    assert "fallback = \"errors.unexpected\"" in content or "i18next.t(fallback)" in content
-    assert "errors.${payload.error_code}" in content
+    assert 'case "invalid_token"' in content
+    assert 'i18next.t("errors.invalid_token")' in content
+    assert 'i18next.t("errors.unexpected")' in content
+    assert "errors.${payload.error_code}" not in content
 
 
 def test_timeline_labels_use_i18next_namespaces():
@@ -62,8 +64,11 @@ def test_timeline_labels_use_i18next_namespaces():
 
 def test_websocket_error_is_localized_and_not_hardcoded():
     content = _load(WS_FILE)
-    assert 'import i18next from "../i18n"' in content or "import i18next from '../i18n'" in content
-    assert 'setError(i18next.t("ws.offline"))' in content
+    assert 'import { useTranslation } from "react-i18next"' in content
+    assert "const { t } = useTranslation()" in content
+    assert "setOffline(true)" in content
+    assert 'offline ? t("ws.offline") : null' in content
+    assert 'import i18next from "../i18n"' not in content
     assert "WebSocket error" not in content
 
 

@@ -3,8 +3,8 @@
   "allowlist": [
     {
       "type": "key",
-      "key": "status.key ?? \"errors.untranslated\"",
-      "reason": "Dynamic status key fallback expression cannot be statically evaluated by the scanner."
+      "key": "status.key",
+      "reason": "Live runtime status objects carry a validated translation key; the fallback is scanned as a literal key."
     },
     {
       "type": "key-pattern",
@@ -21,16 +21,7 @@
       "pattern": "^pages\\.translation\\.badge\\.[a-z]+$",
       "reason": "Dynamic translation badge family generated from translation status values."
     },
-    {
-      "type": "key-pattern",
-      "pattern": "^errors\\.[a-z_]+$",
-      "reason": "Backend error_code keys are looked up via `errors.<code>` at runtime; not all are statically referenced."
-    },
-    {
-      "type": "key-pattern",
-      "pattern": "^timeline\\.[a-zA-Z]+$",
-      "reason": "Timeline keys are used via i18next in api.ts and not part of the `t(...)` scanner family."
-    },
+
     {
       "type": "key",
       "key": "pages.assets.inventory",

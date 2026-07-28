@@ -28,7 +28,10 @@ function formatStatus(status: LiveStatus | null, t: Translator) {
   if (status.raw) {
     return status.raw;
   }
-  return t(status.key ?? "errors.untranslated", status.params ?? {});
+  if (status.key) {
+    return t(status.key, status.params ?? {});
+  }
+  return t("errors.untranslated", status.params ?? {});
 }
 
 const formatUnknown = (value: unknown) => {

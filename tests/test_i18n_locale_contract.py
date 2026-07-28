@@ -209,6 +209,36 @@ class TestScannerFixtureContract:
         assert payload["summary"]["unknownTKeyCount"] == 1
         assert payload["issues"]["unknownKeys"][0]["type"] == "unknown-t-key"
 
+    def test_scanner_validates_direct_i18next_t_calls(self, tmp_path: Path) -> None:
+        source = """
+          import i18next from "./i18n";
+          export function translate() {
+            return i18next.t("known");
+          }
+        """
+        project = _build_temp_project(
+            tmp_path,
+            source=source,
+            en={"known": "Known"},
+            zh={"known": "已知"},
+        )
+
+        code, payload = _run_scanner(project, src_dir=project / "src")
+        assert code == 0
+        assert payload["summary"]["unusedKeyCount"] == 0
+
+        source_missing = source.replace('"known"', '"missing"')
+        project_missing = _build_temp_project(
+            tmp_path,
+            source=source_missing,
+            en={"known": "Known"},
+            zh={"known": "已知"},
+        )
+        code, payload = _run_scanner(project_missing, src_dir=project_missing / "src")
+        assert code == 1
+        assert payload["summary"]["unknownTKeyCount"] == 1
+        assert payload["issues"]["unknownKeys"][0]["type"] == "unknown-t-key"
+
     def test_scanner_enables_dynamic_nav_and_ws_families(self, tmp_path: Path) -> None:
         source = """
           import { useTranslation } from \"react-i18next\";

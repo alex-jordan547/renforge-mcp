@@ -146,6 +146,55 @@ def test_api_coverage_reports_missing_file_with_code(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_coverage_does_not_expose_parser_exception_details(tmp_path: Path) -> None:
+    project = _project_root(tmp_path)
+    coverage_file = project / ".renforge" / "autopilot.json"
+    coverage_file.parent.mkdir()
+    coverage_file.write_text("{invalid-json", encoding="utf-8")
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.get("/api/coverage?token=token")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "ok": False,
+        "error_code": "coverage_read_failed",
+        "details": {},
+        "error": "cannot read coverage",
+    }
+    serialized = response.text
+    assert "JSONDecodeError" not in serialized
+    assert "invalid-json" not in serialized
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_screenshot_does_not_expose_runtime_exception_details(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+
+    def fail_screenshot(*_args, **_kwargs):
+        raise RuntimeError("private runtime detail at /private/project")
+
+    monkeypatch.setattr(server.live, "screenshot_png", fail_screenshot)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/screenshot?token=token", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "ok": False,
+        "error_code": "screenshot_failed",
+        "details": {},
+        "error": "screenshot failed",
+    }
+    assert "RuntimeError" not in response.text
+    assert "private runtime detail" not in response.text
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
 def test_api_assets_reports_missing_game_root_with_code(tmp_path: Path) -> None:
     project = tmp_path / "without-game"
     project.mkdir()

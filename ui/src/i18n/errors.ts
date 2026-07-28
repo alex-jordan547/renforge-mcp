@@ -49,15 +49,67 @@ export function normalizeDashboardApiError(value: unknown, fallbackMessage: stri
 }
 
 export function translateDashboardApiError(payload: DashboardApiError, messageKey?: string): string {
-  if (payload.error_code) {
-    const key = `errors.${payload.error_code}`;
-    if (i18next.exists(key)) {
-      return i18next.t(key);
-    }
+  switch (payload.error_code) {
+    case "assets_game_root_missing":
+      return i18next.t("errors.assets_game_root_missing");
+    case "assets_read_failed":
+      return i18next.t("errors.assets_read_failed");
+    case "coverage_file_missing":
+      return i18next.t("errors.coverage_file_missing");
+    case "coverage_read_failed":
+      return i18next.t("errors.coverage_read_failed");
+    case "debug_events_since_invalid":
+      return i18next.t("errors.debug_events_since_invalid");
+    case "file_access_failed":
+      return i18next.t("errors.file_access_failed");
+    case "file_not_found":
+      return i18next.t("errors.file_not_found");
+    case "file_path_out_of_bounds":
+      return i18next.t("errors.file_path_out_of_bounds");
+    case "invalid_token":
+      return i18next.t("errors.invalid_token");
+    case "launch_version_invalid":
+      return i18next.t("errors.launch_version_invalid");
+    case "live_action_missing":
+      return i18next.t("errors.live_action_missing");
+    case "live_warp_invalid":
+      return i18next.t("errors.live_warp_invalid");
+    case "project_browser_failed":
+      return i18next.t("errors.project_browser_failed");
+    case "project_browser_unknown_root":
+      return i18next.t("errors.project_browser_unknown_root");
+    case "project_folder_invalid":
+      return i18next.t("errors.project_folder_invalid");
+    case "project_folder_not_accessible":
+      return i18next.t("errors.project_folder_not_accessible");
+    case "project_folder_not_found":
+      return i18next.t("errors.project_folder_not_found");
+    case "project_folder_outside_root":
+      return i18next.t("errors.project_folder_outside_root");
+    case "project_not_renpy_project":
+      return i18next.t("errors.project_not_renpy_project");
+    case "project_selection_payload_invalid":
+      return i18next.t("errors.project_selection_payload_invalid");
+    case "project_switch_blocked":
+      return i18next.t("errors.project_switch_blocked");
+    case "screenshot_failed":
+      return i18next.t("errors.screenshot_failed");
+    case "story_map_failed":
+      return i18next.t("errors.story_map_failed");
+    case "story_map_root_missing":
+      return i18next.t("errors.story_map_root_missing");
+    case "timeline_limit_invalid":
+      return i18next.t("errors.timeline_limit_invalid");
+    case "translation_language_missing":
+      return i18next.t("errors.translation_language_missing");
+    case "warp_target_missing":
+      return i18next.t("errors.warp_target_missing");
+    case "warp_target_unknown":
+      return i18next.t("errors.warp_target_unknown");
   }
 
-  const fallback = messageKey ?? "errors.unexpected";
-  return i18next.t(fallback);
+  void messageKey;
+  return i18next.t("errors.unexpected");
 }
 
 export function dashboardApiError(payload: unknown, fallbackMessage = "errors.unexpected"): DashboardApiErrorImpl {
