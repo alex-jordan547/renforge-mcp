@@ -104,7 +104,8 @@ def test_api_project_selection_rejects_non_project_directory(tmp_path: Path) -> 
     payload = response.json()
     assert payload["ok"] is False
     assert payload["error_code"] == "project_not_renpy_project"
-    assert "path" in payload["details"]
+    assert payload["details"] == {"root_id": "project-parent", "path": "not-a-project"}
+    assert str(tmp_path) not in response.text
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
@@ -250,7 +251,96 @@ def test_api_story_map_reports_missing_project_root_with_code(tmp_path: Path) ->
     payload = response.json()
     assert payload["ok"] is False
     assert payload["error_code"] == "story_map_root_missing"
-    assert payload["error"].startswith("Project root does not exist")
+    assert payload["error"] == "project root does not exist"
+    assert payload["details"] == {}
+    assert str(missing_root) not in response.text
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_story_map_does_not_expose_internal_failure_details(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    private_path = str(project / "game" / "script.rpy")
+    monkeypatch.setattr(
+        server,
+        "build_story_map",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error": f"PermissionError while scanning {private_path}",
+        },
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.get("/api/story-map?token=token")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "error_code": "story_map_failed",
+        "details": {},
+        "error": "story map failed",
+    }
+    assert "PermissionError" not in response.text
+    assert private_path not in response.text
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_assets_does_not_expose_internal_failure_details(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    private_path = str(project / "game" / "images")
+    monkeypatch.setattr(
+        server.project_ops,
+        "assets",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error": f"OSError while reading {private_path}",
+        },
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.get("/api/assets?token=token")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "error_code": "assets_read_failed",
+        "details": {},
+        "error": "assets read failed",
+    }
+    assert "OSError" not in response.text
+    assert private_path not in response.text
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_file_does_not_expose_resolver_exception_or_absolute_path(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    private_path = str(project / "game" / "private.rpy")
+
+    def fail_resolver(*_args, **_kwargs):
+        return {
+            "ok": False,
+            "error": f"cannot stat file: PermissionError: denied: {private_path}",
+        }
+
+    monkeypatch.setattr(server, "resolve_game_file_path", fail_resolver)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.get("/api/file?token=token&path=game/private.rpy")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error_code": "file_access_failed",
+        "details": {"path": "game/private.rpy"},
+        "error": "file access failed",
+    }
+    assert "PermissionError" not in response.text
+    assert private_path not in response.text
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")

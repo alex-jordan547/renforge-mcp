@@ -413,15 +413,24 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 code="project_not_renpy_project",
                 error="selected folder is not a Ren'Py project (missing game/)",
                 status_code=422,
-                details={"path": str(target)},
+                details={"root_id": root_id, "path": raw_path},
             )
         result = await runtime.switch(target)
         if not result.get("ok"):
+            running = bool(result.get("running"))
             return error_response(
                 code="project_switch_blocked",
-                error=str(result.get("error", "project switch failed")),
+                error=(
+                    "stop the running game before switching projects"
+                    if running
+                    else "project switch blocked"
+                ),
                 status_code=409,
-                details={"path": str(target), "running": bool(result.get("running"))},
+                details={
+                    "root_id": root_id,
+                    "path": raw_path,
+                    "running": running,
+                },
             )
         return JSONResponse(result)
 
@@ -434,15 +443,15 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             if message.startswith("Project root does not exist"):
                 return error_response(
                     code="story_map_root_missing",
-                    error=message,
+                    error="project root does not exist",
                     status_code=200,
-                    details={"project_root": str(runtime.root)},
+                    details={},
                 )
             return error_response(
                 code="story_map_failed",
-                error=message,
+                error="story map failed",
                 status_code=200,
-                details={"project_root": str(runtime.root)},
+                details={},
             )
         return JSONResponse(result)
 
@@ -495,15 +504,15 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             if message.startswith("no game/"):
                 return error_response(
                     code="assets_game_root_missing",
-                    error=message,
+                    error="no game/ directory found",
                     status_code=200,
-                    details={"project_root": str(runtime.root)},
+                    details={},
                 )
             return error_response(
                 code="assets_read_failed",
-                error=message,
+                error="assets read failed",
                 status_code=200,
-                details={"project_root": str(runtime.root)},
+                details={},
             )
         return JSONResponse(result)
 
@@ -561,13 +570,13 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             if message.startswith("path does not point to a file"):
                 return error_response(
                     code="file_not_found",
-                    error=message,
+                    error="path does not point to a file",
                     status_code=400,
                     details={"path": raw_path},
                 )
             return error_response(
                 code="file_access_failed",
-                error=message,
+                error="file access failed",
                 status_code=400,
                 details={"path": raw_path},
             )
