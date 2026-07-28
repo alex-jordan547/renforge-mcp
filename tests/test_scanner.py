@@ -108,6 +108,60 @@ def test_scan_project_resolves_local_and_dotted_labels(tmp_path: Path) -> None:
     assert result["jumps"][0]["target"] == "route.chapter.detail"
 
 
+def test_scan_project_strips_from_clause_from_static_call_target(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "label start:\n"
+        "    call destination from _call_destination_1\n"
+        "label destination:\n"
+        "    return\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert result["calls"][0]["target"] == "destination"
+    assert result["calls"][0]["kind"] == "static"
+    assert result["unresolved_targets"] == []
+
+
+def test_scan_project_strips_from_clause_and_resolves_local_call_target(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "label route:\n"
+        "    call .detail from _call_detail_1\n"
+        "label .detail:\n"
+        "    return\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert result["calls"][0]["target"] == "route.detail"
+    assert result["calls"][0]["kind"] == "static"
+    assert result["unresolved_targets"] == []
+
+
+def test_scan_project_strips_from_clause_without_breaking_dynamic_call_target(
+    tmp_path: Path,
+) -> None:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text(
+        "label start:\n"
+        "    call expression next_label from _call_expression_1\n",
+        encoding="utf-8",
+    )
+
+    result = scan_project(str(tmp_path))
+
+    assert result["calls"][0]["target"] == "expression next_label"
+    assert result["calls"][0]["kind"] == "dynamic"
+    assert result["unresolved_targets"] == []
+
+
 def test_scan_project_excludes_screen_language_labels(tmp_path: Path) -> None:
     game = tmp_path / "game"
     game.mkdir(parents=True)
