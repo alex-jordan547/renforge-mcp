@@ -37,6 +37,9 @@ examples/demo_game/game/gui/**/*.png
 docs/*
 !docs/MCP.md
 !docs/ARCHITECTURE.md
+!docs/superpowers/
+!docs/superpowers/specs/
+!docs/superpowers/specs/*.md
 MCP_AGENT_IMPROVEMENTS.md
 
 # Ren'Py / RenForge runtime artifacts
@@ -54,3 +57,6 @@ screens
 
 # Local design source files; runtime copies live under ui/public/brand.
 /assets/
+
+# Superpowers visual brainstorming artifacts
+.superpowers/
