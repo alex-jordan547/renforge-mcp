@@ -29,6 +29,36 @@ def test_gap_orders_side_by_side_boxes() -> None:
     assert result["result"] == {"horizontal": 10, "vertical": -12, "overlaps": False}
 
 
+def test_gap_zero_tolerance_passes_when_either_axis_separates_boxes() -> None:
+    side_by_side = [box(50, 10, 20, 12), box(10, 10, 30, 12)]
+    overlapping = [box(10, 20, 30, 20), box(25, 30, 30, 20)]
+
+    assert measure_geometry("gap", side_by_side, tolerance=0)["pass"] is True
+    assert measure_geometry("gap", overlapping, tolerance=0)["pass"] is False
+
+
+def test_gap_orders_each_axis_independently() -> None:
+    result = measure_geometry(
+        "gap",
+        [box(0, 100, 10, 10), box(5, 0, 10, 10)],
+        tolerance=0,
+    )
+
+    assert result["result"] == {"horizontal": -5, "vertical": 90, "overlaps": False}
+    assert result["pass"] is True
+
+
+def test_gap_is_symmetric_when_boxes_share_an_origin() -> None:
+    large = box(0, 0, 100, 100)
+    small = box(0, 0, 10, 10)
+
+    forward = measure_geometry("gap", [large, small])
+    reverse = measure_geometry("gap", [small, large])
+
+    assert forward["result"] == reverse["result"]
+    assert forward["result"] == {"horizontal": -10, "vertical": -10, "overlaps": True}
+
+
 def test_overlap_and_gap_detect_overlapping_boxes() -> None:
     first, second = box(10, 20, 30, 20), box(25, 30, 30, 20)
 
@@ -42,6 +72,16 @@ def test_overlap_and_gap_detect_overlapping_boxes() -> None:
     assert gap["result"] == {"horizontal": -15, "vertical": -10, "overlaps": True}
 
 
+def test_overlap_tolerance_is_minimum_intersection_area() -> None:
+    first, second = box(10, 20, 30, 20), box(25, 30, 30, 20)
+
+    assert measure_geometry("overlap", [first, second], tolerance=150)["pass"] is True
+    assert measure_geometry("overlap", [first, second], tolerance=151)["pass"] is False
+    assert measure_geometry(
+        "overlap", [first, box(100, 100, 10, 10)], tolerance=0
+    )["pass"] is False
+
+
 def test_distribute_reports_even_and_uneven_gaps() -> None:
     even = measure_geometry(
         "distribute", [box(0, 0, 10, 10), box(20, 0, 10, 10), box(40, 0, 10, 10)]
@@ -52,6 +92,16 @@ def test_distribute_reports_even_and_uneven_gaps() -> None:
         "distribute", [box(0, 0, 10, 10), box(20, 0, 10, 10), box(45, 0, 10, 10)]
     )
     assert uneven["result"] == {"axis": "x", "gaps": [10, 15], "max_deviation": 5, "even": False}
+
+
+def test_distribute_zero_tolerance_requires_exact_spacing() -> None:
+    targets = [box(0, 0, 10, 10), box(20, 0, 10, 10), box(41, 0, 10, 10)]
+
+    result = measure_geometry("distribute", targets, tolerance=0)
+
+    assert result["result"]["max_deviation"] == 1
+    assert result["result"]["even"] is False
+    assert result["pass"] is False
 
 
 def test_center_reports_offset_from_container_center() -> None:

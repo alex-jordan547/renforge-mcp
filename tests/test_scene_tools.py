@@ -23,8 +23,10 @@ class _FakeClient:
     def __init__(self, reply, png=None):
         self._reply = reply
         self._png = png
+        self.calls = []
 
     def scene_tree(self, **kwargs):
+        self.calls.append(kwargs)
         reply = json.loads(json.dumps(self._reply))  # deep copy per call
         ids = kwargs.get("ids")
         if ids:
@@ -83,10 +85,39 @@ def test_scene_tree_wireframe_has_legend(monkeypatch):
 
 def test_scene_tree_truncates_to_max_items(monkeypatch):
     nodes = [_node("n%d" % i, i, i, 5, 5) for i in range(10)]
-    live = _patch(monkeypatch, _FakeClient(_reply(nodes)))
-    out = live.scene_tree("proj", max_items=4)
+    client = _FakeClient(_reply(nodes))
+    live = _patch(monkeypatch, client)
+    out = live.scene_tree("proj", types=["image"], max_items=4)
     assert out["truncated"] is True
     assert len(out["nodes"]) == 4
+    assert "max_nodes" not in client.calls[-1]
+
+
+def test_scene_tree_limits_nodes_before_derived_outputs(tmp_path, monkeypatch):
+    nodes = [_node("n%d" % i, i * 10, 0, 5, 5) for i in range(3)]
+    live = _patch(monkeypatch, _FakeClient(_reply(nodes)))
+
+    out = live.scene_tree(
+        str(tmp_path),
+        format="wireframe",
+        save_as="limited",
+        max_items=1,
+    )
+
+    assert "n0" in out["wireframe"]
+    assert "n1" not in out["wireframe"]
+    saved = json.loads((tmp_path / ".renforge" / "scenes" / "limited.json").read_text())
+    assert [node["id"] for node in saved["nodes"]] == ["n0"]
+
+
+def test_scene_tree_applies_depth_and_byte_limits(monkeypatch):
+    live = _patch(monkeypatch, _FakeClient(_reply([_node("hero", 0, 0, 10, 10)])))
+
+    depth_limited = live.scene_tree("proj", max_output_depth=2)
+    byte_limited = live.scene_tree("proj", max_output_bytes=128)
+
+    assert "max_depth" in json.dumps(depth_limited)
+    assert byte_limited["__reason__"] == "max_output_bytes"
 
 
 def test_scene_tree_save_then_diff_detects_move(tmp_path, monkeypatch):
@@ -102,10 +133,74 @@ def test_scene_tree_save_then_diff_detects_move(tmp_path, monkeypatch):
     assert moved and moved[0]["moved"]["dx"] == 30
 
 
-def test_scene_tree_diff_missing_snapshot(monkeypatch):
+def test_scene_tree_rejects_invalid_snapshot_names(tmp_path, monkeypatch):
+    live = _patch(monkeypatch, _FakeClient(_reply([_node("hero", 0, 0, 10, 10)])))
+
+    out = live.scene_tree(str(tmp_path), save_as="a/b")
+
+    assert out["ok"] is False
+    assert "snapshot name" in out["error"]
+
+
+def test_scene_tree_refuses_symlinked_snapshot_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    outside.mkdir()
+    (project / ".renforge").symlink_to(outside, target_is_directory=True)
+    live = _patch(monkeypatch, _FakeClient(_reply([_node("hero", 0, 0, 10, 10)])))
+
+    out = live.scene_tree(str(project), save_as="before")
+
+    assert out["ok"] is False
+    assert "symlink" in out["error"].lower()
+    assert list(outside.iterdir()) == []
+
+
+def test_scene_tree_refuses_symlinked_snapshot_file(tmp_path, monkeypatch):
+    scenes = tmp_path / ".renforge" / "scenes"
+    scenes.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text("do not overwrite", encoding="utf-8")
+    (scenes / "before.json").symlink_to(outside)
+    live = _patch(monkeypatch, _FakeClient(_reply([_node("hero", 0, 0, 10, 10)])))
+
+    out = live.scene_tree(str(tmp_path), save_as="before")
+
+    assert out["ok"] is False
+    assert "symlink" in out["error"].lower()
+    assert outside.read_text(encoding="utf-8") == "do not overwrite"
+
+
+def test_scene_tree_diff_missing_snapshot(tmp_path, monkeypatch):
     live = _patch(monkeypatch, _FakeClient(_reply([_node("a", 0, 0, 5, 5)])))
-    out = live.scene_tree("proj", diff_against="nope")
+    out = live.scene_tree(str(tmp_path), diff_against="nope")
     assert "diff_error" in out
+
+
+def test_scene_tree_diff_rejects_oversized_snapshot(tmp_path, monkeypatch):
+    live = _patch(monkeypatch, _FakeClient(_reply([_node("a", 0, 0, 5, 5)])))
+    monkeypatch.setattr(live, "_SCENE_SNAPSHOT_MAX_BYTES", 32)
+    scenes = tmp_path / ".renforge" / "scenes"
+    scenes.mkdir(parents=True)
+    (scenes / "large.json").write_text('{"nodes":[' + (" " * 64) + "]}", encoding="utf-8")
+
+    out = live.scene_tree(str(tmp_path), diff_against="large")
+
+    assert "diff_error" in out
+
+
+def test_scene_tree_refuses_to_save_oversized_snapshot(tmp_path, monkeypatch):
+    node = _node("hero", 0, 0, 5, 5)
+    node["text"] = "X" * 100
+    live = _patch(monkeypatch, _FakeClient(_reply([node])))
+    monkeypatch.setattr(live, "_SCENE_SNAPSHOT_MAX_BYTES", 64)
+
+    out = live.scene_tree(str(tmp_path), save_as="large")
+
+    assert out["ok"] is False
+    assert "exceeds 64 bytes" in out["error"]
+    assert not (tmp_path / ".renforge" / "scenes" / "large.json").exists()
 
 
 def test_scene_tree_color_samples_frame(monkeypatch):
@@ -132,6 +227,24 @@ def test_measure_gap_accepts_literal_bounds(monkeypatch):
     b = {"x": 30, "y": 0, "width": 10, "height": 10}
     out = live.measure("proj", action="gap", targets=[a, b])
     assert out["result"]["horizontal"] == 20
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"x": 0, "y": 0, "width": -1, "height": 10},
+        {"x": True, "y": 0, "width": 10, "height": 10},
+        {"x": 0, "y": 0, "width": float("nan"), "height": 10},
+    ],
+)
+def test_measure_rejects_invalid_literal_bounds(monkeypatch, invalid):
+    live = _patch(monkeypatch, _FakeClient(_reply([])))
+    valid = {"x": 20, "y": 0, "width": 10, "height": 10}
+
+    out = live.measure("proj", action="gap", targets=[invalid, valid])
+
+    assert out["ok"] is False
+    assert "invalid target bounds" in out["error"]
 
 
 def test_measure_unknown_target_id_errors(monkeypatch):

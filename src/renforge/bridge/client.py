@@ -442,6 +442,9 @@ class BridgeClient:
         screen: str | None = None,
         ids: list[str] | tuple[str, ...] | None = None,
         include: list[str] | tuple[str, ...] | None = None,
+        max_depth: int | None = None,
+        max_nodes: int | None = None,
+        max_text_chars: int | None = None,
     ) -> dict[str, Any]:
         """Return the full perceived scene in logical coordinates.
 
@@ -450,8 +453,11 @@ class BridgeClient:
         ``type``, ``layer``, ``screen``, ``bounds`` and ``zorder``. ``detail``
         is ``semantic`` (default), ``layout`` or ``raw``;
         ``layers``/``types``/``screen``/``ids`` scope the returned nodes;
-        ``include`` opts into extra per-node fields. The reply always carries an
-        ``omitted`` hint describing what was perceived but filtered out.
+        ``include`` opts into extra per-node fields. ``max_depth``,
+        ``max_nodes``, and ``max_text_chars`` can lower bridge traversal and
+        text-size caps for bounded callers.
+        The reply always carries an ``omitted`` completeness hint and reports
+        traversal caps through ``truncated`` and ``limits``.
         """
         payload: dict[str, Any] = {}
         if detail is not None:
@@ -466,6 +472,12 @@ class BridgeClient:
             payload["ids"] = list(ids)
         if include is not None:
             payload["include"] = list(include)
+        if max_depth is not None:
+            payload["max_depth"] = max_depth
+        if max_nodes is not None:
+            payload["max_nodes"] = max_nodes
+        if max_text_chars is not None:
+            payload["max_text_chars"] = max_text_chars
         reply = self.request("scene_tree", payload or None)
         if reply.get("error") is not None:
             result = dict(reply)

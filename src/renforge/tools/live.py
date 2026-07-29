@@ -36,6 +36,7 @@ from ..launch_env import LaunchError
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
+    apply_serialization_limits,
     compact_state,
     normalize_state_profile,
     validate_limit_args,
@@ -43,6 +44,7 @@ from ..state_compact import (
 from ..scene_diff import diff_scenes
 from ..scene_measure import measure_geometry
 from ..scene_wireframe import render_wireframe
+from ..util import write_json_atomic
 
 _SESSIONS: dict[str, BridgeSession] = {}
 _LAUNCH_RESPONSE_WAIT_SECONDS = 20.0
@@ -1565,37 +1567,75 @@ def run_scenario(
 
 
 # --- Scene perception: full-scene tree, measurement, wireframe, diff -------
+_SCENE_SNAPSHOT_MAX_BYTES = 2_000_000
 
 
 def _scene_snapshot_dir(project_path: str) -> Path:
-    directory = Path(project_path).expanduser().resolve() / ".renforge" / "scenes"
-    directory.mkdir(parents=True, exist_ok=True)
+    project_root = Path(project_path).expanduser().resolve()
+    directory = project_root
+    for name in (".renforge", "scenes"):
+        directory = directory / name
+        if directory.is_symlink():
+            raise ValueError("scene snapshot directory must not be a symlink: %s" % directory)
+        directory.mkdir(exist_ok=True)
+        if not directory.resolve().is_relative_to(project_root):
+            raise ValueError("scene snapshot directory escapes the project: %s" % directory)
     return directory
 
 
 def _scene_snapshot_name(name: str) -> str:
-    safe = "".join(ch for ch in str(name) if ch.isalnum() or ch in ("-", "_"))
-    return safe or "scene"
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= 64
+        or not name.isascii()
+        or not name[0].isalnum()
+        or any(not (ch.isalnum() or ch in ("-", "_")) for ch in name)
+    ):
+        raise ValueError("snapshot name must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+    return name
 
 
 def _save_scene_snapshot(project_path: str, name: str, reply: dict) -> str:
-    path = _scene_snapshot_dir(project_path) / (_scene_snapshot_name(name) + ".json")
+    directory = _scene_snapshot_dir(project_path)
+    path = directory / (_scene_snapshot_name(name) + ".json")
+    if path.is_symlink():
+        raise ValueError("scene snapshot file must not be a symlink: %s" % path)
     snapshot = {
         "window": reply.get("window"),
         "coordinate_space": reply.get("coordinate_space"),
         "nodes": reply.get("nodes") or [],
     }
-    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    write_json_atomic(
+        path,
+        snapshot,
+        follow_symlinks=False,
+        max_bytes=_SCENE_SNAPSHOT_MAX_BYTES,
+    )
     return str(path)
 
 
-def _load_scene_snapshot(project_path: str, name: str) -> dict | None:
-    path = _scene_snapshot_dir(project_path) / (_scene_snapshot_name(name) + ".json")
-    if not path.exists():
-        return None
+def _load_scene_snapshot(
+    project_path: str,
+    name: str,
+    *,
+    max_nodes: int | None = None,
+) -> dict | None:
+    directory = _scene_snapshot_dir(project_path)
+    path = directory / (_scene_snapshot_name(name) + ".json")
+    if path.is_symlink():
+        raise ValueError("scene snapshot file must not be a symlink: %s" % path)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as snapshot_file:
+            encoded = snapshot_file.read(_SCENE_SNAPSHOT_MAX_BYTES + 1)
+        if len(encoded) > _SCENE_SNAPSHOT_MAX_BYTES:
+            return None
+        snapshot = json.loads(encoded.decode("utf-8"))
+        if max_nodes is not None and isinstance(snapshot, dict):
+            snapshot["nodes"] = (snapshot.get("nodes") or [])[:max_nodes]
+        return snapshot
+    except (OSError, UnicodeError, ValueError, TypeError):
         return None
 
 
@@ -1665,7 +1705,7 @@ def scene_tree(
     format: str = "json",
     save_as: str | None = None,
     diff_against: str | None = None,
-    max_depth: int | None = None,
+    max_output_depth: int | None = None,
     max_items: int | None = None,
     max_output_bytes: int | None = None,
 ) -> dict:
@@ -1677,21 +1717,57 @@ def scene_tree(
     live scene against a saved one.
     """
     include_list = [str(x).lower() for x in (include or [])]
+    limit_kwargs = {
+        key: value
+        for key, value in (
+            ("max_depth", max_output_depth),
+            ("max_items", max_items),
+            ("max_output_bytes", max_output_bytes),
+        )
+        if value is not None
+    }
+    limits = validate_limit_args(**limit_kwargs)
+    if isinstance(limits, dict):
+        return limits
+    limit_depth, max_nodes, max_bytes = limits
 
     def _handler(client: BridgeClient) -> dict:
+        max_text_chars = (
+            4096
+            if max_output_bytes is None
+            else max(16, min(4096, max_bytes // max_nodes))
+        )
         reply = client.scene_tree(
-            detail=detail, layers=layers, types=types, screen=screen, ids=ids, include=include
+            detail=detail,
+            layers=layers,
+            types=types,
+            screen=screen,
+            ids=ids,
+            include=include,
+            max_text_chars=max_text_chars,
         )
         if not reply.get("ok", True):
             return reply
         nodes = reply.get("nodes") or []
+        node_limit_hit = len(nodes) > max_nodes
+        if node_limit_hit:
+            omitted_count = len(nodes) - max_nodes
+            nodes = nodes[:max_nodes]
+            reply["nodes"] = nodes
+            counts = reply.setdefault("counts", {})
+            counts["returned"] = max_nodes
+            counts["returned_after_limit"] = max_nodes
+            reasons = reply.setdefault("omitted", {}).setdefault("by_reason", {})
+            reasons["max_items"] = reasons.get("max_items", 0) + omitted_count
+            reply.setdefault("limits", {})["max_items"] = max_nodes
+        reply["truncated"] = bool(reply.get("truncated")) or node_limit_hit
         window = reply.get("window") or {}
         if "color" in include_list and nodes:
             _attach_colors(client, nodes, window)
         if save_as:
             reply["saved_as"] = _save_scene_snapshot(project_path, save_as, reply)
         if diff_against:
-            before = _load_scene_snapshot(project_path, diff_against)
+            before = _load_scene_snapshot(project_path, diff_against, max_nodes=max_nodes)
             if before is None:
                 reply["diff_error"] = "no saved scene snapshot %r" % diff_against
             else:
@@ -1703,17 +1779,13 @@ def scene_tree(
                 reply["wireframe"] = render_wireframe(nodes, window)
             except Exception as exc:
                 reply["wireframe_error"] = "%s: %s" % (type(exc).__name__, exc)
-        limit_kwargs = {k: v for k, v in (("max_depth", max_depth), ("max_items", max_items), ("max_output_bytes", max_output_bytes)) if v is not None}
-        limits = validate_limit_args(**limit_kwargs)
-        if isinstance(limits, dict):
-            return limits
-        _md, max_nodes, _mob = limits
-        if len(nodes) > max_nodes:
-            reply["nodes"] = nodes[:max_nodes]
-            reply["truncated"] = True
-            reply.setdefault("counts", {})["returned_after_limit"] = max_nodes
-        else:
-            reply["truncated"] = False
+        if max_output_depth is not None or max_output_bytes is not None:
+            return apply_serialization_limits(
+                reply,
+                max_depth=limit_depth if max_output_depth is not None else 64,
+                max_items=max(max_nodes, 64),
+                max_output_bytes=max_bytes if max_output_bytes is not None else 2**31 - 1,
+            )
         return reply
 
     return _with_client(project_path, _handler)
@@ -1725,8 +1797,18 @@ def _bounds_of(target, id_map: dict) -> tuple[dict | None, dict | None]:
         if not bounds:
             return None, {"ok": False, "error": "target id not found or unmeasurable: %s" % target}
         return bounds, None
-    if isinstance(target, dict) and all(k in target for k in ("x", "y", "width", "height")):
-        return {k: target[k] for k in ("x", "y", "width", "height")}, None
+    keys = ("x", "y", "width", "height")
+    if isinstance(target, dict) and all(key in target for key in keys):
+        bounds = {key: target[key] for key in keys}
+        valid_numbers = all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in bounds.values()
+        )
+        if valid_numbers and bounds["width"] >= 0 and bounds["height"] >= 0:
+            return bounds, None
+        return None, {"ok": False, "error": "invalid target bounds: %r" % (target,)}
     return None, {"ok": False, "error": "invalid target: %r" % (target,)}
 
 

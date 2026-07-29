@@ -125,9 +125,11 @@ screen renforge_sdk_custom(title, amount):
     modal True
     key "dismiss" action NullAction()
     default status = "ready"
+    add Solid("#123456", xsize=120, ysize=80) xpos 30 ypos 40
     text title
     text str(amount)
     text status
+    textbutton "Click" action NullAction()
 
 label renforge_sdk_input_fixture:
     $ renforge_sdk_input_value = renpy.input("SDK name?", default="")
@@ -712,3 +714,120 @@ def test_live_scene_tree_perceives_layers_text_and_measures(sdk, demo_copy: Path
 
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_ids_are_unique_across_layers(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        for layer, color in (("master", "#ff0000"), ("screens", "#0000ff")):
+            client.eval_expr(
+                'renpy.show("renforge_duplicate", what=Solid("%s", xsize=80, ysize=80), layer="%s")'
+                % (color, layer)
+            )
+        client.eval_expr("renpy.restart_interaction()")
+        time.sleep(0.5)
+
+        scene = client.scene_tree(detail="raw")
+        duplicates = [
+            node for node in scene["nodes"]
+            if node.get("tag") == "renforge_duplicate"
+        ]
+        assert {node["layer"] for node in duplicates} == {"master", "screens"}
+        assert len({node["id"] for node in duplicates}) == 2
+
+        measured = live.measure(
+            str(demo_copy),
+            action="gap",
+            targets=[node["id"] for node in duplicates],
+        )
+        assert measured["ok"] is True, measured
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_reports_nested_nodes_custom_layers_and_limits(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    fixture = _add_sdk_fixtures(demo_copy)
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr(
+            'renpy.show_screen("%s", "X" * 100, 7, _layer="master")' % fixture["screen"]
+        )
+        client.eval_expr("renpy.restart_interaction()")
+        time.sleep(0.5)
+
+        scene = client.scene_tree(detail="raw")
+        node_ids = [node["id"] for node in scene["nodes"]]
+        assert len(node_ids) == len(set(node_ids))
+        screen_nodes = [
+            node for node in scene["nodes"]
+            if node.get("screen") == fixture["screen"] and node.get("layer") == "master"
+        ]
+        nested_image = next(node for node in screen_nodes if node["type"] == "image")
+        assert nested_image["bounds"]["x"] == 30
+        assert nested_image["bounds"]["y"] == 40
+
+        containers = client.scene_tree(types=["container"])
+
+        text_limited = client.scene_tree(detail="raw", max_text_chars=16)
+        truncated_text = [
+            node["text"]
+            for node in text_limited["nodes"]
+            if node.get("text", "").endswith("…")
+        ]
+        assert truncated_text
+        assert max(len(text) for text in truncated_text) == 17
+        assert any((node.get("screen") or "").endswith("…") for node in text_limited["nodes"])
+        for node in text_limited["nodes"]:
+            for key in ("text", "screen", "action", "tag", "layer", "type"):
+                if node.get(key) is not None:
+                    assert len(node[key]) <= 17
+            assert len(node["id"]) <= 257
+        stable_id_node = next(
+            node
+            for node in text_limited["nodes"]
+            if node["type"] == "image"
+            and (node.get("bounds") or {}).get("x") == 30
+            and (node.get("bounds") or {}).get("y") == 40
+        )
+        assert stable_id_node["id"] == nested_image["id"]
+        by_stable_id = client.scene_tree(
+            detail="raw",
+            max_text_chars=16,
+            ids=[stable_id_node["id"]],
+        )
+        assert [node["id"] for node in by_stable_id["nodes"]] == [stable_id_node["id"]]
+        assert by_stable_id["nodes"][0]["bounds"] == stable_id_node["bounds"]
+        by_full_screen = client.scene_tree(
+            detail="raw",
+            max_text_chars=16,
+            screen=fixture["screen"],
+        )
+        assert any(
+            node["id"] == stable_id_node["id"] and node["bounds"] == stable_id_node["bounds"]
+            for node in by_full_screen["nodes"]
+        )
+        assert any(node["type"] == "button" for node in by_full_screen["nodes"])
+        measured = live.measure(
+            str(demo_copy),
+            action="fit",
+            targets=[stable_id_node["id"]],
+            within={"x": 0, "y": 0, **scene["window"]},
+        )
+        assert measured["ok"] is True
+        assert any(node.get("screen") == fixture["screen"] for node in containers["nodes"])
+
+        limited = client.scene_tree(detail="raw", max_depth=0)
+        assert limited["truncated"] is True
+        assert limited["omitted"]["by_reason"]["max_depth"] > 0
+
+        node_limited = client.scene_tree(detail="raw", max_nodes=1)
+        assert len(node_limited["nodes"]) == 1
+        assert node_limited["truncated"] is True
+        assert node_limited["omitted"]["by_reason"]["max_nodes"] > 0

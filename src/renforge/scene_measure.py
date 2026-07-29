@@ -48,13 +48,12 @@ def _align(targets: list[dict[str, Any]], tolerance: float | None) -> dict[str, 
 
 def _gap(targets: list[dict[str, Any]], tolerance: float | None) -> dict[str, Any]:
     _check_count("gap", targets, exact=2)
-    ordered = sorted(targets, key=lambda target: (target["x"], target["y"]))
-    first, second = (_edges(target) for target in ordered)
-    horizontal = second[0] - first[1]
-    vertical = second[2] - first[3]
+    values = [_edges(target) for target in targets]
+    horizontal = max(item[0] for item in values) - min(item[1] for item in values)
+    vertical = max(item[2] for item in values) - min(item[3] for item in values)
     result = {"horizontal": horizontal, "vertical": vertical, "overlaps": horizontal < 0 and vertical < 0}
-    # A gap passes when neither axis overlaps beyond the supplied tolerance.
-    passed = horizontal >= -tolerance and vertical >= -tolerance if tolerance is not None else None
+    # Rectangles are separated when either axis clears the supplied tolerance.
+    passed = horizontal >= -tolerance or vertical >= -tolerance if tolerance is not None else None
     return _response("gap", result, passed, tolerance)
 
 
@@ -69,7 +68,7 @@ def _distribute(targets: list[dict[str, Any]], tolerance: float | None) -> dict[
     ordered = sorted(values, key=lambda item: item[index])
     gaps = [ordered[i + 1][index] - ordered[i][edge_index] for i in range(len(ordered) - 1)]
     max_deviation = max(gaps) - min(gaps)
-    even = max_deviation <= (tolerance or 1)
+    even = max_deviation <= (1 if tolerance is None else tolerance)
     return _response(
         "distribute",
         {"axis": axis, "gaps": gaps, "max_deviation": max_deviation, "even": even},
@@ -99,7 +98,7 @@ def _overlap(targets: list[dict[str, Any]], tolerance: float | None) -> dict[str
     areas = [(item[1] - item[0]) * (item[3] - item[2]) for item in (first, second)]
     ratio = round(area / min(areas), 3) if min(areas) > 0 else 0
     rect = {"x": left, "y": top, "width": width, "height": height} if area else None
-    passed = area > 0 if tolerance is not None else None
+    passed = (area > 0 and area >= tolerance) if tolerance is not None else None
     return _response("overlap", {"area": area, "ratio": ratio, "rect": rect}, passed, tolerance)
 
 

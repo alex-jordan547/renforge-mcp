@@ -270,7 +270,9 @@ logical coordinates.
 
 ```text
 renforge_scene_tree(project_path)
-  -> nodes[] (id, type, bounds, center, zorder, screen), window, omitted{by_type,by_layer}
+  -> nodes[] (id, type, bounds, center, zorder, screen), window,
+     omitted{by_type,by_layer,by_reason}, truncated,
+     limits{max_depth,max_nodes,max_text_chars}
 renforge_scene_tree(project_path, include=["color","style","overflow"])
   -> per node: composited color.dominant, declared style, best-effort text overflow
 renforge_scene_tree(project_path, format="wireframe")
@@ -293,6 +295,18 @@ Notes:
 - The default `detail="semantic"` returns meaningful leaves and always includes an
   `omitted` count of what was filtered, so widen with `detail="layout"|"raw"`,
   `types=[…]`, or `layers=[…]` only when needed.
+- If `truncated` is true, `omitted.by_reason` identifies a traversal cap and
+  `limits` reports the effective bound; do not treat that response as a complete
+  inventory.
+- `max_text_chars` bounds node text, screen names, roles, actions, tags, layers,
+  and types; truncated values retain up to that many characters and end with `…`.
+  IDs use a fixed 256-character cap so they remain stable across output budgets
+  and can be passed unchanged to `renforge_measure`.
+- When a focusable scan hits `max_nodes`, `covered` and `clickable` are `null` with
+  `coverage_reason="max_nodes"` because omitted higher controls may overlap them.
+- MCP replies default to `max_items=50`, `max_output_depth=6`, and
+  `max_output_bytes=65536`; lower these for tighter resource bounds or raise
+  them deliberately for a larger inventory.
 - `renforge_measure` targets are `scene_tree` node `id`s (resolved live) or literal
   `{x,y,width,height}` bounds; `center` and `fit` also take a `within` container.
 - `color` and `contrast` sample the actual composited frame while `style` reports

@@ -10,6 +10,7 @@ from PIL import Image
 
 
 _ALPHA_THRESHOLD = 16
+_MAX_SAMPLES = 65_536
 
 
 def _to_rgba(image: bytes | Image.Image) -> Image.Image:
@@ -17,25 +18,39 @@ def _to_rgba(image: bytes | Image.Image) -> Image.Image:
         with Image.open(io.BytesIO(image)) as opened:
             return opened.convert("RGBA")
     if isinstance(image, Image.Image):
-        return image.convert("RGBA")
+        return image if image.mode == "RGBA" else image.convert("RGBA")
     raise TypeError("image must be PNG bytes or a Pillow Image")
 
 
-def _crop(image: Image.Image, box: dict | None) -> Image.Image:
-    if box is None:
-        return image
-    x = box["x"]
-    y = box["y"]
-    return image.crop((x, y, x + box["width"], y + box["height"]))
 
 
 def _pixels(image: bytes | Image.Image, box: dict | None) -> list[tuple[int, int, int, int]]:
-    cropped = _crop(_to_rgba(image), box)
-    return [
-        cropped.getpixel((x, y))
-        for y in range(cropped.height)
-        for x in range(cropped.width)
-    ]
+    rgba = _to_rgba(image)
+    if box is None:
+        region = (0, 0, rgba.width, rgba.height)
+    else:
+        x, y = box["x"], box["y"]
+        region = (x, y, x + box["width"], y + box["height"])
+    width = max(0, region[2] - region[0])
+    height = max(0, region[3] - region[1])
+    area = width * height
+    if not area:
+        return []
+    if area > _MAX_SAMPLES:
+        scale = (_MAX_SAMPLES / area) ** 0.5
+        sample_width = min(_MAX_SAMPLES, max(1, int(width * scale)))
+        sample_height = max(1, min(int(height * scale), _MAX_SAMPLES // sample_width))
+        sampled = rgba.resize(
+            (sample_width, sample_height),
+            Image.Resampling.NEAREST,
+            box=region,
+        )
+    elif region == (0, 0, rgba.width, rgba.height):
+        sampled = rgba
+    else:
+        sampled = rgba.crop(region)
+    flattened = getattr(sampled, "get_flattened_data", None)
+    return list(flattened() if flattened is not None else sampled.getdata())
 
 
 def _relative_luminance(rgb: tuple[int, int, int]) -> float:

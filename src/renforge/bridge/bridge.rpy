@@ -1326,7 +1326,7 @@ init python:
             )
         return elements
 
-    def _renforge_focusable_elements():
+    def _renforge_focusable_elements(max_items=None, max_text_chars=None):
         """Return ``(focus, element)`` pairs for visible focus rectangles.
 
         ``focus_list`` is Ren'Py's authoritative list of controls that can
@@ -1342,6 +1342,8 @@ init python:
         except Exception:
             return elements
         for ordinal, focus in enumerate(focus_list):
+            if max_items is not None and len(elements) >= max_items:
+                break
             x = getattr(focus, "x", None)
             y = getattr(focus, "y", None)
             w = getattr(focus, "w", None)
@@ -1356,21 +1358,34 @@ init python:
                 continue
 
             widget = getattr(focus, "widget", None)
-            text = _renforge_focus_text(widget)
-            screen = _renforge_screen_name(focus)
-            role = _renforge_focus_type(focus, widget)
-            action_name = _renforge_focus_action_name(focus, widget)
+            raw_text = _renforge_focus_text(widget)
+            raw_screen = _renforge_screen_name(focus)
+            raw_role = _renforge_focus_type(focus, widget)
+            raw_action_name = _renforge_focus_action_name(focus, widget)
             zorder = _renforge_focus_zorder(focus, widget, ordinal)
             element_id = _renforge_explicit_focus_id(focus, widget)
             if not element_id:
                 # Prefer screen.action (semantic) over ordinal-heavy paths.
-                if screen and action_name:
-                    base = "%s.%s" % (screen, action_name)
-                elif screen and text:
-                    base = "%s.%s" % (screen, text)
+                if raw_screen and raw_action_name:
+                    element_id = "%s.%s" % (raw_screen, raw_action_name)
+                elif raw_screen and raw_text:
+                    element_id = "%s.%s" % (raw_screen, raw_text)
                 else:
-                    base = "%s:%s:%s" % (screen or "screen", role, text or ordinal)
-                element_id = base
+                    element_id = "%s:%s:%s" % (
+                        raw_screen or "screen",
+                        raw_role,
+                        raw_text or ordinal,
+                    )
+            element_id = _renforge_scene_string(element_id, _RENFORGE_SCENE_MAX_ID_CHARS)
+            text = raw_text
+            screen = raw_screen
+            role = raw_role
+            action_name = raw_action_name
+            if max_text_chars is not None:
+                text = _renforge_scene_string(text, max_text_chars)
+                screen = _renforge_scene_string(screen, max_text_chars)
+                role = _renforge_scene_string(role, max_text_chars)
+                action_name = _renforge_scene_string(action_name, max_text_chars)
             count = used_ids.get(element_id, 0)
             used_ids[element_id] = count + 1
             if count:
@@ -1392,6 +1407,9 @@ init python:
                 "index": ordinal,
                 "coordinate_space": "logical",
             }
+            if max_text_chars is not None:
+                element["_raw_type"] = raw_role
+                element["_raw_screen"] = raw_screen
             elements.append((focus, element))
         return _renforge_mark_coverage(elements)
 
@@ -2190,7 +2208,19 @@ init python:
     # perceived but not returned so an agent can widen precisely.
     _RENFORGE_SCENE_MAX_NODES = 4000
     _RENFORGE_SCENE_MAX_DEPTH = 48
+    _RENFORGE_SCENE_MAX_TEXT_CHARS = 4096
+    _RENFORGE_SCENE_MAX_ID_CHARS = 256
     _RENFORGE_SCENE_SEMANTIC_TYPES = ("image", "text", "button", "bar", "input", "imagemap", "hotspot")
+    def _renforge_scene_string(value, max_chars):
+        if value is None:
+            return None
+        try:
+            text = str(value)
+        except Exception:
+            return None
+        return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
 
     def _renforge_scene_window():
         w = getattr(renpy.config, "screen_width", 0) or 0
@@ -2212,7 +2242,7 @@ init python:
             ("viewport", "container"), ("vbox", "container"), ("hbox", "container"),
             ("fixed", "container"), ("grid", "container"), ("side", "container"),
             ("multibox", "container"), ("screen", "container"),
-            ("image", "image"), ("transform", "image"),
+            ("solid", "image"), ("image", "image"), ("transform", "image"),
         ):
             if marker in lowered:
                 return node_type
@@ -2235,7 +2265,7 @@ init python:
         except Exception:
             return None
 
-    def _renforge_scene_text(d):
+    def _renforge_scene_text(d, max_chars):
         tts = getattr(d, "_tts_all", None)
         if callable(tts):
             text = None
@@ -2251,18 +2281,26 @@ init python:
             if text:
                 spoken = str(text).strip()
                 if spoken:
-                    return spoken
+                    return spoken[:max_chars] + ("…" if len(spoken) > max_chars else "")
         raw = getattr(d, "text", None)
         try:
             if isinstance(raw, (list, tuple)):
-                joined = "".join(p for p in raw if isinstance(p, str)).strip()
+                parts = []
+                remaining = max_chars + 1
+                for part in raw:
+                    if isinstance(part, str) and remaining > 0:
+                        parts.append(part[:remaining])
+                        remaining -= len(parts[-1])
+                joined = "".join(parts).strip()
             elif raw is not None:
                 joined = str(raw).strip()
             else:
                 joined = ""
         except Exception:
             joined = ""
-        return joined or None
+        if not joined:
+            return None
+        return joined[:max_chars] + ("…" if len(joined) > max_chars else "")
 
     def _renforge_scene_node(node_id, node_type, layer, screen, bounds, text=None, action=None, enabled=None):
         node = {
@@ -2358,16 +2396,24 @@ init python:
                 node["overflow"] = _renforge_scene_overflow(d)
 
     def _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
-        if depth > _RENFORGE_SCENE_MAX_DEPTH or len(out) >= _RENFORGE_SCENE_MAX_NODES:
-            return
         children = getattr(d, "children", None)
         if not children:
             child = getattr(d, "child", None)
-            if child is not None:
-                _renforge_scene_descend(child, base_x, base_y, layer, screen, zorder, seen, out, counters, depth + 1)
+            if child is None:
+                return
+            if depth >= counters["_max_depth"]:
+                counters["_omitted_max_depth"] += 1
+                return
+            _renforge_scene_descend(child, base_x, base_y, layer, screen, zorder, seen, out, counters, depth + 1)
+            return
+        if depth >= counters["_max_depth"]:
+            counters["_omitted_max_depth"] += len(children)
             return
         offsets = getattr(d, "offsets", None)
         for index, child in enumerate(children):
+            if len(out) >= counters["_max_nodes"]:
+                counters["_omitted_max_nodes"] += 1
+                break
             ox = oy = 0
             if offsets and index < len(offsets):
                 try:
@@ -2377,34 +2423,75 @@ init python:
             _renforge_scene_descend(child, base_x + ox, base_y + oy, layer, screen, zorder, seen, out, counters, depth + 1)
 
     def _renforge_scene_descend(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
-        if depth > _RENFORGE_SCENE_MAX_DEPTH or len(out) >= _RENFORGE_SCENE_MAX_NODES:
+        if len(out) >= counters["_max_nodes"]:
+            counters["_omitted_max_nodes"] += 1
             return
         if d is None or id(d) in seen:
             return
         seen.add(id(d))
-        if _renforge_scene_type(d) == "text":
-            text = _renforge_scene_text(d)
-            if text:
+        node_type = _renforge_scene_type(d)
+        key = (layer, screen or "", node_type)
+        ordinal = counters.get(key, 0)
+        counters[key] = ordinal + 1
+        screen_id = _renforge_scene_string(screen, _RENFORGE_SCENE_MAX_ID_CHARS)
+        if screen_id:
+            node_id = "%s/%s.%s#%d" % (layer, screen_id, node_type, ordinal)
+        else:
+            node_id = "%s/%s#%d" % (layer, node_type, ordinal)
+        type_filter = counters["_flt_types"]
+        eligible = (
+            (node_type.casefold() in type_filter)
+            if type_filter is not None
+            else _renforge_scene_detail_ok(node_type, counters["_detail"])
+        )
+        eligible = eligible and (
+            counters["_flt_layers"] is None or layer in counters["_flt_layers"]
+        )
+        text = None
+        bounds = None
+        if eligible:
+            text = (
+                _renforge_scene_text(d, counters["_max_text_chars"])
+                if node_type == "text"
+                else None
+            )
+            try:
+                aw, ah = _renforge_scene_window()
+                surf = renpy.display.render.render_for_size(d, aw, ah, 0, 0)
+                w = int(getattr(surf, "width", 0) or 0)
+                h = int(getattr(surf, "height", 0) or 0)
+                if w and h:
+                    bounds = (int(base_x), int(base_y), w, h)
+            except Exception:
                 bounds = None
-                try:
-                    aw, ah = _renforge_scene_window()
-                    surf = renpy.display.render.render_for_size(d, aw, ah, 0, 0)
-                    w = int(getattr(surf, "width", 0) or 0)
-                    h = int(getattr(surf, "height", 0) or 0)
-                    if w and h:
-                        bounds = (int(base_x), int(base_y), w, h)
-                except Exception:
-                    bounds = None
-                key = (layer, screen or "")
-                ordinal = counters.get(key, 0)
-                counters[key] = ordinal + 1
-                node_id = ("%s/%s.text#%d" % (layer, screen, ordinal)) if screen else ("%s/text#%d" % (layer, ordinal))
-                node = _renforge_scene_node(node_id, "text", layer, screen, bounds, text=text)
-                node["zorder"] = zorder
-                node["_d"] = d
-                out.append(node)
-            return
+        node = _renforge_scene_node(node_id, node_type, layer, screen, bounds, text=text)
+        node["zorder"] = zorder
+        node["_d"] = d
+        out.append(node)
         _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth)
+
+    def _renforge_scene_unique_ids(nodes, max_text_chars):
+        used = set()
+        for node in nodes:
+            node.setdefault("_raw_type", node.get("type"))
+            node.setdefault("_raw_layer", node.get("layer"))
+            node.setdefault("_raw_screen", node.get("screen"))
+            for key in ("text", "screen", "action", "tag", "layer", "type"):
+                if node.get(key) is not None:
+                    node[key] = _renforge_scene_string(node[key], max_text_chars)
+            base = _renforge_scene_string(
+                node.get("id") or "node",
+                _RENFORGE_SCENE_MAX_ID_CHARS,
+            )
+            candidate = base
+            suffix_number = 2
+            while candidate in used:
+                suffix = "#%d" % suffix_number
+                candidate = base[:max(1, _RENFORGE_SCENE_MAX_ID_CHARS - len(suffix))] + suffix
+                suffix_number += 1
+            node["id"] = candidate
+            used.add(candidate)
+
 
     def _renforge_scene_detail_ok(node_type, detail):
         if detail == "raw":
@@ -2412,6 +2499,14 @@ init python:
         if detail == "layout":
             return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES or node_type == "container"
         return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES
+
+    def _renforge_scene_limit(payload, name, default, minimum):
+        try:
+            requested = int(payload.get(name, default))
+        except Exception:
+            requested = default
+        return min(default, max(minimum, requested))
+
 
     def _renforge_h_scene_tree(payload):
         payload = payload or {}
@@ -2429,17 +2524,43 @@ init python:
         include = payload.get("include")
         include = set(str(x).casefold() for x in include) if include else set()
 
+        max_depth = _renforge_scene_limit(payload, "max_depth", _RENFORGE_SCENE_MAX_DEPTH, 0)
+        max_nodes = _renforge_scene_limit(payload, "max_nodes", _RENFORGE_SCENE_MAX_NODES, 1)
+        max_text_chars = _renforge_scene_limit(
+            payload, "max_text_chars", _RENFORGE_SCENE_MAX_TEXT_CHARS, 16
+        )
         width, height = _renforge_scene_window()
         seen = set()
         nodes = []
-        counters = {}
+        counters = {
+            "_max_depth": max_depth,
+            "_max_nodes": max_nodes,
+            "_max_text_chars": max_text_chars,
+            "_detail": detail,
+            "_flt_layers": flt_layers,
+            "_flt_types": flt_types,
+            "_flt_screen": flt_screen,
+            "_flt_ids": flt_ids,
+            "_omitted_max_depth": 0,
+            "_omitted_max_nodes": 0,
+        }
 
         # Focusable controls first, so the descent skips their widgets.
         try:
-            focusables = _renforge_focusable_elements()
+            focusables = _renforge_focusable_elements(max_nodes + 1, max_text_chars)
         except Exception:
             focusables = []
+        if len(focusables) > max_nodes:
+            counters["_omitted_max_nodes"] += len(focusables) - max_nodes
+            for _focus, element in focusables[:max_nodes]:
+                element["covered"] = None
+                element["clickable"] = None
+                element["coverage_reason"] = "max_nodes"
+            focusables = focusables[:max_nodes]
         for focus, element in focusables:
+            if len(nodes) >= max_nodes:
+                counters["_omitted_max_nodes"] += len(focusables) - len(nodes)
+                break
             widget = getattr(focus, "widget", None)
             if widget is not None:
                 seen.add(id(widget))
@@ -2468,8 +2589,15 @@ init python:
                 ordered = list(layer_map.keys())
             layer_names = [l for l in ordered if l in layer_map] + [l for l in layer_map if l not in ordered]
             layer_counts = {}
+            limit_hit = False
             for layer in layer_names:
+                if limit_hit:
+                    break
                 for sle in layer_map.get(layer, []):
+                    if len(nodes) >= max_nodes:
+                        counters["_omitted_max_nodes"] += 1
+                        limit_hit = True
+                        break
                     d = getattr(sle, "displayable", None)
                     if d is None or id(d) in seen:
                         continue
@@ -2479,32 +2607,38 @@ init python:
                     bounds = _renforge_scene_place(d, width, height, st, at)
                     node_type = _renforge_scene_type(d)
                     tag = getattr(sle, "tag", None)
+                    tag_text = _renforge_scene_string(tag, max_text_chars)
+                    tag_id = _renforge_scene_string(tag, _RENFORGE_SCENE_MAX_ID_CHARS)
                     screen_name = None
-                    if layer == "screens":
-                        sn = getattr(d, "screen_name", None)
-                        if isinstance(sn, (tuple, list)) and sn:
-                            screen_name = str(sn[0])
-                        elif sn:
-                            screen_name = str(sn)
-                        elif tag:
-                            screen_name = str(tag)
+                    sn = getattr(d, "screen_name", None)
+                    if isinstance(sn, (tuple, list)) and sn:
+                        screen_name = str(sn[0])
+                    elif sn:
+                        screen_name = str(sn)
+                    elif layer == "screens" and tag:
+                        screen_name = str(tag)
                     if tag:
-                        node_id = str(tag)
+                        node_id = "%s/%s" % (layer, tag_id)
                     else:
                         idx = layer_counts.get((layer, node_type), 0)
                         layer_counts[(layer, node_type)] = idx + 1
                         node_id = "%s/%s#%d" % (layer, node_type, idx)
-                    text = _renforge_scene_text(d) if node_type == "text" else None
+                    text = (
+                        _renforge_scene_text(d, max_text_chars)
+                        if node_type == "text"
+                        else None
+                    )
                     node = _renforge_scene_node(node_id, node_type, layer, screen_name, bounds, text=text)
                     node["zorder"] = int(getattr(sle, "zorder", 0) or 0)
                     if tag:
-                        node["tag"] = str(tag)
+                        node["tag"] = tag_text
                     node["_d"] = d
                     nodes.append(node)
                     bx = bounds[0] if bounds is not None else 0
                     by = bounds[1] if bounds is not None else 0
                     _renforge_scene_descend_children(d, bx, by, layer, screen_name, node["zorder"], seen, nodes, counters, 0)
 
+        _renforge_scene_unique_ids(nodes, max_text_chars)
         _renforge_scene_finalize(nodes, include)
 
         perceived_by_type = {}
@@ -2516,13 +2650,16 @@ init python:
 
         returned = []
         for n in nodes:
-            if not _renforge_scene_detail_ok(n["type"], detail):
+            raw_type = n.get("_raw_type")
+            raw_layer = n.get("_raw_layer")
+            raw_screen = n.get("_raw_screen")
+            if flt_types is None and not _renforge_scene_detail_ok(raw_type, detail):
                 continue
-            if flt_layers is not None and (n.get("layer") not in flt_layers):
+            if flt_layers is not None and raw_layer not in flt_layers:
                 continue
-            if flt_types is not None and (str(n["type"]).casefold() not in flt_types):
+            if flt_types is not None and str(raw_type).casefold() not in flt_types:
                 continue
-            if flt_screen is not None and (n.get("screen") != flt_screen):
+            if flt_screen is not None and raw_screen != flt_screen:
                 continue
             if flt_ids is not None and (str(n.get("id")) not in flt_ids):
                 continue
@@ -2538,6 +2675,15 @@ init python:
                         for t in perceived_by_type if perceived_by_type[t] - ret_by_type.get(t, 0) > 0}
         omit_by_layer = {l: perceived_by_layer[l] - ret_by_layer.get(l, 0)
                          for l in perceived_by_layer if perceived_by_layer[l] - ret_by_layer.get(l, 0) > 0}
+        for n in nodes:
+            n.pop("_raw_type", None)
+            n.pop("_raw_layer", None)
+            n.pop("_raw_screen", None)
+        omit_by_reason = {}
+        if counters["_omitted_max_depth"]:
+            omit_by_reason["max_depth"] = counters["_omitted_max_depth"]
+        if counters["_omitted_max_nodes"]:
+            omit_by_reason["max_nodes"] = counters["_omitted_max_nodes"]
 
         return {
             "ok": True,
@@ -2546,7 +2692,17 @@ init python:
             "detail": detail,
             "nodes": returned,
             "counts": {"perceived": len(nodes), "returned": len(returned)},
-            "omitted": {"by_type": omit_by_type, "by_layer": omit_by_layer},
+            "omitted": {
+                "by_type": omit_by_type,
+                "by_layer": omit_by_layer,
+                "by_reason": omit_by_reason,
+            },
+            "truncated": bool(omit_by_reason),
+            "limits": {
+                "max_depth": max_depth,
+                "max_nodes": max_nodes,
+                "max_text_chars": max_text_chars,
+            },
         }
 
     _RENFORGE_HANDLERS = {

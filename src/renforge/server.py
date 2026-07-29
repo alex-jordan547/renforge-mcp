@@ -1152,7 +1152,9 @@ def _register_tools(app: Any) -> None:
         format: str = "json",
         save_as: str = "",
         diff_against: str = "",
+        max_output_depth: int = 6,
         max_items: int = 50,
+        max_output_bytes: int = 65_536,
     ) -> dict:
         """Perceive the whole scene as structured data (logical coordinates).
 
@@ -1180,6 +1182,8 @@ def _register_tools(app: Any) -> None:
                 "save_as": save_as,
                 "diff_against": diff_against,
                 "max_items": max_items,
+                "max_output_depth": max_output_depth,
+                "max_output_bytes": max_output_bytes,
             },
             project_root=project_path,
             fn=live.scene_tree,
@@ -1195,6 +1199,8 @@ def _register_tools(app: Any) -> None:
                 "save_as": save_as or None,
                 "diff_against": diff_against or None,
                 "max_items": max_items,
+                "max_output_depth": max_output_depth,
+                "max_output_bytes": max_output_bytes,
             },
         )
 

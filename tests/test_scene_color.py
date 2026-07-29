@@ -62,3 +62,15 @@ def test_region_contrast_uniform_region_is_safe() -> None:
     assert result["ratio"] == 1.0
     assert result["aa"] is False
     assert result["aaa"] is False
+
+
+def test_pixel_sampling_is_bounded(monkeypatch) -> None:
+    from renforge import scene_color
+
+    monkeypatch.setattr(scene_color, "_MAX_SAMPLES", 16)
+    square = image_module.new("RGBA", (100, 100), (20, 40, 60, 255))
+    wide = image_module.new("RGBA", (1000, 1), (20, 40, 60, 255))
+
+    assert len(scene_color._pixels(square, None)) <= 16
+    assert len(scene_color._pixels(wide, None)) <= 16
+    assert scene_color._to_rgba(wide) is wide

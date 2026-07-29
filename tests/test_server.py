@@ -1497,6 +1497,9 @@ def test_scene_tree_tool_dispatches_options(tmp_path, monkeypatch) -> None:
     assert calls["detail"] == "raw"
     assert calls["include"] == ["color", "style"]
     assert calls["format"] == "wireframe"
+    assert calls["max_output_depth"] == 6
+    assert calls["max_items"] == 50
+    assert calls["max_output_bytes"] == 65_536
 
 
 def test_measure_tool_dispatches_action_and_targets(tmp_path, monkeypatch) -> None:
