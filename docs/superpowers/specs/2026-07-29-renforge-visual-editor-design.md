@@ -41,7 +41,7 @@ While edit mode is active, the overlay owns pointer and editor keyboard input. O
 
 ### Selection
 
-The editor uses an internal runtime graph rather than the public `scene_tree` IDs or the focus list. Hovering chooses the topmost painted inspectable node under the pointer, then the deepest child when paint order is equal. Selection respects clipping and transformed geometry and excludes every RenForge overlay node.
+The editor uses an internal runtime graph rather than the public `scene_tree` IDs or the focus list. Hovering chooses the topmost painted inspectable node under the pointer, then the deepest child when paint order is equal. V1 hit testing uses each node's transformed painted quad or bounds intersected with its effective clip; it does not perform per-pixel alpha testing. Selection excludes every RenForge overlay node.
 
 Clicking selects the current candidate. Repeated clicks within a four-logical-pixel radius cycle deterministically through the painted stack and then its parents. Moving outside that radius, changing the screen tree, or leaving edit mode resets the cycle.
 
@@ -197,7 +197,7 @@ Before a full implementation plan is written, a bounded technical spike must run
 The spike must demonstrate:
 
 1. extraction of parentage, paint order, transformed geometry, and clipping for the selected screen-displayable roster;
-2. hit testing that selects non-focusable nodes and excludes the RenForge overlay;
+2. hit testing against transformed quads/bounds and effective clips, including non-focusable nodes and excluding the RenForge overlay, with per-pixel alpha explicitly out of scope;
 3. a reversible outer runtime override that does not mutate shared styles;
 4. target rebinding after SL2 recreates a displayable;
 5. preservation of existing transforms and animation state for every rostered adapter;

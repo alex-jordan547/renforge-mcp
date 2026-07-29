@@ -40,6 +40,10 @@ docs/*
 !docs/superpowers/
 !docs/superpowers/specs/
 !docs/superpowers/specs/*.md
+!docs/superpowers/plans/
+!docs/superpowers/plans/*.md
+!docs/superpowers/spikes/
+!docs/superpowers/spikes/*.md
 MCP_AGENT_IMPROVEMENTS.md
 
 # Ren'Py / RenForge runtime artifacts
