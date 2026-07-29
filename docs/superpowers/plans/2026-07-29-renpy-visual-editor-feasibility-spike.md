@@ -63,14 +63,17 @@ The final JSON has this exact top-level shape:
 class SpikeReport(TypedDict):
     schema_version: int              # always 1
     completed: bool
-    sdk_expected: str                # "8.5.3"
-    sdk_actual: str
+    sdk_requested: str               # "8.5.3"
+    sdk_manifest_version: str        # e.g. "8.5.3.26051504"
+    sdk_manifest_triplet: list[int]  # [8, 5, 3]
+    sdk_runtime_version: str         # live renpy.version_only
+    sdk_runtime_triplet: list[int]   # live list(renpy.version_tuple[:3])
     project: str
     phases: list[SpikeReply]
     adapters: list[dict[str, object]]
     retained_roster: list[str]
     removed_roster: list[str]
-    decision: str                    # "proceed", "narrow", or "blocked"
+    decision: str                    # "proceed", "narrow", "blocked", or "inconclusive"
     inconclusive_reasons: list[str]
 ```
 
@@ -162,6 +165,14 @@ Normal launch behavior and signatures remain backward compatible.
 Start `editor_spike.rpy` with a fixture that is not reachable from the demo game's normal flow:
 
 ```renpy
+image _renforge_spike_animated = Animation(Solid("#4568aaff", xysize=(160, 100)), 0.4, Solid("#68a8e8ff", xysize=(160, 100)), 0.4)
+
+transform _renforge_spike_guard_motion:
+    xoffset 0
+    linear 0.5 xoffset 20
+    linear 0.5 xoffset 0
+    repeat
+
 screen _renforge_editor_spike_fixture():
     layer "overlay"
     zorder 900
@@ -171,10 +182,11 @@ screen _renforge_editor_spike_fixture():
         xfill True
         yfill True
 
-        add _renforge_spike_animated_displayable():
+        add "_renforge_spike_animated":
             id "spike_add"
             xpos 120
             ypos 110
+            at Transform(xoffset=11, yoffset=-7, alpha=0.85)
 
         imagebutton:
             id "spike_imagebutton"
@@ -207,6 +219,37 @@ screen _renforge_editor_spike_fixture():
             xpos 150
             ypos 470
 
+        imagebutton:
+            id "spike_guard_imagebutton"
+            xpos 760
+            ypos 110
+            idle Solid("#7048d8ff", xysize=(120, 70))
+            hover Solid("#8468e8ff", xysize=(120, 70))
+            action NullAction()
+            at _renforge_spike_guard_motion
+
+        frame:
+            id "spike_guard_frame"
+            xpos 760
+            ypos 220
+            xsize 150
+            ysize 80
+            at _renforge_spike_guard_motion
+            text "Guard frame"
+
+        textbutton "Guard button":
+            id "spike_guard_textbutton"
+            xpos 760
+            ypos 330
+            at _renforge_spike_guard_motion
+            action NullAction()
+
+        text "Guard text":
+            id "spike_guard_text"
+            xpos 760
+            ypos 440
+            at _renforge_spike_guard_motion
+
         fixed:
             id "spike_clip_parent"
             xpos 600
@@ -234,7 +277,6 @@ Register handlers only after the main bridge has initialized:
 ```renpy
 init 1000 python:
     import sys
-    import time
     import types
 
     if "_renforge_runtime" not in sys.modules:
@@ -248,44 +290,12 @@ init 1000 python:
             wrappers={},
             history=[],
             redo=[],
-            animation_samples=[],
-            animated_child=None,
-            existing_transform=None,
         )
 
     def _renforge_spike_state():
         # Mutable displayables, wrappers, and histories live outside store and rollback.
         return sys.modules["_renforge_runtime"].editor_spike
 
-    class _RenforgeSpikeAnimated(renpy.Displayable):
-        def __init__(self):
-            super(_RenforgeSpikeAnimated, self).__init__()
-
-        def render(self, width, height, st, at):
-            state = _renforge_spike_state()
-            state.animation_samples.append({
-                "runtime_object_id": id(self),
-                "st": float(st),
-                "at": float(at),
-                "sample_time": float(time.monotonic()),
-            })
-            color = "#4568aaff" if int(st * 4.0) % 2 == 0 else "#68a8e8ff"
-            rendered = renpy.render(Solid(color, xysize=(160, 100)), width, height, st, at)
-            renpy.redraw(self, 0.05)
-            return rendered
-
-    def _renforge_spike_animated_displayable():
-        state = _renforge_spike_state()
-        if state.animated_child is None:
-            state.animated_child = _RenforgeSpikeAnimated()
-        if state.existing_transform is None:
-            state.existing_transform = Transform(
-                child=state.animated_child,
-                xoffset=11,
-                yoffset=-7,
-                alpha=0.85,
-            )
-        return state.existing_transform
 
     def _renforge_spike_reply(phase, evidence=None, errors=None):
         state = _renforge_spike_state()
@@ -303,12 +313,20 @@ init 1000 python:
         state.wrappers.clear()
         state.history[:] = []
         state.redo[:] = []
-        state.animation_samples[:] = []
         renpy.show_screen("_renforge_editor_spike_fixture")
         renpy.show_screen("_renforge_editor_spike_chrome")
         state.generation += 1
         renpy.restart_interaction()
-        return _renforge_spike_reply("prepare", {"requested": True})
+        return _renforge_spike_reply(
+            "prepare",
+            {
+                "fixture_active": True,
+                "chrome_active": True,
+                "literal_add_profile": True,
+                "runtime_version": str(renpy.version_only),
+                "runtime_triplet": [int(part) for part in renpy.version_tuple[:3]],
+            },
+        )
 
     _RENFORGE_HANDLERS["editor_spike_prepare"] = _renforge_spike_prepare
 ```
@@ -329,9 +347,10 @@ from typing import TypedDict
 
 from renforge.bridge.launcher import launch_with_bridge
 from renforge.project import RenpyProject
-from renforge.sdk import get_or_install_sdk
+from renforge.sdk import _sdk_internal_version, _version_tuple, get_or_install_sdk
 
 EXPECTED_SDK = "8.5.3"
+EXPECTED_SDK_TRIPLET = (8, 5, 3)
 PHASE_COMMANDS = (
     "editor_spike_prepare",
     "editor_spike_graph",
@@ -354,6 +373,13 @@ def _wait_for_screen(client, name: str, timeout: float = 10.0) -> None:
 def run_spike(project_root: Path, output: Path, *, display: str = "auto") -> dict:
     project = RenpyProject(project_root.resolve())
     sdk = get_or_install_sdk(EXPECTED_SDK, project_root=project.root)
+    manifest_version = _sdk_internal_version(sdk.root)
+    manifest_triplet = _version_tuple(manifest_version or "")
+    if manifest_triplet != EXPECTED_SDK_TRIPLET:
+        raise RuntimeError(
+            f"visual-editor spike requires exact SDK 8.5.3, found {manifest_version!r}"
+        )
+
     phases: list[dict] = []
     with launch_with_bridge(
         sdk,
@@ -364,20 +390,25 @@ def run_spike(project_root: Path, output: Path, *, display: str = "auto") -> dic
         savedir="temporary",
         persistent="empty",
     ) as session:
-        phases.append(session.client.request("editor_spike_prepare"))
+        prepare = session.client.request("editor_spike_prepare")
+        phases.append(prepare)
         _wait_for_screen(session.client, "_renforge_editor_spike_fixture")
         # Tasks 2–4 append the remaining commands and report reduction.
+
     report = {
         "schema_version": 1,
         "completed": False,
-        "sdk_expected": EXPECTED_SDK,
-        "sdk_actual": sdk.version,
+        "sdk_requested": EXPECTED_SDK,
+        "sdk_manifest_version": manifest_version,
+        "sdk_manifest_triplet": list(manifest_triplet),
+        "sdk_runtime_version": prepare["evidence"]["runtime_version"],
+        "sdk_runtime_triplet": prepare["evidence"]["runtime_triplet"],
         "project": str(project.root),
         "phases": phases,
         "adapters": [],
         "retained_roster": [],
         "removed_roster": [],
-        "decision": "blocked",
+        "decision": "inconclusive",
         "inconclusive_reasons": ["graph and adapter phases not yet run"],
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -405,10 +436,10 @@ python scripts/run_visual_editor_spike.py \
 Expected evidence:
 
 ```text
-sdk_expected=8.5.3 sdk_actual=8.5.3
-phase=prepare ok=true
+sdk_requested=8.5.3 sdk_manifest_version=8.5.3.* sdk_runtime_triplet=[8,5,3]
+phase=prepare ok=true runtime_version=8.5.3.*
 screen=_renforge_editor_spike_fixture active=true
-completed=false decision=blocked
+completed=false decision=inconclusive
 ```
 
 The command intentionally exits `2` because later evidence is absent. After teardown, verify through the runner's cleanup report that `game/renforge_bridge.rpy` and `game/zzrenforge_editor_spike.rpy` no longer exist.
@@ -444,13 +475,27 @@ _SPIKE_WIDGET_IDS = (
     "spike_frame",
     "spike_textbutton",
     "spike_text",
+    "spike_guard_imagebutton",
+    "spike_guard_frame",
+    "spike_guard_textbutton",
+    "spike_guard_text",
     "spike_clip_parent",
     "spike_clipped_child",
+    "spike_chrome",
 )
 
 
+_SPIKE_WIDGET_SCREENS = {
+    "spike_chrome": "_renforge_editor_spike_chrome",
+}
+
+
 def _renforge_spike_widget(widget_id):
-    return renpy.get_widget("_renforge_editor_spike_fixture", widget_id)
+    screen_name = _SPIKE_WIDGET_SCREENS.get(
+        widget_id,
+        "_renforge_editor_spike_fixture",
+    )
+    return renpy.get_widget(screen_name, widget_id)
 
 
 def _renforge_spike_location(displayable):
@@ -460,7 +505,7 @@ def _renforge_spike_location(displayable):
     return None
 ```
 
-Build a graph from the active screen's displayable tree. Child discovery must record the exact seam used (`children`, `child`, or `visit()`) and avoid duplicates by object identity. Each node record contains:
+Build one graph by traversing both active screen roots, `_renforge_editor_spike_fixture` and `_renforge_editor_spike_chrome`. Child discovery must record the exact seam used (`children`, `child`, or `visit()`) and avoid duplicates by object identity. Each node record contains:
 
 ```python
 {
@@ -531,10 +576,10 @@ non_focusable_add_center       -> first hit is spike_add
 non_focusable_text_center      -> first hit is spike_text
 clipped_child_inside_clip      -> first hit is spike_clipped_child
 clipped_child_outside_clip     -> spike_clipped_child absent
-chrome_center                  -> spike_chrome absent from candidates
+chrome_center                  -> spike_chrome exists in nodes with overlay=true and is absent from hit candidates
 ```
 
-The phase passes only when all fixture widgets have parent and paint-order records, transformed quads are non-null, effective clipping excludes the clipped child's overflow, and the five hit cases match.
+The phase passes only when all fixture widgets, including `spike_chrome`, have parent and paint-order records; transformed quads are non-null; effective clipping excludes the clipped child's overflow; the chrome node is explicitly present with `overlay is True`; and the five hit cases match. Absence of the chrome node is a graph failure, not evidence of exclusion.
 
 - [ ] **Step 4: Capture graph evidence with a real rendered frame**
 
@@ -587,7 +632,7 @@ git commit -m "spike: probe Ren'Py editor graph seams"
 Use this exact candidate configuration; measured results may remove entries but may not silently alter their semantics:
 
 ```python
-_SPIKE_ADAPTERS = {
+SPIKE_ADAPTERS = {
     "screen_add_image": {
         "widget_id": "spike_add",
         "operations": ["move", "scale_resize", "rotate"],
@@ -601,6 +646,8 @@ _SPIKE_ADAPTERS = {
         "minimum_size": [16, 16],
         "requires_animation_continuity": True,
         "existing_transform": {"xoffset": 11, "yoffset": -7, "alpha": 0.85},
+        "requires_existing_transform_preservation": True,
+        "capability_guard": None,
     },
     "screen_imagebutton": {
         "widget_id": "spike_imagebutton",
@@ -609,6 +656,9 @@ _SPIKE_ADAPTERS = {
         "resize_delta": [40, 24],
         "fixed_edge": "top_left",
         "minimum_size": [44, 44],
+        "requires_animation_continuity": False,
+        "requires_existing_transform_preservation": False,
+        "capability_guard": "spike_guard_imagebutton",
     },
     "screen_frame": {
         "widget_id": "spike_frame",
@@ -617,6 +667,9 @@ _SPIKE_ADAPTERS = {
         "resize_delta": [40, 24],
         "fixed_edge": "top_left",
         "minimum_size": [32, 32],
+        "requires_animation_continuity": False,
+        "requires_existing_transform_preservation": False,
+        "capability_guard": "spike_guard_frame",
     },
     "screen_textbutton": {
         "widget_id": "spike_textbutton",
@@ -625,16 +678,26 @@ _SPIKE_ADAPTERS = {
         "resize_delta": [40, 24],
         "fixed_edge": "top_left",
         "minimum_size": [44, 44],
+        "requires_animation_continuity": False,
+        "requires_existing_transform_preservation": False,
+        "capability_guard": "spike_guard_textbutton",
     },
     "screen_text": {
         "widget_id": "spike_text",
         "operations": ["move"],
         "move_delta": [37, 23],
+        "requires_animation_continuity": False,
+        "requires_existing_transform_preservation": False,
+        "capability_guard": "spike_guard_text",
     },
 }
 ```
 
 The `screen_add_image` behavior sheet fixes corner resize to a locked aspect ratio around the visual center. Container/button resize fixes the top-left edge and changes allocation; rotation is unavailable for those adapters.
+
+`SPIKE_ADAPTERS` and a pure `expected_behavior_sheet(name)` builder in `src/renforge/editor_spike.py` are the only semantic source of truth. The driver sends the chosen config with each bridge request. The bridge reports measured evidence but may not rewrite operations, pivots, fixed edges, units, minimum sizes, aspect policies, transform order, or unsupported combinations.
+
+The four `spike_guard_*` fixtures carry an active ATL transform and are not adapter candidates. Before a corresponding static adapter can pass, its measured capability guard must classify the transformed variant as measure-only. The spike must not attempt to wrap or manipulate a guard fixture.
 
 - [ ] **Step 2: Implement an evidence-first child replacement seam**
 
@@ -684,7 +747,7 @@ For allocation-resize adapters, use the runtime property seam proven by inspecti
 {
     "adapter": name,
     "operation": operation,
-    "pass": bool,
+    "passed": bool,
     "replacement_seam": seam_or_none,
     "before": {
         "runtime_object_id": int,
@@ -701,39 +764,74 @@ For allocation-resize adapters, use the runtime property seam proven by inspecti
         "location": location,
         "animation": {"st": float, "at": float, "sample_time": float} or None,
     },
+    "existing_transform": {
+        "runtime_object_id": int,
+        "xoffset": 11,
+        "yoffset": -7,
+        "alpha": 0.85,
+    } or None,
     "expected_geometry": geometry,
     "style_preserved": bool,
     "animation_continuous": bool,
     "visual_delta_within_one_pixel": bool,
     "existing_transform_preserved": bool,
+    "capability_guard_passed": bool,
+    "guard_evidence": {
+        "target_widget_id": str,
+        "reason": "dynamic_at",
+        "capabilities": {"move": False, "resize": False, "rotate": False},
+        "wrapper_present": False,
+        "operation_command_count": 0,
+        "history_command_count": 0,
+        "screenshot": screenshot_descriptor,
+        "passed": True,
+    } or None,
+    "screenshot_refs": [baseline_path, result_path],
+    "animation_probe": {
+        "seam": exact_runtime_seam_or_none,
+        "samples": list[dict],
+        "rendered_phase_samples": list[dict],
+        "control_recreation_samples": list[dict],
+    } or None,
     "errors": list[str],
 }
 ```
 
-A pass requires unchanged style identity, expected geometry within one logical pixel, unchanged source location on the wrapped child, and a named reversible replacement seam. `screen_add_image` additionally requires the editor wrapper to compose outside the stable pre-existing transform without changing its identity or `xoffset=11`, `yoffset=-7`, and `alpha=0.85`. Its instrumented child must keep monotonically advancing `st`/`at` samples across apply, undo, redo, restart/rebind, and reset; neither screen reevaluation nor the editor wrapper may create a replacement child or restart its animation clock.
+A pass requires unchanged style identity, expected geometry within one logical pixel, unchanged source location on the wrapped child, a named reversible replacement seam, and existing screenshot files for baseline and result. `screen_add_image` is the literal source profile `add "_renforge_spike_animated"` with an inline literal `Transform`. Its editor wrapper must compose outside that real pre-existing transform without changing the current transform object's identity or its `xoffset=11`, `yoffset=-7`, and `alpha=0.85` during a live interaction. Animation continuity must be measured from Ren'Py's actual `Animation` displayable through an exact runtime timing seam plus rendered color-phase samples; the fixture must not use a custom displayable, cached factory, or editor-owned animation clock. If no exact timing seam can be established, the adapter fails rather than inferring continuity from object identity.
+
+For `screen_imagebutton`, `screen_frame`, `screen_textbutton`, and `screen_text`, a pass additionally requires a complete `guard_evidence` record proving the configured active-transform target was classified measure-only, all edit capabilities were false for reason `dynamic_at`, no wrapper/operation/history command touched it, and a screenshot captured the guard. `capability_guard_passed` is derived from that record, never accepted as standalone evidence.
 
 - [ ] **Step 4: Exercise undo, redo, interaction restart, and rebind**
 
-`editor_spike_history` runs this exact state sequence for each candidate adapter:
+`editor_spike_history` runs two explicit sequences for each candidate adapter:
 
 ```text
-baseline -> apply -> undo -> redo -> renpy.restart_interaction()
--> resolve new widget instance -> reapply working transform -> reset
+continuity: baseline -> apply -> undo -> redo -> renpy.restart_interaction()
+            -> reapply working transform -> reset
+recreation: capture RuntimeInstanceKey -> hide fixture screen -> restart interaction
+            -> show fixture screen -> restart interaction -> resolve without widget id
+            -> reapply working transform -> reset
 ```
 
-Record object IDs before and after restart. A rebind passes only when:
+The continuity sequence must prove that editor operations and a normal interaction restart do not restart the literal image animation or replace the current inline source transform unnecessarily.
 
-- the post-restart widget is a different runtime object or the report explicitly proves Ren'Py reused it;
-- the target is rediscovered from fixture ownership and source-location metadata rather than the stale object reference;
+The recreation sequence must force a new screen root and a changed target owner-chain object identity; a reused leaf image object does not waive this requirement. Rebinding receives only the pre-recreation `RuntimeInstanceKey` (screen name, source location, statement kind, ancestry/source path, invocation ordinal, and generation), not `widget_id`. Fixture IDs may be used only afterward as a test oracle. A rebind passes only when:
+
+- the screen root and at least one target owner-chain object ID differ after forced hide/show;
+- `rebind_evidence["lookup_fields"]` contains no widget ID and `rebind_evidence["used_widget_id"] is False`;
+- the target is rediscovered from screen ownership, source location, statement kind, ancestry/source path, and generation rather than a stale object reference;
 - the working transform reapplies to expected geometry;
 - reset restores baseline geometry and removes the outer wrapper;
-- the original style identity remains unchanged throughout.
-- for `screen_add_image`, the stable animated child and pre-existing transform retain their object identities and parameters while the editor wrapper is applied and removed;
-- for `screen_add_image`, animation samples continue monotonically across restart/rebind or the report records an adapter failure; a new child clock silently starting at zero is not preservation.
+- the original style identity remains unchanged throughout;
+- for `screen_add_image`, the current inline transform retains its identity and parameters during the continuity sequence; after forced recreation, the new source transform has the same parameters and the editor wrapper composes in the same order;
+- for `screen_add_image`, the forced-recreation animation samples match an unedited control recreation's phase policy, while the continuity sequence itself never restarts the animation;
+- for every non-add adapter, the corresponding `spike_guard_*` target remains unwrapped, receives no operation or history command, reports measure-only throughout both sequences, and yields the same structured `guard_evidence` at adapter, operation, and history levels.
 
 - [ ] **Step 5: Run the complete adapter experiment**
 
 Extend the driver to invoke every declared operation, then the history phase, taking screenshots after baseline, apply, restart/rebind, and reset:
+Each RPC reply is correlated by adapter and operation and stored in an in-memory matrix. After all calls complete, the driver emits exactly one aggregate `apply` phase and one aggregate `history` phase; raw per-RPC envelopes never become top-level phases.
+
 
 ```bash
 python scripts/run_visual_editor_spike.py \
@@ -779,65 +877,428 @@ git commit -m "spike: verify reversible Ren'Py editor adapters"
 
 - [ ] **Step 1: Write failing report-schema and roster-decision tests**
 
-Create `tests/test_editor_spike.py` with one complete adapter factory and four observable contracts:
+Create `tests/test_editor_spike.py` with a complete adapter factory and negative contracts for every promotion invariant:
 
 ```python
+import pytest
+
 from renforge.editor_spike import decide_roster, validate_report
 
 
-def _behavior() -> dict:
-    return {
-        "editable_properties": ["xpos", "ypos"],
-        "units": "logical_pixels",
-        "drag_handle_meaning": "move",
-        "fixed_edge_or_pivot": "visual_center",
-        "anchor_compensation": [0, 0],
-        "aspect_ratio_policy": "locked",
+PHASES = ("prepare", "graph", "apply", "history", "finish")
+GEOMETRY = {"quad": [[0, 0], [10, 0], [10, 10], [0, 10]], "aabb": [0, 0, 10, 10]}
+SCREENSHOT = {"path": "screenshots/probe.png", "sha256": "a" * 64, "width": 1280, "height": 720}
+CANDIDATES = {
+    "screen_add_image": {
+        "operations": ["move", "scale_resize", "rotate"],
         "minimum_size": [16, 16],
-        "rotation_pivot": "visual_center",
-        "rotate_pad": False,
-        "transform_anchor": True,
-        "transform_composition_order": "outer_after_existing",
+        "fixed_edge_or_pivot": "visual_center",
+        "aspect_ratio_policy": "locked",
+        "guard": None,
+    },
+    "screen_imagebutton": {
+        "operations": ["move", "allocation_resize"],
+        "minimum_size": [44, 44],
+        "fixed_edge_or_pivot": "top_left",
+        "aspect_ratio_policy": "free",
+        "guard": "spike_guard_imagebutton",
+    },
+    "screen_frame": {
+        "operations": ["move", "allocation_resize"],
+        "minimum_size": [32, 32],
+        "fixed_edge_or_pivot": "top_left",
+        "aspect_ratio_policy": "free",
+        "guard": "spike_guard_frame",
+    },
+    "screen_textbutton": {
+        "operations": ["move", "allocation_resize"],
+        "minimum_size": [44, 44],
+        "fixed_edge_or_pivot": "top_left",
+        "aspect_ratio_policy": "free",
+        "guard": "spike_guard_textbutton",
+    },
+    "screen_text": {
+        "operations": ["move"],
+        "minimum_size": None,
+        "fixed_edge_or_pivot": "not_applicable",
+        "aspect_ratio_policy": "not_applicable",
+        "guard": "spike_guard_text",
+    },
+}
+EXPECTED_WIDGETS = (
+    "spike_root",
+    "spike_add",
+    "spike_imagebutton",
+    "spike_frame",
+    "spike_textbutton",
+    "spike_text",
+    "spike_guard_imagebutton",
+    "spike_guard_frame",
+    "spike_guard_textbutton",
+    "spike_guard_text",
+    "spike_clip_parent",
+    "spike_clipped_child",
+    "spike_chrome",
+)
+
+
+def _node(widget_id: str, index: int) -> dict:
+    return {
+        "key": f"fixture:{widget_id}",
+        "widget_id": widget_id,
+        "runtime_object_id": index + 100,
+        "parent_key": None if widget_id == "spike_root" else "fixture:spike_root",
+        "paint_index": index,
+        "depth": 0 if widget_id == "spike_root" else 1,
+        "type": "FixtureDisplayable",
+        "location": ["game/renforge_editor_spike.rpy", index + 1],
+        "quad": GEOMETRY["quad"],
+        "aabb": {"x": 0, "y": 0, "width": 10, "height": 10},
+        "effective_clip": None,
+        "child_seam": "children",
+        "overlay": widget_id == "spike_chrome",
+    }
+
+
+def _behavior(name: str) -> dict:
+    config = CANDIDATES[name]
+    is_add = name == "screen_add_image"
+    is_allocation = "allocation_resize" in config["operations"]
+    return {
+        "editable_properties": (
+            ["xpos", "ypos", "zoom", "rotate"]
+            if is_add
+            else ["xpos", "ypos", "xsize", "ysize"]
+            if is_allocation
+            else ["xpos", "ypos"]
+        ),
+        "units": {
+            "position": "logical_pixels",
+            "resize": "scale" if is_add else "logical_pixels" if is_allocation else "not_applicable",
+            "rotation": "degrees" if is_add else "not_applicable",
+        },
+        "drag_handle_meaning": config["operations"],
+        "fixed_edge_or_pivot": config["fixed_edge_or_pivot"],
+        "anchor_compensation": [0, 0],
+        "aspect_ratio_policy": config["aspect_ratio_policy"],
+        "minimum_size": config["minimum_size"],
+        "rotation_pivot": "visual_center" if is_add else None,
+        "rotate_pad": False if is_add else None,
+        "transform_anchor": True if is_add else None,
+        "transform_composition_order": "outer_after_existing" if is_add else "outer_runtime_wrapper",
         "expected_hit_geometry": "transformed_quad_intersect_clip",
-        "unsupported_combinations": ["dynamic_at"],
+        "unsupported_combinations": (
+            ["dynamic_at", "non_literal_displayable"]
+            if is_add
+            else ["active_transform", "active_animation"]
+        ),
+    }
+
+
+def _guard(name: str) -> dict | None:
+    target = CANDIDATES[name]["guard"]
+    if target is None:
+        return None
+    return {
+        "target_widget_id": target,
+        "reason": "dynamic_at",
+        "capabilities": {"move": False, "resize": False, "rotate": False},
+        "wrapper_present": False,
+        "operation_command_count": 0,
+        "history_command_count": 0,
+        "screenshot": SCREENSHOT,
+        "passed": True,
+    }
+
+
+def _operation(name: str, operation: str, passed: bool, guard: dict | None) -> dict:
+    state = {
+        "runtime_object_id": 11,
+        "style_object_id": 12,
+        "geometry": GEOMETRY,
+        "location": ["game/renforge_editor_spike.rpy", 18],
+        "animation": {"seam": "renpy.animation.timebase", "value": 0.25},
+    }
+    is_add = name == "screen_add_image"
+    return {
+        "passed": passed,
+        "adapter": name,
+        "operation": operation,
+        "before": state,
+        "after": {**state, "runtime_object_id": 13, "wrapped_child_id": 11},
+        "existing_transform": {
+            "runtime_object_id": 11,
+            "xoffset": 11,
+            "yoffset": -7,
+            "alpha": 0.85,
+        } if is_add else None,
+        "expected_geometry": GEOMETRY,
+        "replacement_seam": "children",
+        "style_preserved": passed,
+        "animation_continuous": passed if is_add else False,
+        "visual_delta_within_one_pixel": passed,
+        "existing_transform_preserved": passed if is_add else False,
+        "capability_guard_passed": guard is None or guard["passed"],
+        "guard_evidence": guard,
+        "screenshot_refs": [SCREENSHOT, SCREENSHOT],
+        "animation_probe": {
+            "seam": "renpy.animation.timebase",
+            "samples": [{"before": 0.25, "after": 0.30}],
+            "rendered_phase_samples": [{"color": "#4568aaff"}],
+            "control_recreation_samples": [{"color": "#4568aaff"}],
+        } if is_add else None,
+        "errors": [] if passed else ["measured operation failure"],
     }
 
 
 def _adapter(name: str, passed: bool) -> dict:
+    config = CANDIDATES[name]
+    guard = _guard(name)
+    operations = list(config["operations"])
+    operation_evidence = {
+        operation: _operation(name, operation, passed, guard)
+        for operation in operations
+    }
+    is_add = name == "screen_add_image"
     return {
         "name": name,
         "pass": passed,
-        "operations": ["move"],
+        "operations": operations,
+        "operation_evidence": operation_evidence,
         "replacement_seam": "children",
-        "geometry_evidence": {"within_one_pixel": True},
-        "style_preserved": True,
-        "animation_continuous": True,
-        "existing_transform_preserved": True,
-        "rebind_evidence": {"passed": True},
-        "behavior_sheet": _behavior(),
+        "geometry_evidence": {"within_one_pixel": passed, "samples": [GEOMETRY]},
+        "style_preserved": passed,
+        "animation_continuous": passed if is_add else False,
+        "existing_transform_preserved": passed if is_add else False,
+        "capability_guard_passed": guard is None or guard["passed"],
+        "guard_evidence": guard,
+        "rebind_evidence": {
+            "passed": passed,
+            "continuity": {"passed": passed, "animation_restarted": False},
+            "recreation": {
+                "passed": passed,
+                "root_id_changed": passed,
+                "owner_chain_changed": passed,
+                "lookup_fields": [
+                    "screen_name",
+                    "location",
+                    "statement_kind",
+                    "source_path",
+                    "invocation_ordinal",
+                    "generation",
+                ],
+                "used_widget_id": False,
+                "geometry_within_one_pixel": passed,
+            },
+            "guard_evidence": guard,
+            "errors": [] if passed else ["measured rebind failure"],
+        },
+        "behavior_sheet": _behavior(name),
         "errors": [] if passed else ["measured failure"],
     }
 
 
+def _phase_evidence(phase: str, adapters: list[dict]) -> dict:
+    if phase == "prepare":
+        return {
+            "fixture_active": True,
+            "chrome_active": True,
+            "literal_add_profile": True,
+            "runtime_version": "8.5.3.26051504",
+            "runtime_triplet": [8, 5, 3],
+        }
+    if phase == "graph":
+        return {
+            "nodes": [_node(widget_id, index) for index, widget_id in enumerate(EXPECTED_WIDGETS)],
+            "hit_cases": {
+                "non_focusable_add_center": ["fixture:spike_add"],
+                "non_focusable_text_center": ["fixture:spike_text"],
+                "clipped_child_inside_clip": ["fixture:spike_clipped_child"],
+                "clipped_child_outside_clip": [],
+                "chrome_center": [],
+            },
+            "geometry_seam": "render-tree",
+            "clip_seam": "render-tree",
+            "evidence_complete": True,
+            "capability_pass": True,
+            "capability_errors": [],
+            "screenshot": SCREENSHOT,
+        }
+    if phase == "apply":
+        return {
+            "operations": {
+                adapter["name"]: adapter["operation_evidence"]
+                for adapter in adapters
+            },
+            "screenshot_manifest": [SCREENSHOT],
+        }
+    if phase == "history":
+        return {
+            "adapters": {
+                adapter["name"]: adapter["rebind_evidence"]
+                for adapter in adapters
+            },
+            "screenshot_manifest": [SCREENSHOT],
+        }
+    return {"fixture_active": False, "chrome_active": False, "cleanup_requested": True}
+
+
+def _report(adapter: dict) -> dict:
+    adapters_by_name = {
+        name: _adapter(name, True)
+        for name in CANDIDATES
+    }
+    adapters_by_name[adapter["name"]] = adapter
+    adapters = [adapters_by_name[name] for name in CANDIDATES]
+    return {
+        "schema_version": 1,
+        "completed": False,
+        "sdk_requested": "8.5.3",
+        "sdk_manifest_version": "8.5.3.26051504",
+        "sdk_manifest_triplet": [8, 5, 3],
+        "sdk_runtime_version": "8.5.3.26051504",
+        "sdk_runtime_triplet": [8, 5, 3],
+        "project": "/tmp/demo_game",
+        "phases": [
+            {
+                "phase": name,
+                "ok": True,
+                "generation": 1,
+                "evidence": _phase_evidence(name, adapters),
+                "errors": [],
+            }
+            for name in PHASES
+        ],
+        "adapters": adapters,
+        "retained_roster": [],
+        "removed_roster": [],
+        "decision": "inconclusive",
+        "inconclusive_reasons": [],
+    }
+
+def test_validate_report_rejects_failed_phase() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["phases"][1]["ok"] = False
+    report["phases"][1]["errors"] = ["graph probe incomplete"]
+    assert any("graph phase is not ok" in error for error in validate_report(report))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("sdk_manifest_triplet", [8, 5, 4]),
+        ("sdk_runtime_triplet", [8, 5, 4]),
+    ),
+)
+def test_validate_report_rejects_sdk_mismatch(field: str, value: list[int]) -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report[field] = value
+    assert any(field in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_incomplete_raw_operation() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["adapters"][0]["operation_evidence"]["move"] = {"passed": True}
+    assert any("operation_evidence.move.before" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_absent_chrome_node() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    graph = report["phases"][1]["evidence"]
+    graph["nodes"] = [node for node in graph["nodes"] if node["widget_id"] != "spike_chrome"]
+    assert any("spike_chrome" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_incomplete_apply_matrix() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["phases"][2]["evidence"]["operations"] = {}
+    assert any("apply.operations" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_missing_candidate_adapter() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["adapters"].pop()
+    assert any("adapter names" in error for error in validate_report(report))
+
+
 def test_validate_report_rejects_missing_behavior_field() -> None:
-    report = {"phases": [{"phase": name} for name in ("prepare", "graph", "apply", "history", "finish")], "adapters": [_adapter("screen_add_image", True)]}
+    report = _report(_adapter("screen_add_image", True))
     del report["adapters"][0]["behavior_sheet"]["rotation_pivot"]
-    assert validate_report(report) == ["screen_add_image.behavior_sheet.rotation_pivot is required"]
+    assert "screen_add_image.behavior_sheet.rotation_pivot is required" in validate_report(report)
 
 
-def test_validate_report_rejects_missing_animation_evidence() -> None:
-    report = {"phases": [{"phase": name} for name in ("prepare", "graph", "apply", "history", "finish")], "adapters": [_adapter("screen_add_image", True)]}
-    del report["adapters"][0]["animation_continuous"]
-    assert validate_report(report) == ["screen_add_image.animation_continuous is required"]
+@pytest.mark.parametrize(
+    "field",
+    ("style_preserved", "animation_continuous", "existing_transform_preserved"),
+)
+def test_validate_report_rejects_false_boolean_invariant(field: str) -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["adapters"][0][field] = False
+    assert any(field in error for error in validate_report(report))
+
+def test_validate_report_rejects_false_capability_guard() -> None:
+    report = _report(_adapter("screen_frame", True))
+    frame = next(item for item in report["adapters"] if item["name"] == "screen_frame")
+    frame["capability_guard_passed"] = False
+    assert any("capability_guard_passed" in error for error in validate_report(report))
 
 
-def test_decide_roster_returns_narrow_for_mixed_results() -> None:
-    retained, removed, decision = decide_roster([_adapter("a", True), _adapter("b", False)])
-    assert (retained, removed, decision) == (["a"], ["b"], "narrow")
+def test_validate_report_rejects_unsafe_guard_evidence() -> None:
+    report = _report(_adapter("screen_frame", True))
+    frame = next(item for item in report["adapters"] if item["name"] == "screen_frame")
+    frame["guard_evidence"]["wrapper_present"] = True
+    assert any("guard_evidence.wrapper_present" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_changed_behavior_semantics() -> None:
+    report = _report(_adapter("screen_frame", True))
+    frame = next(item for item in report["adapters"] if item["name"] == "screen_frame")
+    frame["behavior_sheet"]["fixed_edge_or_pivot"] = "visual_center"
+    assert any("behavior_sheet.fixed_edge_or_pivot" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_false_geometry_invariant() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["adapters"][0]["geometry_evidence"]["within_one_pixel"] = False
+    assert any("within_one_pixel" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_false_rebind_invariant() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    report["adapters"][0]["rebind_evidence"]["passed"] = False
+    assert any("rebind_evidence.passed" in error for error in validate_report(report))
+
+
+def test_validate_report_rejects_declared_operation_without_evidence() -> None:
+    report = _report(_adapter("screen_add_image", True))
+    del report["adapters"][0]["operation_evidence"]["move"]
+    assert any("operation_evidence.move" in error for error in validate_report(report))
+
+
+def test_decide_roster_refuses_invalid_passing_adapter() -> None:
+    adapter = _adapter("screen_add_image", True)
+    adapter["geometry_evidence"]["within_one_pixel"] = False
+    with pytest.raises(ValueError, match="within_one_pixel"):
+        decide_roster([adapter])
+
+
+def test_decide_roster_returns_narrow_for_valid_mixed_results() -> None:
+    retained, removed, decision = decide_roster(
+        [_adapter("screen_add_image", True), _adapter("screen_frame", False)]
+    )
+    assert (retained, removed, decision) == (
+        ["screen_add_image"],
+        ["screen_frame"],
+        "narrow",
+    )
 
 
 def test_decide_roster_returns_blocked_when_none_pass() -> None:
-    assert decide_roster([_adapter("a", False)]) == ([], ["a"], "blocked")
+    assert decide_roster([_adapter("screen_text", False)]) == (
+        [],
+        ["screen_text"],
+        "blocked",
+    )
 ```
 
 Run:
@@ -850,24 +1311,116 @@ Expected: FAIL because the reducer functions do not exist.
 
 - [ ] **Step 2: Implement strict report reduction**
 
-Add `validate_report(report) -> list[str]`, `decide_roster(report) -> tuple[list[str], list[str], str]`, and `render_markdown(report) -> str`.
-
-Validation must reject as inconclusive:
+Add these exact interfaces:
 
 ```python
+def validate_report(report: dict) -> list[str]: ...
+def decide_roster(adapters: list[dict]) -> tuple[list[str], list[str], str]: ...
+def render_markdown(report: dict) -> str: ...
+```
+
+Validation must require:
+
+```python
+required_top_level_fields = {
+    "schema_version",
+    "completed",
+    "sdk_requested",
+    "sdk_manifest_version",
+    "sdk_manifest_triplet",
+    "sdk_runtime_version",
+    "sdk_runtime_triplet",
+    "project",
+    "phases",
+    "adapters",
+    "retained_roster",
+    "removed_roster",
+    "decision",
+    "inconclusive_reasons",
+}
 required_phase_names = {"prepare", "graph", "apply", "history", "finish"}
+required_phase_fields = {"phase", "ok", "generation", "evidence", "errors"}
+required_phase_evidence_fields = {
+    "prepare": {
+        "fixture_active",
+        "chrome_active",
+        "literal_add_profile",
+        "runtime_version",
+        "runtime_triplet",
+    },
+    "graph": {
+        "nodes",
+        "hit_cases",
+        "geometry_seam",
+        "clip_seam",
+        "evidence_complete",
+        "capability_pass",
+        "capability_errors",
+        "screenshot",
+    },
+    "apply": {"operations", "screenshot_manifest"},
+    "history": {"adapters", "screenshot_manifest"},
+    "finish": {"fixture_active", "chrome_active", "cleanup_requested"},
+}
 required_adapter_fields = {
     "name",
     "pass",
     "operations",
+    "operation_evidence",
     "replacement_seam",
     "geometry_evidence",
     "style_preserved",
     "animation_continuous",
+    "existing_transform_preserved",
+    "capability_guard_passed",
+    "guard_evidence",
     "rebind_evidence",
     "behavior_sheet",
-    "existing_transform_preserved",
     "errors",
+}
+required_operation_fields = {
+    "passed",
+    "adapter",
+    "operation",
+    "before",
+    "after",
+    "existing_transform",
+    "expected_geometry",
+    "replacement_seam",
+    "style_preserved",
+    "animation_continuous",
+    "visual_delta_within_one_pixel",
+    "existing_transform_preserved",
+    "capability_guard_passed",
+    "guard_evidence",
+    "screenshot_refs",
+    "animation_probe",
+    "errors",
+}
+required_runtime_state_fields = {
+    "runtime_object_id",
+    "style_object_id",
+    "geometry",
+    "location",
+    "animation",
+}
+required_screenshot_fields = {"path", "sha256", "width", "height"}
+required_guard_fields = {
+    "target_widget_id",
+    "reason",
+    "capabilities",
+    "wrapper_present",
+    "operation_command_count",
+    "history_command_count",
+    "screenshot",
+    "passed",
+}
+expected_adapter_names = {
+    "screen_add_image",
+    "screen_imagebutton",
+    "screen_frame",
+    "screen_textbutton",
+    "screen_text",
 }
 required_behavior_fields = {
     "editable_properties",
@@ -886,13 +1439,90 @@ required_behavior_fields = {
 }
 ```
 
-Roster reduction is mechanical:
+Require every top-level field, `schema_version == 1`, a non-empty project path, `sdk_requested == "8.5.3"`, and both manifest/live version triplets exactly equal to `[8, 5, 3]`. `sdk_manifest_version` must come from `<sdk.root>/renpy/vc_version.py`; `sdk_runtime_version` and `sdk_runtime_triplet` must come from the live bridge's `renpy.version_only` and `renpy.version_tuple`, and must equal the corresponding prepare evidence. Never derive an actual-version field from `RenpySdk.version`, which is only the requested resolver label. Before reduction, the runner must verify every screenshot path exists under the output directory, recompute its SHA-256, decode its dimensions, and compare those values with the descriptor.
+
+Require exactly one aggregate envelope for every required phase, every `required_phase_fields` key, the phase-specific evidence fields above, `phase["ok"] is True`, and an empty phase-level `errors` list. Adapter failures belong inside conclusive apply/history evidence and do not make those phase envelopes fail. The phase invariants are:
+
+- `prepare`: fixture and chrome active, literal add profile true, and live runtime version evidence matching the top level;
+- `graph`: `evidence_complete is True`, all fixture nodes present, `spike_chrome` present with `overlay is True`, all node records structurally complete, all five hit cases present, and `capability_pass` a measured boolean;
+- `apply`: one `operations[adapter][operation]` matrix covering the fixed five adapters and their immutable configured operations exactly once;
+- `history`: one `adapters[adapter]` matrix covering the fixed five adapters exactly once with continuity and forced-recreation evidence;
+- `finish`: fixture and chrome inactive with cleanup requested.
+
+Require the report's adapter-name set to equal `expected_adapter_names` exactly before reading any per-adapter declarations. Coverage is never derived from the report itself. A missing or extra adapter makes the report inconclusive.
+
+`graph["evidence_complete"]` means the probe ran every documented introspection path and captured a result; it does not mean the capability exists. When `capability_pass is False`, require structured `capability_errors` naming the missing seam and every affected adapter, then require each affected adapter to fail. That remains a conclusive `narrow` or `blocked` result. Missing fields, unexecuted probes, handler failures, or unverifiable observations set `evidence_complete` false and make the report inconclusive.
+
+The runner calls `editor_spike_apply` and `editor_spike_history` as many times as needed but must aggregate their correlated raw replies into those single `apply` and `history` phase envelopes. It must not append one top-level phase per RPC.
+
+For each raw operation, require every `required_operation_fields` key, complete `before`/`after` runtime states, non-null source locations, `wrapped_child_id` after replacement, complete expected/observed geometry, a non-null replacement seam, at least two complete screenshot descriptors, and deterministic error lists. The apply matrix must equal each adapter's `operation_evidence` exactly; the history matrix must equal each adapter's `rebind_evidence` exactly. Reject missing, duplicate, extra, or mismatched adapter/operation keys.
+
+For each rebind record, require complete `continuity` and `recreation` records. A passing recreation requires `root_id_changed`, `owner_chain_changed`, and `geometry_within_one_pixel` true; `used_widget_id` false; and non-empty lookup fields containing screen name, source location, statement kind, source ancestry/path, invocation ordinal, and generation.
+
+Iterate required field names in sorted order so errors are deterministic. For every declared operation, require `operation_evidence[operation]`. For an adapter with `pass is True`, require all of the following:
 
 ```python
-retained = sorted(item["name"] for item in adapters if item["pass"])
-removed = sorted(item["name"] for item in adapters if not item["pass"])
+item["errors"] == []
+item["replacement_seam"] is not None
+item["geometry_evidence"]["within_one_pixel"] is True
+item["style_preserved"] is True
+item["rebind_evidence"]["passed"] is True
+item["rebind_evidence"]["continuity"]["passed"] is True
+item["rebind_evidence"]["recreation"]["passed"] is True
+all(
+    raw["passed"] is True
+    and raw["errors"] == []
+    and raw["replacement_seam"] is not None
+    and raw["style_preserved"] is True
+    and raw["visual_delta_within_one_pixel"] is True
+    and len(raw["screenshot_refs"]) >= 2
+    for raw in item["operation_evidence"].values()
+)
+```
+
+Additionally require `animation_continuous is True`, `existing_transform_preserved is True`, and a complete non-null `animation_probe` with an exact seam and runtime/rendered/control samples for every `screen_add_image` operation. A failed adapter must contain at least one measured error and at least one false raw operation or rebind invariant; a summary error string alone cannot manufacture a failure.
+
+For every adapter, require `operations == SPIKE_ADAPTERS[name]["operations"]` and `behavior_sheet == expected_behavior_sheet(name)` by deep value comparison. Emit a field-specific error for the first mismatch; field presence alone is insufficient.
+
+For every non-add candidate adapter, require `capability_guard_passed is True` and the same complete `guard_evidence` object at adapter, raw-operation, and rebind/history levels. Validate every `required_guard_fields` key, the exact configured guard target, reason `dynamic_at`, all three capabilities false, `wrapper_present is False`, both command counts zero, a verified screenshot descriptor, and `passed is True`. The static fixture may set animation and existing-transform invariants to not-applicable values, but the transformed guard fixture must have no wrapper, operation evidence, or history command.
+
+When `completed is False`, require `decision == "inconclusive"`. When `completed is True`, require empty `inconclusive_reasons`, exact retained/removed arrays derived from the adapter results, and the matching `proceed`/`narrow`/`blocked` decision.
+
+`decide_roster(adapters)` must call the same adapter validator defensively and raise `ValueError` on any schema or invariant error. Only validated adapters reach the mechanical reduction:
+
+```python
+errors = validate_adapters(adapters)
+if errors:
+    raise ValueError("; ".join(errors))
+retained = sorted(item["name"] for item in adapters if item["pass"] is True)
+removed = sorted(item["name"] for item in adapters if item["pass"] is False)
 decision = "proceed" if not removed else "narrow" if retained else "blocked"
 ```
+
+The runner validates the evidence report before roster reduction, fills the final status, then validates the completed report a second time:
+
+```python
+errors = validate_report(report)
+if errors:
+    report["completed"] = False
+    report["decision"] = "inconclusive"
+    report["inconclusive_reasons"] = errors
+else:
+    retained, removed, decision = decide_roster(report["adapters"])
+    report["retained_roster"] = retained
+    report["removed_roster"] = removed
+    report["decision"] = decision
+    report["completed"] = True
+    final_errors = validate_report(report)
+    if final_errors:
+        report["completed"] = False
+        report["retained_roster"] = []
+        report["removed_roster"] = []
+        report["decision"] = "inconclusive"
+        report["inconclusive_reasons"] = final_errors
+```
+
+No code path may call `decide_roster` after the first `validate_report` returns an error.
 
 - [ ] **Step 3: Run focused reducer tests, then the final spike**
 

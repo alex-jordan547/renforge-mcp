@@ -200,7 +200,7 @@ The spike must demonstrate:
 2. hit testing against transformed quads/bounds and effective clips, including non-focusable nodes and excluding the RenForge overlay, with per-pixel alpha explicitly out of scope;
 3. a reversible outer runtime override that does not mutate shared styles;
 4. target rebinding after SL2 recreates a displayable;
-5. preservation of existing transforms and animation state for every rostered adapter;
+5. preservation of existing transforms and animation state for every adapter variant that permits them, plus a measured capability guard that makes variants with unsupported transform or animation state measure-only;
 6. stable Undo/Redo application across screen interaction restarts;
 7. measured geometry matching the rendered result within one logical pixel.
 
@@ -233,10 +233,10 @@ The initial V1 roster is intentionally narrow. These are the only adapters the f
 
 | Concrete adapter | Move | Resize | Rotate | Persistent source semantics |
 | --- | --- | --- | --- | --- |
-| Screen `add` with a literal image-like displayable, direct/literal placement, and no dynamic `at` | Yes | Yes: image scale-resize | Yes | Direct position/offset plus an editor-owned inline literal `Transform` |
-| Screen `imagebutton` with literal states and direct/literal placement | Yes | Yes: allocation resize | No | Direct position/offset and literal `xsize`/`ysize` |
-| Screen `frame`, `button`, or `textbutton` with direct/literal placement | Yes | Yes: allocation resize | No | Direct position/offset and literal `xsize`/`ysize` |
-| Screen `text` with direct/literal placement | Yes | No | No | Direct position/offset only |
+| Screen `add` with a literal image-like displayable, direct/literal placement, no dynamic `at`, and the spike-approved existing-transform/intrinsic-animation profile | Yes | Yes: image scale-resize | Yes | Direct position/offset plus an editor-owned inline literal `Transform` |
+| Screen `imagebutton` with literal static states, direct/literal placement, and no active transform or animation | Yes | Yes: allocation resize | No | Direct position/offset and literal `xsize`/`ysize` |
+| Screen `frame`, `button`, or `textbutton` with static content, direct/literal placement, and no active transform or animation | Yes | Yes: allocation resize | No | Direct position/offset and literal `xsize`/`ysize` |
+| Screen `text` with static literal content, direct/literal placement, and no active transform or animation | Yes | No | No | Direct position/offset only |
 | Scene image tag | No | No | No | Measure-only until the separate scene provenance spike passes |
 
 For each rostered adapter, the general source rules are:
@@ -246,7 +246,7 @@ For each rostered adapter, the general source rules are:
 | Literal integer/`absolute` position with no conflicting provenance | Rewrite the same position family | Use the adapter's declared resize semantics | Use the adapter's declared transform semantics |
 | Fractional `xpos`/`ypos`, `xalign`/`yalign`, or resolved local style base | Preserve the base and add/update integer offsets | Disabled | Disabled |
 | Existing inline literal `Transform` | Patch supported position fields without replacing unrelated fields | Patch only adapter-approved literal scale/size fields | Patch literal rotation, pivot, `rotate_pad`, and anchor fields |
-| Dynamic `at`, ATL, expression, unresolved property bag, shared inherited style, automatic-layout child, or adapter absent from the roster | Measure-only | Measure-only | Measure-only |
+| Dynamic `at`, ATL, expression, unresolved property bag, shared inherited style, automatic-layout child, adapter absent from the roster, or transform/animation state outside that adapter's proven profile | Measure-only | Measure-only | Measure-only |
 
 Every concrete adapter specifies:
 
@@ -428,7 +428,7 @@ The feature is complete when:
 - the dedicated coordinator channel, runtime graph, and source/runtime identities work independently of public MCP scene IDs;
 - locked targets remain selectable and measurable while only eligible operations expose handles;
 - eligible elements can be manipulated only through tested capability adapters;
-- runtime overrides preserve styles, transforms, clipping, and animation state for the proven roster;
+- runtime overrides preserve styles, transforms, clipping, and animation state for adapter variants that admit them, while measured capability guards lock every unsupported transform/animation variant;
 - all requested guides, measurements, snapping, opacity, and attached-information behaviors work without the overlay selecting or blocking itself;
 - no source changes occur before Save code;
 - shadow-project validation passes before publication;
