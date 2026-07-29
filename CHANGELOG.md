@@ -3,6 +3,31 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## [0.7.0] - 2026-07-22
+
+### Added
+
+- **Scene perception suite for non-multimodal agents.** `renforge_scene_tree`
+  reports the whole frame as structured, logical-coordinate nodes — every layer
+  displayable, focusable control, and (unlike `renforge_list_ui_elements`)
+  non-focusable text — each with `id`, `type`, `bounds`, `center`, `zorder`,
+  and `screen`, plus an `omitted` completeness hint so an agent can widen its
+  view precisely. `detail` (`semantic`/`layout`/`raw`), `layers`, `types`,
+  `screen`, and `ids` scope the result; `include=["color","style","overflow"]`
+  adds composited pixel colour, declared style, and best-effort text overflow;
+  `format="wireframe"` renders an ASCII map; `save_as`/`diff_against` persist
+  and structurally diff scene snapshots under `<project>/.renforge/scenes/`.
+- `renforge_measure` computes pixel relationships between scene nodes (by `id`)
+  or literal bounds without vision: `align`, `gap`, `distribute`, `center`,
+  `overlap`, `fit`, and WCAG `contrast`. Returns logical-pixel deltas and, when
+  a `tolerance` is given, a `pass` verdict.
+
+### Fixed
+
+- The `test` extra now installs `httpx2>=2.0.0`, the client backend required by
+  current Starlette `TestClient`, instead of falling back to deprecated `httpx`
+  compatibility and emitting `StarletteDeprecationWarning`.
+
 ## [0.6.6] - 2026-07-24
 
 ### Fixed

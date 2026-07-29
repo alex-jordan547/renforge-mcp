@@ -62,6 +62,8 @@ EXPECTED_TOOLS = {
     "renforge_get_displayable_bounds",
     "renforge_position_element",
     "renforge_diff_screenshots",
+    "renforge_scene_tree",
+    "renforge_measure",
     "renforge_autopilot",
     # assets / translation / build / docs
     "renforge_assets",
@@ -1460,3 +1462,78 @@ def test_screenshot_can_overlay_a_measurement_grid(tmp_path, monkeypatch) -> Non
     annotated = image_module.open(io.BytesIO(base64.b64decode(image_blocks[0].data)))
     assert annotated.size == (200, 120)
     assert annotated.convert("RGB").getpixel((50, 60)) != (0, 0, 128)
+
+
+def test_scene_tree_tool_dispatches_options(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_scene_tree(project_path, **kwargs):
+        calls.update(project_path=project_path, **kwargs)
+        return {"ok": True, "nodes": [], "counts": {"perceived": 0, "returned": 0}}
+
+    monkeypatch.setattr(live, "scene_tree", fake_scene_tree)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_scene_tree",
+                {
+                    "project_path": str(tmp_path),
+                    "detail": "raw",
+                    "include": ["color", "style"],
+                    "format": "wireframe",
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is True
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["detail"] == "raw"
+    assert calls["include"] == ["color", "style"]
+    assert calls["format"] == "wireframe"
+
+
+def test_measure_tool_dispatches_action_and_targets(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_measure(project_path, *, action, targets, within=None, tolerance=None):
+        calls.update(
+            project_path=project_path,
+            action=action,
+            targets=targets,
+            within=within,
+            tolerance=tolerance,
+        )
+        return {"ok": True, "action": action, "result": {}}
+
+    monkeypatch.setattr(live, "measure", fake_measure)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_measure",
+                {
+                    "project_path": str(tmp_path),
+                    "action": "align",
+                    "targets": ["a", "b"],
+                    "tolerance": 2,
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is True
+    assert calls["action"] == "align"
+    assert calls["targets"] == ["a", "b"]
+    assert calls["tolerance"] == 2

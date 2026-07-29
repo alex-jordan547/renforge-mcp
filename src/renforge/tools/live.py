@@ -40,6 +40,9 @@ from ..state_compact import (
     normalize_state_profile,
     validate_limit_args,
 )
+from ..scene_diff import diff_scenes
+from ..scene_measure import measure_geometry
+from ..scene_wireframe import render_wireframe
 
 _SESSIONS: dict[str, BridgeSession] = {}
 _LAUNCH_RESPONSE_WAIT_SECONDS = 20.0
@@ -1561,6 +1564,234 @@ def run_scenario(
     return report
 
 
+# --- Scene perception: full-scene tree, measurement, wireframe, diff -------
+
+
+def _scene_snapshot_dir(project_path: str) -> Path:
+    directory = Path(project_path).expanduser().resolve() / ".renforge" / "scenes"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _scene_snapshot_name(name: str) -> str:
+    safe = "".join(ch for ch in str(name) if ch.isalnum() or ch in ("-", "_"))
+    return safe or "scene"
+
+
+def _save_scene_snapshot(project_path: str, name: str, reply: dict) -> str:
+    path = _scene_snapshot_dir(project_path) / (_scene_snapshot_name(name) + ".json")
+    snapshot = {
+        "window": reply.get("window"),
+        "coordinate_space": reply.get("coordinate_space"),
+        "nodes": reply.get("nodes") or [],
+    }
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    return str(path)
+
+
+def _load_scene_snapshot(project_path: str, name: str) -> dict | None:
+    path = _scene_snapshot_dir(project_path) / (_scene_snapshot_name(name) + ".json")
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _clamp_box(box: dict, frame_width: int, frame_height: int) -> dict:
+    x = max(0, min(int(box["x"]), frame_width - 1))
+    y = max(0, min(int(box["y"]), frame_height - 1))
+    w = max(1, min(int(box["width"]), frame_width - x))
+    h = max(1, min(int(box["height"]), frame_height - y))
+    return {"x": x, "y": y, "width": w, "height": h}
+
+
+def _frame_and_scale(client: BridgeClient, window: dict):
+    """Capture the live frame and the logical->screenshot scale factors."""
+    import io
+
+    from PIL import Image
+
+    png = client.screenshot(0, 0)
+    image = Image.open(io.BytesIO(png)).convert("RGBA")
+    frame_width, frame_height = image.size
+    logical_width = (window or {}).get("width") or frame_width
+    logical_height = (window or {}).get("height") or frame_height
+    scale_x = frame_width / logical_width if logical_width else 1.0
+    scale_y = frame_height / logical_height if logical_height else 1.0
+    return image, frame_width, frame_height, scale_x, scale_y
+
+
+def _logical_box_to_frame(bounds: dict, scale_x: float, scale_y: float, fw: int, fh: int) -> dict:
+    return _clamp_box(
+        {
+            "x": bounds["x"] * scale_x,
+            "y": bounds["y"] * scale_y,
+            "width": bounds["width"] * scale_x,
+            "height": bounds["height"] * scale_y,
+        },
+        fw,
+        fh,
+    )
+
+
+def _attach_colors(client: BridgeClient, nodes: list[dict], window: dict) -> None:
+    from .. import scene_color
+
+    try:
+        image, fw, fh, sx, sy = _frame_and_scale(client, window)
+    except Exception:
+        return
+    for node in nodes:
+        bounds = node.get("bounds")
+        if not bounds:
+            continue
+        try:
+            node["color"] = scene_color.region_color(image, _logical_box_to_frame(bounds, sx, sy, fw, fh))
+        except Exception:
+            pass
+
+
+def scene_tree(
+    project_path: str,
+    *,
+    detail: str | None = None,
+    layers: list[str] | None = None,
+    types: list[str] | None = None,
+    screen: str | None = None,
+    ids: list[str] | None = None,
+    include: list[str] | None = None,
+    format: str = "json",
+    save_as: str | None = None,
+    diff_against: str | None = None,
+    max_depth: int | None = None,
+    max_items: int | None = None,
+    max_output_bytes: int | None = None,
+) -> dict:
+    """Perceive the whole scene: every layer displayable and focusable control.
+
+    Returns logical-coordinate nodes with an ``omitted`` completeness hint.
+    ``include=["color"]`` samples composited pixels; ``format="wireframe"`` adds
+    an ASCII map; ``save_as`` persists a snapshot and ``diff_against`` diffs the
+    live scene against a saved one.
+    """
+    include_list = [str(x).lower() for x in (include or [])]
+
+    def _handler(client: BridgeClient) -> dict:
+        reply = client.scene_tree(
+            detail=detail, layers=layers, types=types, screen=screen, ids=ids, include=include
+        )
+        if not reply.get("ok", True):
+            return reply
+        nodes = reply.get("nodes") or []
+        window = reply.get("window") or {}
+        if "color" in include_list and nodes:
+            _attach_colors(client, nodes, window)
+        if save_as:
+            reply["saved_as"] = _save_scene_snapshot(project_path, save_as, reply)
+        if diff_against:
+            before = _load_scene_snapshot(project_path, diff_against)
+            if before is None:
+                reply["diff_error"] = "no saved scene snapshot %r" % diff_against
+            else:
+                diff = diff_scenes(before, {"nodes": nodes})
+                diff["against"] = diff_against
+                reply["diff"] = diff
+        if format == "wireframe":
+            try:
+                reply["wireframe"] = render_wireframe(nodes, window)
+            except Exception as exc:
+                reply["wireframe_error"] = "%s: %s" % (type(exc).__name__, exc)
+        limit_kwargs = {k: v for k, v in (("max_depth", max_depth), ("max_items", max_items), ("max_output_bytes", max_output_bytes)) if v is not None}
+        limits = validate_limit_args(**limit_kwargs)
+        if isinstance(limits, dict):
+            return limits
+        _md, max_nodes, _mob = limits
+        if len(nodes) > max_nodes:
+            reply["nodes"] = nodes[:max_nodes]
+            reply["truncated"] = True
+            reply.setdefault("counts", {})["returned_after_limit"] = max_nodes
+        else:
+            reply["truncated"] = False
+        return reply
+
+    return _with_client(project_path, _handler)
+
+
+def _bounds_of(target, id_map: dict) -> tuple[dict | None, dict | None]:
+    if isinstance(target, str):
+        bounds = id_map.get(target)
+        if not bounds:
+            return None, {"ok": False, "error": "target id not found or unmeasurable: %s" % target}
+        return bounds, None
+    if isinstance(target, dict) and all(k in target for k in ("x", "y", "width", "height")):
+        return {k: target[k] for k in ("x", "y", "width", "height")}, None
+    return None, {"ok": False, "error": "invalid target: %r" % (target,)}
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    value = value.lstrip("#")
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def _measure_contrast(client: BridgeClient, resolved: list[dict], window: dict, tolerance) -> dict:
+    from .. import scene_color
+
+    if len(resolved) not in (1, 2):
+        return {"ok": False, "error": "contrast requires 1 or 2 targets"}
+    try:
+        image, fw, fh, sx, sy = _frame_and_scale(client, window)
+    except Exception as exc:
+        return {"ok": False, "error": "could not capture frame: %s" % exc}
+    if len(resolved) == 1:
+        result = scene_color.region_contrast(image, _logical_box_to_frame(resolved[0], sx, sy, fw, fh))
+    else:
+        c1 = scene_color.dominant_color(image, _logical_box_to_frame(resolved[0], sx, sy, fw, fh))
+        c2 = scene_color.dominant_color(image, _logical_box_to_frame(resolved[1], sx, sy, fw, fh))
+        ratio = round(scene_color.contrast_ratio(_hex_to_rgb(c1), _hex_to_rgb(c2)), 2)
+        result = {"ratio": ratio, "fg": c1, "bg": c2, "aa": ratio >= 4.5, "aaa": ratio >= 7.0}
+    out = {"ok": True, "action": "contrast", "space": "logical", "result": result}
+    if tolerance is not None:
+        out["pass"] = float(result.get("ratio", 0)) >= float(tolerance)
+    return out
+
+
+def measure(project_path: str, *, action: str, targets: list, within=None, tolerance=None) -> dict:
+    """Measure pixel relationships between scene nodes (ids) or literal bounds.
+
+    Actions: align, gap, distribute, center, overlap, fit, contrast. Returns
+    deltas and, when ``tolerance`` is given, a ``pass`` verdict.
+    """
+    def _handler(client: BridgeClient) -> dict:
+        tree = client.scene_tree(detail="raw")
+        if not tree.get("ok", True):
+            return tree
+        window = tree.get("window") or {}
+        id_map = {n.get("id"): n.get("bounds") for n in (tree.get("nodes") or [])}
+        resolved: list[dict] = []
+        for target in (targets or []):
+            bounds, err = _bounds_of(target, id_map)
+            if err:
+                return err
+            resolved.append(bounds)
+        within_bounds = None
+        if within is not None:
+            within_bounds, werr = _bounds_of(within, id_map)
+            if werr:
+                return werr
+        if str(action) == "contrast":
+            return _measure_contrast(client, resolved, window, tolerance)
+        try:
+            return measure_geometry(str(action), resolved, within=within_bounds, tolerance=tolerance)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+
+    return _with_client(project_path, _handler)
+
+
 __all__ = [
     "launch_game",
     "stop_game",
@@ -1588,4 +1819,6 @@ __all__ = [
     "screenshot_png",
     "run_autopilot",
     "run_scenario",
+    "scene_tree",
+    "measure",
 ]

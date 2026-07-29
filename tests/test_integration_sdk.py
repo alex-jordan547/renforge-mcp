@@ -656,3 +656,59 @@ def test_live_imagebutton_idle_hover_pipeline(sdk, demo_copy: Path) -> None:
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors
         assert not errors.get("events"), errors
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_perceives_layers_text_and_measures(sdk, demo_copy: Path) -> None:
+    """Prove full-scene perception on a real engine: non-focusable layer images
+    and dialogue text get real logical bounds, and measure/wireframe run on them.
+    """
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        what = ""
+        for _ in range(8):
+            what = client.eval_expr(
+                "str((getattr(renpy.get_screen('say'), 'scope', None) or {}).get('what') or '')"
+            )
+            if what:
+                break
+            client.advance()
+            time.sleep(1.0)
+        assert what, "no dialogue text appeared"
+
+        scene = client.scene_tree(include=["style"])
+        assert scene["ok"] is True
+        assert scene["window"]["width"] > 0
+        assert scene["coordinate_space"] == "logical"
+        assert "omitted" in scene
+        nodes = scene["nodes"]
+
+        # A non-focusable layer image (e.g. bg) with a real rendered rectangle.
+        images = [n for n in nodes if n["type"] == "image" and n["bounds_available"]]
+        assert images, "no image node with bounds perceived"
+
+        # Dialogue text is NOT a focusable control, yet it is perceived with
+        # bounds and its declared style colour.
+        texts = [n for n in nodes if n["type"] == "text" and n.get("text")]
+        assert texts, "no text node perceived"
+        say_text = next((n for n in texts if n.get("screen") == "say"), texts[0])
+        assert say_text["bounds"]["width"] > 0
+        assert say_text.get("style", {}).get("color")
+
+        # measure: quick-menu buttons live on one row, so their top edges align.
+        buttons = [n["id"] for n in nodes if n["type"] == "button"]
+        if len(buttons) >= 2:
+            aligned = live.measure(str(demo_copy), action="align", targets=buttons[:2], tolerance=2)
+            assert aligned["ok"] is True
+            assert aligned["result"]["top"] == 0
+
+        # wireframe format renders an ASCII map with a legend.
+        wire = live.scene_tree(str(demo_copy), format="wireframe")
+        assert "wireframe" in wire and "Legend" in wire["wireframe"]
+
+        errors = live.get_errors(str(demo_copy))
+        assert errors.get("ok") is True, errors

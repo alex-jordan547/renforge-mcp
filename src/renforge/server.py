@@ -1141,6 +1141,102 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
+    def renforge_scene_tree(
+        project_path: str,
+        detail: str = "semantic",
+        layers: list[str] | None = None,
+        types: list[str] | None = None,
+        screen: str = "",
+        ids: list[str] | None = None,
+        include: list[str] | None = None,
+        format: str = "json",
+        save_as: str = "",
+        diff_against: str = "",
+        max_items: int = 50,
+    ) -> dict:
+        """Perceive the whole scene as structured data (logical coordinates).
+
+        Unlike `renforge_list_ui_elements` (focusables only), this reports every
+        layer displayable, focusable control, and text block with `id`, `type`,
+        `bounds`, `center`, `zorder` and `screen`. Every reply carries an
+        `omitted` completeness hint. `detail` is `semantic` (default), `layout`
+        or `raw`; `layers`/`types`/`screen`/`ids` scope the result.
+        `include=["color","style","overflow"]` opts into composited colour,
+        declared style, and best-effort text overflow. `format="wireframe"` adds
+        an ASCII map. `save_as` persists a snapshot under `.renforge/scenes/`;
+        `diff_against` diffs the live scene against a saved snapshot.
+        """
+        return _log_tool_call(
+            name="renforge_scene_tree",
+            params={
+                "project_path": project_path,
+                "detail": detail,
+                "layers": layers,
+                "types": types,
+                "screen": screen,
+                "ids": ids,
+                "include": include,
+                "format": format,
+                "save_as": save_as,
+                "diff_against": diff_against,
+                "max_items": max_items,
+            },
+            project_root=project_path,
+            fn=live.scene_tree,
+            args=(project_path,),
+            kwargs={
+                "detail": detail or None,
+                "layers": layers or None,
+                "types": types or None,
+                "screen": screen or None,
+                "ids": ids or None,
+                "include": include or None,
+                "format": format or "json",
+                "save_as": save_as or None,
+                "diff_against": diff_against or None,
+                "max_items": max_items,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_measure(
+        project_path: str,
+        action: str,
+        targets: list[Any],
+        within: Any = None,
+        tolerance: float | None = None,
+    ) -> dict:
+        """Measure pixel relationships between scene nodes, without eyes.
+
+        `action` is one of `align`, `gap`, `distribute`, `center`, `overlap`,
+        `fit`, `contrast`. Each target (and `within`) is a `renforge_scene_tree`
+        node `id` (string, resolved live) or a literal bounds object
+        `{x,y,width,height}`. Returns actionable deltas in logical pixels; when
+        `tolerance` is given, adds a `pass` verdict. `contrast` samples the live
+        frame and reports a WCAG ratio (one target = its internal fg/bg, two
+        targets = between the two elements).
+        """
+        return _log_tool_call(
+            name="renforge_measure",
+            params={
+                "project_path": project_path,
+                "action": action,
+                "targets": targets,
+                "within": within,
+                "tolerance": tolerance,
+            },
+            project_root=project_path,
+            fn=live.measure,
+            args=(project_path,),
+            kwargs={
+                "action": action,
+                "targets": targets,
+                "within": within,
+                "tolerance": tolerance,
+            },
+        )
+
+    @tool_decorator()
     def renforge_run_scenario(
         project_path: str,
         steps: list[dict[str, Any]],

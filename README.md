@@ -151,6 +151,11 @@ JSON summary of the project (labels, scripts, assets, and related metadata).
   advance dialogue, list/select choices, evaluate expressions, get/set store
   variables, send focused text/key/scroll input, poll pushed events, and capture
   frames the model can literally see.
+- **Scene perception (pixel-perfect, no vision needed)** — read the whole frame
+  as structured logical-coordinate nodes (`renforge_scene_tree`): every sprite,
+  control, and text block with bounds, z-order, colour, and style, plus an ASCII
+  wireframe and structural scene diffs. Then `renforge_measure` reports alignment,
+  spacing, overlap, fit, and WCAG contrast as numbers an agent can act on.
 - **Autopilot** — auto-play the game across branches and report label coverage
   and crashes.
 - **Assets & translations** — find orphaned/missing image+audio assets, list
@@ -173,7 +178,7 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 ## Documentation
 
 - **[MCP guide](docs/MCP.md)** — full tool catalogue, agent workflows
-  (hot reload, saves, pixel-perfect placement), safety guards, troubleshooting.
+  (hot reload, saves, pixel-perfect placement, scene perception),
 - **[Architecture](docs/ARCHITECTURE.md)** — code layout, live-control flow,
   Ren'Py SDK resolution, packaging.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, frontend build, PRs.

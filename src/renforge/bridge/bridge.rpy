@@ -2178,6 +2178,377 @@ init python:
         renpy.test.testmouse.click_mouse(1, x, y)
         return {"ok": True, "text": chosen, "x": x, "y": y}
 
+    # -- scene_tree: full-scene perception for non-multimodal agents -------
+    #
+    # list_ui_elements only sees focusables. scene_tree walks every layer's
+    # scene list and reports each displayable's real logical bounds using the
+    # same mechanism as renpy.get_image_bounds (render_for_size sizes the
+    # surface, displayable.place positions it). Focusable controls are merged
+    # from the focus list; non-focusable text is recovered by a guarded
+    # descent through container children/offsets. detail/layers/types/screen
+    # filter the returned set; an omitted-count hint always reports what was
+    # perceived but not returned so an agent can widen precisely.
+    _RENFORGE_SCENE_MAX_NODES = 4000
+    _RENFORGE_SCENE_MAX_DEPTH = 48
+    _RENFORGE_SCENE_SEMANTIC_TYPES = ("image", "text", "button", "bar", "input", "imagemap", "hotspot")
+
+    def _renforge_scene_window():
+        w = getattr(renpy.config, "screen_width", 0) or 0
+        h = getattr(renpy.config, "screen_height", 0) or 0
+        return int(w), int(h)
+
+    def _renforge_scene_type(d):
+        try:
+            if isinstance(d, renpy.text.text.Text):
+                return "text"
+        except Exception:
+            pass
+        name = getattr(getattr(d, "__class__", None), "__name__", "") or ""
+        lowered = name.casefold()
+        for marker, node_type in (
+            ("imagebutton", "button"), ("textbutton", "button"), ("button", "button"),
+            ("imagemap", "imagemap"), ("bar", "bar"), ("input", "input"),
+            ("text", "text"), ("frame", "container"), ("window", "container"),
+            ("viewport", "container"), ("vbox", "container"), ("hbox", "container"),
+            ("fixed", "container"), ("grid", "container"), ("side", "container"),
+            ("multibox", "container"), ("screen", "container"),
+            ("image", "image"), ("transform", "image"),
+        ):
+            if marker in lowered:
+                return node_type
+        return name or "other"
+
+    def _renforge_scene_place(d, width, height, st, at):
+        render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
+        place = getattr(getattr(renpy.display, "displayable", None), "place", None)
+        get_placement = getattr(d, "get_placement", None)
+        if not callable(render_for_size) or not callable(place) or not callable(get_placement):
+            return None
+        try:
+            surf = render_for_size(d, width, height, st, at)
+            sw = getattr(surf, "width", None)
+            sh = getattr(surf, "height", None)
+            if sw is None or sh is None:
+                sw, sh = surf.get_size()
+            x, y = place(width, height, float(sw), float(sh), get_placement())
+            return (int(round(x)), int(round(y)), int(round(sw)), int(round(sh)))
+        except Exception:
+            return None
+
+    def _renforge_scene_text(d):
+        tts = getattr(d, "_tts_all", None)
+        if callable(tts):
+            text = None
+            try:
+                text = tts(False)
+            except TypeError:
+                try:
+                    text = tts()
+                except Exception:
+                    text = None
+            except Exception:
+                text = None
+            if text:
+                spoken = str(text).strip()
+                if spoken:
+                    return spoken
+        raw = getattr(d, "text", None)
+        try:
+            if isinstance(raw, (list, tuple)):
+                joined = "".join(p for p in raw if isinstance(p, str)).strip()
+            elif raw is not None:
+                joined = str(raw).strip()
+            else:
+                joined = ""
+        except Exception:
+            joined = ""
+        return joined or None
+
+    def _renforge_scene_node(node_id, node_type, layer, screen, bounds, text=None, action=None, enabled=None):
+        node = {
+            "id": node_id,
+            "type": node_type,
+            "layer": layer,
+            "screen": screen,
+            "visible": True,
+            "coordinate_space": "logical",
+        }
+        if bounds is not None:
+            x, y, w, h = bounds
+            node["bounds"] = {"x": x, "y": y, "width": w, "height": h}
+            node["center"] = {"x": x + w // 2, "y": y + h // 2}
+            node["bounds_available"] = True
+        else:
+            node["bounds"] = None
+            node["center"] = None
+            node["bounds_available"] = False
+            node["bounds_reason"] = "could not size/place displayable"
+        if text is not None:
+            node["text"] = text
+        if action is not None:
+            node["action"] = action
+        if enabled is not None:
+            node["enabled"] = enabled
+        return node
+
+    def _renforge_color_hex(color):
+        try:
+            if isinstance(color, str):
+                return color
+            if isinstance(color, (tuple, list)) and len(color) >= 3:
+                return "#%02X%02X%02X" % (int(color[0]), int(color[1]), int(color[2]))
+        except Exception:
+            pass
+        return str(color)[:24]
+
+    def _renforge_scene_style(d):
+        style = getattr(d, "style", None)
+        if style is None:
+            return None
+        out = {}
+        color = getattr(style, "color", None)
+        if color is not None:
+            out["color"] = _renforge_color_hex(color)
+        size = getattr(style, "size", None)
+        if isinstance(size, int):
+            out["size"] = size
+        font = getattr(style, "font", None)
+        if font:
+            out["font"] = str(font)[:60]
+        bg = getattr(style, "background", None)
+        if bg is not None:
+            out["background"] = str(bg)[:60]
+        return out or None
+
+    def _renforge_scene_overflow(d):
+        style = getattr(d, "style", None)
+        render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
+        if not callable(render_for_size):
+            return {"available": False, "reason": "render API unavailable"}
+        try:
+            surf = render_for_size(d, 1000000, 1000000, 0, 0)
+            nw = int(getattr(surf, "width", 0) or 0)
+            nh = int(getattr(surf, "height", 0) or 0)
+        except Exception as exc:
+            return {"available": False, "reason": "render failed: %s" % exc}
+        xmax = getattr(style, "xmaximum", None) if style is not None else None
+        ymax = getattr(style, "ymaximum", None) if style is not None else None
+        ox = int(nw - xmax) if isinstance(xmax, int) and nw > xmax else 0
+        oy = int(nh - ymax) if isinstance(ymax, int) and nh > ymax else 0
+        return {
+            "available": True,
+            "overflow": bool(ox or oy),
+            "overflow_px": max(ox, oy),
+            "clipped": bool(ox or oy),
+            "natural": {"width": nw, "height": nh},
+        }
+
+    def _renforge_scene_finalize(nodes, include):
+        want_style = "style" in include
+        want_overflow = "overflow" in include
+        for node in nodes:
+            d = node.pop("_d", None)
+            if d is None:
+                continue
+            if want_style:
+                style = _renforge_scene_style(d)
+                if style:
+                    node["style"] = style
+            if want_overflow and node.get("type") == "text":
+                node["overflow"] = _renforge_scene_overflow(d)
+
+    def _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
+        if depth > _RENFORGE_SCENE_MAX_DEPTH or len(out) >= _RENFORGE_SCENE_MAX_NODES:
+            return
+        children = getattr(d, "children", None)
+        if not children:
+            child = getattr(d, "child", None)
+            if child is not None:
+                _renforge_scene_descend(child, base_x, base_y, layer, screen, zorder, seen, out, counters, depth + 1)
+            return
+        offsets = getattr(d, "offsets", None)
+        for index, child in enumerate(children):
+            ox = oy = 0
+            if offsets and index < len(offsets):
+                try:
+                    ox, oy = int(offsets[index][0]), int(offsets[index][1])
+                except Exception:
+                    ox = oy = 0
+            _renforge_scene_descend(child, base_x + ox, base_y + oy, layer, screen, zorder, seen, out, counters, depth + 1)
+
+    def _renforge_scene_descend(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
+        if depth > _RENFORGE_SCENE_MAX_DEPTH or len(out) >= _RENFORGE_SCENE_MAX_NODES:
+            return
+        if d is None or id(d) in seen:
+            return
+        seen.add(id(d))
+        if _renforge_scene_type(d) == "text":
+            text = _renforge_scene_text(d)
+            if text:
+                bounds = None
+                try:
+                    aw, ah = _renforge_scene_window()
+                    surf = renpy.display.render.render_for_size(d, aw, ah, 0, 0)
+                    w = int(getattr(surf, "width", 0) or 0)
+                    h = int(getattr(surf, "height", 0) or 0)
+                    if w and h:
+                        bounds = (int(base_x), int(base_y), w, h)
+                except Exception:
+                    bounds = None
+                key = (layer, screen or "")
+                ordinal = counters.get(key, 0)
+                counters[key] = ordinal + 1
+                node_id = ("%s/%s.text#%d" % (layer, screen, ordinal)) if screen else ("%s/text#%d" % (layer, ordinal))
+                node = _renforge_scene_node(node_id, "text", layer, screen, bounds, text=text)
+                node["zorder"] = zorder
+                node["_d"] = d
+                out.append(node)
+            return
+        _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth)
+
+    def _renforge_scene_detail_ok(node_type, detail):
+        if detail == "raw":
+            return True
+        if detail == "layout":
+            return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES or node_type == "container"
+        return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES
+
+    def _renforge_h_scene_tree(payload):
+        payload = payload or {}
+        detail = str(payload.get("detail") or "semantic").casefold()
+        if detail not in ("semantic", "layout", "raw"):
+            detail = "semantic"
+        flt_layers = payload.get("layers")
+        flt_layers = set(str(x) for x in flt_layers) if flt_layers else None
+        flt_types = payload.get("types")
+        flt_types = set(str(x).casefold() for x in flt_types) if flt_types else None
+        flt_screen = payload.get("screen")
+        flt_screen = str(flt_screen) if flt_screen else None
+        flt_ids = payload.get("ids")
+        flt_ids = set(str(x) for x in flt_ids) if flt_ids else None
+        include = payload.get("include")
+        include = set(str(x).casefold() for x in include) if include else set()
+
+        width, height = _renforge_scene_window()
+        seen = set()
+        nodes = []
+        counters = {}
+
+        # Focusable controls first, so the descent skips their widgets.
+        try:
+            focusables = _renforge_focusable_elements()
+        except Exception:
+            focusables = []
+        for focus, element in focusables:
+            widget = getattr(focus, "widget", None)
+            if widget is not None:
+                seen.add(id(widget))
+            node = dict(element)
+            node.setdefault("layer", "screens")
+            node["bounds_available"] = node.get("bounds") is not None
+            node.pop("index", None)
+            node.pop("role", None)
+            node["_d"] = widget
+            nodes.append(node)
+
+        # Every layer's top-level displayables, with real logical bounds.
+        try:
+            sl = renpy.game.context().scene_lists
+        except Exception:
+            sl = None
+        try:
+            now = renpy.display.core.get_time()
+        except Exception:
+            now = 0.0
+        if sl is not None:
+            layer_map = getattr(sl, "layers", {}) or {}
+            try:
+                ordered = list(getattr(renpy.display.scenelists, "ordered_layers", None) or renpy.config.layers)
+            except Exception:
+                ordered = list(layer_map.keys())
+            layer_names = [l for l in ordered if l in layer_map] + [l for l in layer_map if l not in ordered]
+            layer_counts = {}
+            for layer in layer_names:
+                for sle in layer_map.get(layer, []):
+                    d = getattr(sle, "displayable", None)
+                    if d is None or id(d) in seen:
+                        continue
+                    seen.add(id(d))
+                    st = (now - sle.show_time) if getattr(sle, "show_time", None) else 0
+                    at = (now - sle.animation_time) if getattr(sle, "animation_time", None) else 0
+                    bounds = _renforge_scene_place(d, width, height, st, at)
+                    node_type = _renforge_scene_type(d)
+                    tag = getattr(sle, "tag", None)
+                    screen_name = None
+                    if layer == "screens":
+                        sn = getattr(d, "screen_name", None)
+                        if isinstance(sn, (tuple, list)) and sn:
+                            screen_name = str(sn[0])
+                        elif sn:
+                            screen_name = str(sn)
+                        elif tag:
+                            screen_name = str(tag)
+                    if tag:
+                        node_id = str(tag)
+                    else:
+                        idx = layer_counts.get((layer, node_type), 0)
+                        layer_counts[(layer, node_type)] = idx + 1
+                        node_id = "%s/%s#%d" % (layer, node_type, idx)
+                    text = _renforge_scene_text(d) if node_type == "text" else None
+                    node = _renforge_scene_node(node_id, node_type, layer, screen_name, bounds, text=text)
+                    node["zorder"] = int(getattr(sle, "zorder", 0) or 0)
+                    if tag:
+                        node["tag"] = str(tag)
+                    node["_d"] = d
+                    nodes.append(node)
+                    bx = bounds[0] if bounds is not None else 0
+                    by = bounds[1] if bounds is not None else 0
+                    _renforge_scene_descend_children(d, bx, by, layer, screen_name, node["zorder"], seen, nodes, counters, 0)
+
+        _renforge_scene_finalize(nodes, include)
+
+        perceived_by_type = {}
+        perceived_by_layer = {}
+        for n in nodes:
+            perceived_by_type[n["type"]] = perceived_by_type.get(n["type"], 0) + 1
+            lk = n.get("layer") or "?"
+            perceived_by_layer[lk] = perceived_by_layer.get(lk, 0) + 1
+
+        returned = []
+        for n in nodes:
+            if not _renforge_scene_detail_ok(n["type"], detail):
+                continue
+            if flt_layers is not None and (n.get("layer") not in flt_layers):
+                continue
+            if flt_types is not None and (str(n["type"]).casefold() not in flt_types):
+                continue
+            if flt_screen is not None and (n.get("screen") != flt_screen):
+                continue
+            if flt_ids is not None and (str(n.get("id")) not in flt_ids):
+                continue
+            returned.append(n)
+
+        ret_by_type = {}
+        ret_by_layer = {}
+        for n in returned:
+            ret_by_type[n["type"]] = ret_by_type.get(n["type"], 0) + 1
+            lk = n.get("layer") or "?"
+            ret_by_layer[lk] = ret_by_layer.get(lk, 0) + 1
+        omit_by_type = {t: perceived_by_type[t] - ret_by_type.get(t, 0)
+                        for t in perceived_by_type if perceived_by_type[t] - ret_by_type.get(t, 0) > 0}
+        omit_by_layer = {l: perceived_by_layer[l] - ret_by_layer.get(l, 0)
+                         for l in perceived_by_layer if perceived_by_layer[l] - ret_by_layer.get(l, 0) > 0}
+
+        return {
+            "ok": True,
+            "coordinate_space": "logical",
+            "window": {"width": width, "height": height},
+            "detail": detail,
+            "nodes": returned,
+            "counts": {"perceived": len(nodes), "returned": len(returned)},
+            "omitted": {"by_type": omit_by_type, "by_layer": omit_by_layer},
+        }
+
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
@@ -2205,6 +2576,7 @@ init python:
         "hit_test": _renforge_h_hit_test,
         "get_displayable_bounds": _renforge_h_get_displayable_bounds,
         "show_displayable": _renforge_h_show_displayable,
+        "scene_tree": _renforge_h_scene_tree,
     }
 
     def _renforge_skip_stop_reason():
