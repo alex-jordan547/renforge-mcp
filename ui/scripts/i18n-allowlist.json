@@ -23,6 +23,11 @@
     },
 
     {
+      "type": "key-pattern",
+      "pattern": "^pages\\.live\\.status\\.",
+      "reason": "Live status success keys are set dynamically via successKey in runAction; cannot be statically traced."
+    },
+    {
       "type": "key",
       "key": "pages.assets.inventory",
       "reason": "Shared scope label used for string interpolation in the assets page UI."

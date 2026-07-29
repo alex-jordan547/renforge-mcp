@@ -266,21 +266,65 @@
       "status": {
         "actionFailed": "Action failed",
         "eval": {
-          "failed": "Failed"
+          "failed": "Evaluation failed",
+          "success": "Evaluated"
         },
         "launch": {
-          "failed": "Launch failed"
+          "alreadyRunning": "Game already running",
+          "failed": "Launch failed",
+          "success": "Game launched"
         },
         "launching": "Launching",
         "live": "Live",
         "stop": {
-          "failed": "Stop failed"
+          "alreadyStopped": "Game not running",
+          "failed": "Stop failed",
+          "success": "Game stopped"
         },
         "stopped": "Stopped",
         "stopping": "Stopping",
-        "syncing": "Syncing"
+        "syncing": "Syncing",
+        "actionOk": "Done",
+        "advance": {
+          "success": "Advanced"
+        },
+        "auto": {
+          "success": "Auto toggled"
+        },
+        "choice": {
+          "selected": "Selected"
+        },
+        "load": {
+          "success": "Loaded"
+        },
+        "quit": {
+          "success": "Quit"
+        },
+        "reload": {
+          "success": "Script reloaded"
+        },
+        "restartInteraction": {
+          "success": "Interaction restarted"
+        },
+        "rollback": {
+          "success": "Rolled back"
+        },
+        "save": {
+          "success": "Saved"
+        },
+        "setVar": {
+          "success": "Variable set"
+        },
+        "skip": {
+          "success": "Skip toggled"
+        }
       },
-      "title": "Live"
+      "title": "Live",
+      "placeholder": {
+        "expr": "store.persistent.score + 1",
+        "varName": "money",
+        "varValue": "\"hello\" or 42"
+      }
     },
     "storyMap": {
       "current": {
@@ -313,6 +357,10 @@
         "fitTitle": "Fit viewport",
         "in": "Zoom in",
         "out": "Zoom out"
+      },
+      "nodeType": {
+        "current": "Current",
+        "label": "Label"
       }
     },
     "timeline": {
@@ -341,7 +389,8 @@
         "minutes": "{{count}} minutes ago",
         "seconds": "{{count}} seconds ago"
       },
-      "title": "Timeline"
+      "title": "Timeline",
+      "none": "None"
     },
     "translation": {
       "emptyDescription": "No translation data.",
@@ -375,7 +424,8 @@
         "sourceDialogues": "Source dialogues",
         "total": "Total: {{count}}",
         "translated": "{{language}} • {{ratio}}% translated",
-        "unavailable": "Unavailable"
+        "unavailable": "Unavailable",
+        "separator": " / "
       },
       "table": {
         "sourceHeader": "Original",
@@ -384,7 +434,9 @@
       },
       "title": "Translation",
       "translatedBadge": "{{ratio}}% translated",
-      "untranslatedMarker": "—"
+      "untranslatedMarker": "—",
+      "endpointError": "Endpoint error",
+      "tlPrefix": "tl/{{language}}"
     }
   },
   "projectPicker": {
@@ -403,7 +455,13 @@
     "parent": "Parent folder",
     "project": "Project",
     "switchError": "Failed to switch project",
-    "title": "Open project"
+    "title": "Open project",
+    "roots": {
+      "current-project": "Current project",
+      "project-parent": "Parent directory",
+      "home": "Home",
+      "drive": "Drive {{letter}}:"
+    }
   },
   "status": {
     "failed": "Failed",

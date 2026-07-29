@@ -48,9 +48,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function formatPayload(value: unknown): string {
+function formatPayload(value: unknown, t: ReturnType<typeof useTranslation>['t']): string {
   if (value === undefined) {
-    return "None";
+    return t("pages.timeline.none");
   }
   try {
     const text = JSON.stringify(value, null, 2) ?? String(value);
@@ -191,11 +191,11 @@ export function TimelinePage({ items }: TimelinePageProps) {
                   <div className="activity-details">
                     <div>
                       <span>{t("pages.timeline.parameters")}</span>
-                      <pre>{formatPayload(payload.params)}</pre>
+                      <pre>{formatPayload(payload.params, t)}</pre>
                     </div>
                     <div>
                       <span>{t("pages.timeline.result")}</span>
-                      <pre>{formatPayload(payload.result)}</pre>
+                      <pre>{formatPayload(payload.result, t)}</pre>
                     </div>
                     {files.length > 0 && (
                       <div>
