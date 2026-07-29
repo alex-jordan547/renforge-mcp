@@ -1466,8 +1466,154 @@ init python:
             pass
         return result
 
+    def _renforge_is_end_interaction(exc):
+        end_interaction = getattr(
+            getattr(getattr(renpy, "display", None), "core", None),
+            "EndInteraction",
+            None,
+        )
+        return end_interaction is not None and isinstance(exc, end_interaction)
+
+
+    def _renforge_reset_testmouse_state():
+        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+        if testmouse is None:
+            return
+        try:
+            setattr(testmouse, "mouse_pos", None)
+        except Exception:
+            pass
+        mouse_buttons = getattr(testmouse, "mouse_buttons", None)
+        if mouse_buttons is None:
+            return
+        if isinstance(mouse_buttons, dict):
+            for key in list(mouse_buttons.keys()):
+                mouse_buttons[key] = False
+            return
+        if isinstance(mouse_buttons, tuple):
+            mouse_buttons = list(mouse_buttons)
+            setattr(testmouse, "mouse_buttons", mouse_buttons)
+        if isinstance(mouse_buttons, list):
+            for index in range(len(mouse_buttons)):
+                try:
+                    mouse_buttons[index] = False
+                except Exception:
+                    mouse_buttons[index] = 0
+
+
+    def _renforge_dispatch_mouse_motion(px, py):
+        if pygame is None:
+            return False
+        event_type = getattr(pygame, "MOUSEMOTION", None)
+        event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+        post = getattr(getattr(pygame, "event", None), "post", None)
+        if event_type is None or not callable(event_factory):
+            return False
+        payload = {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)}
+        try:
+            event = event_factory(event_type, **payload)
+        except TypeError:
+            event = event_factory(event_type, payload)
+        if callable(post):
+            post(event)
+        mouse_handler = getattr(
+            getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None
+        )
+        if callable(mouse_handler):
+            mouse_handler(event, px, py, False)
+        return True
+
+    def _renforge_dispatch_mouse_click(x, y, button=1):
+        if pygame is None:
+            return False
+        event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+        if event_factory is None:
+            return False
+        event_type = getattr(pygame, "MOUSEBUTTONDOWN", None)
+        up_type = getattr(pygame, "MOUSEBUTTONUP", None)
+        if event_type is None or up_type is None:
+            return False
+        payload = {
+            "button": button,
+            "pos": (x, y),
+            "x": x,
+            "y": y,
+            "touch": False,
+            "test": True,
+            "mod": 0,
+        }
+        try:
+            down = event_factory(event_type, **payload)
+            up = event_factory(up_type, **payload)
+        except TypeError:
+            down = event_factory(event_type, payload)
+            up = event_factory(up_type, payload)
+        focus_module = getattr(getattr(renpy, "display", None), "focus", None)
+        mouse_handler = getattr(focus_module, "mouse_handler", None)
+        get_focused = getattr(focus_module, "get_focused", None)
+        if not callable(mouse_handler) or not callable(get_focused):
+            return False
+        mouse_handler(down, x, y, False)
+        focused = get_focused()
+        event_handler = getattr(focused, "event", None)
+        if not callable(event_handler):
+            return False
+        local_x, local_y = x, y
+        for focus in reversed(list(getattr(focus_module, "focus_list", []) or [])):
+            if getattr(focus, "widget", None) is not focused:
+                continue
+            focus_x = getattr(focus, "x", None)
+            focus_y = getattr(focus, "y", None)
+            if focus_x is not None and focus_y is not None:
+                local_x, local_y = x - focus_x, y - focus_y
+            break
+        ignore_event = getattr(getattr(renpy, "display", None), "core", None)
+        ignore_event = getattr(ignore_event, "IgnoreEvent", None)
+        no_interaction_result = object()
+        interaction_result = no_interaction_result
+        for event in (down, up):
+            try:
+                rv = event_handler(event, local_x, local_y, 0)
+                if rv is not None and interaction_result is no_interaction_result:
+                    interaction_result = rv
+            except Exception as exc:
+                if ignore_event is None or not isinstance(exc, ignore_event):
+                    raise
+        if interaction_result is not no_interaction_result:
+            end_interaction = getattr(renpy, "end_interaction", None)
+            if callable(end_interaction):
+                end_interaction(interaction_result)
+        return True
+
+    def _renforge_click_pointer(x, y):
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+
+        _renforge_reset_testmouse_state()
+        try:
+            _renforge_dispatch_mouse_motion(x, y)
+            if _renforge_dispatch_mouse_click(x, y):
+                return "renpy"
+
+            testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+            click_mouse = getattr(testmouse, "click_mouse", None)
+            if callable(click_mouse):
+                click_mouse(1, x, y)
+                return "renpy-test"
+            raise RuntimeError("Ren'Py synthetic mouse API is unavailable")
+        finally:
+            _renforge_reset_testmouse_state()
+
     def _renforge_click_focus(focus):
-        """Click a focus center through Ren'Py's synthetic test input path."""
+        """Click a focus center through shared synthetic input path."""
         fx = getattr(focus, "x", None)
         fy = getattr(focus, "y", None)
         fw = getattr(focus, "w", None)
@@ -1483,21 +1629,13 @@ init python:
             px, py = find_position(focus, (None, None))
             x, y = int(px), int(py)
 
-        interface = getattr(getattr(renpy, "display", None), "interface", None)
-        if interface is not None:
-            try:
-                interface.mouse_focused = True
-            except Exception:
-                pass
-            try:
-                interface.ignore_touch = False
-            except Exception:
-                pass
-        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
-        click_mouse = getattr(testmouse, "click_mouse", None)
-        if not callable(click_mouse):
-            raise RuntimeError("Ren'Py synthetic mouse API is unavailable")
-        click_mouse(1, x, y)
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            setattr(exc, "renforge_pointer", (x, y))
+            raise
         return x, y
 
     def _renforge_resolve_ui_element(payload, action):
@@ -1558,7 +1696,14 @@ init python:
                 }
         if not element.get("enabled", True):
             return {"ok": False, "error": "UI element is disabled", "element": element}
-        x, y = _renforge_click_focus(focus)
+        pending_end_interaction = None
+        try:
+            x, y = _renforge_click_focus(focus)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
+            x, y = getattr(exc, "renforge_pointer")
         # Report which focusable actually owns this coordinate (coverage).
         hit = _renforge_hit_stack(x, y)
         topmost = hit.get("topmost")
@@ -1615,6 +1760,9 @@ init python:
             )
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
         return result
 
     def _renforge_hit_stack(x, y):
@@ -1699,57 +1847,55 @@ init python:
             except Exception:
                 pass
 
-        def _renforge_dispatch_mouse_motion(px, py):
-            """Drive Ren'Py focus/hover state without a player interact loop.
-
-            Posting MOUSEMOTION to pygame is not enough: ImageButton hover uses
-            ``focus.mouse_handler`` during event dispatch. Bridge RPC must call
-            it directly on the main thread after ``testmouse.move_mouse``.
-            """
-            if pygame is None:
-                return False
-            event_type = getattr(pygame, "MOUSEMOTION", None)
-            event_factory = getattr(getattr(pygame, "event", None), "Event", None)
-            post = getattr(getattr(pygame, "event", None), "post", None)
-            if event_type is None or not callable(event_factory):
-                return False
-            event = event_factory(event_type, {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)})
-            if callable(post):
-                post(event)
-            mouse_handler = getattr(getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None)
-            if callable(mouse_handler):
-                mouse_handler(event, px, py, False)
-            return True
-
-        restart_interaction = getattr(renpy, "restart_interaction", None)
+        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
         testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
         move_mouse = getattr(testmouse, "move_mouse", None)
-        if callable(move_mouse):
-            try:
-                move_mouse(x, y)
-            except TypeError:
-                pass
-            else:
-                _renforge_dispatch_mouse_motion(x, y)
-                if callable(restart_interaction):
-                    restart_interaction()
-                return x, y, "renpy-test"
-        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
-        if callable(set_mouse_pos):
-            try:
-                set_mouse_pos(x, y)
-            except TypeError:
-                pass
-            else:
-                _renforge_dispatch_mouse_motion(x, y)
-                if callable(restart_interaction):
-                    restart_interaction()
-                return x, y, "renpy"
-        if not _renforge_dispatch_mouse_motion(x, y):
-            raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
-        if callable(restart_interaction):
-            restart_interaction()
-        return x, y, "pygame"
+        restart_interaction = getattr(renpy, "restart_interaction", None)
+        used_native_set_mouse = False
+
+        _renforge_reset_testmouse_state()
+        try:
+            if callable(set_mouse_pos):
+                try:
+                    set_mouse_pos(x, y, duration=0)
+                except TypeError:
+                    try:
+                        set_mouse_pos(x, y, 0)
+                    except TypeError:
+                        try:
+                            set_mouse_pos(x, y)
+                        except TypeError:
+                            pass
+                        else:
+                            used_native_set_mouse = True
+                    else:
+                        used_native_set_mouse = True
+                else:
+                    used_native_set_mouse = True
+                if used_native_set_mouse:
+                    _renforge_dispatch_mouse_motion(x, y)
+                    if callable(restart_interaction):
+                        restart_interaction()
+                    return x, y, "renpy"
+
+            if callable(move_mouse):
+                try:
+                    move_mouse(x, y)
+                except TypeError:
+                    pass
+                else:
+                    _renforge_dispatch_mouse_motion(x, y)
+                    if callable(restart_interaction):
+                        restart_interaction()
+                    return x, y, "renpy-test"
+
+            if not _renforge_dispatch_mouse_motion(x, y):
+                raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
+            if callable(restart_interaction):
+                restart_interaction()
+            return x, y, "pygame"
+        finally:
+            _renforge_reset_testmouse_state()
 
     def _renforge_h_hover_element(payload):
         payload = payload or {}
@@ -1977,24 +2123,19 @@ init python:
         if coordinate_error is not None:
             return {"ok": False, "error": coordinate_error}
 
-        interface = getattr(getattr(renpy, "display", None), "interface", None)
-        if interface is not None:
-            try:
-                interface.mouse_focused = True
-            except Exception:
-                pass
-            try:
-                interface.ignore_touch = False
-            except Exception:
-                pass
-        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
-        click_mouse = getattr(testmouse, "click_mouse", None)
-        if not callable(click_mouse):
-            return {"ok": False, "error": "Ren'Py synthetic mouse API is unavailable"}
-        click_mouse(1, x, y)
+        pending_end_interaction = None
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
         result = {"ok": True, "x": x, "y": y, "coordinate_space": coordinate_space}
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
         return result
 
     def _renforge_h_get_displayable_bounds(payload):
@@ -2193,8 +2334,18 @@ init python:
             except Exception:
                 pass
 
-        renpy.test.testmouse.click_mouse(1, x, y)
-        return {"ok": True, "text": chosen, "x": x, "y": y}
+        pending_end_interaction = None
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
+        result = {"ok": True, "text": chosen, "x": x, "y": y}
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
+        return result
 
     # -- scene_tree: full-scene perception for non-multimodal agents -------
     #
@@ -2807,6 +2958,9 @@ init python:
         bridge = _renforge_runtime.bridge
         if bridge is None:
             return
+        if bridge.stop.is_set():
+            _renforge_reset_testmouse_state()
+            return
         _renforge_watch_runtime_effects()
         while True:
             try:
@@ -2816,6 +2970,7 @@ init python:
             handler = _RENFORGE_HANDLERS.get(req.command)
             correlation = None
             explicit_correlation = None
+            propagate = None
             try:
                 if handler is None:
                     req.error = "unknown_command: %s" % req.command
@@ -2843,10 +2998,30 @@ init python:
                         result.setdefault("interaction_id", explicit_correlation)
                     req.result = result
             except Exception as exc:
-                req.error = "%s: %s" % (type(exc).__name__, exc)
+                end_interaction = getattr(
+                    getattr(getattr(renpy, "display", None), "core", None),
+                    "EndInteraction",
+                    None,
+                )
+                if end_interaction is not None and isinstance(exc, end_interaction):
+                    preserved_result = getattr(exc, "renforge_result", None)
+                    if isinstance(preserved_result, builtins.dict):
+                        preserved_result = builtins.dict(preserved_result)
+                        preserved_result["ended_interaction"] = True
+                        if explicit_correlation is not None:
+                            preserved_result.setdefault("interaction_id", explicit_correlation)
+                        req.result = preserved_result
+                    else:
+                        req.result = {"ok": True, "ended_interaction": True}
+                    propagate = exc
+                else:
+                    req.error = "%s: %s" % (type(exc).__name__, exc)
             finally:
                 bridge.current_correlation_id = None
+                _renforge_reset_testmouse_state()
                 req.event.set()
+            if propagate is not None:
+                raise propagate
 
     # --- listener: background thread --------------------------------------
 

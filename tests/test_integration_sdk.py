@@ -300,11 +300,16 @@ def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
             time.sleep(1.0)
         assert any(c["text"] == "Take the lantern and go." for c in choices), choices
 
-        session.client.select_choice(text="Take the lantern and go.")
+        selected = session.client.select_choice(text="Take the lantern and go.")
+        assert selected["ok"] is True, selected
+        assert selected["text"] == "Take the lantern and go."
+        assert isinstance(selected["x"], int) and isinstance(selected["y"], int)
+        assert selected.get("ended_interaction") is True
         time.sleep(1.5)
 
         assert session.client.get_var("lantern") is True
         assert session.client.get_var("courage") == 1
+        assert session.client.eval_expr("renpy.test.testmouse.mouse_pos") is None
         # The branch dialogue is still displayed inside ``village_gate``;
         # the jump to ``crossroads`` follows after that line is dismissed.
         assert session.client.get_state()["current_label"] == "village_gate"
@@ -571,11 +576,56 @@ def test_live_imagebutton_hover_bounds_and_capture(sdk, demo_copy: Path) -> None
         assert hovered["ok"] is True, hovered
         assert hovered.get("hovered") is True, hovered
         assert hovered["method"] in {"renpy", "renpy-test", "pygame"}
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
         assert client.get_var("renforge_sdk_button_clicks") == clicks_before
 
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors
         assert not errors.get("events"), errors
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_imagebutton_click_paths_release_testmouse(sdk, demo_copy: Path) -> None:
+    """Exercise click_element and click_at against a real Ren'Py ImageButton."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    _add_hover_fixtures(demo_copy)
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr('renpy.show_screen("renforge_sdk_imagebutton_fixture")')
+        client.eval_expr("renpy.restart_interaction()")
+
+        elements = []
+        for _ in range(40):
+            elements = client.list_ui_elements()
+            if elements:
+                break
+            time.sleep(0.25)
+        assert elements, elements
+
+        button = elements[0]
+        center = button["center"]
+        before = client.get_var("renforge_sdk_button_clicks")
+
+        clicked = client.click_element(id=button["id"])
+        assert clicked["ok"] is True, clicked
+        for _ in range(40):
+            if client.get_var("renforge_sdk_button_clicks") == before + 1:
+                break
+            time.sleep(0.1)
+        assert client.get_var("renforge_sdk_button_clicks") == before + 1, clicked
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
+
+        clicked_at = client.click_at(center["x"], center["y"])
+        assert clicked_at["ok"] is True, clicked_at
+        for _ in range(40):
+            if client.get_var("renforge_sdk_button_clicks") == before + 2:
+                break
+            time.sleep(0.1)
+        assert client.get_var("renforge_sdk_button_clicks") == before + 2
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
