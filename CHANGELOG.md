@@ -32,6 +32,10 @@ versioning.
 
 ### Fixed
 
+- Pointer operations now use one shared bridge input layer. Native hover prefers
+  `renpy.set_mouse_pos(..., duration=0)`, clicks synchronously deliver balanced
+  test-marked mouse-button events to the focused displayable, and fallbacks always
+  release `testmouse` state so physical input immediately reclaims hover control.
 - Runtime discovery now prefers validated project-local Ren'Py SDKs and safely
   falls back to compatible managed SDKs with locked, atomic cache repair.
 - Concurrent RenForge servers now isolate bridge ownership per project,

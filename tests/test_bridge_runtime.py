@@ -125,6 +125,13 @@ def _fake_renpy(store):
     renpy._clicks = []
     renpy._moves = []
 
+    def _move_mouse(x, y):
+        renpy._moves.append((x, y))
+        renpy.test.testmouse.mouse_pos = (x, y)
+
+    def _click_mouse(button, x, y):
+        renpy._clicks.append((button, x, y))
+
     def _find_focus(pattern, raw=False):
         for focus in focus_list:
             if focus.widget is None:
@@ -139,8 +146,10 @@ def _fake_renpy(store):
     renpy.test = types.SimpleNamespace(
         testfocus=types.SimpleNamespace(find_focus=_find_focus, find_position=_find_position),
         testmouse=types.SimpleNamespace(
-            click_mouse=lambda button, x, y: renpy._clicks.append((button, x, y)),
-            move_mouse=lambda x, y: renpy._moves.append((x, y)),
+            click_mouse=_click_mouse,
+            move_mouse=_move_mouse,
+            mouse_pos=None,
+            mouse_buttons=[False, False, False],
         ),
     )
 
@@ -219,6 +228,7 @@ def running_bridge(tmp_path, monkeypatch):
     pygame.TEXTINPUT = 1
     pygame.KEYDOWN = 2
     pygame.KEYUP = 3
+    pygame.MOUSEMOTION = 6
     pygame.MOUSEBUTTONDOWN = 4
     pygame.MOUSEBUTTONUP = 5
     pygame.K_F1 = 101
@@ -637,6 +647,319 @@ def test_select_choice_without_match_returns_error(running_bridge):
     assert "error" in reply
 
 
+def test_dispatch_mouse_click_delivers_down_and_up_to_focused_widget(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    pygame = globs["pygame"]
+    seen = []
+
+    class Focused:
+        def event(self, event, x, y, st):
+            seen.append((event, x, y, st))
+
+    focus_module = renpy.display.focus
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    focus_module.get_focused = lambda: Focused()
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    try:
+        assert globs["_renforge_dispatch_mouse_click"](60, 50) is True
+    finally:
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+
+    down, up = seen[0][0], seen[1][0]
+    assert [down.type, up.type] == [pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP]
+    assert down.button == up.button == 1
+    assert down.pos == up.pos == (60, 50)
+    assert down.test is up.test is True
+    assert [(item[1], item[2], item[3]) for item in seen] == [(60, 50, 0), (60, 50, 0)]
+
+
+def test_dispatch_mouse_click_uses_focused_displayable_local_coordinates(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    seen = []
+
+    class Focused:
+        def event(self, event, x, y, st):
+            seen.append((x, y, st))
+
+    focused = Focused()
+    focus_record = types.SimpleNamespace(widget=focused, x=40, y=30)
+    focus_module = renpy.display.focus
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    focus_module.focus_list.append(focus_record)
+    focus_module.get_focused = lambda: focused
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    try:
+        assert globs["_renforge_dispatch_mouse_click"](70, 80) is True
+    finally:
+        focus_module.focus_list.remove(focus_record)
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+
+    assert seen == [(30, 50, 0), (30, 50, 0)]
+
+
+def test_dispatch_mouse_click_delivers_up_after_down_is_ignored(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    pygame = globs["pygame"]
+    seen = []
+
+    class FakeIgnoreEvent(Exception):
+        pass
+
+    class Focused:
+        def event(self, event, x, y, st):
+            seen.append(event.type)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                raise FakeIgnoreEvent()
+
+    focus_module = renpy.display.focus
+    original_core_module = getattr(renpy.display, "core", None)
+    core_module = original_core_module or types.SimpleNamespace()
+    renpy.display.core = core_module
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    original_ignore_event = getattr(core_module, "IgnoreEvent", None)
+    focus_module.get_focused = lambda: Focused()
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    core_module.IgnoreEvent = FakeIgnoreEvent
+    try:
+        assert globs["_renforge_dispatch_mouse_click"](22, 33) is True
+    finally:
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+        if original_ignore_event is None:
+            delattr(core_module, "IgnoreEvent")
+        else:
+            core_module.IgnoreEvent = original_ignore_event
+        if original_core_module is None:
+            delattr(renpy.display, "core")
+
+    assert seen == [pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP]
+
+
+def test_click_pointer_delivers_up_before_propagating_end_interaction(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    pygame = globs["pygame"]
+    seen = []
+
+    class FakeEndInteraction(Exception):
+        def __init__(self, value):
+            super().__init__(value)
+            self.value = value
+
+    class Focused:
+        def event(self, event, x, y, st):
+            seen.append(event.type)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                return "branch-result"
+            return None
+
+    def _end_interaction(value):
+        raise FakeEndInteraction(value)
+
+    focus_module = renpy.display.focus
+    original_core_module = getattr(renpy.display, "core", None)
+    core_module = original_core_module or types.SimpleNamespace()
+    renpy.display.core = core_module
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    original_end_interaction_class = getattr(core_module, "EndInteraction", None)
+    original_end_interaction = getattr(renpy, "end_interaction", None)
+    focus_module.get_focused = lambda: Focused()
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    core_module.EndInteraction = FakeEndInteraction
+    renpy.end_interaction = _end_interaction
+    renpy.test.testmouse.mouse_pos = (91, 92)
+    renpy.test.testmouse.mouse_buttons = [True, False, False]
+
+    try:
+        with pytest.raises(FakeEndInteraction) as raised:
+            globs["_renforge_click_pointer"](44, 55)
+    finally:
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+        if original_end_interaction_class is None:
+            delattr(core_module, "EndInteraction")
+        else:
+            core_module.EndInteraction = original_end_interaction_class
+        if original_end_interaction is None:
+            delattr(renpy, "end_interaction")
+        else:
+            renpy.end_interaction = original_end_interaction
+        if original_core_module is None:
+            delattr(renpy.display, "core")
+
+    assert raised.value.value == "branch-result"
+    assert seen == [pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP]
+    assert renpy.test.testmouse.mouse_pos is None
+    assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+
+
+def test_click_at_preserves_reply_metadata_when_interaction_ends(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    pygame = globs["pygame"]
+
+    class FakeEndInteraction(Exception):
+        pass
+
+    class Focused:
+        def event(self, event, x, y, st):
+            if event.type == pygame.MOUSEBUTTONUP:
+                return "next-screen"
+            return None
+
+    def _end_interaction(value):
+        raise FakeEndInteraction(value)
+
+    focus_module = renpy.display.focus
+    original_core_module = getattr(renpy.display, "core", None)
+    core_module = original_core_module or types.SimpleNamespace()
+    renpy.display.core = core_module
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    original_end_interaction_class = getattr(core_module, "EndInteraction", None)
+    original_end_interaction = getattr(renpy, "end_interaction", None)
+    focus_module.get_focused = lambda: Focused()
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    core_module.EndInteraction = FakeEndInteraction
+    renpy.end_interaction = _end_interaction
+
+    try:
+        with pytest.raises(FakeEndInteraction) as raised:
+            globs["_renforge_h_click_at"]({"x": 44, "y": 55})
+    finally:
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+        if original_end_interaction_class is None:
+            delattr(core_module, "EndInteraction")
+        else:
+            core_module.EndInteraction = original_end_interaction_class
+        if original_end_interaction is None:
+            delattr(renpy, "end_interaction")
+        else:
+            renpy.end_interaction = original_end_interaction
+        if original_core_module is None:
+            delattr(renpy.display, "core")
+
+    assert getattr(raised.value, "renforge_result", None) == {
+        "ok": True,
+        "x": 44,
+        "y": 55,
+        "coordinate_space": "logical",
+    }
+
+
+def test_click_element_preserves_action_metadata_when_interaction_ends(running_bridge):
+    globs = running_bridge.globs
+    renpy = running_bridge.renpy
+    pygame = globs["pygame"]
+    target = running_bridge.client.list_ui_elements()[1]
+    focus, element, error = globs["_renforge_resolve_ui_element"](
+        {"id": target["id"]}, "click_element"
+    )
+    assert error is None
+
+    class FakeEndInteraction(Exception):
+        pass
+
+    def _event(event, x, y, st):
+        if event.type == pygame.MOUSEBUTTONUP:
+            return "next-screen"
+        return None
+
+    def _end_interaction(value):
+        raise FakeEndInteraction(value)
+
+    focus_module = renpy.display.focus
+    core_module = getattr(renpy.display, "core", None) or types.SimpleNamespace()
+    original_core_module = getattr(renpy.display, "core", None)
+    original_get_focused = getattr(focus_module, "get_focused", None)
+    original_mouse_handler = getattr(focus_module, "mouse_handler", None)
+    original_event = getattr(focus.widget, "event", None)
+    original_end_interaction_class = getattr(core_module, "EndInteraction", None)
+    original_end_interaction = getattr(renpy, "end_interaction", None)
+    renpy.display.core = core_module
+    focus_module.get_focused = lambda: focus.widget
+    focus_module.mouse_handler = lambda event, x, y, default: None
+    focus.widget.event = _event
+    core_module.EndInteraction = FakeEndInteraction
+    renpy.end_interaction = _end_interaction
+
+    try:
+        with pytest.raises(FakeEndInteraction) as raised:
+            globs["_renforge_h_click_element"]({"id": target["id"]})
+    finally:
+        if original_get_focused is None:
+            delattr(focus_module, "get_focused")
+        else:
+            focus_module.get_focused = original_get_focused
+        if original_mouse_handler is None:
+            delattr(focus_module, "mouse_handler")
+        else:
+            focus_module.mouse_handler = original_mouse_handler
+        if original_event is None:
+            delattr(focus.widget, "event")
+        else:
+            focus.widget.event = original_event
+        if original_end_interaction_class is None:
+            delattr(core_module, "EndInteraction")
+        else:
+            core_module.EndInteraction = original_end_interaction_class
+        if original_end_interaction is None:
+            delattr(renpy, "end_interaction")
+        else:
+            renpy.end_interaction = original_end_interaction
+        if original_core_module is None:
+            delattr(renpy.display, "core")
+
+    result = getattr(raised.value, "renforge_result", None)
+    assert result is not None
+    assert result["ok"] is True
+    assert result["action"] == element["action"]
+    assert result["element"] == element
+    assert result["received_by"] is not None
+    assert result["x"] == target["center"]["x"]
+    assert result["y"] == target["center"]["y"]
+
+
 def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
     elements = running_bridge.client.list_ui_elements()
     assert [element["text"] for element in elements] == [
@@ -671,11 +994,133 @@ def test_hit_test_reports_topmost_focusable(running_bridge):
 def test_hover_element_moves_without_clicking(running_bridge):
     element = running_bridge.client.list_ui_elements()[1]
     hovered = running_bridge.client.hover_element(id=element["id"])
-    assert hovered["ok"] is True
+    assert hovered["ok"] is True, hovered
     assert hovered["hovered"] is True
     assert hovered["x"] == 60 and hovered["y"] == 50
     assert running_bridge.renpy._moves == [(60, 50)]
     assert running_bridge.renpy._clicks == []
+
+
+def test_hover_element_prefers_set_mouse_pos_without_legacy_move_mouse(running_bridge):
+    renpy = running_bridge.renpy
+    focus_list = renpy.display.focus.focus_list
+    calls = []
+    previous_set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
+    previous_move_mouse = renpy.test.testmouse.move_mouse
+
+    def _set_mouse_pos(x, y, *, duration):
+        calls.append((x, y, duration))
+        renpy._moves.append((x, y))
+
+    def _legacy_move_mouse(x, y):
+        renpy._moves.append((x, y))
+
+    def _widget_at(x, y):
+        for focus in reversed(focus_list):
+            widget = getattr(focus, "widget", None)
+            if widget is None:
+                continue
+            fx = getattr(focus, "x", None)
+            fy = getattr(focus, "y", None)
+            fw = getattr(focus, "w", None)
+            fh = getattr(focus, "h", None)
+            if fx is None or fy is None or fw is None or fh is None:
+                continue
+            if fx <= x < fx + fw and fy <= y < fy + fh:
+                return widget
+        return None
+
+    def _focus_mouse_handler(event, x, y, _):
+        renpy._focused_widget = _widget_at(int(x), int(y))
+
+    try:
+        renpy.display.focus.mouse_handler = _focus_mouse_handler
+        renpy.set_mouse_pos = _set_mouse_pos
+        renpy.test.testmouse.move_mouse = _legacy_move_mouse
+        renpy.test.testmouse.mouse_pos = (99, 99)
+        renpy.test.testmouse.mouse_buttons = [True, False, False]
+
+        element = running_bridge.client.list_ui_elements()[1]
+        hovered = running_bridge.client.hover_element(id=element["id"])
+        assert hovered["ok"] is True
+        assert hovered["method"] == "renpy"
+        assert calls == [(60, 50, 0)]
+        assert renpy._moves == [(60, 50)]
+        assert renpy._focused_widget is focus_list[2].widget
+        assert renpy.test.testmouse.mouse_pos is None
+        assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+
+        running_bridge.renpy.display.focus.mouse_handler(types.SimpleNamespace(), 60, 20, False)
+        assert renpy._focused_widget is focus_list[1].widget
+    finally:
+        renpy.set_mouse_pos = previous_set_mouse_pos
+        renpy.test.testmouse.move_mouse = previous_move_mouse
+
+
+def test_move_mouse_cleanup_when_exception_injected(running_bridge):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    focus = renpy.display.focus.focus_list[1]
+
+    renpy.test.testmouse.mouse_pos = (42, 42)
+    renpy.test.testmouse.mouse_buttons = [True, False, False]
+    original_mouse_handler = getattr(renpy.display.focus, "mouse_handler", None)
+
+    def _boom_mouse_handler(_event, _x, _y, _):
+        raise RuntimeError("mouse-handler-bad")
+
+    renpy.display.focus.mouse_handler = _boom_mouse_handler
+
+    try:
+        with pytest.raises(RuntimeError, match="mouse-handler-bad"):
+            globs["_renforge_move_mouse"](focus)
+    finally:
+        if original_mouse_handler is not None:
+            renpy.display.focus.mouse_handler = original_mouse_handler
+        else:
+            renpy.display.focus.__dict__.pop("mouse_handler", None)
+
+    assert renpy.test.testmouse.mouse_pos is None
+    assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+
+
+def test_hover_clears_testmouse_override_and_allows_physical_focus_changes(running_bridge):
+    focus_list = running_bridge.renpy.display.focus.focus_list
+
+    def _widget_at(x, y):
+        for focus in reversed(focus_list):
+            widget = getattr(focus, "widget", None)
+            if widget is None:
+                continue
+            fx = getattr(focus, "x", None)
+            fy = getattr(focus, "y", None)
+            fw = getattr(focus, "w", None)
+            fh = getattr(focus, "h", None)
+            if fx is None or fy is None or fw is None or fh is None:
+                continue
+            if fx <= x < fx + fw and fy <= y < fy + fh:
+                return widget
+        return None
+
+    def _focus_mouse_handler(event, x, y, _):
+        mouse_pos = getattr(running_bridge.renpy.test.testmouse, "mouse_pos", None)
+        if isinstance(mouse_pos, (tuple, list)) and len(mouse_pos) == 2:
+            x, y = int(mouse_pos[0]), int(mouse_pos[1])
+        running_bridge.renpy._focused_widget = _widget_at(x, y)
+
+    running_bridge.renpy.display.focus.mouse_handler = _focus_mouse_handler
+    running_bridge.renpy.test.testmouse.mouse_buttons = [True, False, False]
+    element = running_bridge.client.list_ui_elements()[1]
+    hovered = running_bridge.client.hover_element(id=element["id"])
+    assert hovered["ok"] is True
+    assert running_bridge.renpy.test.testmouse.mouse_pos is None
+    assert running_bridge.renpy.test.testmouse.mouse_buttons == [False, False, False]
+    assert running_bridge.renpy._focused_widget is focus_list[2].widget
+
+    event = types.SimpleNamespace()
+    running_bridge.renpy.display.focus.mouse_handler(event, 60, 20, False)
+    assert running_bridge.renpy.test.testmouse.mouse_buttons == [False, False, False]
+    assert running_bridge.renpy._focused_widget is focus_list[1].widget
 
 
 def test_hover_element_frame_guard_blocks_motion(running_bridge):
@@ -723,6 +1168,8 @@ def test_click_element_by_id_and_click_at_guards(running_bridge):
     assert clicked["ok"] is True
     assert clicked["x"] == 60 and clicked["y"] == 50
 
+    assert running_bridge.renpy._clicks[-1] == (1, 60, 50)
+
     frame_hash = running_bridge.client.screenshot_hash()
     guarded = running_bridge.client.click_at(
         123,
@@ -762,6 +1209,100 @@ def test_click_at_translates_screenshot_pixels_to_logical_coordinates(running_br
         "coordinate_space": "screenshot",
     }
     assert running_bridge.renpy._clicks[-1] == (1, 100, 200)
+
+
+def test_click_element_click_at_and_select_choice_use_shared_pointer_path(running_bridge):
+    element = running_bridge.client.list_ui_elements()[1]
+    calls = {"click_mouse": 0}
+
+    original_click_mouse = running_bridge.renpy.test.testmouse.click_mouse
+
+    def _counted_click_mouse(button, x, y):
+        calls["click_mouse"] += 1
+        return original_click_mouse(button, x, y)
+
+    running_bridge.renpy.test.testmouse.click_mouse = _counted_click_mouse
+
+    try:
+        clicked = running_bridge.client.click_element(id=element["id"])
+        clicked_at = running_bridge.client.click_at(80, 90)
+        selected = running_bridge.client.select_choice(text="Beta")
+        assert clicked["ok"] is True
+        assert clicked["x"] == 60
+        assert clicked["y"] == 50
+        assert clicked_at["ok"] is True
+        assert clicked_at["x"] == 80
+        assert clicked_at["y"] == 90
+        assert clicked_at["coordinate_space"] == "logical"
+        assert selected["ok"] is True
+        assert selected["x"] == 60
+        assert selected["y"] == 50
+        assert calls["click_mouse"] == 3
+        assert running_bridge.renpy._clicks[-3:] == [
+            (1, 60, 50),
+            (1, 80, 90),
+            (1, 60, 50),
+        ]
+    finally:
+        running_bridge.renpy.test.testmouse.click_mouse = original_click_mouse
+
+
+def test_fallback_pointer_path_clears_sticky_mouse_state(running_bridge):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+
+    previous_set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
+    previous_mouse = globs["pygame"]
+    globs["pygame"] = None
+    renpy.set_mouse_pos = None
+
+    def _legacy_move_mouse(x, y):
+        renpy._moves.append((x, y))
+        renpy.test.testmouse.mouse_pos = (x, y)
+
+    def _legacy_click_mouse(button, x, y):
+        renpy._clicks.append((button, x, y))
+        renpy.test.testmouse.mouse_pos = (x, y)
+        renpy.test.testmouse.mouse_buttons = [True, False, False]
+
+    renpy.test.testmouse.move_mouse = _legacy_move_mouse
+    renpy.test.testmouse.click_mouse = _legacy_click_mouse
+
+    try:
+        element = running_bridge.client.list_ui_elements()[1]
+        hovered = running_bridge.client.hover_element(id=element["id"])
+        assert hovered["ok"] is True
+        assert hovered["method"] == "renpy-test"
+        assert renpy.test.testmouse.mouse_pos is None
+        assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+
+        clicked = running_bridge.client.click_element(id=element["id"])
+        assert clicked["ok"] is True
+        assert renpy.test.testmouse.mouse_pos is None
+        assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+        selected = running_bridge.client.select_choice(text="Beta")
+        assert selected["ok"] is True
+        assert renpy.test.testmouse.mouse_pos is None
+        assert renpy.test.testmouse.mouse_buttons == [False, False, False]
+    finally:
+        renpy.set_mouse_pos = previous_set_mouse_pos
+        globs["pygame"] = previous_mouse
+
+
+def test_drain_bridge_cleans_testmouse_state_when_stop_is_set(running_bridge):
+    import sys
+
+    renpy = running_bridge.renpy
+    renpy.test.testmouse.mouse_pos = (12, 34)
+    renpy.test.testmouse.mouse_buttons = [True, False, False]
+
+    bridge = sys.modules["_renforge_runtime"].bridge
+    bridge.stop.set()
+
+    running_bridge.globs["renforge_drain_bridge"]()
+
+    assert renpy.test.testmouse.mouse_pos is None
+    assert renpy.test.testmouse.mouse_buttons == [False, False, False]
 
 
 def test_get_displayable_bounds_reports_logical_rect(running_bridge):
