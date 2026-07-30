@@ -229,9 +229,14 @@ def _remove_editor_artifacts(project_root: Path) -> None:
     # previous attempt already removed — that would strand the project lock
     # forever. Ownership is proven by the validated manifest and basename above,
     # plus the digest whenever the source is still present.
+    #
+    # Each symlink check runs *before* its exists() guard: exists() follows
+    # symlinks and is False for a dangling one, so a tampered artifact would
+    # otherwise read as absent, get skipped, and be left behind once the manifest
+    # is gone. Tampering is the one condition that must stay fail-closed.
+    if source_path.is_symlink():
+        raise RuntimeError("editor source artifact became a symlink")
     if source_path.exists():
-        if source_path.is_symlink():
-            raise RuntimeError("editor source artifact became a symlink")
         if not source_path.is_file():
             raise RuntimeError("editor source artifact is not a regular file")
         if hashlib.sha256(source_path.read_bytes()).hexdigest() != expected_sha256:
@@ -240,19 +245,21 @@ def _remove_editor_artifacts(project_root: Path) -> None:
     sibling_path = source_path.with_name(f"{basename}c")
     sibling_backup_path = source_path.with_name(f"{basename}c.bak")
 
-    if should_remove_compiled["rpyc"] and sibling_path.exists():
+    if should_remove_compiled["rpyc"]:
         if sibling_path.is_symlink():
             raise RuntimeError("editor compiled artifact became a symlink")
-        if not sibling_path.is_file():
-            raise RuntimeError("editor compiled artifact is not a regular file")
-        sibling_path.unlink()
+        if sibling_path.exists():
+            if not sibling_path.is_file():
+                raise RuntimeError("editor compiled artifact is not a regular file")
+            sibling_path.unlink()
 
-    if should_remove_compiled["rpyc_bak"] and sibling_backup_path.exists():
+    if should_remove_compiled["rpyc_bak"]:
         if sibling_backup_path.is_symlink():
             raise RuntimeError("editor compiled backup artifact became a symlink")
-        if not sibling_backup_path.is_file():
-            raise RuntimeError("editor compiled backup artifact is not a regular file")
-        sibling_backup_path.unlink()
+        if sibling_backup_path.exists():
+            if not sibling_backup_path.is_file():
+                raise RuntimeError("editor compiled backup artifact is not a regular file")
+            sibling_backup_path.unlink()
 
     source_path.unlink(missing_ok=True)
     manifest_path.unlink(missing_ok=True)

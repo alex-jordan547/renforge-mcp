@@ -927,3 +927,54 @@ def test_editor_artifact_cleanup_stays_retryable_after_any_unlink_failure(
         launcher._remove_editor_artifacts(tmp_path)
         remaining = [artifact.name for artifact in artifacts if artifact.exists()]
         assert remaining == [], f"retry after {failing.name} left {remaining}"
+
+
+def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Path) -> None:
+    """A dangling symlink must never read as an absent artifact.
+
+    ``Path.exists()`` follows symlinks and is False for a broken one, so a
+    tampered artifact would be skipped as "already cleaned", the manifest deleted
+    and the project lock released while the symlink stayed behind.
+    """
+    import renforge.bridge.launcher as launcher
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    renforge_dir = tmp_path / ".renforge"
+    renforge_dir.mkdir(parents=True)
+
+    basename = "zzrenforge_editor_cafebabecafebabe.rpy"
+    payload = b"screen _renforge_editor_launcher():\n    pass\n"
+    manifest_path = renforge_dir / "editor-session.json"
+
+    for artifact_name in (basename, f"{basename}c", f"{basename}c.bak"):
+        for stale in game_dir.iterdir():
+            stale.unlink()
+        (game_dir / basename).write_bytes(payload)
+        (game_dir / f"{basename}c").write_bytes(b"compiled")
+        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "basename": basename,
+                    "source_sha256": hashlib.sha256(payload).hexdigest(),
+                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        artifact = game_dir / artifact_name
+        artifact.unlink()
+        try:
+            artifact.symlink_to(game_dir / "nowhere")
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform dependent
+            pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+        assert artifact.is_symlink() and not artifact.exists(), artifact_name
+        with pytest.raises(RuntimeError, match="symlink"):
+            launcher._remove_editor_artifacts(tmp_path)
+        # Fail closed: the manifest survives, so the caller keeps the project
+        # lock instead of walking away from a tampered artifact.
+        assert manifest_path.exists(), artifact_name
+        assert artifact.is_symlink(), artifact_name
