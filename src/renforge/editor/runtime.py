@@ -32,22 +32,43 @@ class BridgeRuntimeProbe:
         project_root: str | Path,
         *,
         client_factory: Callable[..., BridgeClient] = BridgeClient.from_project,
+        max_retries: int = 1,
     ):
         self._project_root = Path(project_root)
         self._client_factory = client_factory
+        self._max_retries = max(0, int(max_retries))
 
     def _client(self, deadline: float) -> BridgeClient:
-        remaining = max(0.1, float(deadline) - time.monotonic())
+        remaining = float(deadline) - time.monotonic()
+        if remaining <= 0:
+            raise EditorError("RUNTIME_PROBE_TIMEOUT", "runtime probe request deadline exceeded")
         try:
             return self._client_factory(self._project_root, timeout=remaining)
         except (OSError, ValueError, KeyError, BridgeError) as exc:
             raise EditorError("RUNTIME_PROBE_UNAVAILABLE", f"unable to connect to runtime bridge: {exc}") from exc
 
-    def _request(self, command: str, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        try:
-            reply = self._client(deadline).request(command, payload)
-        except (OSError, ValueError, BridgeError, BridgeProtocolError) as exc:
-            raise EditorError("RUNTIME_PROBE_FAILED", f"runtime bridge request failed: {exc}") from exc
+    def _request(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        deadline: float,
+    ) -> dict[str, Any]:
+        last_error: BaseException | None = None
+        for _ in range(self._max_retries + 1):
+            try:
+                reply = self._client(deadline).request(command, payload)
+                break
+            except EditorError as exc:
+                if exc.code == "RUNTIME_PROBE_TIMEOUT":
+                    raise exc
+                last_error = exc
+            except (OSError, ValueError, BridgeError, BridgeProtocolError) as exc:
+                last_error = exc
+        else:
+            if isinstance(last_error, EditorError):
+                raise last_error
+            raise EditorError("RUNTIME_PROBE_FAILED", f"runtime bridge request failed: {last_error}") from last_error
+
         if not isinstance(reply, dict):
             raise EditorError("RUNTIME_PROBE_FAILED", "runtime bridge returned a non-object reply")
         if reply.get("ok") is not True:

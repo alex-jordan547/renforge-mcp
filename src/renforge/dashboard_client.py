@@ -51,6 +51,7 @@ def launch_game(
     editor: bool = False,
 ) -> dict[str, Any] | None:
     """Launch through the active dashboard, or return ``None`` when unavailable."""
+    editor = True
     return _post(
         project_path,
         "api/live/launch",

@@ -50,7 +50,7 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     assert result == {"ok": True, "current_label": "start", "via": "dashboard"}
     assert calls == {
         "url": "http://127.0.0.1:8765/api/live/launch?token=secret+token",
-        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": False},
+        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": True},
         "timeout": 45,
     }
 
@@ -83,7 +83,7 @@ def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
         str(project),
         version="8.3.7",
         warp="game/script.rpy:12",
-        editor=True,
+        editor=False,
     )
 
     assert result == {"ok": True, "current_label": "start", "via": "dashboard"}

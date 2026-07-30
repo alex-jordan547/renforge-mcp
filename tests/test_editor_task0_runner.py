@@ -26,3 +26,16 @@ def test_task0_runner_injects_editor_and_fixture(tmp_path: Path) -> None:
     assert fixture.is_file()
     assert editor.read_text(encoding="utf-8")
     assert fixture.read_text(encoding="utf-8")
+
+
+def test_task0_runner_accepts_custom_fixture_path(tmp_path: Path) -> None:
+    project = tmp_path / "demo"
+    (project / "game").mkdir(parents=True)
+    custom_fixture = tmp_path / "renforge_editor_task0_custom_fixture.rpy"
+    custom_fixture.write_text(
+        "screen renforge_editor_task0_fixture():\n    text \"custom\"\n",
+        encoding="utf-8",
+    )
+
+    copied = inject_editor_task0_resources(project, fixture_path=custom_fixture)
+    assert Path(copied["fixture"]).is_file()

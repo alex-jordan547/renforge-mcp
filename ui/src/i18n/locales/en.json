@@ -235,6 +235,10 @@
         "label": "Label",
         "say": "Say"
       },
+      "editorMode": {
+        "label": "Enable editor mode",
+        "hint": "Check this only when launching from this RenForge session."
+      },
       "header": {
         "hint": "Monitor and control live execution on port {{port}}"
       },

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 import ipaddress
 import json
 import socket
@@ -50,6 +51,7 @@ class _AnalysisRecord:
     runtime_key: dict[str, Any]
     source_key: dict[str, Any] | None
     original_position: list[int]
+    runtime_position: list[int]
     generation: int
     lock_reason: dict[str, Any] | None
     independent_frame_id: str
@@ -89,7 +91,7 @@ class EditorCoordinator:
 
         self._session_id = uuid.uuid4().hex
         self._server_nonce = uuid.uuid4().hex
-        self._script_generation: int | None = None
+        self._script_generation: int = -1
         self._client_nonce: str | None = None
 
         self._request_cache: dict[str, tuple[bytes, dict[str, Any]]] = {}
@@ -138,12 +140,13 @@ class EditorCoordinator:
             self._stop_event.set()
             listener = self._listener
             self._listener = None
+            accept_thread = self._accept_thread
+            self._accept_thread = None
             connections = list(self._connections)
-        if listener is not None:
-            try:
-                listener.close()
-            except OSError:
-                pass
+            connection_threads = list(self._connection_threads)
+            self._connections.clear()
+            self._connection_threads.clear()
+            self._request_cache.clear()
         for connection in connections:
             try:
                 connection.shutdown(socket.SHUT_RDWR)
@@ -153,11 +156,15 @@ class EditorCoordinator:
                 connection.close()
             except OSError:
                 pass
-
-        if self._accept_thread is not None:
-            self._accept_thread.join(timeout=max(0.1, timeout))
-        for thread in list(self._connection_threads):
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
+        for thread in connection_threads:
             thread.join(timeout=max(0.1, timeout))
+        if accept_thread is not None:
+            accept_thread.join(timeout=max(0.1, timeout))
 
         with self._lock:
             for record in self._transactions.values():
@@ -363,7 +370,7 @@ class EditorCoordinator:
                 if cached is not None:
                     previous_bytes, previous_reply = cached
                     if previous_bytes == canonical:
-                        return previous_reply, False
+                        return deepcopy(previous_reply), False
                     return (
                         self._error_reply(
                             request_id=request_id,
@@ -383,8 +390,8 @@ class EditorCoordinator:
                         message=exc.message,
                         details=exc.details,
                     )
-                self._request_cache[request_id] = (canonical, reply)
-            return reply, False
+                self._request_cache[request_id] = (canonical, deepcopy(reply))
+            return deepcopy(reply), False
         except EditorError as exc:
             request_id = frame.get("request_id") if isinstance(frame.get("request_id"), str) else None
             return (
@@ -435,13 +442,15 @@ class EditorCoordinator:
         if generation is None:
             raise EditorError("SCRIPT_GENERATION_INVALID", "independent observation is missing script_generation")
         with self._lock:
-            if self._script_generation is None:
+            if self._script_generation == -1:
                 self._script_generation = generation
             if self._script_generation != generation:
                 raise EditorError("SCRIPT_GENERATION_MISMATCH", "observation generation does not match coordinator")
 
         lock_reason = self._runtime_lock_reason(runtime_key)
         source_key: dict[str, Any] | None = None
+        runtime_position = self._extract_position(independent)
+        original_position = list(runtime_position)
 
         try:
             source_location = runtime_key.get("source_location")
@@ -452,7 +461,11 @@ class EditorCoordinator:
                 and isinstance(source_location[1], int)
             ):
                 raise EditorError("SOURCE_LOCATION_INVALID", "runtime_key.source_location must be [path, line]")
-            relative_path = source_location[0]
+
+            def _strip_game_prefix(path: str) -> str:
+                return path[5:] if path.startswith("game/") else path
+
+            relative_path = _strip_game_prefix(source_location[0])
             if len(relative_path.encode("utf-8")) > MAX_PATH_BYTES:
                 raise EditorError("PATH_TOO_LONG", "source path exceeds 1 KiB")
             source_line = int(source_location[1])
@@ -464,6 +477,28 @@ class EditorCoordinator:
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
             widget_id = self._require_runtime_widget_id(runtime_key)
             statement = analyze_textbutton_statement(lines[source_line - 1], expected_widget_id=widget_id)
+            original_position = [statement.xpos, statement.ypos]
+            ancestry = runtime_key.get("ancestry")
+            normalized_ancestry = (
+                [
+                    {
+                        **ancestor,
+                        "source_location": [
+                            _strip_game_prefix(ancestor["source_location"][0]),
+                            ancestor["source_location"][1],
+                        ],
+                    }
+                    if isinstance(ancestor, dict)
+                    and isinstance(ancestor.get("source_location"), list)
+                    and len(ancestor["source_location"]) == 2
+                    and isinstance(ancestor["source_location"][0], str)
+                    and isinstance(ancestor["source_location"][1], int)
+                    else ancestor
+                    for ancestor in ancestry
+                ]
+                if isinstance(ancestry, list)
+                else ancestry
+            )
             source_key = {
                 "relative_path": relative_path,
                 "line": source_line,
@@ -471,7 +506,7 @@ class EditorCoordinator:
                 "widget_id": widget_id,
                 "invocation_path": runtime_key.get("invocation_path"),
                 "instance_discriminator": runtime_key.get("instance_discriminator"),
-                "ancestry": runtime_key.get("ancestry"),
+                "ancestry": normalized_ancestry,
                 "statement_kind": "textbutton",
                 "baseline_sha256": source_sha,
             }
@@ -486,7 +521,7 @@ class EditorCoordinator:
                         "INDEPENDENT_MEASUREMENT_INVALID",
                         "independent measurement_method must be focus_list",
                     )
-                elif independent.get("runtime_key") != runtime_key:
+                elif not self._runtime_keys_equivalent_for_reobservation(runtime_key, independent.get("runtime_key")):
                     lock_reason = self._lock_reason(
                         "RUNTIME_KEY_MISMATCH",
                         "independent runtime key does not match input runtime key",
@@ -507,7 +542,6 @@ class EditorCoordinator:
         except (OSError, UnicodeDecodeError) as exc:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
 
-        original_position = self._extract_position(independent)
         analysis_id = uuid.uuid4().hex
         record = _AnalysisRecord(
             analysis_id=analysis_id,
@@ -515,6 +549,7 @@ class EditorCoordinator:
             runtime_key=runtime_key,
             source_key=source_key,
             original_position=original_position,
+            runtime_position=runtime_position,
             generation=generation,
             lock_reason=lock_reason,
             independent_frame_id=str(independent.get("frame_id", "")),
@@ -601,7 +636,7 @@ class EditorCoordinator:
             independent = probe.observe(record.runtime_key, deadline=_now_deadline(5.0))
             if not isinstance(independent, dict):
                 raise EditorError("INDEPENDENT_OBSERVATION_INVALID", "runtime probe returned invalid observation")
-            if independent.get("runtime_key") != record.runtime_key:
+            if not self._runtime_keys_equivalent_for_reobservation(record.runtime_key, independent.get("runtime_key")):
                 raise EditorError("RUNTIME_KEY_MISMATCH", "runtime reanalysis key mismatch")
             if independent.get("measurement_method") != "focus_list":
                 raise EditorError("MEASUREMENT_METHOD_INVALID", "independent reanalysis must use focus_list")
@@ -625,7 +660,11 @@ class EditorCoordinator:
                 {
                     "analysis_id": record.analysis_id,
                     "source_key": source_key,
-                    "position": [x, y],
+                    "runtime_key": deepcopy(record.runtime_key),
+                    "position": [
+                        int(record.runtime_position[0]) + int(x) - int(record.original_position[0]),
+                        int(record.runtime_position[1]) + int(y) - int(record.original_position[1]),
+                    ],
                 }
                 for record, x, y, source_key in selected_records
             ],
@@ -703,11 +742,13 @@ class EditorCoordinator:
             self._conditional_rollback(record)
             raise EditorError("ATTESTATION_FAILED", "runtime attestation did not reach all_targets_attested")
 
-        record.state = "committed"
-        if record.timer is not None:
-            record.timer.cancel()
-            record.timer = None
         with self._lock:
+            if record.state != "published":
+                return {"transaction_id": transaction_id, "state": record.state}
+            if record.timer is not None:
+                record.timer.cancel()
+                record.timer = None
+            record.state = "committed"
             self._script_generation = script_generation
         self._persist_transaction(record)
         return {"transaction_id": transaction_id, "state": "committed"}
@@ -727,6 +768,32 @@ class EditorCoordinator:
         if len(widget_id.encode("utf-8")) > MAX_STRING_BYTES:
             raise EditorError("WIDGET_ID_INVALID", "runtime_key.widget_id exceeds size limit")
         return widget_id
+
+    def _runtime_keys_equivalent_for_reobservation(self, runtime_key_a: Any, runtime_key_b: Any) -> bool:
+        if not (isinstance(runtime_key_a, dict) and isinstance(runtime_key_b, dict)):
+            return runtime_key_a == runtime_key_b
+
+        def _single_static_instance(discriminator: Any) -> bool:
+            return (
+                isinstance(discriminator, dict)
+                and discriminator.get("kind") == "static"
+                and discriminator.get("instance_count") == 1
+            )
+
+        allow_ordinal_drift = _single_static_instance(runtime_key_a.get("instance_discriminator")) and _single_static_instance(
+            runtime_key_b.get("instance_discriminator")
+        )
+
+        key_a = deepcopy(runtime_key_a)
+        key_b = deepcopy(runtime_key_b)
+        if allow_ordinal_drift:
+            discriminator_a = key_a.get("instance_discriminator")
+            discriminator_b = key_b.get("instance_discriminator")
+            if isinstance(discriminator_a, dict):
+                discriminator_a.pop("ordinal", None)
+            if isinstance(discriminator_b, dict):
+                discriminator_b.pop("ordinal", None)
+        return key_a == key_b
 
     def _runtime_lock_reason(self, runtime_key: dict[str, Any]) -> dict[str, Any] | None:
         required_string_keys = ("screen", "invocation_path", "widget_id")
@@ -809,7 +876,7 @@ class EditorCoordinator:
         return {"code": code, "message": message}
 
     def _coerce_generation(self, value: Any) -> int | None:
-        if isinstance(value, int):
+        if type(value) is int:
             return value
         return None
 
@@ -899,32 +966,48 @@ class EditorCoordinator:
             return
         self._conditional_rollback(record)
 
-    def _conditional_rollback(self, transaction: _TransactionRecord) -> None:
-        if transaction.timer is not None:
-            transaction.timer.cancel()
-            transaction.timer = None
+    def _conditional_rollback(self, transaction: _TransactionRecord, *, allow_staged: bool = False) -> None:
+        allowed_states = {"published", "staged"} if allow_staged else {"published"}
+        with self._lock:
+            if transaction.state not in allowed_states:
+                return
+            if transaction.timer is not None:
+                transaction.timer.cancel()
+                transaction.timer = None
         try:
             current_bytes = transaction.source_absolute_path.read_bytes()
         except OSError:
+            with self._lock:
+                if transaction.state != "published":
+                    return
+                transaction.state = "rollback_conflict"
+                transaction.uncertain_paths = [transaction.source_relative_path]
+                self._persist_transaction(transaction)
+            return
+        current_sha = sha256_bytes(current_bytes)
+        with self._lock:
+            if transaction.state not in allowed_states:
+                return
+            if current_sha == transaction.staged_sha256:
+                try:
+                    atomic_write_file(transaction.source_absolute_path, transaction.original_bytes)
+                except EditorPathError:
+                    transaction.state = "rollback_conflict"
+                    transaction.uncertain_paths = [transaction.source_relative_path]
+                    self._persist_transaction(transaction)
+                    return
+                transaction.state = "rolled_back"
+                transaction.uncertain_paths = []
+                self._persist_transaction(transaction)
+                return
+            if current_sha == transaction.original_sha256:
+                transaction.state = "rolled_back"
+                transaction.uncertain_paths = []
+                self._persist_transaction(transaction)
+                return
             transaction.state = "rollback_conflict"
             transaction.uncertain_paths = [transaction.source_relative_path]
             self._persist_transaction(transaction)
-            return
-        current_sha = sha256_bytes(current_bytes)
-        if current_sha == transaction.staged_sha256:
-            atomic_write_file(transaction.source_absolute_path, transaction.original_bytes)
-            transaction.state = "rolled_back"
-            transaction.uncertain_paths = []
-            self._persist_transaction(transaction)
-            return
-        if current_sha == transaction.original_sha256:
-            transaction.state = "rolled_back"
-            transaction.uncertain_paths = []
-            self._persist_transaction(transaction)
-            return
-        transaction.state = "rollback_conflict"
-        transaction.uncertain_paths = [transaction.source_relative_path]
-        self._persist_transaction(transaction)
 
     def _persist_transaction(self, transaction: _TransactionRecord) -> None:
         tx_dir = self._transaction_root / transaction.transaction_id
@@ -977,6 +1060,8 @@ class EditorCoordinator:
                 continue
             if state not in COMMIT_STATES:
                 continue
+            if transaction_id != child.name:
+                continue
             try:
                 source_path = resolve_game_path(self._project.root, relative_path)
                 original_path = child / "original" / Path(relative_path)
@@ -985,6 +1070,28 @@ class EditorCoordinator:
                 staged_bytes = staged_path.read_bytes()
             except (EditorPathError, OSError):
                 continue
+            actual_original_sha256 = sha256_bytes(original_bytes)
+            actual_staged_sha256 = sha256_bytes(staged_bytes)
+            manifest_original_sha256 = manifest.get("original_sha256")
+            manifest_staged_sha256 = manifest.get("staged_sha256")
+            manifest_intact = True
+            if isinstance(manifest_original_sha256, str) and manifest_original_sha256 != actual_original_sha256:
+                manifest_intact = False
+            if isinstance(manifest_staged_sha256, str) and manifest_staged_sha256 != actual_staged_sha256:
+                manifest_intact = False
+            if not isinstance(manifest.get("generation"), int):
+                generation = 0
+            else:
+                generation = int(manifest.get("generation", 0))
+            expected_targets = manifest.get("expected_targets")
+            if not isinstance(expected_targets, list):
+                expected_targets = []
+            diagnostics = manifest.get("diagnostics")
+            if not isinstance(diagnostics, dict):
+                diagnostics = {}
+            uncertain_paths = manifest.get("uncertain_paths")
+            if not isinstance(uncertain_paths, list):
+                uncertain_paths = []
 
             record = _TransactionRecord(
                 transaction_id=transaction_id,
@@ -992,15 +1099,20 @@ class EditorCoordinator:
                 source_absolute_path=source_path,
                 original_bytes=original_bytes,
                 staged_bytes=staged_bytes,
-                original_sha256=str(manifest.get("original_sha256") or sha256_bytes(original_bytes)),
-                staged_sha256=str(manifest.get("staged_sha256") or sha256_bytes(staged_bytes)),
-                generation=int(manifest.get("generation") or 0),
-                expected_targets=list(manifest.get("expected_targets") or []),
+                original_sha256=actual_original_sha256,
+                staged_sha256=actual_staged_sha256,
+                generation=generation,
+                expected_targets=list(expected_targets),
                 state=state,
-                diagnostics=dict(manifest.get("diagnostics") or {}),
-                uncertain_paths=list(manifest.get("uncertain_paths") or []),
+                diagnostics=dict(diagnostics),
+                uncertain_paths=list(uncertain_paths),
             )
             self._transactions[transaction_id] = record
-            if state in {"staged", "published"}:
-                self._conditional_rollback(record)
+            if state in {"staged", "published"} and manifest_intact:
+                self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
+            elif state in {"staged", "published"} and not manifest_intact:
+                record.state = "rollback_conflict"
+                record.uncertain_paths = [relative_path]
+                self._recovered.append(transaction_id)
+                self._persist_transaction(record)

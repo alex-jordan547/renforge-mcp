@@ -56,8 +56,9 @@ _LAUNCH_LOCK = threading.Lock()
 
 
 class _LaunchTask:
-    def __init__(self) -> None:
+    def __init__(self, *, requested_editor: bool = False) -> None:
         self.started = time.monotonic()
+        self.requested_editor = requested_editor
         self.finished: float | None = None
         self.cancel_event = threading.Event()
         self.done_event = threading.Event()
@@ -86,15 +87,18 @@ def cancelled_launch_result(*, phase: str = "waiting_for_bridge") -> dict[str, A
     }
 
 
-def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict]) -> None:
+def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict], *, editor: bool = False) -> None:
     try:
         task.result = launch(task.cancel_event)
+        if isinstance(task.result, dict):
+            task.result.setdefault("editor", editor)
     except Exception as exc:
         task.result = {
             "ok": False,
             "ready": False,
             "code": "LAUNCH_TASK_FAILED",
             "phase": "starting_renpy",
+            "editor": editor,
             "message": f"{type(exc).__name__}: {exc}",
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -110,6 +114,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
         return {
             "ok": True,
             "ready": False,
+            "editor": task.requested_editor,
             "status": "starting",
             "phase": "waiting_for_bridge",
             "elapsed_ms": elapsed_ms,
@@ -129,6 +134,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
     is_ready = bool(result.get("ok") and result.get("ready", True))
     result["ready"] = is_ready
     result["status"] = "ready" if is_ready else "failed"
+    result.setdefault("editor", task.requested_editor)
     result["elapsed_ms"] = elapsed_ms
     return result
 
@@ -138,6 +144,7 @@ def start_launch(
     launch: Callable[[threading.Event], dict],
     *,
     wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
+    editor: bool = False,
 ) -> dict[str, Any]:
     key = _key(project_path)
     should_start = False
@@ -145,7 +152,7 @@ def start_launch(
         _prune_launches(time.monotonic())
         task = _LAUNCHES.get(key)
         if task is None or task.done_event.is_set():
-            task = _LaunchTask()
+            task = _LaunchTask(requested_editor=editor)
             _LAUNCHES[key] = task
             should_start = True
 
@@ -159,7 +166,12 @@ def start_launch(
         )
         return result
 
-    threading.Thread(target=_run_launch, args=(task, launch), daemon=True).start()
+    threading.Thread(
+        target=_run_launch,
+        args=(task, launch),
+        kwargs={"editor": editor},
+        daemon=True,
+    ).start()
 
     task.done_event.wait(max(0.0, wait_timeout))
     return _launch_task_status(task)
@@ -288,15 +300,16 @@ def launch_game(
     if isinstance(session_cfg.get("cleanup_on_stop"), bool):
         cleanup_on_stop = session_cfg["cleanup_on_stop"]
     preferences = str(session_cfg.get("preferences", "existing") or "existing")
-    requested_editor = bool(editor)
+    requested_editor = True
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
     if existing is not None:
         existing_editor = bool(getattr(existing, "editor", False))
-        if existing_editor != requested_editor:
+        canonical_editor = bool(existing_editor or requested_editor)
+        if existing_editor != canonical_editor:
             return _session_mode_mismatch(
-                requested_editor=requested_editor,
+                requested_editor=canonical_editor,
                 existing_editor=existing_editor,
                 message=(
                     "The requested launch mode does not match the existing owned session. "
@@ -413,7 +426,7 @@ def launch_game(
             for parameter in launch_signature.parameters.values()
         )
         if supports_editor:
-            launch_kwargs["editor"] = requested_editor
+            launch_kwargs["editor"] = True
         session_obj = launch_with_bridge(sdk, project, cancel_event=cancel_event, **launch_kwargs)
     except LaunchError as exc:
         return exc.to_dict()
@@ -426,7 +439,7 @@ def launch_game(
             "message": f"{type(exc).__name__}: {exc}",
         }
 
-    session_obj.editor = bool(getattr(session_obj, "editor", requested_editor))
+    session_obj.editor = bool(getattr(session_obj, "editor", True))
     _SESSIONS[key] = session_obj
     label = None
     try:

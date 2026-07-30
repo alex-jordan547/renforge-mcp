@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import time
@@ -97,6 +98,41 @@ def _recv_json(sock: socket.socket) -> dict[str, Any]:
 
 def _send_json(sock: socket.socket, payload: dict[str, Any]) -> None:
     sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+
+
+def _write_recovered_staged_transaction(
+    transaction_root: Path,
+    *,
+    transaction_id: str,
+    state: str,
+    original_bytes: bytes,
+    staged_bytes: bytes,
+    generation: int = 1,
+    source_relative_path: str = "script.rpy",
+    session_id: str = "recovery-session",
+) -> None:
+    tx_dir = transaction_root / transaction_id
+    original_path = tx_dir / "original" / Path(source_relative_path)
+    staged_path = tx_dir / "staged" / Path(source_relative_path)
+    original_path.parent.mkdir(parents=True, exist_ok=True)
+    staged_path.parent.mkdir(parents=True, exist_ok=True)
+    original_path.write_bytes(original_bytes)
+    staged_path.write_bytes(staged_bytes)
+    manifest = {
+        "schema_version": 1,
+        "transaction_id": transaction_id,
+        "session_id": session_id,
+        "state": state,
+        "source_relative_path": source_relative_path,
+        "generation": generation,
+        "original_sha256": hashlib.sha256(original_bytes).hexdigest(),
+        "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(),
+        "expected_targets": [],
+        "uncertain_paths": [],
+        "diagnostics": {},
+    }
+    manifest_path = tx_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
 
 
 def _auth(sock: socket.socket, endpoint: Any, *, nonce: str = "nonce") -> dict[str, Any]:
@@ -304,6 +340,38 @@ def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path)
         coordinator.close()
 
 
+def test_analyze_target_normalizes_game_prefixed_source_location(tmp_path: Path) -> None:
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["source_location"] = ["game/script.rpy", 2]
+    observation["rect"] = [112, 110, 120, 40]
+    for ancestor in observation["runtime_key"]["ancestry"]:
+        ancestor["source_location"] = ["game/script.rpy", ancestor["source_location"][1]]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-3",
+            "object_id": "obj-independent-3",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            reply = _analyze(sock, auth, observation, request_id="an-game-prefix")
+            assert reply["ok"] is True
+            assert reply["result"]["lock_reason"] is None
+            source_key = reply["result"]["source_key"]
+            assert source_key["relative_path"] == "script.rpy"
+            assert reply["result"]["original_position"] == [12, 10]
+            for ancestor in source_key["ancestry"]:
+                assert ancestor["source_location"][0] == "script.rpy"
+    finally:
+        coordinator.close()
+
+
 def test_commit_refuses_stale_source_and_duplicate_intent_ids(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation()
@@ -491,6 +559,53 @@ def test_reload_handshake_marks_committed_after_independent_attestation(tmp_path
         coordinator.close()
 
 
+def test_reload_handshake_rolls_back_when_rebind_is_ambiguous(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation(script_generation=20)
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-ambiguous",
+            "object_id": "obj-independent-ambiguous",
+        },
+        attest_reply={"ok": False, "error": "AMBIGUOUS_REBIND"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    baseline = source.read_bytes()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-ambiguous")
+            commit = _commit(sock, auth, analysis, x=300, y=301, request_id="co-ambiguous")
+            transaction_id = commit["result"]["transaction_id"]
+
+            _send_json(
+                sock,
+                {
+                    "protocol": "renforge-editor",
+                    "version": 1,
+                    "connection_id": auth["connection_id"],
+                    "request_id": "hs-ambiguous",
+                    "command": "reload_handshake",
+                    "payload": {
+                        "transaction_id": transaction_id,
+                        "script_generation": 21,
+                    },
+                },
+            )
+            handshake = _recv_json(sock)
+            assert handshake["ok"] is False
+            assert handshake["error"]["code"] == "ATTESTATION_FAILED"
+            assert source.read_bytes() == baseline
+
+            status = _commit_status(sock, auth, transaction_id, request_id="st-ambiguous")
+            assert status["result"]["state"] == "rolled_back"
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize(
     "crop_state,expected_code",
     [
@@ -521,3 +636,108 @@ def test_analyze_target_denies_unproven_crop_states(tmp_path: Path, crop_state: 
             assert reply["result"]["capabilities"] == {"move": False}
     finally:
         coordinator.close()
+
+
+def test_runtime_key_ordinal_drift_is_ignored_for_single_static_instance(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["instance_discriminator"] = {
+        "kind": "static",
+        "instance_count": 1,
+        "ordinal": 6,
+    }
+    drifted_runtime_key = json.loads(json.dumps(observation["runtime_key"]))
+    drifted_runtime_key["instance_discriminator"]["ordinal"] = 7
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "runtime_key": drifted_runtime_key,
+            "frame_id": "independent-frame-7",
+            "object_id": "obj-independent-7",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-ordinal-drift")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"] is None
+            assert analysis["result"]["capabilities"] == {"move": True}
+
+            probe.observe_reply["runtime_key"]["widget_id"] = "changed_btn"
+            commit = _commit(sock, auth, analysis, x=30, y=40, request_id="co-stable-mismatch")
+            assert commit["ok"] is False
+            assert commit["error"]["code"] == "RUNTIME_KEY_MISMATCH"
+    finally:
+        coordinator.close()
+
+
+def test_recover_staged_transaction_with_matching_original_bytes(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    sdk = _make_sdk(tmp_path)
+    coordinator = EditorCoordinator(project, sdk)
+    transaction_root = coordinator._transaction_root
+    transaction_id = "recovered-staged-original"
+    original_bytes = source.read_bytes()
+    staged_bytes = original_bytes.replace(b'"Play"', b'"Recovered"')
+    _write_recovered_staged_transaction(
+        transaction_root,
+        transaction_id=transaction_id,
+        state="staged",
+        original_bytes=original_bytes,
+        staged_bytes=staged_bytes,
+    )
+    coordinator._recover_transactions()
+    status = coordinator.close()
+    assert status["transactions"][transaction_id] == "rolled_back"
+    assert status["recovered"] == [transaction_id]
+    assert coordinator._transactions[transaction_id].uncertain_paths == []
+    assert source.read_bytes() == original_bytes
+
+
+def test_recover_staged_transaction_with_matching_staged_bytes_rolls_back(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    sdk = _make_sdk(tmp_path)
+    coordinator = EditorCoordinator(project, sdk)
+    transaction_root = coordinator._transaction_root
+    transaction_id = "recovered-staged-matching-staged"
+    original_bytes = source.read_bytes()
+    staged_bytes = original_bytes.replace(b'"Play"', b'"Recovered"')
+    source.write_bytes(staged_bytes)
+    _write_recovered_staged_transaction(
+        transaction_root,
+        transaction_id=transaction_id,
+        state="staged",
+        original_bytes=original_bytes,
+        staged_bytes=staged_bytes,
+    )
+    coordinator._recover_transactions()
+    status = coordinator.close()
+    assert status["transactions"][transaction_id] == "rolled_back"
+    assert source.read_bytes() == original_bytes
+
+
+def test_recover_staged_transaction_conflict_keeps_tampered_source(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    sdk = _make_sdk(tmp_path)
+    coordinator = EditorCoordinator(project, sdk)
+    transaction_root = coordinator._transaction_root
+    transaction_id = "recovered-staged-conflict"
+    original_bytes = source.read_bytes()
+    staged_bytes = original_bytes.replace(b'"Play"', b'"Recovered"')
+    source.write_bytes(b"tampered\n")
+    _write_recovered_staged_transaction(
+        transaction_root,
+        transaction_id=transaction_id,
+        state="staged",
+        original_bytes=original_bytes,
+        staged_bytes=staged_bytes,
+    )
+    coordinator._recover_transactions()
+    status = coordinator.close()
+    assert status["transactions"][transaction_id] == "rollback_conflict"
+    assert coordinator._transactions[transaction_id].uncertain_paths == [ "script.rpy" ]
+    assert source.read_bytes() == b"tampered\n"

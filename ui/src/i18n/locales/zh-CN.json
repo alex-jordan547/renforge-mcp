@@ -10,6 +10,14 @@
     "workspace": "工作区",
     "project": "项目"
   },
+  "pages": {
+    "live": {
+      "editorMode": {
+        "label": "启用编辑器模式",
+        "hint": "仅当由当前 RenForge 会话启动且启用 V1 可视化编辑器时勾选。"
+      }
+    }
+  },
   "section": {
     "live": "直播",
     "storyMap": "故事地图",

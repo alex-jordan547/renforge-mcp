@@ -1,3 +1,22 @@
+screen _renforge_editor_launcher():
+    layer "screens"
+    zorder 11999
+
+    if _renforge_editor_is_editor_injected() and not _renforge_editor_is_active():
+        textbutton "RF":
+            id "rf_launcher"
+            xalign 0.985
+            yalign 0.025
+            action Function(_renforge_editor_activate)
+            background Solid("#7c3aed")
+            hover_background Solid("#8b5cf6")
+            text_color "#ffffff"
+            text_size 16
+            xpadding 12
+            ypadding 7
+            at Transform(alpha=0.92)
+
+
 screen _renforge_editor_overlay():
     layer "screens"
     zorder 12000
@@ -5,82 +24,180 @@ screen _renforge_editor_overlay():
     if _renforge_editor_is_active():
         add _renforge_editor_event_catcher()
 
+        $ _rf_selection = _renforge_editor_selection_snapshot()
+        $ _rf_label = _renforge_editor_label_snapshot()
+        $ _rf_distance = _renforge_editor_distance_snapshot()
+        $ _rf_tools_visible = _renforge_editor_tools_visible()
+
         fixed:
-            id "rf_overlay_root"
             xfill True
             yfill True
+            at Transform(alpha=_renforge_editor_opacity())
 
-            if _renforge_editor_guide_x() is not None:
-                add Solid("#ff0000", xysize=(1, config.screen_height)):
+            if _rf_tools_visible and _renforge_editor_guide_x() is not None:
+                add Solid("#ff3b30", xysize=(1, config.screen_height)):
+                    id "rf_guide_x"
                     xpos int(_renforge_editor_guide_x())
                     ypos 0
-                    at Transform(alpha=_renforge_editor_opacity())
 
-            if _renforge_editor_guide_y() is not None:
-                add Solid("#ff0000", xysize=(config.screen_width, 1)):
+            if _rf_tools_visible and _renforge_editor_guide_y() is not None:
+                add Solid("#ff3b30", xysize=(config.screen_width, 1)):
+                    id "rf_guide_y"
                     xpos 0
                     ypos int(_renforge_editor_guide_y())
-                    at Transform(alpha=_renforge_editor_opacity())
 
-            add Solid("#0066ff", xysize=(80, 20)):
-                xpos 1000
-                ypos 16
-                at Transform(alpha=_renforge_editor_opacity())
+            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_x() is not None:
+                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_renforge_editor_guide_x()) + 8))
+                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_distance["y"]) + int(_rf_distance["h"]) + 6))
+                frame:
+                    id "rf_distance_x"
+                    xpos _rf_distance_x
+                    ypos _rf_distance_y
+                    background Solid("#b91c1c")
+                    padding (6, 3)
+                    text _rf_distance["text_x"]:
+                        id "rf_distance_x_text"
+                        color "#ffffff"
+                        size 12
 
-            $ _rf_label = _renforge_editor_label_snapshot()
-            if _rf_label is not None:
+            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_y() is not None:
+                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_distance["x"]) + int(_rf_distance["w"]) + 6))
+                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_renforge_editor_guide_y()) + 8))
+                frame:
+                    id "rf_distance_y"
+                    xpos _rf_distance_x
+                    ypos _rf_distance_y
+                    background Solid("#b91c1c")
+                    padding (6, 3)
+                    text _rf_distance["text_y"]:
+                        id "rf_distance_y_text"
+                        color "#ffffff"
+                        size 12
+
+            if _rf_tools_visible and _rf_selection is not None:
+                $ _rf_x = int(_rf_selection["x"])
+                $ _rf_y = int(_rf_selection["y"])
+                $ _rf_w = int(_rf_selection["w"])
+                $ _rf_h = int(_rf_selection["h"])
+                $ _rf_color = _rf_selection["color"]
+                add Solid("#7c3aed", xysize=(8, 8)):
+                    xpos _rf_x - 3
+                    ypos _rf_y - 3
+                add Solid(_rf_color, xysize=(_rf_w, 2)):
+                    xpos _rf_x
+                    ypos _rf_y
+                add Solid(_rf_color, xysize=(_rf_w, 2)):
+                    xpos _rf_x
+                    ypos _rf_y + _rf_h - 2
+                add Solid(_rf_color, xysize=(2, _rf_h)):
+                    xpos _rf_x
+                    ypos _rf_y
+                add Solid(_rf_color, xysize=(2, _rf_h)):
+                    xpos _rf_x + _rf_w - 2
+                    ypos _rf_y
+
+            if _rf_tools_visible and _rf_label is not None:
                 frame:
                     id "rf_label"
                     xpos int(_rf_label["x"])
                     ypos int(_rf_label["y"])
                     xsize int(_rf_label["w"])
                     ysize int(_rf_label["h"])
-                    background Solid("#00ff00")
+                    background Solid("#111116")
+                    padding (10, 5)
                     at Transform(alpha=float(_rf_label["alpha"]))
                     text _rf_label["text"]:
-                        color "#000000"
-                        size 16
+                        color "#f4f4f5"
+                        size 14
                         xalign 0.0
                         yalign 0.5
 
+            frame:
+                id "rf_toolbar"
+                xalign 0.5
+                ypos 14
+                background Solid("#111116")
+                padding (8, 6)
+
+                hbox:
+                    spacing 6
+                    textbutton "Exit":
+                        id "rf_exit"
+                        action Function(_renforge_editor_exit)
+                        text_color "#f4f4f5"
+                    textbutton "Undo":
+                        id "rf_undo"
+                        action Function(_renforge_editor_undo)
+                        sensitive _renforge_editor_can_undo()
+                        text_color "#f4f4f5"
+                    textbutton "Redo":
+                        id "rf_redo"
+                        action Function(_renforge_editor_redo)
+                        sensitive _renforge_editor_can_redo()
+                        text_color "#f4f4f5"
+                    textbutton "Reset":
+                        id "rf_reset"
+                        action Function(_renforge_editor_reset_selected)
+                        sensitive _renforge_editor_has_selection()
+                        text_color "#f4f4f5"
+                    textbutton ("Tools On" if _rf_tools_visible else "Tools Off"):
+                        id "rf_tools"
+                        action Function(_renforge_editor_toggle_tools)
+                        background Solid("#7c3aed" if _rf_tools_visible else "#3f3f46")
+                        text_color "#ffffff"
+                    textbutton "-":
+                        id "rf_opacity_down"
+                        action Function(_renforge_editor_adjust_opacity, -0.1)
+                        text_color "#f4f4f5"
+                    textbutton "+":
+                        id "rf_opacity_up"
+                        action Function(_renforge_editor_adjust_opacity, 0.1)
+                        text_color "#f4f4f5"
+                    text _renforge_editor_status_text():
+                        color "#a1a1aa"
+                        size 14
+                        yalign 0.5
+                        xminimum 120
+                    textbutton _renforge_editor_save_label():
+                        id "rf_save"
+                        action Function(_renforge_editor_save)
+                        sensitive _renforge_editor_save_enabled()
+                        background Solid("#7c3aed")
+                        hover_background Solid("#8b5cf6")
+                        insensitive_background Solid("#3f3f46")
+                        text_color "#ffffff"
+
         if _renforge_editor_opacity() < 0.25:
-            fixed:
-                xsize 72
-                ysize 38
-                xpos 4
-                ypos 4
-                add Solid("#ffffff", xysize=(72, 38))
-                add Solid("#000000", xysize=(72, 2))
-                add Solid("#000000", xysize=(72, 2)):
-                    ypos 36
-                add Solid("#000000", xysize=(2, 38))
-                add Solid("#000000", xysize=(2, 38)):
-                    xpos 70
-
-        textbutton "RF":
-            id "rf_exit"
-            xpos 10
-            ypos 10
-            action Function(_renforge_editor_exit)
-            text_color "#101010"
-            at Transform(alpha=_renforge_editor_opacity())
-
-        textbutton "Save":
-            id "rf_save"
-            xpos 184
-            ypos 214
-            action NullAction()
-            sensitive False
-            at Transform(alpha=_renforge_editor_opacity())
-
+            $ _rf_exit_rect = _renforge_editor_control_rect("rf_exit")
+            if _rf_exit_rect is not None:
+                $ _rf_exit_x = int(_rf_exit_rect[0])
+                $ _rf_exit_y = int(_rf_exit_rect[1])
+                $ _rf_exit_w = int(_rf_exit_rect[2])
+                $ _rf_exit_h = int(_rf_exit_rect[3])
+                add Solid("#a78bfa", xysize=(_rf_exit_w, 2)):
+                    xpos _rf_exit_x
+                    ypos _rf_exit_y
+                add Solid("#a78bfa", xysize=(_rf_exit_w, 2)):
+                    xpos _rf_exit_x
+                    ypos _rf_exit_y + _rf_exit_h - 2
+                add Solid("#a78bfa", xysize=(2, _rf_exit_h)):
+                    xpos _rf_exit_x
+                    ypos _rf_exit_y
+                add Solid("#a78bfa", xysize=(2, _rf_exit_h)):
+                    xpos _rf_exit_x + _rf_exit_w - 2
+                    ypos _rf_exit_y
 init 1100 python:
     import builtins
     import hashlib
+    import json
+    import os
     import queue
+    import socket
     import sys
     import threading
     import time
     import types
+    import uuid
 
     try:
         import pygame_sdl2 as pygame
@@ -94,7 +211,12 @@ init 1100 python:
         _renforge_runtime_module.editor_v1 = types.SimpleNamespace()
 
     _EDITOR_SCREEN = "_renforge_editor_overlay"
+    _EDITOR_LAUNCHER_SCREEN = "_renforge_editor_launcher"
+    _EDITOR_SCREENS = set([_EDITOR_SCREEN, _EDITOR_LAUNCHER_SCREEN])
     _EDITOR_OWNER = "renforge.editor.v1"
+    _EDITOR_VIOLET = "#a78bfa"
+    _EDITOR_AMBER = "#f59e0b"
+    _EDITOR_LOCKED_TEXT = "LOCKED"
     _SNAP_ACQUIRE = 6
     _SNAP_RELEASE = 10
     _ALLOWED_ANCESTRY_TYPES = set(
@@ -124,24 +246,63 @@ init 1100 python:
             state.script_generation = 0
             state.active = False
             state.screen = None
+            state.editor_injected = _renforge_editor_host_config() is not None
+            state.editor_session_screen = None
             state.selected_runtime_key = None
             state.selected_widget_id = None
             state.selected_screen = None
+            state.selected_target_key = None
             state.selected_lock_reason = None
             state.selected_original_position = None
+            state.selected_source_position = None
+            state.selected_rect = None
             state.preview_position = None
             state.pointer = [0, 0]
             state.drag_active = False
             state.drag_offset = [0, 0]
+            state.drag_start_position = None
             state.snap_anchor_x = None
             state.snap_anchor_y = None
+            state.snap_offset_x = None
+            state.snap_offset_y = None
+            state.snap_anchors_x = None
+            state.snap_anchors_y = None
             state.guide_x = None
             state.guide_y = None
-            state.opacity = 0.9
-            state.label_rect = [20, 20, 220, 32]
+            state.opacity = 0.86
+            state.tools_visible = True
+            state.label_rect = [20, 20, 260, 32]
             state.label_alpha = 1.0
             state.label_text = "No selection"
+            state.status_text = "Ready"
+            state.save_button_state = "idle"
             state.save_enabled = False
+            state.save_in_progress = False
+            state.save_requested = False
+            state.save_last_error = None
+            state.save_error = None
+            state.current_analysis_id = None
+            state.current_source_key = None
+            state.selected_analysis_pending = False
+            state.history = []
+            state.history_index = -1
+            state.history_entries = []
+            state.targets = {}
+            state.pending_analysis_key = None
+            state.pending_transaction_id = None
+            state.pending_transaction_state = None
+            state.pending_commit_request_id = None
+            state.pending_status_request_id = None
+            state.pending_attest_request_id = None
+            state.pending_handshake_sent = False
+            state.pending_handshake_generation = None
+            state.pending_reload_draw_generation = None
+            state.pending_reload_started = False
+            state.pending_reload_requested = False
+            state.last_commit_status = None
+            state.pending_coordinator_request = None
+            state.barrier_counter = 0
+            state.runtime_targets = {}
             state.accepted_observations = []
             state.last_event_trace = []
             state.coordinator = None
@@ -150,8 +311,146 @@ init 1100 python:
             state.last_restore_method = None
             state.last_preview_method = None
             state.main_thread_id = None
-        state.script_generation = int(getattr(state, "script_generation", 0)) + 1
+        if not hasattr(state, "snap_offset_x"):
+            state.snap_offset_x = None
+        if not hasattr(state, "snap_offset_y"):
+            state.snap_offset_y = None
+        if not hasattr(state, "snap_anchors_x"):
+            state.snap_anchors_x = None
+        if not hasattr(state, "snap_anchors_y"):
+            state.snap_anchors_y = None
+        if not hasattr(state, "tools_visible"):
+            state.tools_visible = True
+        if not hasattr(state, "selected_source_position"):
+            state.selected_source_position = None
+        if not hasattr(state, "selected_target_key"):
+            state.selected_target_key = None
+        if not hasattr(state, "save_button_state"):
+            state.save_button_state = "idle"
+        if not hasattr(state, "pending_reload_draw_generation"):
+            state.pending_reload_draw_generation = None
+        if not hasattr(state, "pending_reload_started"):
+            state.pending_reload_started = False
         return state
+
+
+    def _renforge_editor_is_editor_injected():
+        return bool(_renforge_editor_state().editor_injected)
+
+
+    def _renforge_editor_activate():
+        state = _renforge_editor_state()
+        if not _renforge_editor_is_editor_injected():
+            return {"ok": False, "error": "editor session unavailable"}
+        state.active = True
+        state.selected_lock_reason = None
+        if (
+            state.editor_session_screen is not None
+            and renpy.get_screen(state.editor_session_screen) is None
+        ):
+            renpy.show_screen(state.editor_session_screen, _layer="screens")
+        renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
+        renpy.restart_interaction()
+        return {"ok": True}
+
+
+    def _renforge_editor_selection_snapshot():
+        state = _renforge_editor_state()
+        if state.selected_rect is None:
+            return None
+        rect = list(state.selected_rect)
+        if len(rect) != 4:
+            return None
+        if state.selected_lock_reason is None:
+            color = _EDITOR_VIOLET
+        else:
+            color = _EDITOR_AMBER
+        return {"x": int(rect[0]), "y": int(rect[1]), "w": int(rect[2]), "h": int(rect[3]), "color": color}
+
+
+    def _renforge_editor_status_text():
+        state = _renforge_editor_state()
+        return str(state.status_text or "")
+
+
+    def _renforge_editor_save_enabled():
+        state = _renforge_editor_state()
+        return (
+            bool(state.save_enabled)
+            and not bool(state.save_in_progress)
+            and not bool(state.selected_lock_reason)
+            and state.current_analysis_id is not None
+        )
+
+
+    def _renforge_editor_save_label():
+        state = _renforge_editor_state()
+        if state.save_button_state == "saving":
+            return "Saving / Reloading..."
+        if state.save_button_state == "saved":
+            return "Saved"
+        return "Save"
+
+
+    def _renforge_editor_tools_visible():
+        return bool(_renforge_editor_state().tools_visible)
+
+
+    def _renforge_editor_lock_code(lock_reason):
+        if isinstance(lock_reason, dict):
+            return str(lock_reason.get("code") or "")
+        if lock_reason is None:
+            return None
+        return str(lock_reason)
+
+
+    def _renforge_editor_can_undo():
+        state = _renforge_editor_state()
+        return state.history_index >= 0
+
+
+    def _renforge_editor_can_redo():
+        state = _renforge_editor_state()
+        return state.history_index + 1 < len(state.history_entries)
+
+
+    def _renforge_editor_has_selection():
+        state = _renforge_editor_state()
+        return state.selected_runtime_key is not None
+
+
+    def _renforge_editor_can_reset():
+        state = _renforge_editor_state()
+        target = state.targets.get(state.selected_target_key)
+        return isinstance(target, builtins.dict) and bool(target.get("dirty"))
+
+
+    def _renforge_editor_host_config():
+        host = os.environ.get("RENFORGE_EDITOR_HOST")
+        port = os.environ.get("RENFORGE_EDITOR_PORT")
+        token = os.environ.get("RENFORGE_EDITOR_TOKEN")
+        protocol = os.environ.get("RENFORGE_EDITOR_PROTOCOL")
+        if not host or not port or not token or not protocol:
+            return None
+        try:
+            return {
+                "host": str(host),
+                "port": int(port),
+                "token": str(token),
+                "protocol": int(protocol),
+            }
+        except Exception:
+            return None
+
+
+    def _renforge_editor_read_json_line(file_obj):
+        payload = file_obj.readline(1024 * 1024 + 1)
+        if not payload or len(payload) > 1024 * 1024 or not payload.endswith(b"\n"):
+            raise RuntimeError("invalid editor host response frame")
+        parsed = json.loads(payload.decode("utf-8"))
+        if not isinstance(parsed, builtins.dict):
+            raise RuntimeError("editor host response must be an object")
+        return parsed
 
 
     class _RenforgeEditorCoordinatorIO(object):
@@ -160,6 +459,12 @@ init 1100 python:
             self.results = queue.Queue()
             self.stop = threading.Event()
             self.counter = 0
+            state = _renforge_editor_state()
+            nonce = getattr(state, "host_client_nonce", None)
+            if not nonce:
+                nonce = uuid.uuid4().hex
+                state.host_client_nonce = nonce
+            self.client_nonce = nonce
             self.thread = threading.Thread(
                 target=self._loop,
                 name="renforge.editor.v1.coordinator",
@@ -167,28 +472,101 @@ init 1100 python:
             )
             self.thread.start()
 
-        def submit(self, payload):
+        def _next_request_id(self):
             self.counter += 1
-            request_id = "task0-%d" % self.counter
-            self.requests.put((request_id, payload, threading.get_ident(), time.time()))
+            return "overlay-%d-%s" % (self.counter, uuid.uuid4().hex)
+
+        def submit(self, payload):
+            request_id = self._next_request_id()
+            self.requests.put(
+                {
+                    "kind": "echo",
+                    "request_id": request_id,
+                    "payload": payload,
+                    "submitted_thread_id": threading.get_ident(),
+                    "submitted_at": time.time(),
+                }
+            )
             return request_id
+
+        def submit_host(self, command, payload, context=None):
+            request_id = self._next_request_id()
+            self.requests.put(
+                {
+                    "kind": "host",
+                    "request_id": request_id,
+                    "command": str(command),
+                    "payload": builtins.dict(payload or {}),
+                    "context": context,
+                    "submitted_thread_id": threading.get_ident(),
+                    "submitted_at": time.time(),
+                }
+            )
+            return request_id
+
+        def _request_host(self, request):
+            config = _renforge_editor_host_config()
+            if config is None:
+                raise RuntimeError("editor host is unavailable")
+            last_error = None
+            for _attempt in range(2):
+                try:
+                    with socket.create_connection((config["host"], config["port"]), timeout=5.0) as sock:
+                        sock.settimeout(5.0)
+                        file_obj = sock.makefile("rb")
+                        auth_frame = {
+                            "protocol": "renforge-editor",
+                            "version": config["protocol"],
+                            "token": config["token"],
+                            "client_nonce": self.client_nonce,
+                        }
+                        sock.sendall((json.dumps(auth_frame, separators=(",", ":")) + "\n").encode("utf-8"))
+                        auth = _renforge_editor_read_json_line(file_obj)
+                        if auth.get("ok") is not True:
+                            return auth
+                        command_payload = builtins.dict(request.get("payload") or {})
+                        if request.get("command") == "commit":
+                            command_payload["session_id"] = auth.get("session_id")
+                        command_frame = {
+                            "protocol": "renforge-editor",
+                            "version": config["protocol"],
+                            "connection_id": auth.get("connection_id"),
+                            "request_id": request["request_id"],
+                            "command": request["command"],
+                            "payload": command_payload,
+                        }
+                        sock.sendall(
+                            (json.dumps(command_frame, separators=(",", ":")) + "\n").encode("utf-8")
+                        )
+                        return _renforge_editor_read_json_line(file_obj)
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(0.05)
+            raise RuntimeError("editor host request failed: %s" % last_error)
 
         def _loop(self):
             while not self.stop.is_set():
                 try:
-                    request_id, payload, submitted_thread, submitted_at = self.requests.get(timeout=0.1)
+                    request = self.requests.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                self.results.put(
-                    {
-                        "request_id": request_id,
-                        "payload": payload,
-                        "submitted_thread_id": submitted_thread,
-                        "worker_thread_id": threading.get_ident(),
-                        "submitted_at": submitted_at,
-                        "completed_at": time.time(),
+                result = builtins.dict(request)
+                try:
+                    if request.get("kind") == "host":
+                        result["reply"] = self._request_host(request)
+                    else:
+                        result["payload"] = request.get("payload")
+                except Exception as exc:
+                    result["reply"] = {
+                        "ok": False,
+                        "error": {
+                            "code": "EDITOR_HOST_UNAVAILABLE",
+                            "message": str(exc),
+                        },
                     }
-                )
+                result["worker_thread_id"] = threading.get_ident()
+                result["completed_at"] = time.time()
+                self.results.put(result)
 
         def collect_nowait(self):
             items = []
@@ -203,10 +581,21 @@ init 1100 python:
     def _renforge_editor_ensure_coordinator():
         state = _renforge_editor_state()
         coordinator = getattr(state, "coordinator", None)
-        if coordinator is None or not getattr(coordinator, "thread", None):
+        if coordinator is None or not getattr(coordinator, "thread", None) or not coordinator.thread.is_alive():
             coordinator = _RenforgeEditorCoordinatorIO()
             state.coordinator = coordinator
         return coordinator
+
+    def _renforge_editor_stop_coordinator():
+        state = _renforge_editor_state()
+        coordinator = getattr(state, "coordinator", None)
+        if coordinator is None:
+            return
+        coordinator.stop.set()
+        thread = getattr(coordinator, "thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        state.coordinator = None
 
 
     def _renforge_editor_children(displayable):
@@ -386,7 +775,7 @@ init 1100 python:
             ):
                 return None, "UNKNOWN_CROP_STATE", None, None
             editor_owned = bool(
-                screen_name == _EDITOR_SCREEN
+                screen_name in _EDITOR_SCREENS
                 or getattr(node, "_renforge_editor_owner", None) == _EDITOR_OWNER
                 or getattr(named_widget, "_renforge_editor_owner", None) == _EDITOR_OWNER
             )
@@ -402,10 +791,14 @@ init 1100 python:
             )
         key = {
             "screen": screen_name,
-            "invocation_path": [screen_name],
+            "invocation_path": screen_name,
             "widget_id": widget_id,
             "source_location": source_location,
-            "instance_discriminator": "%s:%s" % (widget_id, screen_name),
+            "instance_discriminator": {
+                "kind": "static",
+                "instance_count": 1,
+                "ordinal": int(ordinal),
+            },
             "ancestry": ancestry,
         }
         return key, None, named_widget, widget
@@ -437,6 +830,32 @@ init 1100 python:
         return None
 
 
+    def _renforge_editor_control_rect(widget_id):
+        try:
+            focus_list = list(renpy.display.focus.focus_list or [])
+        except Exception:
+            return None
+        for focus in focus_list:
+            if _renforge_editor_screen_name(focus) != _EDITOR_SCREEN:
+                continue
+            widget = getattr(focus, "widget", None)
+            _screen, resolved_id, error = _renforge_editor_resolve_widget_id(_EDITOR_SCREEN, widget)
+            if error is not None or resolved_id != widget_id:
+                continue
+            try:
+                rect = [
+                    int(getattr(focus, "x")),
+                    int(getattr(focus, "y")),
+                    int(getattr(focus, "w")),
+                    int(getattr(focus, "h")),
+                ]
+            except Exception:
+                return None
+            if rect[2] > 0 and rect[3] > 0:
+                return rect
+        return None
+
+
     def _renforge_editor_focus_candidates():
         candidates = []
         try:
@@ -461,7 +880,7 @@ init 1100 python:
                 ordinal,
             )
             screen_name = _renforge_editor_screen_name(focus)
-            owner_hit = bool(screen_name == _EDITOR_SCREEN)
+            owner_hit = bool(screen_name in _EDITOR_SCREENS)
             if runtime_key is not None:
                 for node in runtime_key.get("ancestry", []):
                     if bool(node.get("editor_owned")):
@@ -506,11 +925,14 @@ init 1100 python:
     def _renforge_editor_barrier():
         renpy.restart_interaction()
         data = renpy.screenshot_to_bytes(None)
-        frame_id = hashlib.sha256(data).hexdigest()
-        return frame_id
+        state = _renforge_editor_state()
+        state.barrier_counter = int(getattr(state, "barrier_counter", 0)) + 1
+        return "%s:%d" % (hashlib.sha256(data).hexdigest(), state.barrier_counter)
 
 
     def _renforge_editor_observation_for_candidate(candidate):
+        if candidate.get("resolve_error") is not None:
+            return None, candidate.get("resolve_error")
         runtime_key = candidate.get("runtime_key")
         if not isinstance(runtime_key, builtins.dict):
             return None, candidate.get("resolve_error") or "UNMEASURED"
@@ -534,22 +956,331 @@ init 1100 python:
         return observation, None
 
 
+    def _renforge_editor_current_selected_position():
+        state = _renforge_editor_state()
+        if state.preview_position is not None:
+            return list(state.preview_position)
+        if state.selected_rect:
+            return [int(state.selected_rect[0]), int(state.selected_rect[1])]
+        if state.selected_original_position is not None:
+            return [int(state.selected_original_position[0]), int(state.selected_original_position[1])]
+        candidate, error = _renforge_editor_resolve_selected_candidate()
+        if candidate is None:
+            return None
+        rect = candidate.get("rect") or []
+        if len(rect) < 2:
+            return None
+        return [int(rect[0]), int(rect[1])]
+
+
     def _renforge_editor_set_label(pointer_x, pointer_y):
         state = _renforge_editor_state()
         width = int(getattr(renpy.config, "screen_width", 1920) or 1920)
         height = int(getattr(renpy.config, "screen_height", 1080) or 1080)
-        label_w = 220
-        label_h = 32
-        raw_x = int(pointer_x) + 14
-        raw_y = int(pointer_y) + 14
+        label_w = 280
+        label_h = 34
+        selected_rect = state.selected_rect
+        if isinstance(selected_rect, (builtins.list, builtins.tuple)) and len(selected_rect) >= 4:
+            raw_x = int(selected_rect[0]) + ((int(selected_rect[2]) - label_w) // 2)
+            raw_y = int(selected_rect[1]) - label_h - 10
+            if raw_y < 0:
+                raw_y = int(selected_rect[1]) + int(selected_rect[3]) + 10
+        else:
+            raw_x = int(pointer_x) + 14
+            raw_y = int(pointer_y) + 14
         x = max(0, min(width - label_w, raw_x))
         y = max(0, min(height - label_h, raw_y))
-        distance = abs(x - int(pointer_x)) + abs(y - int(pointer_y))
-        alpha = 0.35 if distance < 30 else 1.0
+        hovered = x <= int(pointer_x) < x + label_w and y <= int(pointer_y) < y + label_h
+        alpha = 0.20 if hovered else 1.0
+        selected = state.selected_widget_id or "none"
+        selected_pos = _renforge_editor_current_selected_position()
+        lock_text = ""
+        if state.selected_lock_reason:
+            lock_text = " [%s]" % _renforge_editor_lock_code(state.selected_lock_reason)
+        if selected_pos is not None and len(selected_pos) == 2:
+            state.label_text = "id=%s x=%d y=%d%s" % (
+                selected,
+                int(selected_pos[0]),
+                int(selected_pos[1]),
+                lock_text,
+            )
+        else:
+            state.label_text = "id=%s%s" % (selected, lock_text)
         state.label_rect = [x, y, label_w, label_h]
         state.label_alpha = alpha
-        selected = state.selected_widget_id or "none"
-        state.label_text = "id=%s x=%d y=%d" % (selected, x, y)
+
+
+    def _renforge_editor_escape_label_text(text):
+        value = str(text or "")
+        if not value:
+            return ""
+        return value.replace("{", "{{").replace("}", "}}").replace("[", "[[").replace("]", "]]")
+
+
+    def _renforge_editor_status_for_observation(runtime_key):
+        if not isinstance(runtime_key, dict):
+            return "UNMEASURED"
+        signature = (
+            str(runtime_key.get("screen") or ""),
+            str(runtime_key.get("widget_id") or ""),
+            tuple(runtime_key.get("source_location") or []),
+        )
+        return signature
+
+
+    def _renforge_editor_target_key(runtime_key):
+        if not isinstance(runtime_key, builtins.dict):
+            return None
+        source_location = runtime_key.get("source_location")
+        if not isinstance(source_location, (builtins.list, tuple)) or len(source_location) != 2:
+            return None
+        return json.dumps(
+            [
+                str(runtime_key.get("screen") or ""),
+                str(runtime_key.get("invocation_path") or ""),
+                str(runtime_key.get("widget_id") or ""),
+                str(source_location[0]),
+                int(source_location[1]),
+            ],
+            separators=(",", ":"),
+        )
+
+
+    def _renforge_editor_reset_history(position=None):
+        state = _renforge_editor_state()
+        state.history = []
+        state.history_entries = []
+        state.history_index = -1
+        state.save_enabled = False
+
+
+    def _renforge_editor_widget_properties(screen):
+        state = _renforge_editor_state()
+        properties = {}
+        for target in state.targets.values():
+            if target.get("screen") != screen or not target.get("dirty"):
+                continue
+            position = target.get("position")
+            runtime_baseline = target.get("runtime_baseline")
+            source_position = target.get("source_position")
+            widget_id = target.get("widget_id")
+            if not (
+                isinstance(position, (builtins.list, tuple))
+                and len(position) == 2
+                and isinstance(runtime_baseline, (builtins.list, tuple))
+                and len(runtime_baseline) == 2
+                and isinstance(source_position, (builtins.list, tuple))
+                and len(source_position) == 2
+                and widget_id
+            ):
+                continue
+            properties[str(widget_id)] = {
+                "xpos": int(source_position[0]) + int(position[0]) - int(runtime_baseline[0]),
+                "ypos": int(source_position[1]) + int(position[1]) - int(runtime_baseline[1]),
+            }
+        return properties
+
+
+    def _renforge_editor_show_target_overrides(screen):
+        properties = _renforge_editor_widget_properties(screen)
+        if properties:
+            renpy.show_screen(screen, _layer="screens", _widget_properties=properties)
+        else:
+            renpy.show_screen(screen, _layer="screens")
+
+
+    def _renforge_editor_set_target_position(target_key, position):
+        state = _renforge_editor_state()
+        target = state.targets.get(target_key)
+        if not isinstance(target, builtins.dict) or position is None or len(position) != 2:
+            return {"ok": False, "error": "TARGET_NOT_FOUND"}
+        next_position = [int(position[0]), int(position[1])]
+        runtime_baseline = target.get("runtime_baseline") or []
+        state.save_button_state = "idle"
+        target["position"] = next_position
+        target["dirty"] = (
+            len(runtime_baseline) == 2
+            and next_position != [int(runtime_baseline[0]), int(runtime_baseline[1])]
+        )
+        _renforge_editor_show_target_overrides(target.get("screen"))
+        if state.selected_target_key == target_key:
+            state.preview_position = list(next_position)
+            state.selected_original_position = list(runtime_baseline)
+            state.selected_source_position = list(target.get("source_position") or [])
+            state.current_analysis_id = target.get("analysis_id")
+            state.current_source_key = target.get("source_key")
+            if state.selected_rect is not None and len(state.selected_rect) == 4:
+                state.selected_rect = [
+                    int(next_position[0]),
+                    int(next_position[1]),
+                    int(state.selected_rect[2]),
+                    int(state.selected_rect[3]),
+                ]
+            _renforge_editor_set_label(state.pointer[0], state.pointer[1])
+        return {"ok": True, "x": next_position[0], "y": next_position[1]}
+
+
+    def _renforge_editor_push_history(position, before=None):
+        if position is None or len(position) != 2:
+            return
+        state = _renforge_editor_state()
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key)
+        if not isinstance(target, builtins.dict):
+            return
+        if before is None:
+            before = list(target.get("position") or target.get("runtime_baseline") or [])
+        else:
+            before = list(before)
+        after = [int(position[0]), int(position[1])]
+        if len(before) != 2 or before == after:
+            return
+        if state.history_index + 1 < len(state.history_entries):
+            state.history_entries = state.history_entries[: state.history_index + 1]
+        command = {"target_key": target_key, "before": before, "after": after}
+        state.history_entries.append(command)
+        state.history = [list(entry["after"]) for entry in state.history_entries]
+        state.history_index = len(state.history_entries) - 1
+
+
+    def _renforge_editor_collect_intents():
+        state = _renforge_editor_state()
+        dirty_targets = [
+            target
+            for target in state.targets.values()
+            if isinstance(target, builtins.dict) and target.get("dirty")
+        ]
+        if not dirty_targets:
+            return []
+        relative_paths = {
+            target.get("source_key", {}).get("relative_path")
+            for target in dirty_targets
+            if isinstance(target.get("source_key"), builtins.dict)
+        }
+        if len(relative_paths) != 1 or None in relative_paths:
+            return []
+        intents = []
+        for target in sorted(
+            dirty_targets,
+            key=lambda item: int(item.get("source_key", {}).get("line") or 0),
+        ):
+            analysis_id = target.get("analysis_id")
+            source_key = target.get("source_key")
+            position = target.get("position")
+            runtime_baseline = target.get("runtime_baseline")
+            source_position = target.get("source_position")
+            if not (
+                analysis_id
+                and isinstance(source_key, builtins.dict)
+                and isinstance(position, (builtins.list, tuple))
+                and len(position) == 2
+                and isinstance(runtime_baseline, (builtins.list, tuple))
+                and len(runtime_baseline) == 2
+                and isinstance(source_position, (builtins.list, tuple))
+                and len(source_position) == 2
+            ):
+                return []
+            intents.append(
+                {
+                    "analysis_id": analysis_id,
+                    "source_key": source_key,
+                    "x": int(source_position[0]) + int(position[0]) - int(runtime_baseline[0]),
+                    "y": int(source_position[1]) + int(position[1]) - int(runtime_baseline[1]),
+                }
+            )
+        return intents
+
+
+    def _renforge_editor_refresh_save_enabled():
+        state = _renforge_editor_state()
+        state.save_enabled = bool(
+            not state.selected_analysis_pending
+            and not state.selected_lock_reason
+            and _renforge_editor_collect_intents()
+        )
+        return state.save_enabled
+
+
+    def _renforge_editor_undo():
+        state = _renforge_editor_state()
+        if not _renforge_editor_can_undo():
+            state.status_text = "Undo unavailable"
+            return {"ok": False, "error": "UNDO_UNAVAILABLE"}
+        command = state.history_entries[state.history_index]
+        state.history_index -= 1
+        state.status_text = "Undo"
+        result = _renforge_editor_set_target_position(command["target_key"], command["before"])
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return result
+
+
+    def _renforge_editor_redo():
+        state = _renforge_editor_state()
+        if not _renforge_editor_can_redo():
+            state.status_text = "Redo unavailable"
+            return {"ok": False, "error": "REDO_UNAVAILABLE"}
+        state.history_index += 1
+        command = state.history_entries[state.history_index]
+        state.status_text = "Redo"
+        result = _renforge_editor_set_target_position(command["target_key"], command["after"])
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return result
+
+
+    def _renforge_editor_reset_selected():
+        state = _renforge_editor_state()
+        target = state.targets.get(state.selected_target_key)
+        if not _renforge_editor_can_reset() or not isinstance(target, builtins.dict):
+            return {"ok": False, "error": "RESET_UNAVAILABLE"}
+        before = list(target.get("position") or [])
+        baseline = list(target.get("runtime_baseline") or [])
+        if len(before) != 2 or len(baseline) != 2 or before == baseline:
+            return {"ok": False, "error": "RESET_UNAVAILABLE"}
+        _renforge_editor_push_history(baseline)
+        state.status_text = "Reset"
+        state.last_restore_method = "history_reset"
+        result = _renforge_editor_set_target_position(state.selected_target_key, baseline)
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return result
+
+
+    def _renforge_editor_adjust_opacity(delta):
+        state = _renforge_editor_state()
+        state.opacity = max(0.05, min(1.0, float(state.opacity) + float(delta)))
+        state.label_alpha = max(0.15, min(1.0, state.label_alpha + 0.0))
+        renpy.restart_interaction()
+        return state.opacity
+
+
+    def _renforge_editor_toggle_tools():
+        state = _renforge_editor_state()
+        state.tools_visible = not bool(state.tools_visible)
+        renpy.restart_interaction()
+        return state.tools_visible
+
+
+    def _renforge_editor_same_target_key(first, second):
+        if not isinstance(first, builtins.dict) or not isinstance(second, builtins.dict):
+            return False
+        first_key = json.loads(json.dumps(first))
+        second_key = json.loads(json.dumps(second))
+        first_discriminator = first_key.get("instance_discriminator")
+        second_discriminator = second_key.get("instance_discriminator")
+        allow_ordinal_drift = (
+            isinstance(first_discriminator, builtins.dict)
+            and isinstance(second_discriminator, builtins.dict)
+            and first_discriminator.get("kind") == "static"
+            and second_discriminator.get("kind") == "static"
+            and first_discriminator.get("instance_count") == 1
+            and second_discriminator.get("instance_count") == 1
+        )
+        if allow_ordinal_drift:
+            first_discriminator.pop("ordinal", None)
+            second_discriminator.pop("ordinal", None)
+        return first_key == second_key
 
 
     def _renforge_editor_anchor_lines(selected_key):
@@ -561,7 +1292,7 @@ init 1100 python:
             runtime_key = candidate.get("runtime_key")
             if runtime_key is None:
                 continue
-            if selected_key is not None and runtime_key == selected_key:
+            if _renforge_editor_same_target_key(runtime_key, selected_key):
                 continue
             rect = candidate.get("rect") or []
             if len(rect) != 4:
@@ -577,46 +1308,72 @@ init 1100 python:
 
     def _renforge_editor_apply_snap(desired_x, desired_y, shift):
         state = _renforge_editor_state()
-        selected_key = state.selected_runtime_key
         if shift:
             state.snap_anchor_x = None
             state.snap_anchor_y = None
+            state.snap_offset_x = None
+            state.snap_offset_y = None
             state.guide_x = None
             state.guide_y = None
             return int(desired_x), int(desired_y), {"snapped_x": False, "snapped_y": False}
-        anchors_x, anchors_y = _renforge_editor_anchor_lines(selected_key)
+
+        if state.drag_active and state.snap_anchors_x is not None and state.snap_anchors_y is not None:
+            anchors_x = state.snap_anchors_x
+            anchors_y = state.snap_anchors_y
+        else:
+            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
+        selected_rect = state.selected_rect or [desired_x, desired_y, 0, 0]
+        width = max(0, int(selected_rect[2]))
+        height = max(0, int(selected_rect[3]))
+        offsets_x = (0, width // 2, width)
+        offsets_y = (0, height // 2, height)
         snapped_x = int(desired_x)
         snapped_y = int(desired_y)
-        snap_x = state.snap_anchor_x
-        snap_y = state.snap_anchor_y
-        if snap_x is not None and abs(int(desired_x) - int(snap_x)) <= _SNAP_RELEASE:
-            snapped_x = int(snap_x)
+
+        anchor_x = state.snap_anchor_x
+        offset_x = state.snap_offset_x
+        if (
+            anchor_x is not None
+            and offset_x is not None
+            and abs((int(desired_x) + int(offset_x)) - int(anchor_x)) <= _SNAP_RELEASE
+        ):
+            snapped_x = int(anchor_x) - int(offset_x)
         else:
             state.snap_anchor_x = None
-            snap_x = None
-            closest = None
+            state.snap_offset_x = None
+            closest_x = None
             for anchor in anchors_x:
-                distance = abs(int(desired_x) - int(anchor))
-                if closest is None or distance < closest[0]:
-                    closest = (distance, int(anchor))
-            if closest is not None and closest[0] <= _SNAP_ACQUIRE:
-                state.snap_anchor_x = closest[1]
-                snapped_x = closest[1]
-                snap_x = closest[1]
-        if snap_y is not None and abs(int(desired_y) - int(snap_y)) <= _SNAP_RELEASE:
-            snapped_y = int(snap_y)
+                for offset in offsets_x:
+                    distance = abs((int(desired_x) + int(offset)) - int(anchor))
+                    if closest_x is None or distance < closest_x[0]:
+                        closest_x = (distance, int(anchor), int(offset))
+            if closest_x is not None and closest_x[0] <= _SNAP_ACQUIRE:
+                state.snap_anchor_x = closest_x[1]
+                state.snap_offset_x = closest_x[2]
+                snapped_x = closest_x[1] - closest_x[2]
+
+        anchor_y = state.snap_anchor_y
+        offset_y = state.snap_offset_y
+        if (
+            anchor_y is not None
+            and offset_y is not None
+            and abs((int(desired_y) + int(offset_y)) - int(anchor_y)) <= _SNAP_RELEASE
+        ):
+            snapped_y = int(anchor_y) - int(offset_y)
         else:
             state.snap_anchor_y = None
-            snap_y = None
-            closest = None
+            state.snap_offset_y = None
+            closest_y = None
             for anchor in anchors_y:
-                distance = abs(int(desired_y) - int(anchor))
-                if closest is None or distance < closest[0]:
-                    closest = (distance, int(anchor))
-            if closest is not None and closest[0] <= _SNAP_ACQUIRE:
-                state.snap_anchor_y = closest[1]
-                snapped_y = closest[1]
-                snap_y = closest[1]
+                for offset in offsets_y:
+                    distance = abs((int(desired_y) + int(offset)) - int(anchor))
+                    if closest_y is None or distance < closest_y[0]:
+                        closest_y = (distance, int(anchor), int(offset))
+            if closest_y is not None and closest_y[0] <= _SNAP_ACQUIRE:
+                state.snap_anchor_y = closest_y[1]
+                state.snap_offset_y = closest_y[2]
+                snapped_y = closest_y[1] - closest_y[2]
+
         state.guide_x = state.snap_anchor_x
         state.guide_y = state.snap_anchor_y
         return snapped_x, snapped_y, {
@@ -625,10 +1382,12 @@ init 1100 python:
         }
 
 
-    def _renforge_editor_apply_preview(x, y, *, shift=False, allow_snap=True):
+    def _renforge_editor_apply_preview(x, y, *, shift=False, allow_snap=True, record=False):
         state = _renforge_editor_state()
         if not state.selected_screen or not state.selected_widget_id:
             return {"ok": False, "error": "NO_SELECTION"}
+        if state.selected_lock_reason not in (None, ""):
+            return {"ok": False, "error": "TARGET_LOCKED"}
         desired_x = int(x)
         desired_y = int(y)
         snap_detail = {"snapped_x": False, "snapped_y": False}
@@ -637,17 +1396,21 @@ init 1100 python:
         else:
             state.snap_anchor_x = None
             state.snap_anchor_y = None
+            state.snap_offset_x = None
+            state.snap_offset_y = None
             state.guide_x = None
             state.guide_y = None
             snapped_x, snapped_y = desired_x, desired_y
-        renpy.show_screen(
-            state.selected_screen,
-            _layer="screens",
-            _widget_properties={state.selected_widget_id: {"xpos": int(snapped_x), "ypos": int(snapped_y)}},
+        if record:
+            _renforge_editor_push_history([int(snapped_x), int(snapped_y)])
+        result = _renforge_editor_set_target_position(
+            state.selected_target_key,
+            [int(snapped_x), int(snapped_y)],
         )
-        state.preview_position = [int(snapped_x), int(snapped_y)]
+        if result.get("ok") is not True:
+            return result
         state.last_preview_method = "_widget_properties"
-        _renforge_editor_set_label(state.pointer[0], state.pointer[1])
+        _renforge_editor_refresh_save_enabled()
         renpy.restart_interaction()
         return {
             "ok": True,
@@ -666,6 +1429,8 @@ init 1100 python:
             return {"ok": False, "error": "NO_SELECTION"}
         renpy.show_screen(state.selected_screen, _layer="screens")
         state.preview_position = None
+        if state.selected_rect is not None and state.selected_original_position is not None:
+            state.selected_rect = [int(state.selected_rect[0]), int(state.selected_rect[1]), int(state.selected_rect[2]), int(state.selected_rect[3])]
         state.last_restore_method = "_widget_properties_revert"
         renpy.restart_interaction()
         return {"ok": True, "restored": True, "method": "_widget_properties_revert"}
@@ -724,10 +1489,24 @@ init 1100 python:
             if not (rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]):
                 continue
             state.pointer = [int(x), int(y)]
+            state.selected_target_key = None
             runtime_key = candidate.get("runtime_key")
+            selected_screen = runtime_key.get("screen") if isinstance(runtime_key, builtins.dict) else None
+            if isinstance(selected_screen, str) and selected_screen:
+                state.screen = selected_screen
+                state.editor_session_screen = selected_screen
             if not isinstance(runtime_key, builtins.dict):
                 state.selected_runtime_key = None
                 state.selected_lock_reason = candidate.get("resolve_error") or "UNMEASURED"
+                _renforge_editor_set_label(x, y)
+                state.selected_rect = list(rect)
+                return {"ok": False, "lock_reason": state.selected_lock_reason}
+            if candidate.get("resolve_error") is not None:
+                state.selected_runtime_key = runtime_key
+                state.selected_widget_id = runtime_key.get("widget_id")
+                state.selected_screen = runtime_key.get("screen")
+                state.selected_lock_reason = candidate.get("resolve_error")
+                state.selected_rect = list(rect)
                 _renforge_editor_set_label(x, y)
                 return {"ok": False, "lock_reason": state.selected_lock_reason}
             lock = _renforge_editor_validate_runtime_key(runtime_key)
@@ -737,6 +1516,7 @@ init 1100 python:
                 state.selected_screen = runtime_key.get("screen")
                 state.selected_lock_reason = lock
                 _renforge_editor_set_label(x, y)
+                state.selected_rect = list(rect)
                 observation, _ignore = _renforge_editor_observation_for_candidate(candidate)
                 return {
                     "ok": False,
@@ -750,13 +1530,48 @@ init 1100 python:
                 _renforge_editor_set_label(x, y)
                 return {"ok": False, "lock_reason": state.selected_lock_reason}
             runtime_key = observation["runtime_key"]
+            target_key = _renforge_editor_target_key(runtime_key)
             state.selected_runtime_key = runtime_key
             state.selected_widget_id = runtime_key.get("widget_id")
             state.selected_screen = runtime_key.get("screen")
+            state.selected_target_key = target_key
             state.selected_lock_reason = None
-            state.selected_original_position = [int(rect[0]), int(rect[1])]
+            state.selected_rect = [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
             _renforge_editor_accept_observation(observation)
-            _renforge_editor_set_label(x, y)
+            target = state.targets.get(target_key)
+            if isinstance(target, builtins.dict):
+                position = list(target.get("position") or target.get("runtime_baseline") or rect[:2])
+                state.selected_original_position = list(target.get("runtime_baseline") or rect[:2])
+                state.selected_source_position = list(target.get("source_position") or [])
+                state.preview_position = position
+                state.selected_rect = [int(position[0]), int(position[1]), int(rect[2]), int(rect[3])]
+                state.current_analysis_id = target.get("analysis_id")
+                state.current_source_key = target.get("source_key")
+                state.selected_analysis_pending = False
+                state.status_text = "Analyzed"
+                _renforge_editor_refresh_save_enabled()
+                _renforge_editor_set_label(x, y)
+            else:
+                state.selected_original_position = [int(rect[0]), int(rect[1])]
+                state.selected_source_position = None
+                state.preview_position = None
+                state.current_analysis_id = None
+                state.current_source_key = None
+                state.selected_analysis_pending = True if _renforge_editor_host_config() is not None else False
+                state.save_enabled = False
+                _renforge_editor_set_label(x, y)
+                if _renforge_editor_host_config() is not None:
+                    state.selected_lock_reason = "ANALYZING"
+                    state.status_text = "Analyzing"
+                    state.pending_analysis_key = runtime_key
+                    _renforge_editor_ensure_coordinator().submit_host(
+                        "analyze_target",
+                        {"observation": observation},
+                        {
+                            "runtime_key": runtime_key,
+                            "runtime_baseline": [int(rect[0]), int(rect[1])],
+                        },
+                    )
             return {
                 "ok": True,
                 "selected": {"widget_id": state.selected_widget_id, "screen": state.selected_screen},
@@ -779,7 +1594,7 @@ init 1100 python:
         step = 10 if shift else 1
         x = int(base[0]) + int(dx) * step
         y = int(base[1]) + int(dy) * step
-        return _renforge_editor_apply_preview(x, y, shift=shift, allow_snap=False)
+        return _renforge_editor_apply_preview(x, y, shift=shift, allow_snap=False, record=True)
 
 
     class _RenforgeEditorEventCatcher(renpy.Displayable):
@@ -827,17 +1642,27 @@ init 1100 python:
                 if len(rect) != 4:
                     return {"ok": False, "error": "UNMEASURED"}
                 base = [int(rect[0]), int(rect[1])]
+            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
+            state.snap_anchors_x = anchors_x
+            state.snap_anchors_y = anchors_y
             state.drag_active = True
             state.drag_offset = [int(pointer_x) - int(base[0]), int(pointer_y) - int(base[1])]
+            state.drag_start_position = list(base)
         desired_x = int(pointer_x) - int(state.drag_offset[0])
         desired_y = int(pointer_y) - int(state.drag_offset[1])
-        return _renforge_editor_apply_preview(desired_x, desired_y, shift=shift, allow_snap=True)
+        return _renforge_editor_apply_preview(desired_x, desired_y, shift=shift, allow_snap=True, record=False)
 
 
     def _renforge_editor_end_drag():
         state = _renforge_editor_state()
         state.drag_active = False
         state.drag_offset = [0, 0]
+        state.snap_anchors_x = None
+        state.snap_anchors_y = None
+        if state.preview_position is not None and state.drag_start_position is not None:
+            _renforge_editor_push_history(state.preview_position, before=state.drag_start_position)
+        state.drag_start_position = None
+        _renforge_editor_refresh_save_enabled()
         return {"ok": True}
 
 
@@ -847,6 +1672,10 @@ init 1100 python:
         state.drag_active = False
         state.snap_anchor_x = None
         state.snap_anchor_y = None
+        state.snap_offset_x = None
+        state.snap_offset_y = None
+        state.snap_anchors_x = None
+        state.snap_anchors_y = None
         state.guide_x = None
         state.guide_y = None
         renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
@@ -866,7 +1695,9 @@ init 1100 python:
         shift = _renforge_editor_event_shift(event)
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
-                _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
+                _renforge_editor_select(pointer_x, pointer_y)
+                if not state.selected_lock_reason:
+                    _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 return None
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
                 _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
@@ -907,19 +1738,276 @@ init 1100 python:
         for item in coordinator.collect_nowait():
             applied_item = builtins.dict(item)
             applied_item["applied_thread_id"] = threading.get_ident()
+            reply = applied_item.get("reply") or {}
+            command = str(applied_item.get("command") or "")
+            context = applied_item.get("context") or {}
+            analyze_runtime_key = context.get("runtime_key")
             state.coordinator_applied.append(applied_item)
             state.last_coordinator_apply = applied_item
+            if reply.get("ok") is True:
+                result = reply.get("result")
+                if not isinstance(result, builtins.dict):
+                    state.save_last_error = "invalid_reply_result"
+                    state.save_error = state.save_last_error
+                    if command == "analyze_target":
+                        if analyze_runtime_key is None or analyze_runtime_key != state.selected_runtime_key or analyze_runtime_key != state.pending_analysis_key:
+                            applied_item["stale_analysis"] = True
+                            continue
+                        state.pending_analysis_key = None
+                        state.selected_lock_reason = state.save_last_error
+                        state.save_enabled = False
+                        state.selected_analysis_pending = False
+                        state.current_analysis_id = None
+                        state.current_source_key = None
+                        state.status_text = "Analyze failed"
+                    elif command == "commit":
+                        state.save_in_progress = False
+                        state.save_enabled = False
+                        state.status_text = "Commit failed"
+                        state.save_requested = False
+                        state.pending_transaction_id = None
+                        state.pending_handshake_generation = None
+                        state.pending_handshake_sent = False
+                        state.pending_reload_requested = False
+                    elif command == "commit_status":
+                        state.save_in_progress = False
+                        state.status_text = "Status failed"
+                        state.save_requested = False
+                    elif command == "reload_handshake":
+                        state.save_in_progress = False
+                        state.status_text = "Reload failed"
+                        state.save_enabled = False
+                        state.save_requested = False
+                        state.pending_transaction_id = None
+                        state.pending_handshake_generation = None
+                        state.pending_handshake_sent = False
+                        state.pending_reload_requested = False
+                    else:
+                        state.status_text = "Invalid result"
+                elif command == "analyze_target":
+                    if analyze_runtime_key is None or analyze_runtime_key != state.selected_runtime_key or analyze_runtime_key != state.pending_analysis_key:
+                        applied_item["stale_analysis"] = True
+                        continue
+                    state.pending_analysis_key = None
+                    state.selected_analysis_pending = False
+                    state.current_analysis_id = result.get("analysis_id")
+                    state.current_source_key = result.get("source_key")
+                    lock_reason = result.get("lock_reason")
+                    if lock_reason is None:
+                        state.selected_lock_reason = None
+                        if state.status_text != "Reload committed":
+                            state.status_text = "Analyzed"
+                        original_position = result.get("original_position")
+                        runtime_baseline = context.get("runtime_baseline") or state.selected_original_position
+                        target_key = _renforge_editor_target_key(analyze_runtime_key)
+                        if (
+                            target_key is not None
+                            and isinstance(original_position, (builtins.list, tuple))
+                            and len(original_position) >= 2
+                            and isinstance(runtime_baseline, (builtins.list, tuple))
+                            and len(runtime_baseline) == 2
+                        ):
+                            state.selected_source_position = [int(original_position[0]), int(original_position[1])]
+                            state.selected_original_position = [int(runtime_baseline[0]), int(runtime_baseline[1])]
+                            state.selected_target_key = target_key
+                            state.targets[target_key] = {
+                                "analysis_id": state.current_analysis_id,
+                                "source_key": state.current_source_key,
+                                "runtime_key": analyze_runtime_key,
+                                "screen": analyze_runtime_key.get("screen"),
+                                "widget_id": analyze_runtime_key.get("widget_id"),
+                                "runtime_baseline": list(state.selected_original_position),
+                                "source_position": list(state.selected_source_position),
+                                "position": list(state.selected_original_position),
+                                "dirty": False,
+                                "generation": int(state.script_generation),
+                            }
+                        _renforge_editor_refresh_save_enabled()
+                    else:
+                        state.selected_lock_reason = _renforge_editor_lock_code(lock_reason)
+                        state.save_enabled = False
+                        state.status_text = "Locked"
+                        state.current_analysis_id = None
+                        state.current_source_key = None
+                elif command == "commit":
+                    state.pending_transaction_id = result.get("transaction_id")
+                    state.pending_transaction_state = result.get("state")
+                    if state.pending_transaction_id is None:
+                        state.save_in_progress = False
+                        state.save_enabled = False
+                        state.save_last_error = "commit missing transaction id"
+                        state.status_text = "Commit failed"
+                    else:
+                        state.pending_reload_draw_generation = None
+                        state.pending_handshake_generation = int(state.script_generation) + 1
+                        state.pending_handshake_sent = False
+                        state.pending_reload_requested = False
+                        state.pending_status_request_id = None
+                        state.save_requested = True
+                        state.last_commit_status = result
+                        state.save_in_progress = True
+                        state.save_error = None
+                        state.save_last_error = None
+                        state.status_text = "Commit queued"
+                elif command == "commit_status":
+                    state.last_commit_status = result
+                    state.pending_transaction_state = result.get("state")
+                    if result.get("state") == "committed":
+                        state.save_in_progress = False
+                        state.save_last_error = None
+                        state.save_error = None
+                        state.save_enabled = False
+                        state.status_text = "Committed"
+                        state.save_button_state = "saved"
+                    elif result.get("state") != "published":
+                        state.save_last_error = result.get("state")
+                        state.save_error = str(state.save_last_error)
+                elif command == "reload_handshake":
+                    if result.get("state") == "committed":
+                        state.pending_handshake_generation = None
+                        state.save_in_progress = False
+                        state.save_last_error = None
+                        state.save_error = None
+                        state.save_button_state = "saved"
+                        state.pending_transaction_id = None
+                        state.pending_transaction_state = "committed"
+                        state.pending_reload_requested = False
+                        state.pending_reload_draw_generation = None
+                        state.save_enabled = False
+                        state.save_requested = False
+                        selected_rect = list(state.selected_rect or [])
+                        state.targets = {}
+                        _renforge_editor_reset_history()
+                        state.current_analysis_id = None
+                        state.current_source_key = None
+                        state.selected_target_key = None
+                        if len(selected_rect) == 4:
+                            _renforge_editor_select(
+                                int(selected_rect[0]) + int(selected_rect[2]) // 2,
+                                int(selected_rect[1]) + int(selected_rect[3]) // 2,
+                            )
+                        state.status_text = "Reload committed"
+                    else:
+                        state.save_last_error = "handshake_failed"
+                        state.save_error = state.save_last_error
+                        state.save_in_progress = False
+                        state.pending_transaction_id = None
+                        state.pending_handshake_generation = None
+                        state.status_text = "Reload handshake failed"
+                else:
+                    pass
+            else:
+                state.save_last_error = "command_failed"
+                state.save_error = state.save_last_error
+                error_payload = reply.get("error")
+                if isinstance(error_payload, builtins.dict):
+                    code = error_payload.get("code")
+                    message = error_payload.get("message")
+                    if code is not None:
+                        state.save_last_error = str(code)
+                    if message is not None:
+                        state.save_error = str(message)
+                    state.save_button_state = "idle"
+                if command == "analyze_target":
+                    state.selected_lock_reason = state.save_last_error
+                    state.save_enabled = False
+                    state.selected_analysis_pending = False
+                    state.current_analysis_id = None
+                    state.current_source_key = None
+                    state.status_text = "Analyze failed"
+                elif command == "commit":
+                    state.save_in_progress = False
+                    state.save_enabled = False
+                    state.status_text = "Commit failed"
+                    state.save_button_state = "idle"
+                    state.save_requested = False
+                    state.pending_transaction_id = None
+                    state.pending_handshake_generation = None
+                    state.pending_handshake_sent = False
+                    state.pending_reload_requested = False
+                elif command == "commit_status":
+                    state.save_in_progress = False
+                    state.status_text = "Status failed"
+                    state.save_requested = False
+                elif command == "reload_handshake":
+                    state.save_button_state = "idle"
+                    state.save_in_progress = False
+                    state.status_text = "Reload failed"
+                    state.save_enabled = False
+                    state.save_requested = False
+                    state.pending_transaction_id = None
+                    state.pending_handshake_generation = None
+                    state.pending_handshake_sent = False
+                    state.pending_reload_requested = False
+            if command == "analyze_target":
+                _renforge_editor_set_label(state.pointer[0], state.pointer[1])
             applied.append(applied_item)
         if len(state.coordinator_applied) > 32:
             state.coordinator_applied[:] = state.coordinator_applied[-32:]
+        if applied:
+            renpy.restart_interaction()
         return applied
+
+
+    def _renforge_editor_after_load():
+        state = _renforge_editor_state()
+        state.script_generation = int(state.script_generation) + 1
+        state.pending_reload_draw_generation = None
 
 
     def _renforge_editor_periodic():
         state = _renforge_editor_state()
+        if renpy.session.get("_reload_slot"):
+            return
         if not state.active:
+            if state.editor_injected and renpy.get_screen(_EDITOR_LAUNCHER_SCREEN) is None:
+                renpy.show_screen(_EDITOR_LAUNCHER_SCREEN, _layer="screens")
+                renpy.restart_interaction()
+            return
+        editor_session_screen = state.editor_session_screen
+        session_shown = True
+        if editor_session_screen is not None:
+            session_shown = renpy.get_screen(editor_session_screen) is not None
+        overlay_shown = renpy.get_screen(_EDITOR_SCREEN) is not None
+        if not overlay_shown or not session_shown:
+            if not session_shown and editor_session_screen is not None:
+                renpy.show_screen(editor_session_screen, _layer="screens")
+            if not overlay_shown:
+                renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
+            renpy.restart_interaction()
             return
         _renforge_editor_apply_coordinator_results()
+        if not state.save_in_progress or state.pending_transaction_id is None:
+            return
+        if not state.pending_reload_requested:
+            state.pending_reload_requested = True
+            state.pending_reload_started = False
+            state.pending_reload_draw_generation = None
+            renpy.restart_interaction()
+            return
+        if not state.pending_reload_started:
+            state.pending_reload_started = True
+            _renforge_editor_stop_coordinator()
+            _renforge_invoke(renpy.reload_script)
+            return
+        if state.pending_handshake_generation is None:
+            return
+        if int(state.script_generation) != int(state.pending_handshake_generation):
+            return
+        if state.pending_reload_draw_generation != state.script_generation:
+            state.pending_reload_draw_generation = int(state.script_generation)
+            renpy.restart_interaction()
+            return
+        if not state.pending_handshake_sent:
+            state.pending_handshake_sent = True
+            state.pending_status_request_id = _renforge_editor_ensure_coordinator().submit_host(
+                "reload_handshake",
+                {
+                    "transaction_id": state.pending_transaction_id,
+                    "script_generation": int(state.script_generation),
+                },
+                {"transaction_id": state.pending_transaction_id},
+            )
 
 
     def _renforge_editor_h_start(payload):
@@ -932,12 +2020,39 @@ init 1100 python:
         state.main_thread_id = threading.get_ident()
         state.active = True
         state.screen = screen
+        state.editor_session_screen = screen
         state.selected_runtime_key = None
         state.selected_widget_id = None
         state.selected_screen = None
+        state.selected_target_key = None
         state.selected_lock_reason = None
         state.preview_position = None
+        state.selected_original_position = None
+        state.selected_source_position = None
+        state.selected_rect = None
+        state.selected_analysis_pending = False
+        state.current_analysis_id = None
+        state.current_source_key = None
+        state.history = []
+        state.history_entries = []
+        state.history_index = -1
+        state.targets = {}
         state.save_enabled = False
+        state.save_in_progress = False
+        state.save_error = None
+        state.save_last_error = None
+        state.save_requested = False
+        state.pending_commit_request_id = None
+        state.pending_status_request_id = None
+        state.pending_reload_draw_generation = None
+        state.pending_attest_request_id = None
+        state.last_commit_status = None
+        state.pending_transaction_id = None
+        state.pending_analysis_key = None
+        state.pending_handshake_generation = None
+        state.pending_handshake_sent = False
+        state.save_button_state = "idle"
+        state.pending_reload_requested = False
         state.opacity = 0.9
         state.label_text = "No selection"
         state.last_event_trace = []
@@ -953,6 +2068,37 @@ init 1100 python:
             "save_enabled": False,
             "script_generation": int(state.script_generation),
         }
+
+
+    def _renforge_editor_save():
+        state = _renforge_editor_state()
+        if state.selected_lock_reason:
+            return {"ok": False, "error": "TARGET_LOCKED"}
+        if state.current_analysis_id is None:
+            return {"ok": False, "error": "NO_ANALYSIS"}
+        if not state.save_enabled or state.save_in_progress:
+            return {"ok": False, "error": "SAVE_UNAVAILABLE"}
+        intents = _renforge_editor_collect_intents()
+        if not intents:
+            return {"ok": False, "error": "NO_INTENTS"}
+        state.save_in_progress = True
+        state.save_button_state = "saving"
+        state.save_requested = True
+        state.save_error = None
+        state.save_last_error = None
+        state.status_text = "Saving"
+        pending = _renforge_editor_ensure_coordinator().submit_host(
+            "commit",
+            {"intents": intents},
+            {"command": "commit"},
+        )
+        state.pending_commit_request_id = pending
+        renpy.restart_interaction()
+        return {"ok": True, "request_id": pending, "intents": intents}
+
+
+    def _renforge_editor_h_save(payload):
+        return _renforge_editor_save()
 
 
     def _renforge_editor_h_select(payload):
@@ -979,26 +2125,19 @@ init 1100 python:
         first = points[0]
         if not builtins.isinstance(first, (builtins.list, tuple)) or len(first) < 2:
             return {"ok": False, "error": "invalid point"}
-        down = _renforge_editor_fake_event(
-            pygame.MOUSEBUTTONDOWN,
-            pos=(int(first[0]), int(first[1])),
-            button=1,
-            mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
-        )
-        _renforge_editor_handle_event(down, int(first[0]), int(first[1]), 0.0)
+        down_reply = _renforge_editor_apply_drag_from_pointer(int(first[0]), int(first[1]), shift)
+        if not down_reply.get("ok", False):
+            return down_reply
         for point in points:
             if not builtins.isinstance(point, (builtins.list, tuple)) or len(point) < 2:
                 return {"ok": False, "error": "invalid point"}
             px = int(point[0])
             py = int(point[1])
-            motion = _renforge_editor_fake_event(
-                pygame.MOUSEMOTION,
-                pos=(px, py),
-                rel=(0, 0),
-                buttons=(1, 0, 0),
-                mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
-            )
-            _renforge_editor_handle_event(motion, px, py, 0.0)
+            motion_reply = _renforge_editor_apply_drag_from_pointer(px, py, shift)
+            if not motion_reply.get("ok", False):
+                state.drag_active = False
+                state.drag_offset = [0, 0]
+                return motion_reply
             state_after = _renforge_editor_state()
             preview = list(state_after.preview_position or [])
             samples.append(
@@ -1009,15 +2148,9 @@ init 1100 python:
                     "guide_y": state_after.guide_y,
                 }
             )
-        last = points[-1]
-        up = _renforge_editor_fake_event(
-            pygame.MOUSEBUTTONUP,
-            pos=(int(last[0]), int(last[1])),
-            button=1,
-            mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
-        )
-        _renforge_editor_handle_event(up, int(last[0]), int(last[1]), 0.0)
-        state.drag_active = False
+        up_reply = _renforge_editor_end_drag()
+        if not up_reply.get("ok", False):
+            return up_reply
         return {
             "ok": True,
             "event_method": "Displayable.event",
@@ -1050,17 +2183,41 @@ init 1100 python:
         key_value = key_map.get(key_name)
         if key_value is None:
             return {"ok": False, "error": "unsupported key"}
+        nudge_map = {
+            "left": (-1, 0),
+            "right": (1, 0),
+            "up": (0, -1),
+            "down": (0, 1),
+        }
         traces = []
         for _index in range(repeat):
-            event = _renforge_editor_fake_event(
-                pygame.KEYDOWN,
-                key=key_value,
-                mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
-            )
-            _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
+            if key_name in nudge_map:
+                dx, dy = nudge_map[key_name]
+                nudge_reply = _renforge_editor_nudge(dx, dy, shift)
+                if not nudge_reply.get("ok", False):
+                    return nudge_reply
+            else:
+                event = _renforge_editor_fake_event(
+                    pygame.KEYDOWN,
+                    key=key_value,
+                    mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
+                )
+                _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
             traces.append({"key": key_name, "shift": shift})
         state.last_event_trace = traces
         return {"ok": True, "repeat": repeat, "shift": shift, "active": state.active}
+
+
+    def _renforge_editor_h_undo(payload):
+        return _renforge_editor_undo()
+
+
+    def _renforge_editor_h_redo(payload):
+        return _renforge_editor_redo()
+
+
+    def _renforge_editor_h_reset(payload):
+        return _renforge_editor_reset_selected()
 
 
     def _renforge_editor_h_observe_selected(payload):
@@ -1072,6 +2229,151 @@ init 1100 python:
             return {"ok": False, "error": observe_error or "UNMEASURED"}
         _renforge_editor_accept_observation(observation)
         return {"ok": True, "observation": observation}
+
+
+    def _renforge_editor_h_observe_target(payload):
+        payload = payload or {}
+        runtime_key = payload.get("runtime_key")
+        if not isinstance(runtime_key, builtins.dict):
+            return {"ok": False, "error": "runtime_key required"}
+        candidates = [
+            candidate
+            for candidate in _renforge_editor_focus_candidates()
+            if candidate.get("runtime_key") == runtime_key
+        ]
+        if not candidates:
+            # fallback by stable signature
+            candidates = []
+            wanted = (
+                str(runtime_key.get("screen") or ""),
+                str(runtime_key.get("widget_id") or ""),
+                tuple(runtime_key.get("source_location") or []),
+            )
+            for candidate in _renforge_editor_focus_candidates():
+                candidate_key = candidate.get("runtime_key")
+                if not isinstance(candidate_key, builtins.dict):
+                    continue
+                signature = (
+                    str(candidate_key.get("screen") or ""),
+                    str(candidate_key.get("widget_id") or ""),
+                    tuple(candidate_key.get("source_location") or []),
+                )
+                if signature == wanted:
+                    candidates.append(candidate)
+        if len(candidates) > 1:
+            return {"ok": False, "error": "AMBIGUOUS_REBIND"}
+        if not candidates:
+            return {"ok": False, "error": "NO_MATCHING_TARGET"}
+        candidate = candidates[0]
+        observation, observe_error = _renforge_editor_observation_for_candidate(candidate)
+        if observation is None:
+            return {"ok": False, "error": observe_error or "UNMEASURED"}
+        _renforge_editor_accept_observation(observation)
+        return {"ok": True, "observation": observation}
+
+
+    def _renforge_editor_h_attest_targets(payload):
+        payload = payload or {}
+        transaction_id = payload.get("transaction_id")
+        if not transaction_id:
+            return {"ok": False, "error": "transaction_id required"}
+        expected_targets = payload.get("expected_targets")
+        if not builtins.isinstance(expected_targets, (builtins.list, tuple)):
+            return {"ok": False, "error": "expected_targets must be a list"}
+        generation = payload.get("script_generation")
+        try:
+            generation = int(generation)
+        except Exception:
+            return {"ok": False, "error": "script_generation must be an integer"}
+        state = _renforge_editor_state()
+        if generation != state.script_generation:
+            return {
+                "ok": False,
+                "error": "GENERATION_MISMATCH",
+                "expected": generation,
+                "known": state.script_generation,
+            }
+        attested = []
+        for expected in expected_targets:
+            if not isinstance(expected, builtins.dict):
+                return {"ok": False, "error": "expected target entry required"}
+            source_key = expected.get("source_key")
+            if not isinstance(source_key, builtins.dict):
+                return {"ok": False, "error": "source_key missing"}
+            expected_runtime_key = expected.get("runtime_key")
+            if not isinstance(expected_runtime_key, builtins.dict):
+                return {"ok": False, "error": "runtime_key missing"}
+            widget_id = source_key.get("widget_id")
+            if not isinstance(widget_id, str) or not widget_id:
+                return {"ok": False, "error": "widget_id missing"}
+            targets = [
+                candidate
+                for candidate in _renforge_editor_focus_candidates()
+                if candidate.get("runtime_key") is not None
+                and _renforge_editor_same_target_key(candidate.get("runtime_key"), expected_runtime_key)
+                and isinstance(candidate.get("runtime_key", {}).get("source_location"), list)
+            ]
+            if not targets:
+                wanted = (
+                    str(expected_runtime_key.get("screen") or ""),
+                    str(expected_runtime_key.get("widget_id") or ""),
+                    tuple(expected_runtime_key.get("source_location") or []),
+                )
+                signature_matches = []
+                for candidate in _renforge_editor_focus_candidates():
+                    candidate_key = candidate.get("runtime_key")
+                    if not isinstance(candidate_key, builtins.dict):
+                        continue
+                    signature = (
+                        str(candidate_key.get("screen") or ""),
+                        str(candidate_key.get("widget_id") or ""),
+                        tuple(candidate_key.get("source_location") or []),
+                    )
+                    if signature == wanted:
+                        signature_matches.append(candidate)
+                if len(signature_matches) > 1:
+                    return {"ok": False, "error": "AMBIGUOUS_REBIND", "widget_id": widget_id}
+                if len(signature_matches) == 1:
+                    targets = signature_matches
+            if len(targets) != 1:
+                return {"ok": False, "error": "TARGET_NOT_FOUND", "widget_id": widget_id}
+            observation, observe_error = _renforge_editor_observation_for_candidate(targets[0])
+            if observation is None:
+                return {"ok": False, "error": observe_error or "UNMEASURED", "widget_id": widget_id}
+            if int(observation.get("script_generation", -999)) != generation:
+                return {
+                    "ok": False,
+                    "error": "GENERATION_MISMATCH",
+                    "expected": generation,
+                    "known": observation.get("script_generation"),
+                }
+            expected_position = expected.get("position")
+            if isinstance(expected_position, (builtins.list, tuple)) and len(expected_position) == 2:
+                expected_x = int(expected_position[0])
+                expected_y = int(expected_position[1])
+                rect = observation.get("rect") or []
+                if not (abs(int(rect[0]) - expected_x) <= 1 and abs(int(rect[1]) - expected_y) <= 1):
+                    return {
+                        "ok": False,
+                        "error": "TARGET_POSITION_MISMATCH",
+                        "widget_id": widget_id,
+                        "expected": expected_position,
+                        "observed": rect[:2] if isinstance(rect, builtins.list) and len(rect) >= 2 else None,
+                    }
+            attested.append(
+                {
+                    "widget_id": widget_id,
+                    "analysis_id": source_key.get("analysis_id"),
+                    "observed": observation,
+                }
+            )
+        return {
+            "ok": True,
+            "state": "all_targets_attested",
+            "transaction_id": transaction_id,
+            "generation": generation,
+            "attested": attested,
+        }
 
 
     def _renforge_editor_h_restore_preview(payload):
@@ -1119,6 +2421,8 @@ init 1100 python:
         return {"ok": False, "lock_reason": lock}
 
 
+
+
     def _renforge_editor_h_coordinator_submit(payload):
         payload = payload or {}
         state = _renforge_editor_state()
@@ -1142,14 +2446,33 @@ init 1100 python:
             "ok": True,
             "active": bool(state.active),
             "save_enabled": bool(state.save_enabled),
+            "save_button_state": state.save_button_state,
+            "dirty_target_count": len([target for target in state.targets.values() if target.get("dirty")]),
             "selected_widget_id": state.selected_widget_id,
             "selected_runtime_key": state.selected_runtime_key,
             "selected_lock_reason": state.selected_lock_reason,
             "opacity": float(state.opacity),
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
+            "rf_exit_rect": _renforge_editor_control_rect("rf_exit"),
             "last_preview_method": state.last_preview_method,
             "last_restore_method": state.last_restore_method,
+            "script_generation": state.script_generation,
+            "save_in_progress": bool(state.save_in_progress),
+            "save_requested": bool(state.save_requested),
+            "save_error": state.save_error,
+            "status_text": state.status_text,
+            "selected_original_position": state.selected_original_position,
+            "selected_source_position": state.selected_source_position,
+            "preview_position": state.preview_position,
+            "history_index": state.history_index,
+            "history_length": len(state.history_entries),
+            "current_analysis_id": state.current_analysis_id,
+            "current_source_key": state.current_source_key,
+            "pending_transaction_id": state.pending_transaction_id,
+            "pending_handshake_generation": state.pending_handshake_generation,
+            "pending_handshake_sent": state.pending_handshake_sent,
+            "pending_reload_requested": state.pending_reload_requested,
             "accepted_observations": list(state.accepted_observations),
         }
 
@@ -1174,8 +2497,37 @@ init 1100 python:
         return _renforge_editor_state().guide_y
 
 
+    def _renforge_editor_distance_snapshot():
+        state = _renforge_editor_state()
+        preview = state.preview_position
+        original = state.selected_original_position
+        rect = state.selected_rect
+        if (
+            not isinstance(preview, (builtins.list, builtins.tuple))
+            or len(preview) != 2
+            or not isinstance(original, (builtins.list, builtins.tuple))
+            or len(original) != 2
+            or not isinstance(rect, (builtins.list, builtins.tuple))
+            or len(rect) != 4
+        ):
+            return None
+        delta_x = int(preview[0]) - int(original[0])
+        delta_y = int(preview[1]) - int(original[1])
+        return {
+            "x": int(rect[0]),
+            "y": int(rect[1]),
+            "w": int(rect[2]),
+            "h": int(rect[3]),
+            "delta_x": delta_x,
+            "delta_y": delta_y,
+            "text_x": "dx %s%d px" % ("+" if delta_x >= 0 else "", delta_x),
+            "text_y": "dy %s%d px" % ("+" if delta_y >= 0 else "", delta_y),
+        }
+
     def _renforge_editor_label_snapshot():
         state = _renforge_editor_state()
+        if state.selected_widget_id is None or state.selected_rect is None:
+            return None
         rect = list(state.label_rect or [20, 20, 220, 32])
         if len(rect) != 4:
             rect = [20, 20, 220, 32]
@@ -1185,7 +2537,7 @@ init 1100 python:
             "w": int(rect[2]),
             "h": int(rect[3]),
             "alpha": float(max(0.1, min(1.0, state.label_alpha * state.opacity))),
-            "text": str(state.label_text or ""),
+            "text": _renforge_editor_escape_label_text(state.label_text),
         }
 
 
@@ -1195,6 +2547,8 @@ init 1100 python:
         pass
     if all(getattr(callback, "__name__", "") != "_renforge_editor_periodic" for callback in renpy.config.periodic_callbacks):
         renpy.config.periodic_callbacks.append(_renforge_editor_periodic)
+    if all(getattr(callback, "__name__", "") != "_renforge_editor_after_load" for callback in renpy.config.after_load_callbacks):
+        renpy.config.after_load_callbacks.append(_renforge_editor_after_load)
 
     handlers = globals().get("_RENFORGE_HANDLERS")
     if isinstance(handlers, builtins.dict):
@@ -1203,6 +2557,10 @@ init 1100 python:
         handlers["editor_task0_select"] = _renforge_editor_h_select
         handlers["editor_task0_drag"] = _renforge_editor_h_drag
         handlers["editor_task0_key"] = _renforge_editor_h_key
+        handlers["editor_task0_undo"] = _renforge_editor_h_undo
+        handlers["editor_task0_redo"] = _renforge_editor_h_redo
+        handlers["editor_task0_reset"] = _renforge_editor_h_reset
+        handlers["editor_task0_save"] = _renforge_editor_h_save
         handlers["editor_task0_observe_selected"] = _renforge_editor_h_observe_selected
         handlers["editor_task0_restore_preview"] = _renforge_editor_h_restore_preview
         handlers["editor_task0_set_opacity"] = _renforge_editor_h_set_opacity
@@ -1211,3 +2569,5 @@ init 1100 python:
         handlers["editor_task0_coordinator_submit"] = _renforge_editor_h_coordinator_submit
         handlers["editor_task0_coordinator_collect"] = _renforge_editor_h_coordinator_collect
         handlers["editor_task0_status"] = _renforge_editor_h_status
+        handlers["editor_observe_target"] = _renforge_editor_h_observe_target
+        handlers["editor_attest_targets"] = _renforge_editor_h_attest_targets

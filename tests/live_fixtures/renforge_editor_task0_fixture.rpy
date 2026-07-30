@@ -22,17 +22,16 @@ screen renforge_editor_task0_fixture():
             ypos 210
             action NullAction()
 
-        textbutton "MOVE ME":
-            id "task0_target"
-            xpos 180
-            ypos 210
-            action SetVariable("renforge_editor_task0_clicks", renforge_editor_task0_clicks + 1)
+        fixed:
+            id "task0_target_parent"
+            xpos 40
+            ypos 30
+            xsize 400
+            ysize 300
 
-        textbutton "OVERLAP TOP":
-            id "task0_top"
-            xpos 170
-            ypos 200
-            action NullAction()
+            textbutton "MOVE ME" id "task0_target" xpos 180 ypos 210 action SetVariable("renforge_editor_task0_clicks", renforge_editor_task0_clicks + 1)
+
+        textbutton "OVERLAP TOP" id "task0_top" xpos 170 ypos 200 action NullAction()
 
         viewport:
             id "task0_clip_parent"

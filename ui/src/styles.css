@@ -551,6 +551,37 @@ a { color: var(--accent); text-decoration: none; }
 .scene .ui-row { position: absolute; inset: auto 0 12px 0; display: flex; justify-content: center; gap: 16px; font-family: var(--font-mono); font-size: 10px; color: rgba(255,255,255,.4); }
 .scene .empty-box { font-family: var(--font-mono); font-size: 13px; color: var(--meta); }
 .transport { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.launch-editor-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  background: var(--surface);
+  flex: 1 1 100%;
+}
+.launch-editor-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.launch-editor-toggle input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+.launch-editor-toggle > span {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.launch-editor-toggle .muted {
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
 .tctl { flex: 1 1 auto; min-width: 92px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border-soft); color: var(--fg-2); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: transform var(--motion-fast) var(--ease-standard), background .16s, color .16s, border-color .16s; }
 .tctl:hover { background: var(--raised); color: var(--fg); }
 .tctl:active { transform: scale(.96); }

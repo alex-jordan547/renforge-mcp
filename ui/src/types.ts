@@ -37,6 +37,16 @@ export interface LiveState {
   variables: Record<string, unknown>;
 }
 
+export interface LiveLaunchResponse {
+  ok: boolean;
+  editor?: boolean;
+  already_running?: boolean;
+  external?: boolean;
+  current_label?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
 export interface LiveChoice {
   index: number;
   text: string;

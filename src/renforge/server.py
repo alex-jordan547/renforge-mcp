@@ -113,6 +113,7 @@ def _register_tools(app: Any) -> None:
         session: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict:
+        canonical_editor = True
         if cancel_event is not None and cancel_event.is_set():
             return live.cancelled_launch_result(phase="detecting_environment")
         from .dashboard_client import (
@@ -121,7 +122,12 @@ def _register_tools(app: Any) -> None:
         )
 
         # Dashboard owns its own display process; only warp/version are delegated.
-        delegated = launch_via_dashboard(project_path, version=version, warp=warp, editor=editor)
+        delegated = launch_via_dashboard(
+            project_path,
+            version=version,
+            warp=warp,
+            editor=canonical_editor,
+        )
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
                 stopped = stop_via_dashboard(project_path)
@@ -160,7 +166,7 @@ def _register_tools(app: Any) -> None:
             project_path,
             version=version,
             warp=warp,
-            editor=editor,
+            editor=canonical_editor,
             display=display,
             audio=audio,
             savedir=savedir,
@@ -178,6 +184,8 @@ def _register_tools(app: Any) -> None:
         return delegated if delegated is not None else live.stop_game(project_path)
 
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
+        kwargs["editor"] = True
+
         def _launch(cancel_event: threading.Event) -> dict:
             return _launch_game(
                 project_path,
@@ -185,7 +193,7 @@ def _register_tools(app: Any) -> None:
                 **kwargs,
             )
 
-        return live.start_launch(project_path, _launch)
+        return live.start_launch(project_path, _launch, editor=True)
 
     def _context_payload() -> dict[str, Any]:
         dashboard = session_registry.active_dashboard()
