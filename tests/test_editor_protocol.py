@@ -25,22 +25,29 @@ def _make_project(tmp_path: Path) -> RenpyProject:
 def _make_sdk(tmp_path: Path) -> RenpySdk:
     sdk_root = tmp_path / "sdk"
     sdk_root.mkdir(parents=True)
-    launcher = sdk_root / "renpy.sh"
+    # A ``renpy.py`` launcher, never ``renpy.sh``: the SDK resolver only accepts
+    # ``renpy.exe`` or ``renpy.py`` on Windows, and runs the ``.py`` form through
+    # ``sys.executable`` on every platform.
+    launcher = sdk_root / "renpy.py"
     launcher.write_text(
-        "#!/bin/sh\n"
-        "project=\"$1\"\n"
-        "cmd=\"$2\"\n"
-        "if [ \"$cmd\" = \"lint\" ]; then\n"
-        "  if [ -f \"$project/.lint_stderr\" ]; then cat \"$project/.lint_stderr\" 1>&2; fi\n"
-        "  if [ -f \"$project/.lint_stdout\" ]; then cat \"$project/.lint_stdout\"; fi\n"
-        "  if [ -f \"$project/.lint_touch\" ]; then echo touch > \"$project/game/_shadow_artifact.txt\"; fi\n"
-        "  if [ -f \"$project/.lint_fail\" ]; then echo lint-failed 1>&2; exit 1; fi\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 0\n",
+        "import pathlib\n"
+        "import sys\n"
+        "\n"
+        "project = pathlib.Path(sys.argv[1])\n"
+        "if (sys.argv[2] if len(sys.argv) > 2 else '') != 'lint':\n"
+        "    raise SystemExit(0)\n"
+        "for name, stream in (('.lint_stderr', sys.stderr), ('.lint_stdout', sys.stdout)):\n"
+        "    fixture = project / name\n"
+        "    if fixture.is_file():\n"
+        "        stream.write(fixture.read_text(encoding='utf-8'))\n"
+        "if (project / '.lint_touch').is_file():\n"
+        "    (project / 'game' / '_shadow_artifact.txt').write_text('touch\\n', encoding='utf-8')\n"
+        "if (project / '.lint_fail').is_file():\n"
+        "    sys.stderr.write('lint-failed\\n')\n"
+        "    raise SystemExit(1)\n"
+        "raise SystemExit(0)\n",
         encoding="utf-8",
     )
-    launcher.chmod(0o755)
     return RenpySdk(version="8.5.3", root=sdk_root)
 
 
