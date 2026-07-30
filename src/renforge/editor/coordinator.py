@@ -182,8 +182,9 @@ class EditorCoordinator:
         with self._lock:
             active = [thread for thread in self._busy_command_threads if thread.is_alive()]
         if active:
-            with self._lock:
-                self._busy_command_threads.update(active)
+            # Retention needs no bookkeeping here: _busy_command_threads is never
+            # cleared on the failure path, so the live executors are already in it
+            # for the next close() to join.
             raise EditorError(
                 "SHUTDOWN_INCOMPLETE",
                 "editor command handlers outlived close(); the project lock is held",
