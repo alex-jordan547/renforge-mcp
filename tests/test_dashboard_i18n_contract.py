@@ -111,3 +111,12 @@ def test_invalid_warp_target_is_translated():
     assert 'case "warp_target_invalid"' in content
     assert 'i18next.t("errors.warp_target_invalid")' in content
     assert en["errors"]["warp_target_invalid"] == "Invalid warp target"
+
+
+def test_invalid_editor_launch_mode_is_translated():
+    content = _load(I18N_ERRORS_FILE)
+    en = json.loads(_load(EN_FILE))
+
+    assert 'case "launch_editor_invalid"' in content
+    assert 'i18next.t("errors.launch_editor_invalid")' in content
+    assert en["errors"]["launch_editor_invalid"] == "Launch editor invalid"

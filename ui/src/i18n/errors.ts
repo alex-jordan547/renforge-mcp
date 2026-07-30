@@ -70,6 +70,8 @@ export function translateDashboardApiError(payload: DashboardApiError, messageKe
       return i18next.t("errors.invalid_token");
     case "launch_version_invalid":
       return i18next.t("errors.launch_version_invalid");
+    case "launch_editor_invalid":
+      return i18next.t("errors.launch_editor_invalid");
     case "live_action_missing":
       return i18next.t("errors.live_action_missing");
     case "live_warp_invalid":
