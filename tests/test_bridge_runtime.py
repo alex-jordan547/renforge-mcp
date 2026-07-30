@@ -26,6 +26,15 @@ def _load_bridge_body():
     return "\n".join(line[4:] if line.startswith("    ") else line for line in lines[1:])
 
 
+def _load_editor_body():
+    raw = Path(__file__).resolve().parents[1] / "src/renforge/bridge/editor.rpy"
+    lines = raw.read_text(encoding="utf-8").splitlines()
+    start = lines.index("init 1100 python:")
+    return "\n".join(
+        line[4:] if line.startswith("    ") else line for line in lines[start + 1 :]
+    )
+
+
 class _FakeWidget:
     def __init__(self, text):
         self._text = text
@@ -583,6 +592,42 @@ def test_send_input_scroll_posts_logical_wheel_event(running_bridge):
     assert event.pos == (123, 456)
 
 
+def test_send_input_drag_posts_real_mouse_event_sequence(running_bridge):
+    points = [[100, 200], [150, 200], [150, 240]]
+    reply = running_bridge.client.send_input(
+        drag={"points": points, "button": 1, "coordinate_space": "logical"}
+    )
+
+    assert reply == {"ok": True, "mode": "drag", "points": points, "button": 1}
+    events = running_bridge.renpy._pygame_events
+    assert [event.type for event in events] == [4, 6, 6, 5]
+    assert events[0].button == 1
+    assert events[0].pos == (100, 200)
+    assert events[1].pos == (150, 200)
+    assert events[1].rel == (0, 0)
+    assert events[1].buttons == (1, 0, 0)
+    assert events[2].pos == (150, 240)
+    assert events[2].rel == (0, 0)
+    assert events[2].buttons == (1, 0, 0)
+    assert events[3].button == 1
+    assert events[3].pos == (150, 240)
+    assert running_bridge.renpy.display.interface.mouse_focused is True
+
+
+def test_send_input_drag_validates_exclusive_and_non_empty_points(running_bridge):
+    mixed = running_bridge.client.send_input(
+        text="nope",
+        drag={"points": [[1, 2], [3, 4]]},
+    )
+    empty = running_bridge.client.send_input(drag={"points": []})
+
+    assert mixed["ok"] is False
+    assert "exactly one" in mixed["error"]
+    assert empty["ok"] is False
+    assert "non-empty" in empty["error"]
+    assert running_bridge.renpy._pygame_events == []
+
+
 def test_poll_events_captures_labels_and_say_lines(running_bridge):
     config = running_bridge.renpy.config
     # Fire Ren'Py's registered callbacks the way the engine would.
@@ -713,6 +758,94 @@ def test_dispatch_mouse_click_uses_focused_displayable_local_coordinates(running
             focus_module.mouse_handler = original_mouse_handler
 
     assert seen == [(30, 50, 0), (30, 50, 0)]
+
+
+def test_editor_mouse_up_applies_final_drag_position_without_motion(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    pygame = globs["pygame"]
+    screen_name = "drag_target_screen"
+    baseline = [320, 220]
+
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    ScreenDisplayable = type("ScreenDisplayable", (), {})
+    Text = type("Text", (), {})
+    screen = ScreenDisplayable()
+    widget = Text()
+    widget._location = ("game/screens.rpy", 12)
+    screen.children = [widget]
+    screen.widgets = {"drag_target": widget}
+    focus = _FakeFocus("Drag target", baseline[0], baseline[1], 120, 60, widget=widget)
+    focus.screen_name = screen_name
+    renpy.display.focus.focus_list[:] = [focus]
+    renpy.display.screen = types.SimpleNamespace(
+        get_screen=lambda name: screen if name == screen_name else None
+    )
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        center = [baseline[0] + focus.w // 2, baseline[1] + focus.h // 2]
+        selected = globs["_renforge_editor_h_select"]({"x": center[0], "y": center[1]})
+        runtime_key = selected["observation"]["runtime_key"]
+        target_key = globs["_renforge_editor_target_key"](runtime_key)
+        state.targets[target_key] = {
+            "analysis_id": "analysis-drag-target",
+            "source_key": {"relative_path": "screens.rpy", "line": 12},
+            "screen": screen_name,
+            "widget_id": "drag_target",
+            "runtime_baseline": list(baseline),
+            "source_position": list(baseline),
+            "position": list(baseline),
+            "dirty": False,
+        }
+        analyzed = globs["_renforge_editor_h_select"](
+            {"x": center[0], "y": center[1]}
+        )
+        assert analyzed["ok"] is True
+        assert state.preview_position == baseline
+
+        down = pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN,
+            {"button": 1, "pos": tuple(center), "mod": pygame.KMOD_NONE},
+        )
+        up = pygame.event.Event(
+            pygame.MOUSEBUTTONUP,
+            {
+                "button": 1,
+                "pos": (center[0] + 40, center[1] + 30),
+                "mod": pygame.KMOD_NONE,
+            },
+        )
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](down, center[0], center[1], 0.0)
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](
+                up, center[0] + 40, center[1] + 30, 0.0
+            )
+
+        assert state.preview_position[0] == pytest.approx(baseline[0] + 40, abs=1)
+        assert state.preview_position[1] == pytest.approx(baseline[1] + 30, abs=1)
+        assert state.targets[state.selected_target_key]["dirty"] is True
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
 
 
 def test_dispatch_mouse_click_delivers_up_after_down_is_ignored(running_bridge):

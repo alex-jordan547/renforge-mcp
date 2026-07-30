@@ -7,7 +7,7 @@ screen _renforge_editor_launcher():
             id "rf_launcher"
             xalign 0.985
             yalign 0.025
-            action Function(_renforge_editor_activate)
+            action Function(_renforge_editor_consume, _renforge_editor_activate)
             background Solid("#7c3aed")
             hover_background Solid("#8b5cf6")
             text_color "#ffffff"
@@ -123,35 +123,35 @@ screen _renforge_editor_overlay():
                     spacing 6
                     textbutton "Exit":
                         id "rf_exit"
-                        action Function(_renforge_editor_exit)
+                        action Function(_renforge_editor_consume, _renforge_editor_exit)
                         text_color "#f4f4f5"
                     textbutton "Undo":
                         id "rf_undo"
-                        action Function(_renforge_editor_undo)
+                        action Function(_renforge_editor_consume, _renforge_editor_undo)
                         sensitive _renforge_editor_can_undo()
                         text_color "#f4f4f5"
                     textbutton "Redo":
                         id "rf_redo"
-                        action Function(_renforge_editor_redo)
+                        action Function(_renforge_editor_consume, _renforge_editor_redo)
                         sensitive _renforge_editor_can_redo()
                         text_color "#f4f4f5"
                     textbutton "Reset":
                         id "rf_reset"
-                        action Function(_renforge_editor_reset_selected)
+                        action Function(_renforge_editor_consume, _renforge_editor_reset_selected)
                         sensitive _renforge_editor_has_selection()
                         text_color "#f4f4f5"
                     textbutton ("Tools On" if _rf_tools_visible else "Tools Off"):
                         id "rf_tools"
-                        action Function(_renforge_editor_toggle_tools)
+                        action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
                         background Solid("#7c3aed" if _rf_tools_visible else "#3f3f46")
                         text_color "#ffffff"
                     textbutton "-":
                         id "rf_opacity_down"
-                        action Function(_renforge_editor_adjust_opacity, -0.1)
+                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1)
                         text_color "#f4f4f5"
                     textbutton "+":
                         id "rf_opacity_up"
-                        action Function(_renforge_editor_adjust_opacity, 0.1)
+                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
                         text_color "#f4f4f5"
                     text _renforge_editor_status_text():
                         color "#a1a1aa"
@@ -160,7 +160,7 @@ screen _renforge_editor_overlay():
                         xminimum 120
                     textbutton _renforge_editor_save_label():
                         id "rf_save"
-                        action Function(_renforge_editor_save)
+                        action Function(_renforge_editor_consume, _renforge_editor_save)
                         sensitive _renforge_editor_save_enabled()
                         background Solid("#7c3aed")
                         hover_background Solid("#8b5cf6")
@@ -336,6 +336,18 @@ init 1100 python:
 
     def _renforge_editor_is_editor_injected():
         return bool(_renforge_editor_state().editor_injected)
+
+
+    def _renforge_editor_consume(callback, *args):
+        """Run an editor control's action and report nothing back to Ren'Py.
+
+        `Function` ends the interaction as soon as its callable returns a
+        non-None value (behavior.py, Button.handle_click), and every editor
+        callback returns a status dict. That ended the interaction and
+        dismissed the dialogue underneath, so pressing Exit or Tools also
+        advanced the story. Returning None lets Ren'Py consume the click.
+        """
+        callback(*args)
 
 
     def _renforge_editor_activate():
@@ -1688,39 +1700,40 @@ init 1100 python:
         if not state.active:
             return None
         pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
-        state.pointer = [int(pointer_x), int(pointer_y)]
-        _renforge_editor_set_label(pointer_x, pointer_y)
         event_type = getattr(event, "type", None)
         key = getattr(event, "key", None)
         shift = _renforge_editor_event_shift(event)
+        state.pointer = [int(pointer_x), int(pointer_y)]
+        _renforge_editor_set_label(pointer_x, pointer_y)
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
                 _renforge_editor_select(pointer_x, pointer_y)
                 if not state.selected_lock_reason:
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
                 _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEBUTTONUP", None) and getattr(event, "button", 0) == 1:
+                if state.drag_active: _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 _renforge_editor_end_drag()
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "KEYDOWN", None):
                 if key == getattr(pygame, "K_ESCAPE", None):
                     _renforge_editor_exit()
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_LEFT", None):
                     _renforge_editor_nudge(-1, 0, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_RIGHT", None):
                     _renforge_editor_nudge(1, 0, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_UP", None):
                     _renforge_editor_nudge(0, -1, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_DOWN", None):
                     _renforge_editor_nudge(0, 1, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
         return None
 
 
@@ -2196,13 +2209,17 @@ init 1100 python:
                 nudge_reply = _renforge_editor_nudge(dx, dy, shift)
                 if not nudge_reply.get("ok", False):
                     return nudge_reply
+                continue
             else:
                 event = _renforge_editor_fake_event(
                     pygame.KEYDOWN,
                     key=key_value,
                     mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
                 )
-                _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
+                try:
+                    _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
+                except renpy.IgnoreEvent:
+                    pass
             traces.append({"key": key_name, "shift": shift})
         state.last_event_trace = traces
         return {"ok": True, "repeat": repeat, "shift": shift, "active": state.active}
@@ -2483,6 +2500,8 @@ init 1100 python:
 
     def _renforge_editor_is_active():
         return bool(_renforge_editor_state().active)
+
+
 
 
     def _renforge_editor_opacity():
