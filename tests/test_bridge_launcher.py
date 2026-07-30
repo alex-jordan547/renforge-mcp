@@ -948,7 +948,12 @@ def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Pa
     payload = b"screen _renforge_editor_launcher():\n    pass\n"
     manifest_path = renforge_dir / "editor-session.json"
 
-    for artifact_name in (basename, f"{basename}c", f"{basename}c.bak"):
+    for target in (
+        game_dir / basename,
+        game_dir / f"{basename}c",
+        game_dir / f"{basename}c.bak",
+        manifest_path,
+    ):
         for stale in game_dir.iterdir():
             stale.unlink()
         (game_dir / basename).write_bytes(payload)
@@ -965,20 +970,24 @@ def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Pa
             encoding="utf-8",
         )
 
-        artifact = game_dir / artifact_name
-        artifact.unlink()
+        target.unlink()
         try:
-            artifact.symlink_to(game_dir / "nowhere")
+            target.symlink_to(game_dir / "nowhere")
         except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform dependent
             pytest.skip(f"symlinks unavailable on this platform: {exc}")
 
-        assert artifact.is_symlink() and not artifact.exists(), artifact_name
+        assert target.is_symlink() and not target.exists(), str(target)
         with pytest.raises(RuntimeError, match="symlink"):
             launcher._remove_editor_artifacts(tmp_path)
-        # Fail closed: the manifest survives, so the caller keeps the project
-        # lock instead of walking away from a tampered artifact.
-        assert manifest_path.exists(), artifact_name
-        assert artifact.is_symlink(), artifact_name
+        # Fail closed: nothing was removed, so the manifest is exactly as seeded
+        # — a regular file, unless the manifest itself was the tampered target, in
+        # which case it remains the dangling symlink. Either way the caller keeps
+        # the project lock instead of walking away from a tampered tree.
+        if target == manifest_path:
+            assert manifest_path.is_symlink(), str(target)
+        else:
+            assert manifest_path.is_file(), str(target)
+        assert target.is_symlink(), str(target)
 
 
 def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(

@@ -183,9 +183,14 @@ def _inject_editor_artifact(project: RenpyProject) -> Path:
 
 def _remove_editor_artifacts(project_root: Path) -> None:
     manifest_path = _editor_manifest_path(project_root)
+    # Symlink check first: exists() follows symlinks and is False for a dangling
+    # one, which would read a tampered manifest as absent and return, leaving the
+    # symlink behind once the lock is released. Same invariant as the artifacts.
+    if manifest_path.is_symlink():
+        raise RuntimeError("editor artifact manifest became a symlink")
     if not manifest_path.exists():
         return
-    if manifest_path.is_symlink() or not manifest_path.is_file():
+    if not manifest_path.is_file():
         raise RuntimeError("editor artifact manifest is not a regular file")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
