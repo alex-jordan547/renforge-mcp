@@ -2,7 +2,7 @@
   "nav": {
     "workspace": "工作区",
     "project": "项目",
-    "live": "主页",
+    "live": "实时",
     "storyMap": "故事节点图",
     "timeline": "时间线",
     "assets": "素材",
@@ -11,12 +11,12 @@
     "editor": "脚本阅读"
   },
   "section": {
-    "live": "主页",
+    "live": "实时",
     "storyMap": "故事节点图",
     "timeline": "时间线",
     "assets": "素材",
     "translation": "翻译",
-    "diagnostics": "Lint诊断脚本",
+    "diagnostics": "诊断",
     "editor": "脚本阅读"
   },
   "subtitle": {
@@ -302,7 +302,7 @@
         "stopping": "停止中",
         "syncing": "同步中"
       },
-      "title": "主页"
+      "title": "实时运行"
     },
     "storyMap": {
       "current": {
@@ -320,7 +320,9 @@
       "loading": "正在加载故事节点图",
       "nodeType": {
         "current": "当前",
-        "label": "标签"
+        "label": "标签",
+        "call": "调用",
+        "jump": "跳转"
       },
       "minimap": {
         "aria": "切换小地图"
@@ -353,7 +355,7 @@
       "filesTouchedHeader": "涉及文件",
       "filteredEvents": "已筛选事件：{{visible}}/{{total}}",
       "hideDetails": "隐藏详情",
-      "hint": "运行时环境（runtime）桥接与活动历史。",
+      "hint": "运行时桥接与活动历史。",
       "parameters": "参数",
       "result": "结果",
       "searchPlaceholder": "搜索时间线",
@@ -438,7 +440,8 @@
       "current-project": "当前项目",
       "project-parent": "上级目录",
       "home": "用户主目录",
-      "drive": "{{letter}} 盘"
+      "drive": "{{letter}} 盘",
+      "windows-drives": "Windows 驱动器"
     }
   },
   "status": {
@@ -454,7 +457,7 @@
     "entered": "已进入",
     "say": "对话",
     "exception": "异常",
-    "runtimeError": "运行时环境（runtime）错误",
+    "runtimeError": "运行时错误",
     "bridgeEvent": "桥接事件"
   }
 }

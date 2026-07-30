@@ -95,7 +95,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
       data.nodes.map((node, index) => {
         const { label, ...nodeData } = node.data;
         const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
-        const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type ?? t("pages.storyMap.nodeType.label"));
+        const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type === "call" ? t("pages.storyMap.nodeType.call") : node.data.type === "jump" ? t("pages.storyMap.nodeType.jump") : t("pages.storyMap.nodeType.label"));
         return {
           id: node.id,
           data: {
@@ -182,7 +182,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
             const pos = byId.get(node.id);
             const { label, ...nodeData } = node.data;
             const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
-            const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type ?? t("pages.storyMap.nodeType.label"));
+            const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type === "call" ? t("pages.storyMap.nodeType.call") : node.data.type === "jump" ? t("pages.storyMap.nodeType.jump") : t("pages.storyMap.nodeType.label"));
             return {
               id: node.id,
               data: {

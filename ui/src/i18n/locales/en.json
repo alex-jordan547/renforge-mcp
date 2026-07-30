@@ -360,7 +360,9 @@
       },
       "nodeType": {
         "current": "Current",
-        "label": "Label"
+        "label": "Label",
+        "call": "Call",
+        "jump": "Jump"
       }
     },
     "timeline": {
@@ -460,7 +462,8 @@
       "current-project": "Current project",
       "project-parent": "Parent directory",
       "home": "Home",
-      "drive": "Drive {{letter}}:"
+      "drive": "Drive {{letter}}:",
+      "windows-drives": "Windows Drives"
     }
   },
   "status": {

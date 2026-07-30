@@ -15,6 +15,7 @@ function translateRootLabel(rootId: string, t: ReturnType<typeof useTranslation>
     case 'current-project': return t('projectPicker.roots.current-project');
     case 'project-parent': return t('projectPicker.roots.project-parent');
     case 'home': return t('projectPicker.roots.home');
+    case 'windows-drives': return t('projectPicker.roots.windows-drives');
     default:
       if (rootId.startsWith('drive-')) {
         const letter = rootId.replace('drive-', '').toUpperCase();
