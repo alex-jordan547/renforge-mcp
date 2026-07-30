@@ -103,6 +103,7 @@ def _register_tools(app: Any) -> None:
         *,
         version: str = "stable",
         warp: str | None = None,
+        editor: bool = False,
         display: str = "auto",
         audio: str = "auto",
         savedir: str | None = None,
@@ -120,7 +121,7 @@ def _register_tools(app: Any) -> None:
         )
 
         # Dashboard owns its own display process; only warp/version are delegated.
-        delegated = launch_via_dashboard(project_path, version=version, warp=warp)
+        delegated = launch_via_dashboard(project_path, version=version, warp=warp, editor=editor)
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
                 stopped = stop_via_dashboard(project_path)
@@ -159,6 +160,7 @@ def _register_tools(app: Any) -> None:
             project_path,
             version=version,
             warp=warp,
+            editor=editor,
             display=display,
             audio=audio,
             savedir=savedir,
@@ -355,6 +357,7 @@ def _register_tools(app: Any) -> None:
         project_path: str,
         warp: str = "",
         version: str = "stable",
+        editor: bool = False,
         display: str = "auto",
         audio: str = "auto",
         savedir: str = "",
@@ -373,6 +376,7 @@ def _register_tools(app: Any) -> None:
         kwargs: dict[str, Any] = {
             "version": version,
             "warp": warp or None,
+            "editor": editor,
             "display": display or "auto",
             "audio": audio or "auto",
             "persistent": persistent or "existing",
@@ -388,6 +392,7 @@ def _register_tools(app: Any) -> None:
                 "project_path": project_path,
                 "warp": warp,
                 "version": version,
+                "editor": editor,
                 "display": display,
                 "audio": audio,
                 "savedir": savedir,

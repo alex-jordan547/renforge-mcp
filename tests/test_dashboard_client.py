@@ -50,7 +50,45 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     assert result == {"ok": True, "current_label": "start", "via": "dashboard"}
     assert calls == {
         "url": "http://127.0.0.1:8765/api/live/launch?token=secret+token",
-        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12"},
+        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": False},
+        "timeout": 45,
+    }
+
+
+def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "game-project"
+    calls = {}
+    monkeypatch.setattr(
+        dashboard_client,
+        "dashboard_connection",
+        lambda: {
+            "project": str(project),
+            "url": "http://127.0.0.1:8765/",
+            "token": "secret token",
+        },
+    )
+
+    def fake_urlopen(request, timeout: int):
+        calls.update(
+            payload=json.loads(request.data.decode("utf-8")),
+            timeout=timeout,
+        )
+        return _Response({"ok": True, "current_label": "start"})
+
+    monkeypatch.setattr(dashboard_client, "urlopen", fake_urlopen)
+
+    result = dashboard_client.launch_game(
+        str(project),
+        version="8.3.7",
+        warp="game/script.rpy:12",
+        editor=True,
+    )
+
+    assert result == {"ok": True, "current_label": "start", "via": "dashboard"}
+    assert calls == {
+        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": True},
         "timeout": 45,
     }
 
