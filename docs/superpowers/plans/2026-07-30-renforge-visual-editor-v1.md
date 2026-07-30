@@ -129,9 +129,15 @@ guard to `editor_observe_target`, retries transient bridge transport failures, a
 idempotent re-show.
 
 Environment names are exactly `RENFORGE_EDITOR_HOST`, `RENFORGE_EDITOR_PORT`,
-`RENFORGE_EDITOR_TOKEN`, and `RENFORGE_EDITOR_PROTOCOL=1`. Editor injection uses a random safe filename
-`zzrenforge_editor_<launch_nonce>.rpy`. A session-owned manifest records its path and SHA-256; cleanup
-removes only bytes matching that manifest. It never overwrites or blindly deletes a user file.
+`RENFORGE_EDITOR_TOKEN`, and `RENFORGE_EDITOR_PROTOCOL=1`. Editor injection chooses a random safe
+basename `zzrenforge_editor_<launch_nonce>` for which `.rpy`, `.rpyc`, and `.rpyc.bak` are all absent.
+The durable session manifest records that three-file sibling set, the injected `.rpy` SHA-256, and
+`absent_before=true` for each generated sibling. Cleanup may remove the source only when its bytes still
+match the injected digest; it may remove compiled siblings only when the source still matches, they
+were absent before injection, are regular non-symlink files, and retain the exact random basename.
+Otherwise it reports `EDITOR_ARTIFACT_CONFLICT`, leaves every uncertain path untouched, and does not
+release ownership as if cleanup succeeded. Crash recovery applies the same checks. It never overwrites
+or blindly deletes a user file.
 
 `live.launch_game` records editor mode and coordinator ownership. Reuse requires the requested mode to
 match; otherwise return `SESSION_MODE_MISMATCH`. Launch status reports the actual `editor` boolean.
@@ -210,8 +216,9 @@ manifest-matching artifacts. Add `BridgeClient.editor_observe_target` and the ru
 a source-writing handler or duplicate scene/bounds/measure/image-position APIs.
 
 Tests begin red and prove opt-in/default launch, mode mismatch, status, dashboard/MCP propagation,
-environment delivery, coordinator ownership, reload transport retry, manifest-safe cleanup and every
-failed-launch/deferred-reap path.
+environment delivery, coordinator ownership, reload transport retry, random-name collision retry,
+source-digest mismatch, symlinked/generated sibling refusal, manifest-safe `.rpy/.rpyc/.rpyc.bak`
+cleanup, crash recovery and every failed-launch/deferred-reap path.
 
 ## Task 4 — Integration and live acceptance
 

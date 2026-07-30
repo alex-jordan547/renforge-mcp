@@ -125,6 +125,9 @@ evidence that validated itself. A computed placement agreeing with a requested p
   dedicated connection. It never receives a filesystem write primitive.
 - Save stays disabled while analysis is pending, the coordinator/runtime probe is unavailable, or any
   selected target is locked.
+- The injected editor uses a random basename absent across `.rpy/.rpyc/.rpyc.bak`; a durable
+  ownership manifest and content checks govern cleanup. Uncertain or externally modified artifacts
+  are left untouched and reported, never blindly deleted.
 
 ## Save semantics
 
