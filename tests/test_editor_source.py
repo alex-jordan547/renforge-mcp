@@ -65,3 +65,33 @@ def test_resolve_game_path_rejects_alias_escape_and_symlink(tmp_path: Path) -> N
     with pytest.raises(EditorPathError, match="symlink"):
         resolve_game_path(project_root, "link.rpy")
 
+
+def test_analyze_textbutton_statement_ignores_keywords_inside_strings_comments_and_nested_calls() -> None:
+    line = (
+        '    textbutton "id \\"fake\\" xpos 88 ypos 99 # comment" '
+        'id "start" xpos 12 ypos 34 action Jump("xpos 1 ypos 2 id \\"bogus\\"") # xpos 222\n'
+    )
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    assert parsed.widget_id == "start"
+    assert parsed.xpos == 12
+    assert parsed.ypos == 34
+    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=77, y=66).decode("utf-8")
+    assert 'id "start" xpos 77 ypos 66 action Jump("xpos 1 ypos 2 id \\"bogus\\"") # xpos 222' in patched
+    assert 'textbutton "id \\"fake\\" xpos 88 ypos 99 # comment"' in patched
+
+
+def test_analyze_textbutton_statement_rejects_statement_with_only_nested_coordinates() -> None:
+    with pytest.raises(EditorSourceError, match="xpos"):
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" action Function(move_to, xpos=90, ypos=50)\n',
+            expected_widget_id="start",
+        )
+
+
+def test_apply_textbutton_patch_preserves_non_ascii_bytes_outside_coordinate_spans() -> None:
+    line = '    textbutton "Café — 東京" id "start" xpos -12 ypos 10 action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=901, y=-7)
+    assert patched.decode("utf-8") == (
+        '    textbutton "Café — 東京" id "start" xpos 901 ypos -7 action NullAction()\n'
+    )

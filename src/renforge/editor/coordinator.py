@@ -100,8 +100,10 @@ class EditorCoordinator:
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._connection_threads: set[threading.Thread] = set()
+        self._connections: set[socket.socket] = set()
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
+        self._request_lock = threading.Lock()
 
         self._transaction_root = self._project.root / RENFORGE_DIRNAME / TRANSACTION_DIRNAME
         self._transaction_root.mkdir(parents=True, exist_ok=True)
@@ -136,14 +138,26 @@ class EditorCoordinator:
             self._stop_event.set()
             listener = self._listener
             self._listener = None
+            connections = list(self._connections)
         if listener is not None:
             try:
                 listener.close()
             except OSError:
                 pass
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                connection.close()
+            except OSError:
+                pass
 
         if self._accept_thread is not None:
             self._accept_thread.join(timeout=max(0.1, timeout))
+        for thread in list(self._connection_threads):
+            thread.join(timeout=max(0.1, timeout))
 
         with self._lock:
             for record in self._transactions.values():
@@ -171,6 +185,8 @@ class EditorCoordinator:
             thread.start()
 
     def _handle_connection(self, conn: socket.socket, addr: tuple[str, int]) -> None:
+        with self._lock:
+            self._connections.add(conn)
         try:
             if not ipaddress.ip_address(addr[0]).is_loopback:
                 self._send_json(
@@ -232,6 +248,9 @@ class EditorCoordinator:
                 if should_close:
                     return
         finally:
+            with self._lock:
+                self._connections.discard(conn)
+                self._connection_threads.discard(threading.current_thread())
             try:
                 conn.close()
             except OSError:
@@ -274,8 +293,10 @@ class EditorCoordinator:
     def _handle_auth_frame(self, frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         try:
             required_keys = {"protocol", "version", "token", "client_nonce"}
-            if not required_keys.issubset(frame.keys()):
+            if not required_keys.issubset(frame):
                 raise EditorError("AUTH_REQUIRED", "first frame must authenticate before commands")
+            if set(frame) != required_keys:
+                raise EditorError("AUTH_FRAME_SCHEMA_INVALID", "auth frame must contain exactly the required fields")
             protocol = self._require_string(frame, "protocol")
             version = frame.get("version")
             token = self._require_string(frame, "token")
@@ -307,6 +328,7 @@ class EditorCoordinator:
             return self._error_reply(request_id=None, code=exc.code, message=exc.message, details=exc.details), False
 
     def _handle_command_frame(self, frame: dict[str, Any], *, expected_connection_id: str) -> tuple[dict[str, Any], bool]:
+        required_keys = {"protocol", "version", "connection_id", "request_id", "command", "payload"}
         try:
             protocol = self._require_string(frame, "protocol")
             version = frame.get("version")
@@ -314,6 +336,8 @@ class EditorCoordinator:
             request_id = self._require_string(frame, "request_id")
             command = self._require_string(frame, "command")
             payload = frame.get("payload")
+            if set(frame) != required_keys:
+                raise EditorError("COMMAND_FRAME_SCHEMA_INVALID", "command frame must contain exactly the required fields")
             if protocol != PROTOCOL_NAME or version != PROTOCOL_VERSION:
                 raise EditorError("PROTOCOL_MISMATCH", "protocol mismatch")
             if connection_id != expected_connection_id:
@@ -321,8 +345,20 @@ class EditorCoordinator:
             if not isinstance(payload, dict):
                 raise EditorError("PAYLOAD_INVALID", "payload must be a JSON object")
 
-            canonical = json.dumps(frame, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-            with self._lock:
+            canonical_frame = {
+                "protocol": protocol,
+                "version": version,
+                "request_id": request_id,
+                "command": command,
+                "payload": payload,
+            }
+            canonical = json.dumps(
+                canonical_frame,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            with self._request_lock:
                 cached = self._request_cache.get(request_id)
                 if cached is not None:
                     previous_bytes, previous_reply = cached
@@ -337,21 +373,29 @@ class EditorCoordinator:
                         True,
                     )
 
-            result = self._dispatch_command(command, payload)
-            reply = self._ok_reply(request_id=request_id, result=result)
-            with self._lock:
+                try:
+                    result = self._dispatch_command(command, payload)
+                    reply = self._ok_reply(request_id=request_id, result=result)
+                except EditorError as exc:
+                    reply = self._error_reply(
+                        request_id=request_id,
+                        code=exc.code,
+                        message=exc.message,
+                        details=exc.details,
+                    )
                 self._request_cache[request_id] = (canonical, reply)
             return reply, False
         except EditorError as exc:
             request_id = frame.get("request_id") if isinstance(frame.get("request_id"), str) else None
-            reply = self._error_reply(request_id=request_id, code=exc.code, message=exc.message, details=exc.details)
-            if request_id is not None:
-                canonical = json.dumps(frame, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-                with self._lock:
-                    cached = self._request_cache.get(request_id)
-                    if cached is None:
-                        self._request_cache[request_id] = (canonical, reply)
-            return reply, False
+            return (
+                self._error_reply(
+                    request_id=request_id,
+                    code=exc.code,
+                    message=exc.message,
+                    details=exc.details,
+                ),
+                False,
+            )
 
     def _require_string(self, payload: dict[str, Any], key: str, *, max_bytes: int = MAX_STRING_BYTES) -> str:
         value = payload.get(key)
