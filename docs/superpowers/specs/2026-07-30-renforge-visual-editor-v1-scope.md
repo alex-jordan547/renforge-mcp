@@ -31,10 +31,10 @@ requires it — none is arbitrary.
 
 | Gate | Requirement | Why (mechanism) |
 |---|---|---|
-| 1 | Displayable is **focusable** | Selection reads `renpy.display.focus.focus_list`; non-focusables are absent from it |
-| 2 | Statement carries an **`id`** | Runtime preview uses `_widget_properties`, which is keyed by widget id |
-| 3 | Single-line statement with **literal `xpos` and `ypos`** | The patcher rewrites literal integers on one source line |
-| 4 | Not inside a **`viewport`** / `Crop` / `Transform(crop=)` | Only `fixed` + `clipping True` was exercised; viewport clipping is untested |
+| 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
+| 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
+| 3 | Single-line `textbutton` with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only those two integer spans |
+| 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
 failed and why, e.g. *"`text` is not focusable — cannot be selected in V1"* or
@@ -42,6 +42,12 @@ failed and why, e.g. *"`text` is not focusable — cannot be selected in V1"* or
 
 Elements that fail gate 2, 3 or 4 but pass gate 1 remain **selectable and measurable** (you can inspect
 their box and distances) but are **locked for editing**. Elements failing gate 1 are invisible to V1.
+
+The runtime descriptor is deny-by-default. It carries a typed ancestor chain, screen invocation path,
+instance discriminator, source location and editor-ownership marker. The host independently parses the
+source statement and compares the literal id. Missing proof, an unknown ancestor/crop state, or more
+than one live instance produces a stable lock reason; an ordinal or synthetic scene-tree id is never
+treated as source identity.
 
 ## Adapter allowlist
 
@@ -111,23 +117,28 @@ evidence that validated itself. A computed placement agreeing with a requested p
 ## Security boundary
 
 - The injected overlay owns interaction and runtime preview only.
-- The existing game-side bridge request socket remains host-to-game; it is not reused to publish source.
-- A per-launch `EditorCoordinator` on the RenForge host listens on loopback with a random token.
+- The existing game-side bridge remains host-to-game and is reused only for independent fresh-frame
+  observation and post-reload attestation — never to publish source.
+- A per-launch `EditorCoordinator` on the RenForge host listens on loopback with a separate random
+  token and an auth-first, versioned protocol.
 - The overlay may call `analyze_target`, `commit`, `commit_status`, and `reload_handshake` on that
   dedicated connection. It never receives a filesystem write primitive.
-- Save stays disabled while analysis is pending, the coordinator is unavailable, or any selected
-  target is locked.
+- Save stays disabled while analysis is pending, the coordinator/runtime probe is unavailable, or any
+  selected target is locked.
 
 ## Save semantics
 
 - **Nothing is written until Save.** Dragging only mutates runtime state.
-- Save is **all-or-nothing** across the session's changes. A single unsavable element aborts the whole
-  write rather than leaving the file half-applied.
-- Unsavable elements can never enter the change set in the first place (gates are checked at selection
-  time, not at save time), so an abort means a real conflict — not a surprise.
-- On external modification during the session: refuse, keep the in-memory work, and offer reload or retry.
-- After a successful write: `reload_script()`, re-show the screen, rebind by stable key, and the new
-  state becomes the baseline for Undo.
+- A V1 edit session may contain multiple target intents but **all must resolve to one source file**.
+  This makes publication one atomic file replacement; a second file is rejected up front as
+  `MULTI_FILE_UNSUPPORTED`.
+- All intents are re-analysed against the same baseline immediately before publication. Any stale,
+  ambiguous or unsavable target aborts the complete save.
+- On an external modification: write nothing, keep the in-memory work, and offer reload or retry.
+- After publication, the coordinator marks the transaction committed only after a new script
+  generation, a successful draw barrier, stable-key rebinding and independent `focus_list`
+  measurement of every successor within one logical pixel. Failure triggers conditional rollback.
+- A successful Save establishes the new baseline and clears Undo/Redo; history does not cross it.
 
 ## Known operational hazards
 
@@ -135,15 +146,17 @@ Both were hit during the spikes and are handled; re-introducing either will look
 failure when it is not.
 
 1. **A show lost to the async reload.** `reload_script()` completes asynchronously; a `show_screen`
-   landing mid-teardown is silently dropped and the handler still reports success. Post-reload waits
-   must re-issue the idempotent show, bounded, and still surface the original error on exhaustion.
-2. **The bridge disappears mid-reload.** While init blocks re-execute, the client *raises*
-   (`bridge response was empty`) rather than returning a reply. Every poll that can straddle a reload
-   must treat a transport error as transient and retry to its deadline — while never accepting an
-   observation that was not preceded by a successful frame.
+   landing mid-teardown is silently dropped and the handler still reports success.
+2. **The bridge disappears mid-reload.** While init blocks re-execute, the client raises
+   (`bridge response was empty`) rather than returning a reply.
+3. **A headless game does not redraw on its own.** A focus list can describe a stale frame.
 
-A headless game does not redraw on its own: force a real frame (screenshot goes through the draw path)
-before any measurement, or you will read a stale focus list.
+The save path therefore follows one explicit state machine:
+`reload_requested → bridge_reconnected → fresh_frame → re_show_observed → all_targets_attested`.
+Transient transport failures and the idempotent re-show are retried to a deadline. A screenshot/draw
+barrier immediately precedes each focus measurement. Generation, pending transaction and callback
+registration live in a reload-surviving module, not `renpy.store`. Exhaustion never certifies success;
+it starts conditional rollback.
 
 ## Verification standard
 
