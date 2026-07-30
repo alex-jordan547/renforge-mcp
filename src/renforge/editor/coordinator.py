@@ -102,6 +102,7 @@ class EditorCoordinator:
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._connection_threads: set[threading.Thread] = set()
+        self._busy_command_threads: set[threading.Thread] = set()
         self._connections: set[socket.socket] = set()
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
@@ -144,6 +145,7 @@ class EditorCoordinator:
             self._accept_thread = None
             connections = list(self._connections)
             connection_threads = list(self._connection_threads)
+            busy_threads = list(self._busy_command_threads)
             self._connections.clear()
             self._connection_threads.clear()
             self._request_cache.clear()
@@ -161,28 +163,31 @@ class EditorCoordinator:
                 listener.close()
             except OSError:
                 pass
-        for thread in connection_threads:
+        # Join the deduplicated union of idle readers and command executors; the
+        # busy set is persisted (never cleared on failure), so a retry also waits
+        # for a command the previous close() already saw.
+        for thread in set(connection_threads) | set(busy_threads):
             thread.join(timeout=max(0.1, timeout))
         if accept_thread is not None:
             accept_thread.join(timeout=max(0.1, timeout))
 
-        # A handler that outlives the join can still be inside a commit — the
-        # shadow lint alone may run far longer than this timeout — and would
-        # publish source after the caller has torn the session down. Fail closed
-        # so BridgeSession keeps the project lock, and keep the survivors
-        # tracked: a retried close() must join them again instead of finding an
-        # empty set and reporting a clean shutdown.
-        surviving = [thread for thread in connection_threads if thread.is_alive()]
-        accept_survived = accept_thread is not None and accept_thread.is_alive()
-        if surviving or accept_survived:
+        # Only a handler *executing a command* can reach atomic_write_file and
+        # publish source after the caller has torn the session down. A thread
+        # parked on _read_frame, or the accept thread, writes nothing and exits
+        # once the stop event or the closed socket wakes it, so it must NOT fail
+        # the shutdown (that broke the protocol close test on slower sockets).
+        # The _stop_event recheck in _handle_connection closes the race: a handler
+        # only enters _busy_command_threads while stop is clear, so after the
+        # stop set any command-in-flight is already tracked before we snapshot it.
+        with self._lock:
+            active = [thread for thread in self._busy_command_threads if thread.is_alive()]
+        if active:
             with self._lock:
-                self._connection_threads.update(surviving)
-                if accept_survived:
-                    self._accept_thread = accept_thread
+                self._busy_command_threads.update(active)
             raise EditorError(
                 "SHUTDOWN_INCOMPLETE",
-                "editor handler threads outlived close(); the project lock is held",
-                {"surviving_handlers": len(surviving), "accept_thread_alive": accept_survived},
+                "editor command handlers outlived close(); the project lock is held",
+                {"active_commands": len(active)},
             )
 
         with self._lock:
@@ -269,7 +274,23 @@ class EditorCoordinator:
                     connection_id = str(response["connection_id"])
                     continue
 
-                response, should_close = self._handle_command_frame(frame, expected_connection_id=connection_id)
+                # Register as command-in-flight only while stop is clear, under
+                # the lock close() inspects. If stop is already set the thread
+                # returns without entering the set, so close() either waits for a
+                # command it has seen, or sees none and never tears down under one.
+                with self._lock:
+                    if self._stop_event.is_set():
+                        return
+                    self._busy_command_threads.add(threading.current_thread())
+                try:
+                    response, should_close = self._handle_command_frame(
+                        frame, expected_connection_id=connection_id
+                    )
+                finally:
+                    with self._lock:
+                        self._busy_command_threads.discard(threading.current_thread())
+                # _send_json may block on a slow socket but can never write
+                # source, so it runs outside the command-in-flight guard.
                 self._send_json(conn, response)
                 if should_close:
                     return

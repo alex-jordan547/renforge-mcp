@@ -17,6 +17,7 @@ from renforge.bridge.launcher import (
     remove_bridge_artifacts,
 )
 from renforge.editor import EditorEndpoint, PROTOCOL_VERSION
+from renforge.editor.exceptions import EditorError
 from renforge.launch_env import LaunchError
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
@@ -978,3 +979,69 @@ def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Pa
         # lock instead of walking away from a tampered artifact.
         assert manifest_path.exists(), artifact_name
         assert artifact.is_symlink(), artifact_name
+
+
+def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The Codex P1 contract lives at the BridgeSession boundary.
+
+    A coordinator that reports an incomplete shutdown — a handler can still reach
+    ``atomic_write_file`` — must leave ``session.closed`` False and the project
+    lock held, so no concurrent session can launch over the half-torn-down one.
+    `_close_resources` keeps killing Ren'Py and removing artifacts after the
+    exception; the lock is the real safeguard, released only once a retry sees a
+    clean close.
+    """
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    close_calls = {"count": 0}
+
+    class _StalledCoordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            pass
+
+        def attach_runtime_probe(self, _probe: object) -> None:
+            return None
+
+        def start(self) -> EditorEndpoint:
+            return EditorEndpoint(host="127.0.0.1", port=64444, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            close_calls["count"] += 1
+            if close_calls["count"] == 1:
+                raise EditorError("SHUTDOWN_INCOMPLETE", "handler still running", {"active_commands": 1})
+            return {"closed": True}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _StalledCoordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, editor=True)
+
+    first = session.close(timeout=0.1)
+    assert "editor_coordinator" in first["failed"]
+    assert session.closed is False
+
+    # The project lock is the real safeguard: a second session must not launch.
+    with pytest.raises(LaunchError) as excinfo:
+        ProjectBridgeLock(project_root / ".renforge" / "bridge.lock").acquire()
+    assert excinfo.value.code == "BRIDGE_PROJECT_LOCKED"
+
+    # The retry joins the now-finished handler and releases everything.
+    second = session.close(timeout=0.1)
+    assert second.get("failed", []) == []
+    assert session.closed is True
+
+    # With the lock released, a fresh session can take ownership again.
+    reacquired = ProjectBridgeLock(project_root / ".renforge" / "bridge.lock")
+    reacquired.acquire()
+    try:
+        pass
+    finally:
+        reacquired.release()
+

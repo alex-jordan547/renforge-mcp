@@ -796,7 +796,7 @@ def test_close_fails_closed_while_a_handler_is_still_running(tmp_path: Path) -> 
             with pytest.raises(EditorError) as excinfo:
                 coordinator.close(timeout=0.2)
             assert excinfo.value.code == "SHUTDOWN_INCOMPLETE"
-            assert excinfo.value.details["surviving_handlers"] == 1
+            assert excinfo.value.details["active_commands"] == 1
 
             # Still blocked: a second attempt must fail again. This is what proves
             # the survivor stayed tracked — the handler discards itself from
@@ -805,7 +805,7 @@ def test_close_fails_closed_while_a_handler_is_still_running(tmp_path: Path) -> 
             with pytest.raises(EditorError) as retry_excinfo:
                 coordinator.close(timeout=0.2)
             assert retry_excinfo.value.code == "SHUTDOWN_INCOMPLETE"
-            assert retry_excinfo.value.details["surviving_handlers"] == 1
+            assert retry_excinfo.value.details["active_commands"] == 1
 
         release.set()
         assert coordinator.close(timeout=10.0)["transactions"] == {}
