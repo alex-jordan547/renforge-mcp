@@ -668,6 +668,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         payload = _as_dict(await _read_json(request))
         version = payload.get("version", "stable")
         warp = payload.get("warp")
+        editor = payload.get("editor", False)
         if not isinstance(version, str) or not version:
             return error_response(
                 code="launch_version_invalid",
@@ -682,11 +683,19 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"warp": warp},
             )
+        if not isinstance(editor, bool):
+            return error_response(
+                code="launch_editor_invalid",
+                error="editor must be a boolean",
+                status_code=400,
+                details={"editor": editor},
+            )
         result = await asyncio.to_thread(
             live.launch_game,
             str(runtime.root),
             version=version,
             warp=warp,
+            editor=editor,
         )
         return JSONResponse(result)
 

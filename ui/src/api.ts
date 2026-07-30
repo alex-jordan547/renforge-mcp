@@ -7,6 +7,7 @@ import type {
   LintDiagnostic,
   LintResponse,
   LiveChoice,
+  LiveLaunchResponse,
   LiveScreenshot,
   LiveState,
   ProjectBrowserResponse,
@@ -578,13 +579,13 @@ export const api = {
     return response as { ok: boolean; action?: string; event?: string; error?: string };
   },
 
-  async launchGame(version = "stable", warp?: string): Promise<{ ok: boolean; already_running?: boolean; current_label?: string; error?: string }> {
+  async launchGame(version = "stable", warp?: string): Promise<LiveLaunchResponse> {
     const response = await apiPost<unknown>("/api/live/launch", {
       version,
       ...(warp ? { warp } : {}),
     });
     checkBooleanResponse(response, "Launch");
-    return response as { ok: boolean; already_running?: boolean; current_label?: string; error?: string };
+    return response as LiveLaunchResponse;
   },
 
   async stopGame(): Promise<{ ok: boolean; was_running?: boolean; error?: string }> {

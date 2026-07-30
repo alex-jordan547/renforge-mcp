@@ -1,10 +1,12 @@
 import errno
+import hashlib
 import json
 import os
 import signal
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,6 +16,8 @@ from renforge.bridge.launcher import (
     launch_with_bridge,
     remove_bridge_artifacts,
 )
+from renforge.editor import EditorEndpoint, PROTOCOL_VERSION
+from renforge.editor.exceptions import EditorError
 from renforge.launch_env import LaunchError
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
@@ -614,3 +618,439 @@ def test_failed_launch_defers_cleanup_and_unlock_until_process_exits(
 
     assert launches["count"] == 2
     session.close(timeout=0.01)
+
+
+def test_launch_without_editor_does_not_start_editor_flow(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    for key in ("RENFORGE_EDITOR_HOST", "RENFORGE_EDITOR_PORT", "RENFORGE_EDITOR_TOKEN", "RENFORGE_EDITOR_PROTOCOL"):
+        monkeypatch.delenv(key, raising=False)
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["env"] = env
+        assert env is not None
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.EditorCoordinator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("editor flow started")),
+    )
+
+    session = launch_with_bridge(sdk, project, editor=False)
+    assert session is not None
+    assert not session.editor
+    env = captured.get("env") or {}
+    assert not any(key.startswith("RENFORGE_EDITOR_") for key in env)
+    assert session.editor is False
+    assert not (project_root / ".renforge" / "editor-session.json").exists()
+    session.close(timeout=0.1)
+
+
+def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, Any] = {}
+    probe: dict[str, object] = {}
+    coordinator: dict[str, object] = {}
+    close_calls: dict[str, int] = {"count": 0}
+
+    class _Coordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            coordinator["init"] = True
+
+        def attach_runtime_probe(self, runtime_probe: object) -> None:
+            probe["value"] = runtime_probe
+
+        def start(self) -> EditorEndpoint:
+            return EditorEndpoint(host="127.0.0.1", port=51234, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            close_calls["count"] += 1
+            return {"closed": True}
+
+    class _Probe:
+        def __init__(self, project_root: str | Path):
+            probe["project_root"] = str(project_root)
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["env"] = env
+        assert env is not None
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeRuntimeProbe", _Probe)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, editor=True)
+    assert coordinator.get("init") is True
+    assert session.editor is True
+    env = captured["env"]
+    editor_keys = {k for k in env if k.startswith("RENFORGE_EDITOR_")}
+    assert editor_keys == {
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    }
+    assert env["RENFORGE_EDITOR_HOST"] == "127.0.0.1"
+    assert env["RENFORGE_EDITOR_PORT"] == "51234"
+    assert env["RENFORGE_EDITOR_TOKEN"] == "editor-token"
+    assert env["RENFORGE_EDITOR_PROTOCOL"] == "1"
+    assert probe["project_root"] == str(project_root)
+    assert isinstance(probe["value"], _Probe)
+
+    manifest_path = project_root / ".renforge" / "editor-session.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    basename = manifest["basename"]
+    source_path = project_root / "game" / basename
+    expected_resource = (
+        Path(__file__).resolve().parents[1] / "src" / "renforge" / "bridge" / "editor.rpy"
+    )
+    expected_hash = hashlib.sha256(expected_resource.read_bytes()).hexdigest()
+    assert manifest["source_sha256"] == expected_hash
+    assert manifest["absent_before"] == {"rpy": True, "rpyc": True, "rpyc_bak": True}
+    assert source_path.read_bytes() == expected_resource.read_bytes()
+
+    close_result = session.close(timeout=0.1)
+    assert close_result["cleaned"]["editor_coordinator"] is True
+    assert close_result["cleaned"]["bridge_artifacts"] is True
+    assert close_calls["count"] == 1
+    assert session.closed is True
+
+
+def test_launch_with_editor_retries_collision_free_random_basename(monkeypatch, tmp_path: Path) -> None:
+    import renforge.bridge.launcher as launcher
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    launch_tokens = iter(["deadbeef", "cafebabe", "00"])
+    monkeypatch.setattr(
+        "renforge.bridge.launcher.secrets.token_hex",
+        lambda _size=8: next(launch_tokens),
+    )
+    manifest_collision = f"{launcher._EDITOR_INJECTED_PREFIX}deadbeef.rpy"
+    (project.game_dir / manifest_collision).write_text("occupied", encoding="utf-8")
+    (project.game_dir / f"{manifest_collision}c").write_bytes(b"compiled")
+    (project.game_dir / f"{manifest_collision}c.bak").write_bytes(b"compiled")
+
+    class _Coordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            pass
+
+        def attach_runtime_probe(self, _probe: object) -> None:
+            return None
+
+        def start(self) -> EditorEndpoint:
+            return EditorEndpoint(host="127.0.0.1", port=62010, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            return {"closed": True}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        assert env is not None
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, editor=True)
+    manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
+
+    expected_basename = f"{launcher._EDITOR_INJECTED_PREFIX}cafebabe.rpy"
+    assert manifest["basename"] == expected_basename
+    assert (project.game_dir / manifest_collision).read_text(encoding="utf-8") == "occupied"
+    assert (project.game_dir / expected_basename).exists()
+    session.close(timeout=0.1)
+
+
+def test_editor_close_preserves_modified_injected_artifact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+
+    class _Coordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            pass
+
+        def attach_runtime_probe(self, _probe: object) -> None:
+            return None
+
+        def start(self) -> EditorEndpoint:
+            return EditorEndpoint(host="127.0.0.1", port=63333, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            return {"closed": True}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, editor=True)
+    manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
+    injected = project_root / "game" / manifest["basename"]
+    sibling = project_root / "game" / f"{manifest['basename']}c"
+    injected.write_text("modified-by-test", encoding="utf-8")
+    sibling.write_bytes(b"foreign")
+
+    close_result = session.close(timeout=0.1)
+    assert "bridge_artifacts" in close_result["failed"]
+    assert session.closed is False
+    assert injected.exists()
+    assert sibling.exists()
+    assert (project_root / ".renforge" / "editor-session.json").exists()
+    assert "renpy_process" in close_result["cleaned"]
+
+
+def test_bridge_session_close_is_idempotent(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    process = _FakeProcess()
+    session = BridgeSession(process, _FakeClient(), project_root)
+
+    first = session.close(timeout=0.1)
+    second = session.close(timeout=0.1)
+
+    assert session.closed is True
+    assert first == second
+    assert process.killed is True
+    assert second["cleaned"]["renpy_process"] is True
+
+
+def test_editor_launch_failure_cleans_resources_and_closes_coordinator(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    coordinator_calls = {"close": 0, "init": 0, "start": 0}
+    process = _FakeProcess()
+
+    class _Coordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            coordinator_calls["init"] += 1
+
+        def attach_runtime_probe(self, _probe: object) -> None:
+            return None
+
+        def start(self) -> EditorEndpoint:
+            coordinator_calls["start"] += 1
+            return EditorEndpoint(host="127.0.0.1", port=62020, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            coordinator_calls["close"] += 1
+            return {"closed": True}
+
+    def fake_popen(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project, editor=True, startup_timeout=0.0)
+
+    assert excinfo.value.code == "BRIDGE_CONNECTION_TIMEOUT"
+    assert coordinator_calls["init"] == 1
+    assert coordinator_calls["start"] == 1
+    assert coordinator_calls["close"] == 1
+    assert not (project_root / ".renforge" / "editor-session.json").exists()
+    assert process.returncode is not None
+
+
+def test_editor_artifact_cleanup_stays_retryable_after_any_unlink_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Cleanup must be idempotent at every unlink.
+
+    ``BridgeSession.close()`` and the deferred reaper both retry removal, and a
+    failure that leaves the manifest pointing at an already-deleted artifact
+    would make every later attempt abort before reaching the artifact that
+    actually failed — stranding the project lock forever.
+    """
+    import renforge.bridge.launcher as launcher
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    renforge_dir = tmp_path / ".renforge"
+    renforge_dir.mkdir(parents=True)
+
+    basename = "zzrenforge_editor_deadbeefdeadbeef.rpy"
+    payload = b"screen _renforge_editor_launcher():\n    pass\n"
+    manifest_path = renforge_dir / "editor-session.json"
+    artifacts = (
+        game_dir / basename,
+        game_dir / f"{basename}c",
+        game_dir / f"{basename}c.bak",
+        manifest_path,
+    )
+
+    def seed() -> None:
+        (game_dir / basename).write_bytes(payload)
+        (game_dir / f"{basename}c").write_bytes(b"compiled")
+        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "basename": basename,
+                    "source_sha256": hashlib.sha256(payload).hexdigest(),
+                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    real_unlink = Path.unlink
+
+    for failing in artifacts:
+        seed()
+
+        def flaky_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self.name == failing.name:
+                raise OSError(errno.EACCES, "artifact is locked")
+            real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+        with pytest.raises(OSError):
+            launcher._remove_editor_artifacts(tmp_path)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+
+        launcher._remove_editor_artifacts(tmp_path)
+        remaining = [artifact.name for artifact in artifacts if artifact.exists()]
+        assert remaining == [], f"retry after {failing.name} left {remaining}"
+
+
+def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Path) -> None:
+    """A dangling symlink must never read as an absent artifact.
+
+    ``Path.exists()`` follows symlinks and is False for a broken one, so a
+    tampered artifact would be skipped as "already cleaned", the manifest deleted
+    and the project lock released while the symlink stayed behind.
+    """
+    import renforge.bridge.launcher as launcher
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    renforge_dir = tmp_path / ".renforge"
+    renforge_dir.mkdir(parents=True)
+
+    basename = "zzrenforge_editor_cafebabecafebabe.rpy"
+    payload = b"screen _renforge_editor_launcher():\n    pass\n"
+    manifest_path = renforge_dir / "editor-session.json"
+
+    for target in (
+        game_dir / basename,
+        game_dir / f"{basename}c",
+        game_dir / f"{basename}c.bak",
+        manifest_path,
+    ):
+        for stale in game_dir.iterdir():
+            stale.unlink()
+        (game_dir / basename).write_bytes(payload)
+        (game_dir / f"{basename}c").write_bytes(b"compiled")
+        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "basename": basename,
+                    "source_sha256": hashlib.sha256(payload).hexdigest(),
+                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        target.unlink()
+        try:
+            target.symlink_to(game_dir / "nowhere")
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform dependent
+            pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+        assert target.is_symlink() and not target.exists(), str(target)
+        with pytest.raises(RuntimeError, match="symlink"):
+            launcher._remove_editor_artifacts(tmp_path)
+        # Fail closed: nothing was removed, so the manifest is exactly as seeded
+        # — a regular file, unless the manifest itself was the tampered target, in
+        # which case it remains the dangling symlink. Either way the caller keeps
+        # the project lock instead of walking away from a tampered tree.
+        if target == manifest_path:
+            assert manifest_path.is_symlink(), str(target)
+        else:
+            assert manifest_path.is_file(), str(target)
+        assert target.is_symlink(), str(target)
+
+
+def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The Codex P1 contract lives at the BridgeSession boundary.
+
+    A coordinator that reports an incomplete shutdown — a handler can still reach
+    ``atomic_write_file`` — must leave ``session.closed`` False and the project
+    lock held, so no concurrent session can launch over the half-torn-down one.
+    `_close_resources` keeps killing Ren'Py and removing artifacts after the
+    exception; the lock is the real safeguard, released only once a retry sees a
+    clean close.
+    """
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    close_calls = {"count": 0}
+
+    class _StalledCoordinator:
+        def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
+            pass
+
+        def attach_runtime_probe(self, _probe: object) -> None:
+            return None
+
+        def start(self) -> EditorEndpoint:
+            return EditorEndpoint(host="127.0.0.1", port=64444, token="editor-token", protocol_version=PROTOCOL_VERSION)
+
+        def close(self, timeout: float = 10.0) -> dict[str, Any]:
+            close_calls["count"] += 1
+            if close_calls["count"] == 1:
+                raise EditorError("SHUTDOWN_INCOMPLETE", "handler still running", {"active_commands": 1})
+            return {"closed": True}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _StalledCoordinator)
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, editor=True)
+
+    first = session.close(timeout=0.1)
+    assert "editor_coordinator" in first["failed"]
+    assert session.closed is False
+
+    # The project lock is the real safeguard: a second session must not launch.
+    with pytest.raises(LaunchError) as excinfo:
+        ProjectBridgeLock(project_root / ".renforge" / "bridge.lock").acquire()
+    assert excinfo.value.code == "BRIDGE_PROJECT_LOCKED"
+
+    # The retry joins the now-finished handler and releases everything.
+    second = session.close(timeout=0.1)
+    assert second.get("failed", []) == []
+    assert session.closed is True
+
+    # With the lock released, a fresh session can take ownership again.
+    reacquired = ProjectBridgeLock(project_root / ".renforge" / "bridge.lock")
+    reacquired.acquire()
+    try:
+        pass
+    finally:
+        reacquired.release()
+

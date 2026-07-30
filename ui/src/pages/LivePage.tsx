@@ -174,7 +174,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     eventCursor.current = 0;
     setEvents([]);
     try {
-      const result = await api.launchGame();
+      const result = await api.launchGame("stable");
       setStatus({
         key: result.already_running ? "pages.live.status.launch.alreadyRunning" : "pages.live.status.launch.success",
       });

@@ -981,6 +981,43 @@ def test_list_ui_elements_reports_bounds_and_semantic_fields(running_bridge):
     assert len(info["frame_id"]) == 64
 
 
+def test_list_ui_elements_uses_named_textbutton_widget_id(running_bridge):
+    renpy = running_bridge.renpy
+    named_text = _FakeWidget("Tools On")
+    button = _FakeWidget("Tools On")
+    button.child = named_text
+    focus = _FakeFocus("Tools On", 10, 10, 100, 30, widget=button)
+    focus.screen_name = "_renforge_editor_overlay"
+    original_focus_list = list(renpy.display.focus.focus_list)
+    original_get_screen = getattr(renpy, "get_screen", None)
+    renpy.display.focus.focus_list[:] = [focus]
+    renpy.get_screen = lambda name: (
+        types.SimpleNamespace(widgets={"rf_tools": named_text})
+        if name == "_renforge_editor_overlay"
+        else None
+    )
+
+    try:
+        elements = running_bridge.client.list_ui_elements(
+            screen="_renforge_editor_overlay"
+        )
+        assert elements[0]["id"] == "rf_tools"
+        _focus, element, error = running_bridge.globs[
+            "_renforge_resolve_ui_element"
+        ](
+            {"id": "rf_tools", "screen": "_renforge_editor_overlay"},
+            "click_element",
+        )
+        assert error is None
+        assert element["id"] == "rf_tools"
+    finally:
+        renpy.display.focus.focus_list[:] = original_focus_list
+        if original_get_screen is None:
+            delattr(renpy, "get_screen")
+        else:
+            renpy.get_screen = original_get_screen
+
+
 def test_hit_test_reports_topmost_focusable(running_bridge):
     elements = running_bridge.client.list_ui_elements()
     target = elements[0]

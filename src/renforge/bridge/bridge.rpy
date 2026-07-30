@@ -1252,6 +1252,28 @@ init python:
                 if value:
                     return value
         return None
+    def _renforge_named_focus_id(screen_name, widget, cache):
+        if not screen_name or widget is None:
+            return None
+        widget_ids = cache.get(screen_name)
+        if widget_ids is None:
+            widget_ids = {}
+            try:
+                screen = renpy.get_screen(screen_name)
+                named_widgets = getattr(screen, "widgets", None) or {}
+                for name, named_widget in named_widgets.items():
+                    widget_ids.setdefault(id(named_widget), str(name))
+            except Exception:
+                pass
+            cache[screen_name] = widget_ids
+        for candidate in (widget, getattr(widget, "child", None)):
+            if candidate is not None:
+                widget_id = widget_ids.get(id(candidate))
+                if widget_id:
+                    return widget_id
+        return None
+
+
 
     def _renforge_focus_action_name(focus, widget):
         """Best-effort human/action name for a focusable control."""
@@ -1337,6 +1359,7 @@ init python:
         """
         elements = []
         used_ids = {}
+        named_widget_ids = {}
         try:
             focus_list = renpy.display.focus.focus_list
         except Exception:
@@ -1364,6 +1387,12 @@ init python:
             raw_action_name = _renforge_focus_action_name(focus, widget)
             zorder = _renforge_focus_zorder(focus, widget, ordinal)
             element_id = _renforge_explicit_focus_id(focus, widget)
+            if not element_id:
+                element_id = _renforge_named_focus_id(
+                    raw_screen,
+                    widget,
+                    named_widget_ids,
+                )
             if not element_id:
                 # Prefer screen.action (semantic) over ordinal-heavy paths.
                 if raw_screen and raw_action_name:

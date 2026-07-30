@@ -13,6 +13,7 @@ PNG from :func:`screenshot_png` into an MCP image.
 from __future__ import annotations
 
 import json
+import inspect
 import math
 import os
 import signal
@@ -55,8 +56,9 @@ _LAUNCH_LOCK = threading.Lock()
 
 
 class _LaunchTask:
-    def __init__(self) -> None:
+    def __init__(self, *, requested_editor: bool = False) -> None:
         self.started = time.monotonic()
+        self.requested_editor = requested_editor
         self.finished: float | None = None
         self.cancel_event = threading.Event()
         self.done_event = threading.Event()
@@ -85,15 +87,18 @@ def cancelled_launch_result(*, phase: str = "waiting_for_bridge") -> dict[str, A
     }
 
 
-def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict]) -> None:
+def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict], *, editor: bool = False) -> None:
     try:
         task.result = launch(task.cancel_event)
+        if isinstance(task.result, dict):
+            task.result.setdefault("editor", editor)
     except Exception as exc:
         task.result = {
             "ok": False,
             "ready": False,
             "code": "LAUNCH_TASK_FAILED",
             "phase": "starting_renpy",
+            "editor": editor,
             "message": f"{type(exc).__name__}: {exc}",
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -109,6 +114,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
         return {
             "ok": True,
             "ready": False,
+            "editor": task.requested_editor,
             "status": "starting",
             "phase": "waiting_for_bridge",
             "elapsed_ms": elapsed_ms,
@@ -128,6 +134,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
     is_ready = bool(result.get("ok") and result.get("ready", True))
     result["ready"] = is_ready
     result["status"] = "ready" if is_ready else "failed"
+    result.setdefault("editor", task.requested_editor)
     result["elapsed_ms"] = elapsed_ms
     return result
 
@@ -137,6 +144,7 @@ def start_launch(
     launch: Callable[[threading.Event], dict],
     *,
     wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
+    editor: bool = False,
 ) -> dict[str, Any]:
     key = _key(project_path)
     should_start = False
@@ -144,7 +152,7 @@ def start_launch(
         _prune_launches(time.monotonic())
         task = _LAUNCHES.get(key)
         if task is None or task.done_event.is_set():
-            task = _LaunchTask()
+            task = _LaunchTask(requested_editor=editor)
             _LAUNCHES[key] = task
             should_start = True
 
@@ -158,7 +166,12 @@ def start_launch(
         )
         return result
 
-    threading.Thread(target=_run_launch, args=(task, launch), daemon=True).start()
+    threading.Thread(
+        target=_run_launch,
+        args=(task, launch),
+        kwargs={"editor": editor},
+        daemon=True,
+    ).start()
 
     task.done_event.wait(max(0.0, wait_timeout))
     return _launch_task_status(task)
@@ -170,6 +183,23 @@ def launch_status(project_path: str) -> dict[str, Any]:
         task = _LAUNCHES.get(key)
     if task is not None:
         return _launch_task_status(task)
+
+    session = _SESSIONS.get(key)
+    if session is not None:
+        process = getattr(session, "process", None)
+        process_alive = callable(getattr(process, "poll", None)) and process.poll() is None
+        if process_alive:
+            try:
+                state = session.client.get_state()
+                return {
+                    "ok": True,
+                    "ready": True,
+                    "status": "ready",
+                    "current_label": state.get("current_label"),
+                    "editor": bool(getattr(session, "editor", False)),
+                }
+            except Exception:
+                pass
 
     try:
         state = _client(project_path).get_state()
@@ -186,6 +216,7 @@ def launch_status(project_path: str) -> dict[str, Any]:
         "status": "ready",
         "external": True,
         "current_label": state.get("current_label"),
+        "editor": False,
     }
 
 
@@ -213,11 +244,30 @@ def _with_client(project_path: str | Path, fn: Callable[[BridgeClient], dict]) -
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _session_mode_mismatch(
+    *,
+    requested_editor: bool,
+    existing_editor: bool,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "ready": False,
+        "code": "SESSION_MODE_MISMATCH",
+        "phase": "validating_session_mode",
+        "message": message,
+        "error": message,
+        "requested_editor": requested_editor,
+        "existing_editor": existing_editor,
+    }
+
+
 def launch_game(
     project_path: str,
     version: str = "stable",
     warp: str | None = None,
     *,
+    editor: bool = False,
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
@@ -250,10 +300,22 @@ def launch_game(
     if isinstance(session_cfg.get("cleanup_on_stop"), bool):
         cleanup_on_stop = session_cfg["cleanup_on_stop"]
     preferences = str(session_cfg.get("preferences", "existing") or "existing")
+    requested_editor = True
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
     if existing is not None:
+        existing_editor = bool(getattr(existing, "editor", False))
+        canonical_editor = bool(existing_editor or requested_editor)
+        if existing_editor != canonical_editor:
+            return _session_mode_mismatch(
+                requested_editor=canonical_editor,
+                existing_editor=existing_editor,
+                message=(
+                    "The requested launch mode does not match the existing owned session. "
+                    "Stop the running session before switching editor mode."
+                ),
+            )
         # Reuse a live session only when no warp is requested and it still
         # answers; otherwise tear it down (a warp needs a fresh --warp launch,
         # and a dead process must be reaped so it does not linger as a zombie).
@@ -265,6 +327,7 @@ def launch_game(
                     "already_running": True,
                     "ready": True,
                     "current_label": state.get("current_label"),
+                    "editor": existing_editor,
                 }
             except Exception:
                 pass  # unreachable session; fall through and relaunch
@@ -301,12 +364,22 @@ def launch_game(
         try:
             external = _client(project.root)
             state = external.get_state()
+            if requested_editor:
+                return _session_mode_mismatch(
+                    requested_editor=True,
+                    existing_editor=False,
+                    message=(
+                        "Editor mode cannot be proven for an external session. "
+                        "Launch from this RenForge process with editor=true instead."
+                    ),
+                )
             return {
                 "ok": True,
                 "already_running": True,
                 "external": True,
                 "ready": True,
                 "current_label": state.get("current_label"),
+                "editor": False,
             }
         except Exception:
             pass
@@ -347,6 +420,13 @@ def launch_game(
             launch_kwargs["savedir"] = savedir
         if timeout is not None:
             launch_kwargs["startup_timeout"] = float(timeout)
+        launch_signature = inspect.signature(launch_with_bridge)
+        supports_editor = "editor" in launch_signature.parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in launch_signature.parameters.values()
+        )
+        if supports_editor:
+            launch_kwargs["editor"] = True
         session_obj = launch_with_bridge(sdk, project, cancel_event=cancel_event, **launch_kwargs)
     except LaunchError as exc:
         return exc.to_dict()
@@ -359,6 +439,7 @@ def launch_game(
             "message": f"{type(exc).__name__}: {exc}",
         }
 
+    session_obj.editor = bool(getattr(session_obj, "editor", True))
     _SESSIONS[key] = session_obj
     label = None
     try:
@@ -370,6 +451,7 @@ def launch_game(
         "ready": True,
         "already_running": False,
         "current_label": label,
+        "editor": bool(session_obj.editor),
         "display": session_obj.display_mode,
         "startup_ms": session_obj.startup_ms,
         "phases": session_obj.phases,
