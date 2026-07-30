@@ -223,17 +223,19 @@ def _remove_editor_artifacts(project_root: Path) -> None:
     }
 
     source_path = project_root / "game" / basename
-    if not source_path.exists():
-        raise RuntimeError("editor source artifact is missing")
-    if source_path.is_symlink():
-        raise RuntimeError("editor source artifact became a symlink")
-    if not source_path.is_file():
-        raise RuntimeError("editor source artifact is not a regular file")
-    actual_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        raise RuntimeError("editor source artifact changed after injection")
-
-    source_path.unlink()
+    # Every step below tolerates an already-absent artifact. Cleanup is retried
+    # by BridgeSession.close() and the deferred reaper, so a partial failure must
+    # never leave a state where the next attempt aborts on an artifact the
+    # previous attempt already removed — that would strand the project lock
+    # forever. Ownership is proven by the validated manifest and basename above,
+    # plus the digest whenever the source is still present.
+    if source_path.exists():
+        if source_path.is_symlink():
+            raise RuntimeError("editor source artifact became a symlink")
+        if not source_path.is_file():
+            raise RuntimeError("editor source artifact is not a regular file")
+        if hashlib.sha256(source_path.read_bytes()).hexdigest() != expected_sha256:
+            raise RuntimeError("editor source artifact changed after injection")
 
     sibling_path = source_path.with_name(f"{basename}c")
     sibling_backup_path = source_path.with_name(f"{basename}c.bak")
@@ -252,7 +254,8 @@ def _remove_editor_artifacts(project_root: Path) -> None:
             raise RuntimeError("editor compiled backup artifact is not a regular file")
         sibling_backup_path.unlink()
 
-    manifest_path.unlink()
+    source_path.unlink(missing_ok=True)
+    manifest_path.unlink(missing_ok=True)
 
 
 def _editor_environment(endpoint: EditorEndpoint) -> dict[str, str]:

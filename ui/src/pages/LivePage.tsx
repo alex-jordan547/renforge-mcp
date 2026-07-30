@@ -88,7 +88,6 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
   const [choices, setChoices] = useState<LiveChoice[]>([]);
   const [events, setEvents] = useState<DebugBridgeEvent[]>([]);
   const [expr, setExpr] = useState("");
-  const [editorMode, setEditorMode] = useState(false);
   const [evalResult, setEvalResult] = useState<string>("");
   const [setVarName, setSetVarName] = useState("");
   const [setVarValue, setSetVarValue] = useState("");
@@ -175,7 +174,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
     eventCursor.current = 0;
     setEvents([]);
     try {
-      const result = await api.launchGame("stable", undefined, editorMode);
+      const result = await api.launchGame("stable");
       setStatus({
         key: result.already_running ? "pages.live.status.launch.alreadyRunning" : "pages.live.status.launch.success",
       });
@@ -336,22 +335,6 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
               )}
             </div>
             <div className="transport">
-              <label className="launch-editor-toggle" htmlFor="live-launch-editor">
-                <input
-                  id="live-launch-editor"
-                  type="checkbox"
-                  checked={editorMode}
-                  disabled={Boolean(busyAction) || isRunning}
-                  aria-describedby="live-launch-editor-hint"
-                  onChange={(event) => setEditorMode(event.target.checked)}
-                />
-                <span>
-                  <span>{t("pages.live.editorMode.label")}</span>
-                  <span id="live-launch-editor-hint" className="muted">
-                    {t("pages.live.editorMode.hint")}
-                  </span>
-                </span>
-              </label>
               <button className="tctl primary" type="button" onClick={onLaunchGame} disabled={Boolean(busyAction) || isRunning}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />

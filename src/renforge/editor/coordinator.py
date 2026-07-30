@@ -166,6 +166,25 @@ class EditorCoordinator:
         if accept_thread is not None:
             accept_thread.join(timeout=max(0.1, timeout))
 
+        # A handler that outlives the join can still be inside a commit — the
+        # shadow lint alone may run far longer than this timeout — and would
+        # publish source after the caller has torn the session down. Fail closed
+        # so BridgeSession keeps the project lock, and keep the survivors
+        # tracked: a retried close() must join them again instead of finding an
+        # empty set and reporting a clean shutdown.
+        surviving = [thread for thread in connection_threads if thread.is_alive()]
+        accept_survived = accept_thread is not None and accept_thread.is_alive()
+        if surviving or accept_survived:
+            with self._lock:
+                self._connection_threads.update(surviving)
+                if accept_survived:
+                    self._accept_thread = accept_thread
+            raise EditorError(
+                "SHUTDOWN_INCOMPLETE",
+                "editor handler threads outlived close(); the project lock is held",
+                {"surviving_handlers": len(surviving), "accept_thread_alive": accept_survived},
+            )
+
         with self._lock:
             for record in self._transactions.values():
                 if record.timer is not None:

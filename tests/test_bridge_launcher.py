@@ -865,3 +865,65 @@ def test_editor_launch_failure_cleans_resources_and_closes_coordinator(
     assert coordinator_calls["close"] == 1
     assert not (project_root / ".renforge" / "editor-session.json").exists()
     assert process.returncode is not None
+
+
+def test_editor_artifact_cleanup_stays_retryable_after_any_unlink_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Cleanup must be idempotent at every unlink.
+
+    ``BridgeSession.close()`` and the deferred reaper both retry removal, and a
+    failure that leaves the manifest pointing at an already-deleted artifact
+    would make every later attempt abort before reaching the artifact that
+    actually failed — stranding the project lock forever.
+    """
+    import renforge.bridge.launcher as launcher
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    renforge_dir = tmp_path / ".renforge"
+    renforge_dir.mkdir(parents=True)
+
+    basename = "zzrenforge_editor_deadbeefdeadbeef.rpy"
+    payload = b"screen _renforge_editor_launcher():\n    pass\n"
+    manifest_path = renforge_dir / "editor-session.json"
+    artifacts = (
+        game_dir / basename,
+        game_dir / f"{basename}c",
+        game_dir / f"{basename}c.bak",
+        manifest_path,
+    )
+
+    def seed() -> None:
+        (game_dir / basename).write_bytes(payload)
+        (game_dir / f"{basename}c").write_bytes(b"compiled")
+        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "basename": basename,
+                    "source_sha256": hashlib.sha256(payload).hexdigest(),
+                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    real_unlink = Path.unlink
+
+    for failing in artifacts:
+        seed()
+
+        def flaky_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self.name == failing.name:
+                raise OSError(errno.EACCES, "artifact is locked")
+            real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+        with pytest.raises(OSError):
+            launcher._remove_editor_artifacts(tmp_path)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+
+        launcher._remove_editor_artifacts(tmp_path)
+        remaining = [artifact.name for artifact in artifacts if artifact.exists()]
+        assert remaining == [], f"retry after {failing.name} left {remaining}"

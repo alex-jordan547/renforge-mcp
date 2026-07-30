@@ -579,15 +579,10 @@ export const api = {
     return response as { ok: boolean; action?: string; event?: string; error?: string };
   },
 
-  async launchGame(
-    version = "stable",
-    warp?: string,
-    editor = false,
-  ): Promise<LiveLaunchResponse> {
+  async launchGame(version = "stable", warp?: string): Promise<LiveLaunchResponse> {
     const response = await apiPost<unknown>("/api/live/launch", {
       version,
       ...(warp ? { warp } : {}),
-      editor,
     });
     checkBooleanResponse(response, "Launch");
     return response as LiveLaunchResponse;

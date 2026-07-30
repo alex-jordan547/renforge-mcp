@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 
 from renforge.editor import EditorCoordinator, RuntimeProbe
+from renforge.editor.exceptions import EditorError
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
 
@@ -749,3 +751,64 @@ def test_recover_staged_transaction_conflict_keeps_tampered_source(tmp_path: Pat
     assert status["transactions"][transaction_id] == "rollback_conflict"
     assert coordinator._transactions[transaction_id].uncertain_paths == [ "script.rpy" ]
     assert source.read_bytes() == b"tampered\n"
+
+
+def test_close_fails_closed_while_a_handler_is_still_running(tmp_path: Path) -> None:
+    """A handler still executing a command must not be reported as a clean stop.
+
+    ``BridgeSession`` only keeps the project lock when ``close()`` signals
+    failure. Reporting success here lets it kill Ren'Py, remove the artifacts and
+    release the lock while the surviving handler can still reach
+    ``atomic_write_file`` and publish source into a stopped session.
+    """
+    project, _source = _make_project(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingProbe(_Probe):
+        def observe(self, runtime_key: dict[str, Any], *, deadline: float) -> dict[str, Any]:
+            entered.set()
+            release.wait(timeout=10.0)
+            return super().observe(runtime_key, deadline=deadline)
+
+    observation = _base_observation()
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(_BlockingProbe(observe_reply=observation))
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=5.0) as sock:
+            auth = _auth(sock, endpoint)
+            # Send without reading: the handler must still be inside the command
+            # when close() runs.
+            _send_json(
+                sock,
+                {
+                    "protocol": "renforge-editor",
+                    "version": 1,
+                    "connection_id": auth["connection_id"],
+                    "request_id": "an-blocking",
+                    "command": "analyze_target",
+                    "payload": {"observation": observation},
+                },
+            )
+            assert entered.wait(timeout=5.0), "handler never entered the probe"
+
+            with pytest.raises(EditorError) as excinfo:
+                coordinator.close(timeout=0.2)
+            assert excinfo.value.code == "SHUTDOWN_INCOMPLETE"
+            assert excinfo.value.details["surviving_handlers"] == 1
+
+            # Still blocked: a second attempt must fail again. This is what proves
+            # the survivor stayed tracked — the handler discards itself from
+            # _connection_threads in its own finally, so once released a retry
+            # would succeed even if the first close() had dropped the reference.
+            with pytest.raises(EditorError) as retry_excinfo:
+                coordinator.close(timeout=0.2)
+            assert retry_excinfo.value.code == "SHUTDOWN_INCOMPLETE"
+            assert retry_excinfo.value.details["surviving_handlers"] == 1
+
+        release.set()
+        assert coordinator.close(timeout=10.0)["transactions"] == {}
+    finally:
+        release.set()
+        coordinator.close(timeout=10.0)
