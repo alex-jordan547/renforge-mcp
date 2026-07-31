@@ -82,6 +82,16 @@ versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Complete Simplified Chinese (`zh-CN`) coverage for the dashboard, including
+  localized runtime status messages, project-browser roots, and Story Map node
+  types.
+
+### Thanks
+
+- Thanks to [@AxelBeary](https://github.com/AxelBeary) for the complete
+  Simplified Chinese dashboard translation and the related i18n fixes.
 
 ## [0.6.2] - 2026-07-19
 

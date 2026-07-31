@@ -1,51 +1,52 @@
 {
   "nav": {
-    "live": "直播",
-    "storyMap": "故事地图",
+    "workspace": "工作区",
+    "project": "项目",
+    "live": "实时",
+    "storyMap": "故事节点图",
     "timeline": "时间线",
-    "assets": "资产",
+    "assets": "素材",
     "translation": "翻译",
     "diagnostics": "诊断",
-    "editor": "脚本阅读器",
-    "workspace": "工作区",
-    "project": "项目"
+    "editor": "脚本阅读"
   },
   "section": {
-    "live": "直播",
-    "storyMap": "故事地图",
+    "live": "实时",
+    "storyMap": "故事节点图",
     "timeline": "时间线",
-    "assets": "资产",
+    "assets": "素材",
     "translation": "翻译",
     "diagnostics": "诊断",
-    "editor": "脚本阅读器"
+    "editor": "脚本阅读"
   },
   "subtitle": {
-    "live": "操作控制台 — 实时执行",
-    "storyMap": "标签和转换的图形",
-    "timeline": "运行时事件历史",
-    "assets": "Ren'Py 项目的资产清单",
-    "translation": "每种语言的翻译进度",
-    "diagnostics": "代码检查报告和静态检查",
+    "live": "实时监控项目状态",
+    "storyMap": "故事节点图",
+    "timeline": "时间线",
+    "assets": "Ren'Py 项目素材清单",
+    "translation": "各语言翻译进度",
+    "diagnostics": "代码检查报告与静态分析",
     "editor": "只读项目源码"
   },
   "toolbar": {
     "currentLabel": "当前标签",
     "switchProject": "切换项目",
-    "toggleTheme": "切换亮色/暗色"
+    "toggleTheme": "切换浅色/深色"
   },
   "sidebar": {
     "expandSidebar": "展开侧边栏",
     "collapseSidebar": "收起侧边栏",
     "wsLabel": "WS",
     "nodesLabel": "节点",
-    "edgesLabel": "边",
+    "edgesLabel": "连线",
     "eventsLabel": "事件",
     "versionLabel": "版本"
   },
   "ws": {
+    "offline": "离线",
+    "statusLabel": "连接",
     "connected": "已连接",
-    "connecting": "连接中",
-    "offline": "离线"
+    "connecting": "连接中"
   },
   "lang": {
     "switchLanguage": "语言",
@@ -53,7 +54,410 @@
     "zhCN": "中文"
   },
   "error": {
-    "sectionError": "模块错误",
-    "sectionErrorMessage": "此模块已被隔离，以保证应用程序的响应性。"
+    "sectionError": "模块出错",
+    "sectionErrorMessage": "此模块已隔离，以保持应用响应。",
+    "storyMapFailed": "无法加载故事节点图数据"
+  },
+  "a11y": {
+    "empty": "什么都没有",
+    "largeLivePreview": "大尺寸实时预览",
+    "navigation": "主导航"
+  },
+  "app": {
+    "cancel": "取消",
+    "jump": "跳转",
+    "jumpFailed": "跳转失败",
+    "jumpRequested": "跳转已请求",
+    "runtimeConsoleSuffix": "调试面板",
+    "versionPrefix": "RenForge v"
+  },
+  "errors": {
+    "translationLoad": "无法加载翻译数据",
+    "translationStringsError": "无法加载翻译字符串",
+    "translationUnavailableReason": "无法加载翻译数据：{{error}}",
+    "unavailable": "服务不可用",
+    "unexpected": "未知错误",
+    "assets_game_root_missing": "素材根目录缺失",
+    "assets_read_failed": "素材读取失败",
+    "coverage_file_missing": "覆盖率文件缺失",
+    "coverage_read_failed": "覆盖率读取失败",
+    "debug_events_since_invalid": "调试事件起始值无效",
+    "file_access_failed": "文件访问失败",
+    "file_not_found": "文件未找到",
+    "file_path_out_of_bounds": "文件路径越界",
+    "invalid_token": "令牌无效",
+    "launch_version_invalid": "启动版本无效",
+    "live_action_missing": "缺少实时操作",
+    "live_warp_invalid": "实时跳转目标无效",
+    "project_browser_failed": "项目浏览器失败",
+    "project_browser_unknown_root": "项目浏览器未知根目录",
+    "project_folder_invalid": "项目文件夹无效",
+    "project_folder_not_accessible": "项目文件夹不可访问",
+    "project_folder_not_found": "未找到项目文件夹",
+    "project_folder_outside_root": "项目文件夹在根目录之外",
+    "project_not_renpy_project": "不是 Ren'Py 项目",
+    "project_selection_payload_invalid": "项目选择数据无效",
+    "project_switch_blocked": "项目切换被阻止",
+    "screenshot_failed": "截图失败",
+    "story_map_failed": "故事节点图加载失败",
+    "story_map_root_missing": "故事节点图根目录缺失",
+    "timeline_limit_invalid": "时间线限制无效",
+    "translation_language_missing": "翻译语言缺失",
+    "warp_target_invalid": "跳转目标无效",
+    "warp_target_missing": "跳转目标缺失",
+    "warp_target_unknown": "跳转目标未知",
+    "untranslated": "缺少翻译"
+  },
+  "pages": {
+    "assets": {
+      "cards": {
+        "missingFiles": "缺失文件",
+        "orphans": "孤立素材",
+        "projectFiles": "项目文件",
+        "undefinedImages": "未定义图片"
+      },
+      "descriptions": {
+        "missingFiles": "脚本引用但磁盘上找不到的文件。",
+        "orphans": "磁盘上有但脚本从未引用的素材。",
+        "undefinedImages": "脚本使用但未用 image 语句声明的图片。"
+      },
+      "empty": {
+        "noFiles": "没有匹配此过滤条件的文件。",
+        "noOrphans": "没有孤立素材。"
+      },
+      "filters": {
+        "all": "全部",
+        "audio": "音频",
+        "images": "图片",
+        "videos": "视频"
+      },
+      "hint": "清单 · {{route}}",
+      "loadError": "无法加载素材：{{error}}",
+      "loading": "正在加载清单",
+      "projectFiles": "项目文件",
+      "sectionMissingFiles": "缺失文件",
+      "sectionOrphans": "孤立素材",
+      "sectionUndefinedImages": "未定义图片",
+      "title": "素材",
+      "inventory": "清单"
+    },
+    "diagnostics": {
+      "emptyBanner": "{{count}} 条诊断记录",
+      "hint": "当前项目的健康检查与静态分析。",
+      "loadError": "无法加载诊断：{{route}} — {{error}}",
+      "loading": "正在加载诊断",
+      "metrics": {
+        "errors": "错误",
+        "screens": "界面",
+        "warnings": "警告"
+      },
+      "severity": {
+        "critical": "严重",
+        "error": "错误",
+        "hint": "提示",
+        "info": "信息",
+        "warning": "警告"
+      },
+      "rawReportBadge": "原始报告",
+      "rawReportTitle": "原始诊断报告",
+      "structuredTitle": "结构化诊断",
+      "table": {
+        "fileLine": "文件:行号",
+        "message": "消息",
+        "severity": "严重级别"
+      },
+      "title": "诊断"
+    },
+    "editor": {
+      "errors": {
+        "listScripts": "无法列出脚本"
+      },
+      "fallbacks": {
+        "contentUnavailable": "内容不可用"
+      },
+      "hint": "只读项目文件浏览。",
+      "loadButton": "加载",
+      "loadError": "无法加载文件：{{path}}（{{error}}）",
+      "loading": "正在加载文件",
+      "noteText": "输入 game/ 下的相对路径以查看文件内容。",
+      "pathLabel": "路径",
+      "projectScriptsAria": "项目脚本",
+      "readOnlyBadge": "只读",
+      "title": "脚本阅读",
+      "treeNoScripts": "未找到脚本"
+    },
+    "live": {
+      "placeholder": {
+        "expr": "store.persistent.score + 1",
+        "varName": "money",
+        "varValue": "\"hello\" or 42"
+      },
+      "actions": {
+        "advance": "继续",
+        "auto": "自动",
+        "back": "回退",
+        "choose": "选择",
+        "launch": "启动",
+        "load": "快速读档",
+        "quit": "退出",
+        "reload": "重载",
+        "save": "快速存档",
+        "skip": "快进",
+        "stop": "停止"
+      },
+      "choices": {
+        "badge": "选项",
+        "title": "选项"
+      },
+      "console": {
+        "advanced": {
+          "events": "{{count}} 个事件",
+          "refresh": "刷新",
+          "restart": "重启",
+          "restartAria": "重启游戏",
+          "title": "高级"
+        },
+        "badge": "控制台",
+        "eval": {
+          "empty": "无表达式结果",
+          "expressionLabel": "表达式",
+          "submit": "执行"
+        },
+        "events": {
+          "empty": "无事件"
+        },
+        "title": "控制台",
+        "watch": {
+          "nameLabel": "名称",
+          "set": "设置",
+          "title": "监视",
+          "valueLabel": "值"
+        }
+      },
+      "event": {
+        "exception": "异常",
+        "label": "标签",
+        "say": "对话"
+      },
+      "header": {
+        "hint": "监视和控制端口 {{port}} 上运行的程序"
+      },
+      "preview": {
+        "alt": "实时预览截图",
+        "empty": "无实时截图",
+        "title": "实时预览"
+      },
+      "state": {
+        "badge": "状态",
+        "label": "当前标签",
+        "labelFallback": "无当前标签",
+        "menu": {
+          "active": "有菜单",
+          "inactive": "无菜单",
+          "label": "菜单"
+        },
+        "port": {
+          "label": "端口"
+        },
+        "tags": {
+          "label": "标签"
+        },
+        "title": "状态",
+        "variables": {
+          "empty": "无变量",
+          "title": "变量"
+        }
+      },
+      "status": {
+        "actionFailed": "操作失败",
+        "actionOk": "操作完成",
+        "advance": { "success": "已继续" },
+        "auto": { "success": "自动已切换" },
+        "choice": { "selected": "已选择" },
+        "eval": {
+          "failed": "执行失败",
+          "success": "执行完成"
+        },
+        "launch": {
+          "alreadyRunning": "游戏已在运行",
+          "failed": "启动失败",
+          "success": "游戏已启动"
+        },
+        "launching": "启动中",
+        "live": "运行中",
+        "load": { "success": "已读档" },
+        "quit": { "success": "已退出" },
+        "reload": { "success": "已重载" },
+        "restartInteraction": { "success": "已重启交互" },
+        "rollback": { "success": "已回退" },
+        "save": { "success": "已存档" },
+        "setVar": { "success": "已设置变量" },
+        "skip": { "success": "快进已切换" },
+        "stop": {
+          "alreadyStopped": "游戏未在运行",
+          "failed": "停止失败",
+          "success": "游戏已停止"
+        },
+        "stopped": "已停止",
+        "stopping": "停止中",
+        "syncing": "同步中"
+      },
+      "title": "实时运行"
+    },
+    "storyMap": {
+      "current": {
+        "empty": "未选择标签",
+        "title": "当前标签"
+      },
+      "empty": {
+        "body": "该项目没有故事节点图数据。",
+        "title": "无故事节点图数据"
+      },
+      "error": {
+        "load": "无法加载故事节点图：{{error}}"
+      },
+      "hint": "按标签浏览关系图与跳转。",
+      "loading": "正在加载故事节点图",
+      "nodeType": {
+        "current": "当前",
+        "label": "标签",
+        "call": "调用",
+        "jump": "跳转"
+      },
+      "minimap": {
+        "aria": "切换小地图"
+      },
+      "status": {
+        "layout": "布局应用中",
+        "warp": "尝试跳转到 {{target}}"
+      },
+      "title": "故事节点图",
+      "transitions": {
+        "hide": "隐藏jump命令跳转",
+        "show": "显示jump命令跳转"
+      },
+      "zoom": {
+        "fit": "适配窗口",
+        "fitTitle": "适应视口",
+        "in": "放大",
+        "out": "缩小"
+      }
+    },
+    "timeline": {
+      "badge": {
+        "activity": "活动",
+        "bridge": "桥接",
+        "ui": "界面"
+      },
+      "emptyDescription": "暂无时间线条目。",
+      "emptyTitle": "无时间线事件",
+      "filesTouched": "涉及 {{count}} 个文件",
+      "filesTouchedHeader": "涉及文件",
+      "filteredEvents": "已筛选事件：{{visible}}/{{total}}",
+      "hideDetails": "隐藏详情",
+      "hint": "运行时桥接与活动历史。",
+      "parameters": "参数",
+      "result": "结果",
+      "searchPlaceholder": "搜索时间线",
+      "showDetails": "显示详情",
+      "sourceActivity": "活动",
+      "sourceBridge": "桥接",
+      "timeAgo": {
+        "days": "{{count}} 天前",
+        "hours": "{{count}} 小时前",
+        "justNow": "刚刚",
+        "minutes": "{{count}} 分钟前",
+        "seconds": "{{count}} 秒前"
+      },
+      "title": "时间线",
+      "none": "无"
+    },
+    "translation": {
+      "emptyDescription": "没有翻译数据。",
+      "emptyTitle": "暂无翻译",
+      "endpointError": "接口错误",
+      "hint": "各语言翻译状态与覆盖率。",
+      "languageSummary": "{{language}}：{{status}}",
+      "loading": "正在加载翻译",
+      "noSearchMatch": "无匹配结果",
+      "ratioLabel": "{{ratio}}%",
+      "scriptSummaryTitle": "翻译统计",
+      "searchPlaceholder": "搜索字符串",
+      "stringHeader": "{{language}} 翻译",
+      "tlPrefix": "tl/{{language}}",
+      "badge": {
+        "complete": "已完成",
+        "incomplete": "未完成",
+        "partial": "部分",
+        "unavailable": "不可用"
+      },
+      "status": {
+        "complete": "已完成",
+        "incomplete": "未完成",
+        "partial": "部分",
+        "unavailable": "不可用"
+      },
+      "summary": {
+        "missing": "缺失：{{count}}",
+        "missingDialogue": "缺失对话：{{count}}",
+        "missingStrings": "缺失字符串：{{count}}",
+        "none": "无摘要",
+        "orphans": "孤立字符串：{{count}}",
+        "sourceDialogues": "源对话",
+        "total": "总计：{{count}}",
+        "separator": " / ",
+        "translated": "{{language}} · {{ratio}}% 已翻译",
+        "unavailable": "不可用"
+      },
+      "table": {
+        "sourceHeader": "原文",
+        "stateHeader": "状态",
+        "translationHeader": "{{language}}"
+      },
+      "title": "翻译",
+      "translatedBadge": "已翻译 {{ratio}}%",
+      "untranslatedMarker": "—"
+    }
+  },
+  "projectPicker": {
+    "browseRoots": "浏览根目录",
+    "chooseGame": "选择此游戏",
+    "close": "关闭",
+    "containsGame": "包含游戏",
+    "fallback": "未命名项目",
+    "loadError": "加载项目浏览器失败",
+    "loadingFolders": "加载文件夹…",
+    "loadingPath": "解析路径…",
+    "noFolders": "未找到文件夹",
+    "open": "打开",
+    "openProject": "打开项目",
+    "opening": "打开中",
+    "parent": "上级文件夹",
+    "project": "项目",
+    "switchError": "切换项目失败",
+    "title": "打开项目",
+    "roots": {
+      "current-project": "当前项目",
+      "project-parent": "上级目录",
+      "home": "用户主目录",
+      "drive": "{{letter}} 盘",
+      "windows-drives": "Windows 驱动器"
+    }
+  },
+  "status": {
+    "failed": "失败",
+    "incomplete": "未完成",
+    "ok": "正常",
+    "warning": "警告"
+  },
+  "timeline": {
+    "failed": "失败",
+    "completed": "已完成",
+    "label": "标签",
+    "entered": "已进入",
+    "say": "对话",
+    "exception": "异常",
+    "runtimeError": "运行时错误",
+    "bridgeEvent": "桥接事件"
   }
 }

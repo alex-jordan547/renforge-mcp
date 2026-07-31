@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 
 const SOURCE_DIALOGUE_COUNT = 6;
 const ORPHAN_COUNT = 1;
-const TRANSLATION_PREFIX = "tl/";
 
 type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
@@ -96,7 +95,7 @@ function formatRow(language: string, stats: TranslationStats | null, t: Translat
   if (total !== null && missingDialogue === null && missingStrings === null && missing === null) {
     fileSummary.push(t("pages.translation.summary.total", { count: total }));
   }
-  const files = fileSummary.length > 0 ? fileSummary.join(" / ") : t("pages.translation.summary.none");
+  const files = fileSummary.length > 0 ? fileSummary.join(t("pages.translation.summary.separator")) : t("pages.translation.summary.none");
   const hasMissing = [missing, missingDialogue, missingStrings].some((value) => value !== null && value > 0);
 
   let status: TranslationRow["status"] = "partial";
@@ -185,7 +184,7 @@ export function TranslationPage() {
                   languageList[index],
                   null,
                   t,
-                  result.reason instanceof Error ? result.reason.message : "Endpoint error",
+                  result.reason instanceof Error ? result.reason.message : t("pages.translation.endpointError"),
                 ),
           ),
         );
@@ -396,7 +395,7 @@ export function TranslationPage() {
                       <td className={`tr ${!str.tr ? "miss" : ""}`}>
                             {str.tr ? (
                           <>
-                            <span className="id">{TRANSLATION_PREFIX}{selectedLanguage}</span>
+                            <span className="id">{t("pages.translation.tlPrefix", { language: selectedLanguage })}</span>
                             {str.tr}
                           </>
                         ) : (

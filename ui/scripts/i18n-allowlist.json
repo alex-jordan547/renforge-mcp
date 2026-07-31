@@ -23,6 +23,11 @@
     },
 
     {
+      "type": "key-pattern",
+      "pattern": "^pages\\.live\\.status\\.[a-zA-Z]+(\\.[a-zA-Z]+)?$",
+      "reason": "Live status keys are set dynamically via successKey in runAction (e.g. pages.live.status.save.success); pattern limited to the one- or two-segment camelCase key family actually used."
+    },
+    {
       "type": "key",
       "key": "pages.assets.inventory",
       "reason": "Shared scope label used for string interpolation in the assets page UI."

@@ -7,9 +7,6 @@ const POLL_MS = 1800;
 const BRIDGE_PORT = 42547;
 const DASH = "—";
 const PROMPT_ARROW = "›";
-const EXPR_PLACEHOLDER = "store.persistent.score + 1";
-const VAR_NAME_PLACEHOLDER = "money";
-const VAR_VALUE_PLACEHOLDER = '"hello" or 42';
 
 interface Translator {
   (key: string, options?: Record<string, unknown>): string;
@@ -150,7 +147,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
       const result = await action();
       if (result && typeof result === "object" && "ok" in result && (result as { ok?: unknown }).ok === false) {
         const error = (result as { error?: string }).error;
-        throw new Error(error || "action failed");
+        throw new Error(error || t("pages.live.status.actionFailed"));
       }
       setStatus({ key: successKey });
       window.setTimeout(() => {
@@ -494,7 +491,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                   id="expr"
                   value={expr}
                   onChange={(e) => setExpr(e.target.value)}
-                  placeholder={EXPR_PLACEHOLDER}
+                  placeholder={t("pages.live.placeholder.expr")}
                 />
                 <button type="submit" className="btn btn-primary" disabled={controlsDisabled}>
                   {t("pages.live.console.eval.submit")}
@@ -524,7 +521,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                     id="wname"
                     value={setVarName}
                     onChange={(e) => setSetVarName(e.target.value)}
-                    placeholder={VAR_NAME_PLACEHOLDER}
+                    placeholder={t("pages.live.placeholder.varName")}
                   />
                 </div>
                 <div>
@@ -536,7 +533,7 @@ export function LivePage({ liveState = null, liveFrame = null }: LivePageProps =
                     id="wval"
                     value={setVarValue}
                     onChange={(e) => setSetVarValue(e.target.value)}
-                    placeholder={VAR_VALUE_PLACEHOLDER}
+                    placeholder={t("pages.live.placeholder.varValue")}
                   />
                 </div>
               </div>

@@ -9,6 +9,22 @@ interface ProjectPickerProps {
   onSelected: (project: string) => void;
 }
 
+/** 将后端返回的 root.id 映射为翻译后的标签。 */
+function translateRootLabel(rootId: string, t: ReturnType<typeof useTranslation>['t']): string {
+  switch (rootId) {
+    case 'current-project': return t('projectPicker.roots.current-project');
+    case 'project-parent': return t('projectPicker.roots.project-parent');
+    case 'home': return t('projectPicker.roots.home');
+    case 'windows-drives': return t('projectPicker.roots.windows-drives');
+    default:
+      if (rootId.startsWith('drive-')) {
+        const letter = rootId.replace('drive-', '').toUpperCase();
+        return t('projectPicker.roots.drive', { letter });
+      }
+      return rootId;
+  }
+}
+
 export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps) {
   const [browser, setBrowser] = useState<ProjectBrowserResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -89,7 +105,7 @@ export function ProjectPicker({ open, onClose, onSelected }: ProjectPickerProps)
               disabled={loading || selecting}
               onClick={() => void load(root.id)}
             >
-              {root.label}
+              {translateRootLabel(root.id, t)}
             </button>
           ))}
         </div>

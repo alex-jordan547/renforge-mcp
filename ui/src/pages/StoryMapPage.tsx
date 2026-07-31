@@ -95,7 +95,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
       data.nodes.map((node, index) => {
         const { label, ...nodeData } = node.data;
         const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
-        const nodeType = isCurrent ? "current" : (node.data.type ?? "label");
+        const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type === "call" ? t("pages.storyMap.nodeType.call") : node.data.type === "jump" ? t("pages.storyMap.nodeType.jump") : t("pages.storyMap.nodeType.label"));
         return {
           id: node.id,
           data: {
@@ -114,7 +114,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
           className: `${mapNodeClass(node.data.type ?? "label")}${isCurrent ? " current" : ""}`,
         };
       }),
-    [data.nodes, currentLabel],
+    [data.nodes, currentLabel, t],
   );
 
   const fallbackEdges = useMemo(
@@ -182,7 +182,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
             const pos = byId.get(node.id);
             const { label, ...nodeData } = node.data;
             const isCurrent = node.id === currentLabel || node.data.name === currentLabel;
-            const nodeType = isCurrent ? "current" : (node.data.type ?? "label");
+            const nodeType = isCurrent ? t("pages.storyMap.nodeType.current") : (node.data.type === "call" ? t("pages.storyMap.nodeType.call") : node.data.type === "jump" ? t("pages.storyMap.nodeType.jump") : t("pages.storyMap.nodeType.label"));
             return {
               id: node.id,
               data: {
@@ -229,7 +229,7 @@ function StoryMapInner({ data, loading, error, onJump, currentLabel }: StoryMapP
     return () => {
       active = false;
     };
-  }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes, currentLabel]);
+  }, [data.edges, data.nodes, setEdges, setNodes, fallbackEdges, fallbackNodes, currentLabel, t]);
 
   useEffect(() => {
     setNodes((currentNodes) =>
