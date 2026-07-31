@@ -220,28 +220,37 @@ def _commit(
     y: int,
     request_id: str = "co-1",
 ) -> dict[str, Any]:
-    _send_json(
-        sock,
-        {
-            "protocol": "renforge-editor",
-            "version": 1,
-            "connection_id": auth["connection_id"],
-            "request_id": request_id,
-            "command": "commit",
-            "payload": {
-                "session_id": auth["session_id"],
-                "intents": [
-                    {
-                        "analysis_id": analysis["result"]["analysis_id"],
-                        "source_key": analysis["result"]["source_key"],
-                        "x": x,
-                        "y": y,
-                    }
-                ],
+    # Commit runs a shadow-project lint subprocess under the coordinator request
+    # lock. On loaded Windows CI hosts that can exceed the 2s create_connection
+    # default used by most tests; keep recv budget above the lint timeout floor
+    # (max(1.0, attestation_timeout * 3)) without changing non-commit paths.
+    previous_timeout = sock.gettimeout()
+    sock.settimeout(max(float(previous_timeout or 0.0), 10.0))
+    try:
+        _send_json(
+            sock,
+            {
+                "protocol": "renforge-editor",
+                "version": 1,
+                "connection_id": auth["connection_id"],
+                "request_id": request_id,
+                "command": "commit",
+                "payload": {
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": analysis["result"]["analysis_id"],
+                            "source_key": analysis["result"]["source_key"],
+                            "x": x,
+                            "y": y,
+                        }
+                    ],
+                },
             },
-        },
-    )
-    return _recv_json(sock)
+        )
+        return _recv_json(sock)
+    finally:
+        sock.settimeout(previous_timeout)
 
 
 def _commit_status(sock: socket.socket, auth: dict[str, Any], transaction_id: str, request_id: str = "st-1") -> dict[str, Any]:

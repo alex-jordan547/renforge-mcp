@@ -315,7 +315,12 @@ class EditorCoordinator:
         return data[:-1], None
 
     def _send_json(self, conn: socket.socket, payload: dict[str, Any]) -> None:
-        conn.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+        try:
+            conn.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+        except OSError:
+            # Client may have timed out or closed while a long command (e.g. shadow
+            # lint) was still running. Teardown is handled by the connection finally.
+            return
 
     def _error_reply(self, *, request_id: str | None, code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
         error_payload: dict[str, Any] = {"code": code, "message": message}
