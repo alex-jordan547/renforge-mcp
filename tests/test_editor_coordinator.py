@@ -874,6 +874,36 @@ def test_commit_helper_raises_and_restores_socket_timeout(monkeypatch: pytest.Mo
     assert sock.gettimeout() == 2.0
 
 
+def test_commit_helper_keeps_higher_existing_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    existing = _COMMIT_SOCKET_TIMEOUT_SECONDS + 10.0
+    sock = _TimeoutProbeSocket(initial_timeout=existing)
+    auth = {"connection_id": "c1", "session_id": "s1"}
+    analysis = {
+        "result": {
+            "analysis_id": "a1",
+            "source_key": {"path": "script.rpy", "line": 2, "baseline_sha256": "deadbeef"},
+        }
+    }
+    module = sys.modules[__name__]
+
+    def fake_send(target: Any, payload: dict[str, Any]) -> None:
+        assert target.gettimeout() == existing
+
+    def fake_recv(target: Any) -> dict[str, Any]:
+        assert target.gettimeout() == existing
+        return {"ok": True, "result": {"transaction_id": "tx", "state": "published"}}
+
+    monkeypatch.setattr(module, "_send_json", fake_send)
+    monkeypatch.setattr(module, "_recv_json", fake_recv)
+
+    reply = _commit(sock, auth, analysis, x=1, y=2, request_id="co-timeout-keep")
+    assert reply["ok"] is True
+    assert sock.settimeout_calls == [existing, existing]
+    assert sock.gettimeout() == existing
+
+
 def test_commit_helper_restores_timeout_when_recv_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
@@ -917,6 +947,12 @@ def test_send_json_swallows_closed_peer_errors(tmp_path: Path) -> None:
             raise ConnectionResetError(104, "Connection reset by peer")
 
     coordinator._send_json(_ResetPeer(), {"ok": True})  # type: ignore[arg-type]
+
+    class _AbortedPeer:
+        def sendall(self, _data: bytes) -> None:
+            raise ConnectionAbortedError(53, "Software caused connection abort")
+
+    coordinator._send_json(_AbortedPeer(), {"ok": True})  # type: ignore[arg-type]
 
     class _UnexpectedPeer:
         def sendall(self, _data: bytes) -> None:
