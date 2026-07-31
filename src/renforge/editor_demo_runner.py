@@ -378,12 +378,19 @@ def run_demo_v1_scenario(client: Any) -> dict[str, Any]:
     if not isinstance(samples, list) or not samples:
         raise AssertionError(f"snap samples missing: {snap!r}")
     final_sample = samples[-1]
-    guide_y = snap.get("guide_y")
+    guide_y = final_sample.get("guide_y")
     preview = final_sample.get("preview_position")
     if not isinstance(guide_y, int) or not isinstance(preview, list) or len(preview) != 2:
         raise AssertionError(f"snap did not produce a measurable guide/preview: {snap!r}")
     if abs(int(preview[1]) - decline_top) > 1 or guide_y != decline_top:
         raise AssertionError(f"snap missed decline top: {snap!r}; decline_top={decline_top}")
+    _ed_require_ok(
+        client.eval_expr(
+            "_renforge_editor_apply_drag_from_pointer(%d, %d, False)"
+            % (int(preview[0]), int(preview[1]))
+        ),
+        "visual snap guide",
+    )
 
     opacity_before_low = client.screenshot()
     _ed_require_ok(client.request("editor_task0_set_opacity", {"opacity": 0.2}), "opacity low")
@@ -393,37 +400,53 @@ def run_demo_v1_scenario(client: Any) -> dict[str, Any]:
     high_image = _open_png(high_png)
     low_image = _open_png(low_png)
     scale = _scale(client, high_image)
-    # Sample a clear span of the guide: the selection border is painted over the
-    # widget and the distance badge sits beside it, so sampling the widget's own
-    # columns would measure those instead of the line.
-    free_x0 = 4
-    free_x1 = max(free_x0 + 16, take_rect[0] - 8)
-
-    def guide_excess(image: Image.Image, y: int) -> float:
-        return _red_excess(image, y, free_x0, free_x1, scale)
-
-    red_high = guide_excess(high_image, guide_y)
-    settle_deadline = time.monotonic() + 2.0
-    while time.monotonic() < settle_deadline:
-        time.sleep(0.1)
-        settled_png = client.screenshot()
-        settled_image = _open_png(settled_png)
-        settled_red_high = guide_excess(settled_image, guide_y)
-        high_png = settled_png
-        high_image = settled_image
-        if abs(settled_red_high - red_high) < 2:
-            red_high = settled_red_high
-            break
-        red_high = settled_red_high
-    red_low = guide_excess(low_image, guide_y)
-    # Relative criteria only: the guide's own row must out-red the rows just
-    # above and below it, and must fade when the overlay opacity drops.
-    neighbour_high = max(
-        guide_excess(high_image, guide_y - 3),
-        guide_excess(high_image, guide_y + 3),
+    guide_snapshot = client.eval_expr("_renforge_editor_guide_snapshot()")
+    guide_line_y = guide_snapshot.get("line_y")
+    if (
+        not isinstance(guide_line_y, list)
+        or len(guide_line_y) != 3
+        or int(guide_line_y[1]) != guide_y
+        or int(guide_line_y[2]) <= 0
+        or int(guide_line_y[2]) >= high_image.size[0]
+    ):
+        raise AssertionError(f"bounded horizontal guide missing: {guide_snapshot!r}")
+    guide_start_x = int(guide_line_y[0])
+    guide_length = int(guide_line_y[2])
+    guide_end_x = guide_start_x + guide_length
+    sample_step = max(4, guide_length // 24)
+    sample_centers = list(
+        range(guide_start_x + 4, max(guide_start_x + 5, guide_end_x - 3), sample_step)
     )
-    guide_row_delta = red_high - red_low
-    guide_over_neighbour = red_high - neighbour_high
+    if not sample_centers:
+        sample_centers = [guide_start_x + guide_length // 2]
+    guide_contrasts = []
+    guide_fades = []
+    for center_x in sample_centers:
+        sample_x0 = max(guide_start_x, center_x - 2)
+        sample_x1 = min(guide_end_x, center_x + 3)
+        high_row = _red_excess(
+            high_image, guide_y, sample_x0, sample_x1, scale
+        )
+        high_neighbour = max(
+            _red_excess(
+                high_image, guide_y - 3, sample_x0, sample_x1, scale
+            ),
+            _red_excess(
+                high_image, guide_y + 3, sample_x0, sample_x1, scale
+            ),
+        )
+        low_row = _red_excess(
+            low_image, guide_y, sample_x0, sample_x1, scale
+        )
+        guide_contrasts.append(high_row - high_neighbour)
+        guide_fades.append(high_row - low_row)
+    guide_over_neighbour = max(guide_contrasts)
+    guide_opacity_delta = max(guide_fades)
+    if guide_over_neighbour <= 2.0 or guide_opacity_delta <= 0.0:
+        raise AssertionError(
+            "bounded guide pixels missing: contrast=%.1f opacity_delta=%.1f guide=%r"
+            % (guide_over_neighbour, guide_opacity_delta, guide_snapshot)
+        )
     guide_widget = bool(
         client.eval_expr("renpy.get_widget('_renforge_editor_overlay','rf_guide_y') is not None")
     )
@@ -435,28 +458,22 @@ def run_demo_v1_scenario(client: Any) -> dict[str, Any]:
         not guide_widget
         or not isinstance(distance_y_text, str)
         or not distance_y_text.strip()
-        or guide_over_neighbour <= 2.0
-        or guide_row_delta <= 0.0
     ):
         raise AssertionError(
-            "snap visual proof missing: widget=%r, text=%r, row=%.1f neighbour=%.1f "
-            "low=%.1f over_neighbour=%.1f opacity_delta=%.1f"
-            % (
-                guide_widget,
-                distance_y_text,
-                red_high,
-                neighbour_high,
-                red_low,
-                guide_over_neighbour,
-                guide_row_delta,
-            )
+            "snap visual proof missing: widget=%r, text=%r, guide=%r"
+            % (guide_widget, distance_y_text, guide_snapshot)
         )
+    _ed_require_ok(client.eval_expr("_renforge_editor_end_drag()"), "visual snap end")
 
     shift_drag = _ed_require_ok(
         client.request("editor_task0_drag", {"points": snap_points, "shift": True}),
         "shift drag",
     )
-    if shift_drag.get("guide_x") is not None or shift_drag.get("guide_y") is not None:
+    shift_samples = shift_drag.get("samples") or []
+    if any(
+        sample.get("guide_x") is not None or sample.get("guide_y") is not None
+        for sample in shift_samples
+    ):
         raise AssertionError(f"shift drag unexpectedly snapped: {shift_drag!r}")
 
     _ed_require_ok(_ed_select(client, _TAKE_ID), "take reselect for shift nudge")
@@ -667,9 +684,12 @@ def run_demo_v1_scenario(client: Any) -> dict[str, Any]:
             "preview_on_anchor": abs(int(preview[1]) - decline_top) <= 1,
             "guide_widget": guide_widget,
             "distance_y_text": distance_y_text,
-            "guide_row_delta": guide_row_delta,
+            "guide_snapshot": guide_snapshot,
+            "guide_length": int(guide_line_y[2]),
             "guide_over_neighbour": guide_over_neighbour,
+            "guide_opacity_delta": guide_opacity_delta,
             "low_png_bytes": len(low_png),
+            "high_png_bytes": len(high_png),
         },
         "shift_drag": shift_drag,
         "shift_nudge": {

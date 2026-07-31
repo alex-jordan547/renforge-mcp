@@ -60,8 +60,10 @@ def test_live_demo_editor_v1_acceptance(sdk, demo_copy: Path) -> None:
     assert snap["preview_on_anchor"] is True
     assert snap["guide_widget"] is True
     assert snap["distance_y_text"]
+    assert snap["guide_snapshot"]["line_y"][1] == snap["guide_y"]
+    assert 0 < snap["guide_length"] < 1280
     assert snap["guide_over_neighbour"] > 2.0
-    assert snap["guide_row_delta"] > 0.0
+    assert snap["guide_opacity_delta"] > 0.0
 
     assert report["shift_drag"]["guide_x"] is None
     assert report["shift_drag"]["guide_y"] is None
