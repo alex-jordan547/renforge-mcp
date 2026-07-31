@@ -236,6 +236,7 @@ screen village_gate_choices():
     text "The gate is silent. Choose your path." xpos 140 ypos 240
     textbutton "Take the lantern and go." id "demo_lantern_take" xpos 160 ypos 320 action Return("take_lantern")
     textbutton "Ask the Elder to send someone else." id "demo_lantern_decline" xpos 160 ypos 380 action Return("decline_lantern")
+    textbutton "Hold the gate (locked demo)." id "demo_locked_expr" xpos gui.choice_spacing ypos 440 action NullAction()
 
 
 ## Quick Menu screen ###########################################################
@@ -315,6 +316,8 @@ screen navigation():
         textbutton _("Load") action ShowMenu("load")
 
         textbutton _("Preferences") action ShowMenu("preferences")
+
+        textbutton _("Editor playground") action ShowMenu("editor_playground")
 
         if _in_replay:
 

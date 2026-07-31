@@ -644,7 +644,11 @@ init python:
 
     def _renforge_h_send_input(payload):
         payload = payload or {}
-        supplied = [name for name in ("text", "key", "scroll") if name in payload and payload.get(name) is not None]
+        supplied = [
+            name
+            for name in ("text", "key", "scroll", "drag")
+            if name in payload and payload.get(name) is not None
+        ]
         if len(supplied) != 1:
             return {
                 "ok": False,
@@ -710,6 +714,123 @@ init python:
                 )
                 pygame.event.post(event)
             return {"ok": True, "mode": "key", "key": key, "keycode": keycode}
+
+
+        if supplied[0] == "drag":
+            drag = payload.get("drag")
+            if not isinstance(drag, builtins.dict):
+                return {"ok": False, "error": "drag must be an object with points and button"}
+            raw_points = drag.get("points")
+            if not isinstance(raw_points, builtins.list) or not raw_points:
+                return {"ok": False, "error": "drag points must be a non-empty list"}
+            coordinate_space = str(drag.get("coordinate_space", "logical") or "logical").casefold()
+            if coordinate_space not in ("logical", "screenshot"):
+                return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+            button = drag.get("button", 1)
+            if isinstance(button, bool) or not isinstance(button, builtins.int):
+                return {"ok": False, "error": "drag button must be an integer"}
+            frame_data = None
+            if coordinate_space == "screenshot":
+                frame_data = renpy.screenshot_to_bytes(None)
+            logical_points = []
+            for raw_point in raw_points:
+                if not isinstance(raw_point, builtins.list) or len(raw_point) != 2:
+                    return {"ok": False, "error": "drag points must be coordinate pairs"}
+                raw_x, raw_y = raw_point
+                if (
+                    isinstance(raw_x, bool)
+                    or not isinstance(raw_x, (builtins.int, builtins.float))
+                    or isinstance(raw_y, bool)
+                    or not isinstance(raw_y, (builtins.int, builtins.float))
+                ):
+                    return {"ok": False, "error": "drag points must be numeric"}
+                try:
+                    point_x = int(round(float(raw_x)))
+                    point_y = int(round(float(raw_y)))
+                except (TypeError, ValueError, OverflowError):
+                    return {"ok": False, "error": "drag points must be numeric"}
+                if point_x < 0 or point_y < 0:
+                    return {"ok": False, "error": "drag coordinates must be non-negative"}
+                point_x, point_y, frame_data, coordinate_error = _renforge_to_logical_coordinates(
+                    point_x, point_y, coordinate_space, frame_data
+                )
+                if coordinate_error is not None:
+                    return {"ok": False, "error": coordinate_error}
+                logical_points.append([point_x, point_y])
+            if pygame is None:
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+            interface = getattr(getattr(renpy, "display", None), "interface", None)
+            if interface is not None:
+                try:
+                    interface.mouse_focused = True
+                except Exception:
+                    pass
+                try:
+                    interface.ignore_touch = False
+                except Exception:
+                    pass
+            event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+            post = getattr(getattr(pygame, "event", None), "post", None)
+            down_type = getattr(pygame, "MOUSEBUTTONDOWN", None)
+            motion_type = getattr(pygame, "MOUSEMOTION", None)
+            up_type = getattr(pygame, "MOUSEBUTTONUP", None)
+            if (
+                not callable(event_factory)
+                or not callable(post)
+                or down_type is None
+                or motion_type is None
+                or up_type is None
+            ):
+                return {"ok": False, "error": "pygame_sdl2 event API is unavailable"}
+
+            def make_event(event_type, attrs):
+                try:
+                    return event_factory(event_type, **attrs)
+                except TypeError:
+                    return event_factory(event_type, attrs)
+
+            first_x, first_y = logical_points[0]
+            button_payload = {
+                "button": button,
+                "pos": (first_x, first_y),
+                "x": first_x,
+                "y": first_y,
+                "touch": False,
+                "test": True,
+                "mod": 0,
+            }
+            post(make_event(down_type, button_payload))
+            previous_x, previous_y = first_x, first_y
+            held_buttons = tuple(int(button == candidate) for candidate in (1, 2, 3))
+            for point_x, point_y in logical_points[1:]:
+                post(
+                    make_event(
+                        motion_type,
+                        {
+                            "pos": (point_x, point_y),
+                            "rel": (point_x - previous_x, point_y - previous_y),
+                            "buttons": held_buttons,
+                        },
+                    )
+                )
+                previous_x, previous_y = point_x, point_y
+            last_x, last_y = logical_points[-1]
+            button_payload = {
+                "button": button,
+                "pos": (last_x, last_y),
+                "x": last_x,
+                "y": last_y,
+                "touch": False,
+                "test": True,
+                "mod": 0,
+            }
+            post(make_event(up_type, button_payload))
+            return {
+                "ok": True,
+                "mode": "drag",
+                "points": logical_points,
+                "button": button,
+            }
 
         scroll = payload.get("scroll")
         if not isinstance(scroll, builtins.dict):

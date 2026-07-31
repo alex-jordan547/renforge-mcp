@@ -207,13 +207,15 @@ class BridgeClient:
         text: str | None = None,
         key: str | None = None,
         scroll: dict[str, Any] | None = None,
+        drag: dict[str, Any] | None = None,
         submit: bool = False,
     ) -> dict:
-        """Send exactly one text, named-key, or scroll input operation."""
+        """Send exactly one text, named-key, scroll, or drag input operation."""
         payload: dict[str, Any] = {
             "text": text,
             "key": key,
             "scroll": scroll,
+            "drag": drag,
             "submit": bool(submit),
         }
         # Keep omitted optional modes out of the wire payload so callers can

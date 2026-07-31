@@ -26,6 +26,15 @@ def _load_bridge_body():
     return "\n".join(line[4:] if line.startswith("    ") else line for line in lines[1:])
 
 
+def _load_editor_body():
+    raw = Path(__file__).resolve().parents[1] / "src/renforge/bridge/editor.rpy"
+    lines = raw.read_text(encoding="utf-8").splitlines()
+    start = lines.index("init 1100 python:")
+    return "\n".join(
+        line[4:] if line.startswith("    ") else line for line in lines[start + 1 :]
+    )
+
+
 class _FakeWidget:
     def __init__(self, text):
         self._text = text
@@ -583,6 +592,42 @@ def test_send_input_scroll_posts_logical_wheel_event(running_bridge):
     assert event.pos == (123, 456)
 
 
+def test_send_input_drag_posts_real_mouse_event_sequence(running_bridge):
+    points = [[100, 200], [150, 200], [150, 240]]
+    reply = running_bridge.client.send_input(
+        drag={"points": points, "button": 3, "coordinate_space": "logical"}
+    )
+
+    assert reply == {"ok": True, "mode": "drag", "points": points, "button": 3}
+    events = running_bridge.renpy._pygame_events
+    assert [event.type for event in events] == [4, 6, 6, 5]
+    assert events[0].button == 3
+    assert events[0].pos == (100, 200)
+    assert events[1].pos == (150, 200)
+    assert events[1].rel == (50, 0)
+    assert events[1].buttons == (0, 0, 1)
+    assert events[2].pos == (150, 240)
+    assert events[2].rel == (0, 40)
+    assert events[2].buttons == (0, 0, 1)
+    assert events[3].button == 3
+    assert events[3].pos == (150, 240)
+    assert running_bridge.renpy.display.interface.mouse_focused is True
+
+
+def test_send_input_drag_validates_exclusive_and_non_empty_points(running_bridge):
+    mixed = running_bridge.client.send_input(
+        text="nope",
+        drag={"points": [[1, 2], [3, 4]]},
+    )
+    empty = running_bridge.client.send_input(drag={"points": []})
+
+    assert mixed["ok"] is False
+    assert "exactly one" in mixed["error"]
+    assert empty["ok"] is False
+    assert "non-empty" in empty["error"]
+    assert running_bridge.renpy._pygame_events == []
+
+
 def test_poll_events_captures_labels_and_say_lines(running_bridge):
     config = running_bridge.renpy.config
     # Fire Ren'Py's registered callbacks the way the engine would.
@@ -713,6 +758,418 @@ def test_dispatch_mouse_click_uses_focused_displayable_local_coordinates(running
             focus_module.mouse_handler = original_mouse_handler
 
     assert seen == [(30, 50, 0), (30, 50, 0)]
+
+
+def test_editor_mouse_up_applies_final_drag_position_without_motion(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    pygame = globs["pygame"]
+    screen_name = "drag_target_screen"
+    baseline = [320, 220]
+
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    ScreenDisplayable = type("ScreenDisplayable", (), {})
+    Text = type("Text", (), {})
+    screen = ScreenDisplayable()
+    widget = Text()
+    widget._location = ("game/screens.rpy", 12)
+    screen.children = [widget]
+    screen.widgets = {"drag_target": widget}
+    focus = _FakeFocus("Drag target", baseline[0], baseline[1], 120, 60, widget=widget)
+    focus.screen_name = screen_name
+    renpy.display.focus.focus_list[:] = [focus]
+    renpy.display.screen = types.SimpleNamespace(
+        get_screen=lambda name: screen if name == screen_name else None
+    )
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        center = [baseline[0] + focus.w // 2, baseline[1] + focus.h // 2]
+        selected = globs["_renforge_editor_h_select"]({"x": center[0], "y": center[1]})
+        runtime_key = selected["observation"]["runtime_key"]
+        target_key = globs["_renforge_editor_target_key"](runtime_key)
+        state.targets[target_key] = {
+            "analysis_id": "analysis-drag-target",
+            "source_key": {"relative_path": "screens.rpy", "line": 12},
+            "screen": screen_name,
+            "widget_id": "drag_target",
+            "runtime_baseline": list(baseline),
+            "source_position": list(baseline),
+            "position": list(baseline),
+            "dirty": False,
+        }
+        analyzed = globs["_renforge_editor_h_select"](
+            {"x": center[0], "y": center[1]}
+        )
+        assert analyzed["ok"] is True
+        assert state.preview_position == baseline
+
+        down = pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN,
+            {"button": 1, "pos": tuple(center), "mod": pygame.KMOD_NONE},
+        )
+        up = pygame.event.Event(
+            pygame.MOUSEBUTTONUP,
+            {
+                "button": 1,
+                "pos": (center[0] + 40, center[1] + 30),
+                "mod": pygame.KMOD_NONE,
+            },
+        )
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](down, center[0], center[1], 0.0)
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](
+                up, center[0] + 40, center[1] + 30, 0.0
+            )
+
+        assert state.preview_position[0] == pytest.approx(baseline[0] + 40, abs=1)
+        assert state.preview_position[1] == pytest.approx(baseline[1] + 30, abs=1)
+        assert state.targets[state.selected_target_key]["dirty"] is True
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_drag_feedback_separates_distance_from_bounded_snap_guide(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.drag_active = True
+        state.drag_start_position = [100, 200]
+        state.drag_offset = [10, 10]
+        state.pointer = [111, 211]
+        state.selected_original_position = [100, 200]
+        state.preview_position = [100, 200]
+        state.selected_rect = [100, 200, 40, 20]
+        state.snap_candidates_x = [
+            {"anchor": 120, "rect": [120, 260, 40, 40]}
+        ]
+        state.snap_candidates_y = []
+
+        measurement = globs["_renforge_editor_measure_snapshot"]()
+        snapped_x, snapped_y, detail = globs["_renforge_editor_apply_snap"](
+            81, 200, False
+        )
+        guide = globs["_renforge_editor_guide_snapshot"]()
+        held_x, held_y, held_detail = globs["_renforge_editor_apply_snap"](
+            84, 210, False
+        )
+        held_guide = globs["_renforge_editor_guide_snapshot"]()
+        globs["_renforge_editor_apply_snap"](84, 210, True)
+        state.snap_candidates_x = []
+        state.snap_candidates_y = [
+            {"anchor": 230, "rect": [300, 230, 50, 40]}
+        ]
+        y_snapped_x, y_snapped_y, y_detail = globs[
+            "_renforge_editor_apply_snap"
+        ](100, 211, False)
+        horizontal_guide = globs["_renforge_editor_guide_snapshot"]()
+
+        assert measurement == {"dx": 1, "dy": 1}
+        assert (snapped_x, snapped_y) == (80, 200)
+        assert detail == {"snapped_x": True, "snapped_y": False}
+        assert guide == {
+            "line_x": [120, 200, 100],
+            "line_y": None,
+        }
+        assert (held_x, held_y) == (80, 210)
+        assert held_detail == {"snapped_x": True, "snapped_y": False}
+        assert held_guide == {
+            "line_x": [120, 210, 90],
+            "line_y": None,
+        }
+        assert (y_snapped_x, y_snapped_y) == (100, 210)
+        assert y_detail == {"snapped_x": False, "snapped_y": True}
+        assert horizontal_guide == {
+            "line_x": None,
+            "line_y": [100, 230, 250],
+        }
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_drag_deduplicates_target_rebuild_but_refreshes_measurement(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    show_calls = []
+    renpy.show_screen = lambda *args, **kwargs: show_calls.append((args, kwargs))
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.drag_active = True
+        state.selected_screen = "drag_target_screen"
+        state.selected_widget_id = "drag_target"
+        state.selected_target_key = "target"
+        state.selected_lock_reason = None
+        state.selected_original_position = [100, 200]
+        state.selected_source_position = [100, 200]
+        state.selected_rect = [100, 200, 40, 20]
+        state.preview_position = [100, 200]
+        state.targets["target"] = {
+            "screen": "drag_target_screen",
+            "widget_id": "drag_target",
+            "runtime_baseline": [100, 200],
+            "source_position": [100, 200],
+            "position": [100, 200],
+            "dirty": False,
+        }
+
+        first = globs["_renforge_editor_apply_preview"](
+            101, 200, allow_snap=False
+        )
+        restart_count = len(
+            [item for item in renpy._invoked if item == ("restart_interaction",)]
+        )
+        second = globs["_renforge_editor_apply_preview"](
+            101, 200, allow_snap=False
+        )
+
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert len(show_calls) == 1
+        assert len(
+            [item for item in renpy._invoked if item == ("restart_interaction",)]
+        ) == restart_count + 1
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_motion_applies_preview_immediately(running_bridge, monkeypatch):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    pygame = globs["pygame"]
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    show_calls = []
+    renpy.show_screen = lambda *args, **kwargs: show_calls.append((args, kwargs))
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.drag_active = True
+        state.drag_offset = [10, 10]
+        state.drag_start_position = [100, 200]
+        state.selected_screen = "drag_target_screen"
+        state.selected_widget_id = "drag_target"
+        state.selected_target_key = "target"
+        state.selected_lock_reason = None
+        state.selected_original_position = [100, 200]
+        state.selected_source_position = [100, 200]
+        state.selected_rect = [100, 200, 40, 20]
+        state.preview_position = [100, 200]
+        state.snap_candidates_x = []
+        state.snap_candidates_y = []
+        state.targets["target"] = {
+            "screen": "drag_target_screen",
+            "widget_id": "drag_target",
+            "runtime_baseline": [100, 200],
+            "source_position": [100, 200],
+            "position": [100, 200],
+            "dirty": False,
+        }
+
+        motion = pygame.event.Event(
+            pygame.MOUSEMOTION,
+            {"pos": (111, 210), "rel": (1, 0), "buttons": (1, 0, 0)},
+        )
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](motion, 111, 210, 0.0)
+
+        assert state.preview_position == [101, 200]
+        assert len(show_calls) == 1
+
+        up = pygame.event.Event(
+            pygame.MOUSEBUTTONUP,
+            {
+                "button": 1,
+                "pos": (113, 213),
+                "x": 113,
+                "y": 213,
+                "touch": False,
+                "test": True,
+                "mod": 0,
+            },
+        )
+        with pytest.raises(renpy.IgnoreEvent):
+            globs["_renforge_editor_handle_event"](up, 113, 213, 0.0)
+        assert state.drag_active is False
+        assert state.preview_position == [103, 203]
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_task0_drag_uses_displayable_event_path(running_bridge, monkeypatch):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    pygame = globs["pygame"]
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.preview_position = [100, 200]
+        event_types = []
+
+        def handle_event(event, x, y, st):
+            event_types.append(event.type)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                state.drag_active = True
+            elif event.type == pygame.MOUSEMOTION:
+                state.preview_position = [int(x), int(y)]
+            elif event.type == pygame.MOUSEBUTTONUP:
+                state.drag_active = False
+            raise renpy.IgnoreEvent()
+
+        globs["_renforge_editor_handle_event"] = handle_event
+        globs["_renforge_editor_apply_drag_from_pointer"] = (
+            lambda x, y, shift: {
+                "ok": True,
+                "preview_position": [int(x), int(y)],
+            }
+        )
+
+        reply = globs["_renforge_editor_h_drag"](
+            {"points": [[100, 200], [120, 200], [130, 210]]}
+        )
+
+        assert reply["ok"] is True
+        assert event_types == [
+            pygame.MOUSEBUTTONDOWN,
+            pygame.MOUSEMOTION,
+            pygame.MOUSEMOTION,
+            pygame.MOUSEBUTTONUP,
+        ]
+        assert reply["preview_before_mouse_up"] == [130, 210]
+        assert reply["drag_active_before_mouse_up"] is True
+        assert state.drag_active is False
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_coordinator_survives_missing_global_queue(running_bridge, monkeypatch):
+    renpy = running_bridge.renpy
+    globs = dict(running_bridge.globs)
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        coordinator = globs["_renforge_editor_ensure_coordinator"]()
+        saved_queue = globs.get("queue")
+        globs.pop("queue", None)
+        try:
+            # Force the Empty path that crashed after reload before any submit.
+            time.sleep(0.15)
+            assert coordinator.thread.is_alive()
+        finally:
+            if saved_queue is not None:
+                globs["queue"] = saved_queue
+        request_id = coordinator.submit({"probe": True})
+        deadline = time.time() + 1.0
+        collected = []
+        while time.time() < deadline:
+            collected = coordinator.collect_nowait()
+            if collected:
+                break
+            time.sleep(0.02)
+        assert coordinator.thread.is_alive()
+        assert any(item.get("request_id") == request_id for item in collected)
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
 
 
 def test_dispatch_mouse_click_delivers_up_after_down_is_ignored(running_bridge):

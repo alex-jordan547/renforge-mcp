@@ -7,7 +7,7 @@ screen _renforge_editor_launcher():
             id "rf_launcher"
             xalign 0.985
             yalign 0.025
-            action Function(_renforge_editor_activate)
+            action Function(_renforge_editor_consume, _renforge_editor_activate)
             background Solid("#7c3aed")
             hover_background Solid("#8b5cf6")
             text_color "#ffffff"
@@ -27,6 +27,8 @@ screen _renforge_editor_overlay():
         $ _rf_selection = _renforge_editor_selection_snapshot()
         $ _rf_label = _renforge_editor_label_snapshot()
         $ _rf_distance = _renforge_editor_distance_snapshot()
+        $ _rf_measure = _renforge_editor_measure_snapshot()
+        $ _rf_guide = _renforge_editor_guide_snapshot()
         $ _rf_tools_visible = _renforge_editor_tools_visible()
 
         fixed:
@@ -34,40 +36,47 @@ screen _renforge_editor_overlay():
             yfill True
             at Transform(alpha=_renforge_editor_opacity())
 
-            if _rf_tools_visible and _renforge_editor_guide_x() is not None:
-                add Solid("#ff3b30", xysize=(1, config.screen_height)):
+            if _rf_tools_visible and _rf_guide["line_x"] is not None:
+                add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
                     id "rf_guide_x"
-                    xpos int(_renforge_editor_guide_x())
-                    ypos 0
+                    xpos int(_rf_guide["line_x"][0])
+                    ypos int(_rf_guide["line_x"][1])
 
-            if _rf_tools_visible and _renforge_editor_guide_y() is not None:
-                add Solid("#ff3b30", xysize=(config.screen_width, 1)):
+            if _rf_tools_visible and _rf_guide["line_y"] is not None:
+                add Solid("#ff3b30", xysize=(max(1, int(_rf_guide["line_y"][2])), 1)):
                     id "rf_guide_y"
-                    xpos 0
-                    ypos int(_renforge_editor_guide_y())
+                    xpos int(_rf_guide["line_y"][0])
+                    ypos int(_rf_guide["line_y"][1])
 
-            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_x() is not None:
-                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_renforge_editor_guide_x()) + 8))
+            $ _rf_guide_x_val = _renforge_editor_guide_x()
+            $ _rf_guide_y_val = _renforge_editor_guide_y()
+            $ _rf_show_dx = _rf_distance is not None and (_rf_guide_x_val is not None or (_rf_measure is not None and _rf_measure["dx"] != 0))
+            $ _rf_show_dy = _rf_distance is not None and (_rf_guide_y_val is not None or (_rf_measure is not None and _rf_measure["dy"] != 0))
+
+            if _rf_tools_visible and _rf_show_dx:
+                $ _rf_anchor_x = _rf_guide_x_val if _rf_guide_x_val is not None else int(_rf_distance["x"]) + int(_rf_distance["w"])
+                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_anchor_x) + 8))
                 $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_distance["y"]) + int(_rf_distance["h"]) + 6))
                 frame:
                     id "rf_distance_x"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#b91c1c")
+                    background Solid("#27272a")
                     padding (6, 3)
                     text _rf_distance["text_x"]:
                         id "rf_distance_x_text"
                         color "#ffffff"
                         size 12
 
-            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_y() is not None:
+            if _rf_tools_visible and _rf_show_dy:
+                $ _rf_anchor_y = _rf_guide_y_val if _rf_guide_y_val is not None else int(_rf_distance["y"]) + int(_rf_distance["h"])
                 $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_distance["x"]) + int(_rf_distance["w"]) + 6))
-                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_renforge_editor_guide_y()) + 8))
+                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_anchor_y) + 8))
                 frame:
                     id "rf_distance_y"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#b91c1c")
+                    background Solid("#27272a")
                     padding (6, 3)
                     text _rf_distance["text_y"]:
                         id "rf_distance_y_text"
@@ -123,35 +132,35 @@ screen _renforge_editor_overlay():
                     spacing 6
                     textbutton "Exit":
                         id "rf_exit"
-                        action Function(_renforge_editor_exit)
+                        action Function(_renforge_editor_consume, _renforge_editor_exit)
                         text_color "#f4f4f5"
                     textbutton "Undo":
                         id "rf_undo"
-                        action Function(_renforge_editor_undo)
+                        action Function(_renforge_editor_consume, _renforge_editor_undo)
                         sensitive _renforge_editor_can_undo()
                         text_color "#f4f4f5"
                     textbutton "Redo":
                         id "rf_redo"
-                        action Function(_renforge_editor_redo)
+                        action Function(_renforge_editor_consume, _renforge_editor_redo)
                         sensitive _renforge_editor_can_redo()
                         text_color "#f4f4f5"
                     textbutton "Reset":
                         id "rf_reset"
-                        action Function(_renforge_editor_reset_selected)
+                        action Function(_renforge_editor_consume, _renforge_editor_reset_selected)
                         sensitive _renforge_editor_has_selection()
                         text_color "#f4f4f5"
                     textbutton ("Tools On" if _rf_tools_visible else "Tools Off"):
                         id "rf_tools"
-                        action Function(_renforge_editor_toggle_tools)
+                        action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
                         background Solid("#7c3aed" if _rf_tools_visible else "#3f3f46")
                         text_color "#ffffff"
                     textbutton "-":
                         id "rf_opacity_down"
-                        action Function(_renforge_editor_adjust_opacity, -0.1)
+                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1)
                         text_color "#f4f4f5"
                     textbutton "+":
                         id "rf_opacity_up"
-                        action Function(_renforge_editor_adjust_opacity, 0.1)
+                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
                         text_color "#f4f4f5"
                     text _renforge_editor_status_text():
                         color "#a1a1aa"
@@ -160,7 +169,7 @@ screen _renforge_editor_overlay():
                         xminimum 120
                     textbutton _renforge_editor_save_label():
                         id "rf_save"
-                        action Function(_renforge_editor_save)
+                        action Function(_renforge_editor_consume, _renforge_editor_save)
                         sensitive _renforge_editor_save_enabled()
                         background Solid("#7c3aed")
                         hover_background Solid("#8b5cf6")
@@ -191,7 +200,6 @@ init 1100 python:
     import hashlib
     import json
     import os
-    import queue
     import socket
     import sys
     import threading
@@ -265,10 +273,14 @@ init 1100 python:
             state.snap_anchor_y = None
             state.snap_offset_x = None
             state.snap_offset_y = None
-            state.snap_anchors_x = None
-            state.snap_anchors_y = None
+            state.snap_candidates_x = None
+            state.snap_candidates_y = None
+            state.snap_target_x_rect = None
+            state.snap_target_y_rect = None
             state.guide_x = None
             state.guide_y = None
+            state.guide_x_span = None
+            state.guide_y_span = None
             state.opacity = 0.86
             state.tools_visible = True
             state.label_rect = [20, 20, 260, 32]
@@ -315,10 +327,18 @@ init 1100 python:
             state.snap_offset_x = None
         if not hasattr(state, "snap_offset_y"):
             state.snap_offset_y = None
-        if not hasattr(state, "snap_anchors_x"):
-            state.snap_anchors_x = None
-        if not hasattr(state, "snap_anchors_y"):
-            state.snap_anchors_y = None
+        if not hasattr(state, "snap_candidates_x"):
+            state.snap_candidates_x = None
+        if not hasattr(state, "snap_candidates_y"):
+            state.snap_candidates_y = None
+        if not hasattr(state, "snap_target_x_rect"):
+            state.snap_target_x_rect = None
+        if not hasattr(state, "snap_target_y_rect"):
+            state.snap_target_y_rect = None
+        if not hasattr(state, "guide_x_span"):
+            state.guide_x_span = None
+        if not hasattr(state, "guide_y_span"):
+            state.guide_y_span = None
         if not hasattr(state, "tools_visible"):
             state.tools_visible = True
         if not hasattr(state, "selected_source_position"):
@@ -336,6 +356,18 @@ init 1100 python:
 
     def _renforge_editor_is_editor_injected():
         return bool(_renforge_editor_state().editor_injected)
+
+
+    def _renforge_editor_consume(callback, *args):
+        """Run an editor control's action and report nothing back to Ren'Py.
+
+        `Function` ends the interaction as soon as its callable returns a
+        non-None value (behavior.py, Button.handle_click), and every editor
+        callback returns a status dict. That ended the interaction and
+        dismissed the dialogue underneath, so pressing Exit or Tools also
+        advanced the story. Returning None lets Ren'Py consume the click.
+        """
+        callback(*args)
 
 
     def _renforge_editor_activate():
@@ -455,8 +487,10 @@ init 1100 python:
 
     class _RenforgeEditorCoordinatorIO(object):
         def __init__(self):
-            self.requests = queue.Queue()
-            self.results = queue.Queue()
+            import queue as queue_module
+
+            self.requests = queue_module.Queue()
+            self.results = queue_module.Queue()
             self.stop = threading.Event()
             self.counter = 0
             state = _renforge_editor_state()
@@ -545,10 +579,13 @@ init 1100 python:
             raise RuntimeError("editor host request failed: %s" % last_error)
 
         def _loop(self):
+            import queue as queue_module
+
+            empty = queue_module.Empty
             while not self.stop.is_set():
                 try:
                     request = self.requests.get(timeout=0.1)
-                except queue.Empty:
+                except empty:
                     continue
                 result = builtins.dict(request)
                 try:
@@ -569,11 +606,14 @@ init 1100 python:
                 self.results.put(result)
 
         def collect_nowait(self):
+            import queue as queue_module
+
+            empty = queue_module.Empty
             items = []
             while True:
                 try:
                     items.append(self.results.get_nowait())
-                except queue.Empty:
+                except empty:
                     break
             return items
 
@@ -1283,9 +1323,9 @@ init 1100 python:
         return first_key == second_key
 
 
-    def _renforge_editor_anchor_lines(selected_key):
-        anchors_x = []
-        anchors_y = []
+    def _renforge_editor_anchor_candidates(selected_key):
+        candidates_x = []
+        candidates_y = []
         for candidate in _renforge_editor_focus_candidates():
             if candidate.get("editor_owned"):
                 continue
@@ -1297,13 +1337,13 @@ init 1100 python:
             rect = candidate.get("rect") or []
             if len(rect) != 4:
                 continue
-            left = int(rect[0])
-            top = int(rect[1])
-            width = int(rect[2])
-            height = int(rect[3])
-            anchors_x.extend([left, left + width // 2, left + width])
-            anchors_y.extend([top, top + height // 2, top + height])
-        return anchors_x, anchors_y
+            target_rect = [int(value) for value in rect]
+            left, top, width, height = target_rect
+            for anchor in (left, left + width // 2, left + width):
+                candidates_x.append({"anchor": anchor, "rect": target_rect})
+            for anchor in (top, top + height // 2, top + height):
+                candidates_y.append({"anchor": anchor, "rect": target_rect})
+        return candidates_x, candidates_y
 
 
     def _renforge_editor_apply_snap(desired_x, desired_y, shift):
@@ -1313,15 +1353,25 @@ init 1100 python:
             state.snap_anchor_y = None
             state.snap_offset_x = None
             state.snap_offset_y = None
+            state.snap_target_x_rect = None
+            state.snap_target_y_rect = None
             state.guide_x = None
             state.guide_y = None
+            state.guide_x_span = None
+            state.guide_y_span = None
             return int(desired_x), int(desired_y), {"snapped_x": False, "snapped_y": False}
 
-        if state.drag_active and state.snap_anchors_x is not None and state.snap_anchors_y is not None:
-            anchors_x = state.snap_anchors_x
-            anchors_y = state.snap_anchors_y
+        if (
+            state.drag_active
+            and state.snap_candidates_x is not None
+            and state.snap_candidates_y is not None
+        ):
+            candidates_x = state.snap_candidates_x
+            candidates_y = state.snap_candidates_y
         else:
-            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
+            candidates_x, candidates_y = _renforge_editor_anchor_candidates(
+                state.selected_runtime_key
+            )
         selected_rect = state.selected_rect or [desired_x, desired_y, 0, 0]
         width = max(0, int(selected_rect[2]))
         height = max(0, int(selected_rect[3]))
@@ -1335,21 +1385,30 @@ init 1100 python:
         if (
             anchor_x is not None
             and offset_x is not None
+            and state.snap_target_x_rect is not None
             and abs((int(desired_x) + int(offset_x)) - int(anchor_x)) <= _SNAP_RELEASE
         ):
             snapped_x = int(anchor_x) - int(offset_x)
         else:
             state.snap_anchor_x = None
             state.snap_offset_x = None
+            state.snap_target_x_rect = None
             closest_x = None
-            for anchor in anchors_x:
+            for candidate in candidates_x:
+                anchor = int(candidate["anchor"])
                 for offset in offsets_x:
-                    distance = abs((int(desired_x) + int(offset)) - int(anchor))
+                    distance = abs((int(desired_x) + int(offset)) - anchor)
                     if closest_x is None or distance < closest_x[0]:
-                        closest_x = (distance, int(anchor), int(offset))
+                        closest_x = (
+                            distance,
+                            anchor,
+                            int(offset),
+                            list(candidate["rect"]),
+                        )
             if closest_x is not None and closest_x[0] <= _SNAP_ACQUIRE:
                 state.snap_anchor_x = closest_x[1]
                 state.snap_offset_x = closest_x[2]
+                state.snap_target_x_rect = closest_x[3]
                 snapped_x = closest_x[1] - closest_x[2]
 
         anchor_y = state.snap_anchor_y
@@ -1357,25 +1416,50 @@ init 1100 python:
         if (
             anchor_y is not None
             and offset_y is not None
+            and state.snap_target_y_rect is not None
             and abs((int(desired_y) + int(offset_y)) - int(anchor_y)) <= _SNAP_RELEASE
         ):
             snapped_y = int(anchor_y) - int(offset_y)
         else:
             state.snap_anchor_y = None
             state.snap_offset_y = None
+            state.snap_target_y_rect = None
             closest_y = None
-            for anchor in anchors_y:
+            for candidate in candidates_y:
+                anchor = int(candidate["anchor"])
                 for offset in offsets_y:
-                    distance = abs((int(desired_y) + int(offset)) - int(anchor))
+                    distance = abs((int(desired_y) + int(offset)) - anchor)
                     if closest_y is None or distance < closest_y[0]:
-                        closest_y = (distance, int(anchor), int(offset))
+                        closest_y = (
+                            distance,
+                            anchor,
+                            int(offset),
+                            list(candidate["rect"]),
+                        )
             if closest_y is not None and closest_y[0] <= _SNAP_ACQUIRE:
                 state.snap_anchor_y = closest_y[1]
                 state.snap_offset_y = closest_y[2]
+                state.snap_target_y_rect = closest_y[3]
                 snapped_y = closest_y[1] - closest_y[2]
 
         state.guide_x = state.snap_anchor_x
         state.guide_y = state.snap_anchor_y
+        if state.guide_x is not None and state.snap_target_x_rect is not None:
+            target = state.snap_target_x_rect
+            state.guide_x_span = [
+                min(snapped_y, int(target[1])),
+                max(snapped_y + height, int(target[1]) + int(target[3])),
+            ]
+        else:
+            state.guide_x_span = None
+        if state.guide_y is not None and state.snap_target_y_rect is not None:
+            target = state.snap_target_y_rect
+            state.guide_y_span = [
+                min(snapped_x, int(target[0])),
+                max(snapped_x + width, int(target[0]) + int(target[2])),
+            ]
+        else:
+            state.guide_y_span = None
         return snapped_x, snapped_y, {
             "snapped_x": state.snap_anchor_x is not None,
             "snapped_y": state.snap_anchor_y is not None,
@@ -1401,6 +1485,25 @@ init 1100 python:
             state.guide_x = None
             state.guide_y = None
             snapped_x, snapped_y = desired_x, desired_y
+        if (
+            not record
+            and state.preview_position is not None
+            and len(state.preview_position) == 2
+            and [int(snapped_x), int(snapped_y)] == [int(state.preview_position[0]), int(state.preview_position[1])]
+        ):
+            # A pinned snap or a sub-pixel move: rebuilding the screen would
+            # change nothing visible and costs a full interaction restart.
+            if state.drag_active:
+                renpy.restart_interaction()
+            return {
+                "ok": True,
+                "x": int(snapped_x),
+                "y": int(snapped_y),
+                "method": "_widget_properties",
+                "snap": snap_detail,
+                "guide_x": state.guide_x,
+                "guide_y": state.guide_y,
+            }
         if record:
             _renforge_editor_push_history([int(snapped_x), int(snapped_y)])
         result = _renforge_editor_set_target_position(
@@ -1632,6 +1735,7 @@ init 1100 python:
 
     def _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift):
         state = _renforge_editor_state()
+        state.pointer = [int(pointer_x), int(pointer_y)]
         if not state.drag_active:
             base = state.preview_position or state.selected_original_position
             if base is None:
@@ -1642,9 +1746,11 @@ init 1100 python:
                 if len(rect) != 4:
                     return {"ok": False, "error": "UNMEASURED"}
                 base = [int(rect[0]), int(rect[1])]
-            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
-            state.snap_anchors_x = anchors_x
-            state.snap_anchors_y = anchors_y
+            candidates_x, candidates_y = _renforge_editor_anchor_candidates(
+                state.selected_runtime_key
+            )
+            state.snap_candidates_x = candidates_x
+            state.snap_candidates_y = candidates_y
             state.drag_active = True
             state.drag_offset = [int(pointer_x) - int(base[0]), int(pointer_y) - int(base[1])]
             state.drag_start_position = list(base)
@@ -1657,8 +1763,18 @@ init 1100 python:
         state = _renforge_editor_state()
         state.drag_active = False
         state.drag_offset = [0, 0]
-        state.snap_anchors_x = None
-        state.snap_anchors_y = None
+        state.snap_candidates_x = None
+        state.snap_candidates_y = None
+        state.snap_anchor_x = None
+        state.snap_anchor_y = None
+        state.snap_offset_x = None
+        state.snap_offset_y = None
+        state.snap_target_x_rect = None
+        state.snap_target_y_rect = None
+        state.guide_x = None
+        state.guide_y = None
+        state.guide_x_span = None
+        state.guide_y_span = None
         if state.preview_position is not None and state.drag_start_position is not None:
             _renforge_editor_push_history(state.preview_position, before=state.drag_start_position)
         state.drag_start_position = None
@@ -1674,10 +1790,14 @@ init 1100 python:
         state.snap_anchor_y = None
         state.snap_offset_x = None
         state.snap_offset_y = None
-        state.snap_anchors_x = None
-        state.snap_anchors_y = None
+        state.snap_candidates_x = None
+        state.snap_candidates_y = None
+        state.snap_target_x_rect = None
+        state.snap_target_y_rect = None
         state.guide_x = None
         state.guide_y = None
+        state.guide_x_span = None
+        state.guide_y_span = None
         renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
         renpy.restart_interaction()
         return {"ok": True, "active": False}
@@ -1687,40 +1807,44 @@ init 1100 python:
         state = _renforge_editor_state()
         if not state.active:
             return None
-        pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
-        state.pointer = [int(pointer_x), int(pointer_y)]
-        _renforge_editor_set_label(pointer_x, pointer_y)
         event_type = getattr(event, "type", None)
+        pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
         key = getattr(event, "key", None)
         shift = _renforge_editor_event_shift(event)
+        state.pointer = [int(pointer_x), int(pointer_y)]
+        _renforge_editor_set_label(pointer_x, pointer_y)
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
                 _renforge_editor_select(pointer_x, pointer_y)
                 if not state.selected_lock_reason:
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
+                # Ren'Py already coalesces MOUSEMOTION to the latest event before
+                # dispatch. Apply that motion immediately; do not re-queue it.
                 _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEBUTTONUP", None) and getattr(event, "button", 0) == 1:
+                if state.drag_active:
+                    _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 _renforge_editor_end_drag()
-                return None
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "KEYDOWN", None):
                 if key == getattr(pygame, "K_ESCAPE", None):
                     _renforge_editor_exit()
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_LEFT", None):
                     _renforge_editor_nudge(-1, 0, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_RIGHT", None):
                     _renforge_editor_nudge(1, 0, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_UP", None):
                     _renforge_editor_nudge(0, -1, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
                 if key == getattr(pygame, "K_DOWN", None):
                     _renforge_editor_nudge(0, 1, shift)
-                    return None
+                    raise renpy.IgnoreEvent()
         return None
 
 
@@ -2027,6 +2151,9 @@ init 1100 python:
         state.selected_target_key = None
         state.selected_lock_reason = None
         state.preview_position = None
+        state.drag_active = False
+        state.drag_offset = [0, 0]
+        state.drag_start_position = None
         state.selected_original_position = None
         state.selected_source_position = None
         state.selected_rect = None
@@ -2119,43 +2246,85 @@ init 1100 python:
         state = _renforge_editor_state()
         if not state.active:
             return {"ok": False, "error": "editor is not active"}
-        samples = []
         if pygame is None:
             return {"ok": False, "error": "pygame_sdl2 is unavailable"}
-        first = points[0]
-        if not builtins.isinstance(first, (builtins.list, tuple)) or len(first) < 2:
-            return {"ok": False, "error": "invalid point"}
-        down_reply = _renforge_editor_apply_drag_from_pointer(int(first[0]), int(first[1]), shift)
-        if not down_reply.get("ok", False):
-            return down_reply
+
+        normalized_points = []
         for point in points:
             if not builtins.isinstance(point, (builtins.list, tuple)) or len(point) < 2:
                 return {"ok": False, "error": "invalid point"}
-            px = int(point[0])
-            py = int(point[1])
-            motion_reply = _renforge_editor_apply_drag_from_pointer(px, py, shift)
-            if not motion_reply.get("ok", False):
-                state.drag_active = False
-                state.drag_offset = [0, 0]
-                return motion_reply
-            state_after = _renforge_editor_state()
-            preview = list(state_after.preview_position or [])
-            samples.append(
-                {
-                    "point": [px, py],
-                    "preview_position": preview if len(preview) == 2 else None,
-                    "guide_x": state_after.guide_x,
-                    "guide_y": state_after.guide_y,
-                }
+            normalized_points.append([int(point[0]), int(point[1])])
+
+        def dispatch(event, px, py):
+            try:
+                _renforge_editor_handle_event(event, px, py, 0.0)
+            except renpy.IgnoreEvent:
+                pass
+
+        def sample(point):
+            current = _renforge_editor_state()
+            preview = list(current.preview_position or [])
+            return {
+                "point": list(point),
+                "preview_position": preview if len(preview) == 2 else None,
+                "guide_x": current.guide_x,
+                "guide_y": current.guide_y,
+            }
+
+        mod = getattr(pygame, "KMOD_SHIFT", 0) if shift else 0
+        first_x, first_y = normalized_points[0]
+        dispatch(
+            _renforge_editor_fake_event(
+                getattr(pygame, "MOUSEBUTTONDOWN", None),
+                button=1,
+                pos=(first_x, first_y),
+                mod=mod,
+            ),
+            first_x,
+            first_y,
+        )
+        if not state.drag_active:
+            return {
+                "ok": False,
+                "error": state.selected_lock_reason or "drag did not start",
+            }
+
+        samples = [sample(normalized_points[0])]
+        previous_x, previous_y = first_x, first_y
+        for px, py in normalized_points[1:]:
+            dispatch(
+                _renforge_editor_fake_event(
+                    getattr(pygame, "MOUSEMOTION", None),
+                    pos=(px, py),
+                    rel=(px - previous_x, py - previous_y),
+                    buttons=(1, 0, 0),
+                    mod=mod,
+                ),
+                px,
+                py,
             )
-        up_reply = _renforge_editor_end_drag()
-        if not up_reply.get("ok", False):
-            return up_reply
+            samples.append(sample([px, py]))
+            previous_x, previous_y = px, py
+
+        preview_before_mouse_up = list(state.preview_position or [])
+        drag_active_before_mouse_up = bool(state.drag_active)
+        dispatch(
+            _renforge_editor_fake_event(
+                getattr(pygame, "MOUSEBUTTONUP", None),
+                button=1,
+                pos=(previous_x, previous_y),
+                mod=mod,
+            ),
+            previous_x,
+            previous_y,
+        )
         return {
             "ok": True,
-            "event_method": "Displayable.event",
+            "event_method": "_renforge_editor_handle_event",
             "preview_method": state.last_preview_method,
             "samples": samples,
+            "preview_before_mouse_up": preview_before_mouse_up,
+            "drag_active_before_mouse_up": drag_active_before_mouse_up,
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
         }
@@ -2196,13 +2365,17 @@ init 1100 python:
                 nudge_reply = _renforge_editor_nudge(dx, dy, shift)
                 if not nudge_reply.get("ok", False):
                     return nudge_reply
+                continue
             else:
                 event = _renforge_editor_fake_event(
                     pygame.KEYDOWN,
                     key=key_value,
                     mod=getattr(pygame, "KMOD_SHIFT", 0) if shift else 0,
                 )
-                _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
+                try:
+                    _renforge_editor_handle_event(event, state.pointer[0], state.pointer[1], 0.0)
+                except renpy.IgnoreEvent:
+                    pass
             traces.append({"key": key_name, "shift": shift})
         state.last_event_trace = traces
         return {"ok": True, "repeat": repeat, "shift": shift, "active": state.active}
@@ -2485,6 +2658,8 @@ init 1100 python:
         return bool(_renforge_editor_state().active)
 
 
+
+
     def _renforge_editor_opacity():
         return float(_renforge_editor_state().opacity)
 
@@ -2495,6 +2670,19 @@ init 1100 python:
 
     def _renforge_editor_guide_y():
         return _renforge_editor_state().guide_y
+
+
+    def _renforge_editor_guide_snapshot():
+        state = _renforge_editor_state()
+        line_x = None
+        line_y = None
+        if state.guide_x is not None and state.guide_x_span is not None:
+            start, end = state.guide_x_span
+            line_x = [int(state.guide_x), int(start), max(1, int(end) - int(start))]
+        if state.guide_y is not None and state.guide_y_span is not None:
+            start, end = state.guide_y_span
+            line_y = [int(start), int(state.guide_y), max(1, int(end) - int(start))]
+        return {"line_x": line_x, "line_y": line_y}
 
 
     def _renforge_editor_distance_snapshot():
@@ -2522,6 +2710,56 @@ init 1100 python:
             "delta_y": delta_y,
             "text_x": "dx %s%d px" % ("+" if delta_x >= 0 else "", delta_x),
             "text_y": "dy %s%d px" % ("+" if delta_y >= 0 else "", delta_y),
+        }
+
+    def _renforge_editor_measure_snapshot():
+        """Track raw pointer displacement throughout an active drag.
+
+        Snap guides intentionally hold the preview at an anchor. Measurement
+        lines still follow the pointer so a small or directional movement is
+        visible instead of flashing only after snap release.
+        """
+        state = _renforge_editor_state()
+        if not state.drag_active:
+            return None
+        pointer = state.pointer
+        drag_start = state.drag_start_position
+        drag_offset = state.drag_offset
+        preview = state.preview_position
+        original = state.selected_original_position
+        rect = state.selected_rect
+        if (
+            not isinstance(pointer, (builtins.list, builtins.tuple))
+            or len(pointer) != 2
+            or not isinstance(rect, (builtins.list, builtins.tuple))
+            or len(rect) != 4
+        ):
+            return None
+        if (
+            isinstance(drag_start, (builtins.list, builtins.tuple))
+            and len(drag_start) == 2
+            and isinstance(drag_offset, (builtins.list, builtins.tuple))
+            and len(drag_offset) == 2
+        ):
+            origin_x, origin_y = int(drag_start[0]), int(drag_start[1])
+            current_x = int(pointer[0]) - int(drag_offset[0])
+            current_y = int(pointer[1]) - int(drag_offset[1])
+        elif (
+            isinstance(preview, (builtins.list, builtins.tuple))
+            and len(preview) == 2
+            and isinstance(original, (builtins.list, builtins.tuple))
+            and len(original) == 2
+        ):
+            origin_x, origin_y = int(original[0]), int(original[1])
+            current_x, current_y = int(preview[0]), int(preview[1])
+        else:
+            return None
+        width, height = int(rect[2]), int(rect[3])
+        dx = current_x - origin_x
+        dy = current_y - origin_y
+        return {
+            "dx": dx,
+            "dy": dy,
         }
 
     def _renforge_editor_label_snapshot():
