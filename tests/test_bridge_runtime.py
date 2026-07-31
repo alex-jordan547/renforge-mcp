@@ -595,21 +595,21 @@ def test_send_input_scroll_posts_logical_wheel_event(running_bridge):
 def test_send_input_drag_posts_real_mouse_event_sequence(running_bridge):
     points = [[100, 200], [150, 200], [150, 240]]
     reply = running_bridge.client.send_input(
-        drag={"points": points, "button": 1, "coordinate_space": "logical"}
+        drag={"points": points, "button": 3, "coordinate_space": "logical"}
     )
 
-    assert reply == {"ok": True, "mode": "drag", "points": points, "button": 1}
+    assert reply == {"ok": True, "mode": "drag", "points": points, "button": 3}
     events = running_bridge.renpy._pygame_events
     assert [event.type for event in events] == [4, 6, 6, 5]
-    assert events[0].button == 1
+    assert events[0].button == 3
     assert events[0].pos == (100, 200)
     assert events[1].pos == (150, 200)
-    assert events[1].rel == (0, 0)
-    assert events[1].buttons == (1, 0, 0)
+    assert events[1].rel == (50, 0)
+    assert events[1].buttons == (0, 0, 1)
     assert events[2].pos == (150, 240)
-    assert events[2].rel == (0, 0)
-    assert events[2].buttons == (1, 0, 0)
-    assert events[3].button == 1
+    assert events[2].rel == (0, 40)
+    assert events[2].buttons == (0, 0, 1)
+    assert events[3].button == 3
     assert events[3].pos == (150, 240)
     assert running_bridge.renpy.display.interface.mouse_focused is True
 

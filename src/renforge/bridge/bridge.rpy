@@ -800,17 +800,20 @@ init python:
                 "mod": 0,
             }
             post(make_event(down_type, button_payload))
+            previous_x, previous_y = first_x, first_y
+            held_buttons = tuple(int(button == candidate) for candidate in (1, 2, 3))
             for point_x, point_y in logical_points[1:]:
                 post(
                     make_event(
                         motion_type,
                         {
                             "pos": (point_x, point_y),
-                            "rel": (0, 0),
-                            "buttons": (1, 0, 0) if button == 1 else (0, 0, 0),
+                            "rel": (point_x - previous_x, point_y - previous_y),
+                            "buttons": held_buttons,
                         },
                     )
                 )
+                previous_x, previous_y = point_x, point_y
             last_x, last_y = logical_points[-1]
             button_payload = {
                 "button": button,
