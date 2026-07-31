@@ -233,6 +233,7 @@ init 1100 python:
             "Fixed",
             "MultiBox",
             "Button",
+            "ImageButton",
             "Text",
             "Frame",
             "Window",

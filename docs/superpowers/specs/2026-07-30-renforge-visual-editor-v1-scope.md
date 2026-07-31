@@ -56,13 +56,13 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 | Adapter | Selection | Write chain | Status |
 |---|---|---|---|
 | `textbutton` | Spike C `pass` | Spike D `pass` | **Shipped in V1** |
-| `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path | **Implemented; live proof opt-in (`RENFORGE_IMAGEBUTTON_LIVE=1`)** |
+| `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path + seven-step live proof | **Implemented** (live proof green via `RENFORGE_IMAGEBUTTON_LIVE=1`) |
 | `button` | focusable by construction | not exercised | Blocked until proven |
 | `text`, `add`, `frame` | **not selectable** | Spike B proved write on a literal `text`, but by key, not by click | Out of V1 |
 
 `imagebutton` has a dedicated single-line adapter (issue #32) rather than a textbutton allowlist widen.
-It ships to the host path with unit/coordinator coverage; the seven-step live proof is opt-in until
-exercised in default CI.
+Host unit/coordinator coverage lands in default CI; the seven-step live proof is opt-in in CI but was
+executed green locally against Ren'Py 8.5.3 (`RENFORGE_IMAGEBUTTON_LIVE=1 pytest tests/test_editor_imagebutton_live.py`).
 
 ## Proven mechanisms (do not redesign)
 
