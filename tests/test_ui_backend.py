@@ -37,6 +37,35 @@ def _project_at(path: Path) -> Path:
     return path
 
 
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_root_route_returns_stable_error_when_static_assets_are_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    missing_static_dir = tmp_path / "ui-static-missing"
+    assert not missing_static_dir.exists()
+
+    monkeypatch.setattr(server, "_static_dir", lambda: missing_static_dir)
+
+    app = server.create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ok": False,
+        "error_code": "ui_assets_missing",
+        "details": {
+            "hint": "cd ui && npm ci && npm run build or install a RenForge wheel",
+            "path": str(missing_static_dir),
+        },
+        "error": "UI assets are not built yet",
+    }
+
+
 def test_resolve_game_file_path_rejects_traversal(tmp_path: Path) -> None:
     project = _project_root(tmp_path)
     result = graph.resolve_game_file_path(project, "../outside.rpy")

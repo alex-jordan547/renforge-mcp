@@ -63,6 +63,9 @@ screens
 # Local design source files; runtime copies live under ui/public/brand.
 /assets/
 
+# Generated dashboard assets are built from ui/ and intentionally not committed.
+/src/renforge/ui/static/
+
 # Superpowers visual brainstorming artifacts
 .superpowers/
 

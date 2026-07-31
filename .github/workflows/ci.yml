@@ -8,8 +8,53 @@ on:
       - master
 
 jobs:
+  ui-build:
+    name: UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Check and build frontend
+        working-directory: ui
+        run: npm run build
+
+      - name: Validate generated UI artifacts
+        run: python scripts/validate_ui_artifacts.py --static-dir src/renforge/ui/static
+
+      - name: Ensure generated static assets are untracked
+        run: |
+          if [ -n "$(git ls-files 'src/renforge/ui/static/**')" ]; then
+            echo "Generated UI assets must not be tracked by git."
+            git ls-files 'src/renforge/ui/static/**'
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-static
+          path: src/renforge/ui/static
+          if-no-files-found: error
+          retention-days: 3
+
   test:
     name: Python ${{ matrix.python-version }} tests (${{ matrix.os }})
+    needs: ui-build
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -33,18 +78,24 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Install frontend scanner dependencies
+      - name: Install frontend dependencies
         working-directory: ui
         run: npm ci
+
+      - name: Download built UI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-static
+          path: src/renforge/ui/static
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .[test]
+          python -m pip install -e '.[test]'
 
       - name: Compile source and tests
         run: python -m compileall src tests
@@ -52,21 +103,40 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-  ui-build:
-    name: UI build
+  package-contract:
+    name: Package contract checks
+    needs: ui-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: "20"
+          python-version: "3.12"
 
-      - name: Install frontend dependencies
-        working-directory: ui
-        run: npm ci
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
 
-      - name: Build frontend
-        working-directory: ui
-        run: npm run build
+      - name: Download built UI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-static
+          path: src/renforge/ui/static
+
+      - name: Build package
+        run: python -m build
+
+      - name: Validate package artifacts
+        run: python scripts/validate_ui_artifacts.py --static-dir src/renforge/ui/static --dist-dir dist
+
+      - name: Smoke test installed wheel
+        shell: bash
+        run: |
+          WHEEL_PATH="$(python -c 'from pathlib import Path; wheels = list(Path("dist").glob("*.whl")); assert len(wheels) == 1, wheels; print(wheels[0].resolve())')"
+          python -m venv .venv-smoke
+          .venv-smoke/bin/python -m pip install --upgrade pip
+          .venv-smoke/bin/python -m pip install "${WHEEL_PATH}[ui]"
+          .venv-smoke/bin/python scripts/smoke_ui.py --timeout 45

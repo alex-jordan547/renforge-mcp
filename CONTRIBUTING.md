@@ -24,15 +24,18 @@ The dashboard frontend lives in `ui/` (Vite + React + TypeScript):
 cd ui
 npm ci
 npm run dev      # dev server proxying to the Python backend on :8765
-npm run build    # builds into src/renforge/ui/static/ (committed)
+npm run build    # builds into src/renforge/ui/static/ (generated, ignored)
 ```
+
+The generated `src/renforge/ui/static/` tree is not committed and is regenerated
+for local testing by running `npm run build` from `ui/`.
 
 ## Pull requests
 
 - Keep PRs focused: one change per PR.
 - Run `pytest` before submitting; add tests for behavior changes.
-- If you touch the frontend, run `npm run build` and commit the updated
-  `src/renforge/ui/static/` assets.
+- If you touch the frontend, run `npm run build`; generated static assets must be
+  left uncommitted.
 
 ## Locale and i18n integration
 

@@ -76,6 +76,6 @@ None
 
 - [ ] The PR is focused on one coherent change.
 - [ ] Tests were added or updated for behavior changes.
-- [ ] Generated `src/renforge/ui/static/` assets are committed when the frontend changed.
+- [ ] Generated `src/renforge/ui/static/` assets remain untracked; CI and release builds produce them.
 - [ ] No credentials, tokens, personal paths, or other secrets are included.
 - [ ] I understand the submitted code and can explain how it works.
