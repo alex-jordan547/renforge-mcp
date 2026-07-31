@@ -3,7 +3,7 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
-## [0.7.0] - 2026-07-22
+## [0.7.0] - Unreleased
 
 ### Added
 
@@ -21,12 +21,29 @@ versioning.
   or literal bounds without vision: `align`, `gap`, `distribute`, `center`,
   `overlap`, `fit`, and WCAG `contrast`. Returns logical-pixel deltas and, when
   a `tolerance` is given, a `pass` verdict.
+- Complete Simplified Chinese (`zh-CN`) coverage for the dashboard, including
+  localized runtime status messages, project-browser roots, and Story Map node
+  types.
+
+### Changed
+
+- Dashboard bundles are now generated once by CI and release workflows, remain
+  untracked in Git, and are validated inside both wheels and source archives.
+  PyPI and `uvx` users continue to receive a ready-to-run dashboard without
+  needing Node.js.
 
 ### Fixed
 
 - The `test` extra now installs `httpx2>=2.0.0`, the client backend required by
   current Starlette `TestClient`, instead of falling back to deprecated `httpx`
   compatibility and emitting `StarletteDeprecationWarning`.
+- Missing dashboard assets now return a stable, actionable HTTP 503 response
+  instead of a generic 404.
+
+### Thanks
+
+- Thanks to [@AxelBeary](https://github.com/AxelBeary) for the complete
+  Simplified Chinese dashboard translation and the related i18n fixes.
 
 ## [0.6.6] - 2026-07-24
 
@@ -79,19 +96,6 @@ versioning.
   process was eventually closed. The listener and its helpers now use
   function-local imports (read from `sys.modules`, which reload never
   touches), and the accept loop also tolerates non-timeout `OSError`.
-
-## [Unreleased]
-
-### Added
-
-- Complete Simplified Chinese (`zh-CN`) coverage for the dashboard, including
-  localized runtime status messages, project-browser roots, and Story Map node
-  types.
-
-### Thanks
-
-- Thanks to [@AxelBeary](https://github.com/AxelBeary) for the complete
-  Simplified Chinese dashboard translation and the related i18n fixes.
 
 ## [0.6.2] - 2026-07-19
 
