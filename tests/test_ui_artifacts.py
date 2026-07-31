@@ -9,6 +9,8 @@ import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 
 def _run_validator(static_dir: Path, dist_dir: Path | None = None) -> subprocess.CompletedProcess[str]:
     command = [
@@ -157,6 +159,7 @@ def test_validate_ui_artifacts_ignores_api_ws_route_and_minified_js_strings(tmp_
         const api = '/api/project';
         const live = '/api/live/state';
         const ws = '/ws';
+        const wsLookalike = '/ws-lookalike.js';
         const minified = '/$';
         const apiModule = '/api/project.js';
         const brand = '/brand/renforge-mark.png';
@@ -175,10 +178,11 @@ def test_validate_ui_artifacts_ignores_api_ws_route_and_minified_js_strings(tmp_
 
     assert result.returncode == 1
     assert "/assets/fail.js" in result.stderr
-    assert "unsupported local reference" not in result.stderr
+    assert "/ws-lookalike.js" in result.stderr
+    assert "unsupported local reference" in result.stderr
     assert "/api/project" not in result.stderr
     assert "/api/live/state" not in result.stderr
-    assert "/ws" not in result.stderr
+    assert "unsupported local reference '/ws'" not in result.stderr
     assert "/$" not in result.stderr
 
 
@@ -253,3 +257,68 @@ def test_validate_ui_artifacts_diagnostic_output_is_deterministic(tmp_path: Path
     errors = [line for line in result.stderr.splitlines() if line.startswith("ERROR")]
     assert errors == sorted(errors)
     assert len(errors) >= 2
+
+
+def test_validate_ui_artifacts_rejects_duplicate_wheel_static_members(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    _write_file(static_dir / "index.html", '<script src="/assets/index.js"></script>')
+    _write_file(static_dir / "assets" / "index.js", "console.log('ok')")
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        _write_wheel(
+            dist_dir,
+            files=[
+                ("index.html", '<script src="/assets/index.js"></script>'),
+                ("assets/index.js", "console.log('first')"),
+                ("assets/index.js", "console.log('duplicate')"),
+            ],
+        )
+
+    result = _run_validator(static_dir, dist_dir)
+
+    assert result.returncode == 1
+    assert "duplicate static member 'renforge/ui/static/assets/index.js'" in result.stderr
+
+
+def test_validate_ui_artifacts_rejects_duplicate_sdist_static_members(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    _write_file(static_dir / "index.html", '<script src="/assets/index.js"></script>')
+    _write_file(static_dir / "assets" / "index.js", "console.log('ok')")
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    _write_sdist(
+        dist_dir,
+        files=[
+            ("index.html", '<script src="/assets/index.js"></script>'),
+            ("assets/index.js", "console.log('first')"),
+            ("assets/index.js", "console.log('duplicate')"),
+        ],
+    )
+
+    result = _run_validator(static_dir, dist_dir)
+
+    assert result.returncode == 1
+    assert "duplicate static member" in result.stderr
+    assert "src/renforge/ui/static/assets/index.js" in result.stderr
+
+
+def test_validate_ui_artifacts_rejects_empty_dist_directory(tmp_path: Path) -> None:
+    static_dir = _valid_static(tmp_path / "static")
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+
+    result = _run_validator(static_dir, dist_dir)
+
+    assert result.returncode == 1
+    assert "no wheel or sdist artifacts found" in result.stderr
+
+
+def test_validate_ui_artifacts_rejects_extensionless_root_html_reference(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    _write_file(static_dir / "index.html", '<img src="/missing-image">')
+
+    result = _run_validator(static_dir)
+
+    assert result.returncode == 1
+    assert "unsupported local reference '/missing-image'" in result.stderr

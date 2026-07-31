@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import tarfile
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 from zipfile import ZipFile
@@ -19,7 +20,7 @@ import re
 import sys
 
 SUPPORTED_PREFIXES = ("/assets/", "/brand/")
-IGNORED_ROUTE_PREFIXES = ("/api/", "/ws", "/ws/")
+IGNORED_ROUTE_PREFIXES = ("/api/", "/ws/")
 
 HTML_ATTR_RE = re.compile(r"\b(?:href|src)\s*=\s*(['\"])(.*?)\1", re.IGNORECASE)
 CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
@@ -77,7 +78,7 @@ def _is_supported(path: str) -> bool:
 
 
 def _is_ignored_route(path: str) -> bool:
-    return path.startswith(IGNORED_ROUTE_PREFIXES)
+    return path == "/ws" or path.startswith(IGNORED_ROUTE_PREFIXES)
 
 
 def _looks_like_asset_path(path: str) -> bool:
@@ -106,6 +107,8 @@ def _validate_text_refs(
     refs: set[str],
     available: set[str],
     errors: list[str],
+    *,
+    strict_root_refs: bool = False,
 ) -> None:
     for raw in sorted(refs):
         if not _is_local_ref(raw):
@@ -121,7 +124,7 @@ def _validate_text_refs(
         if _is_ignored_route(path):
             continue
 
-        if not _is_supported(path) and _looks_like_asset_path(path):
+        if not _is_supported(path) and (strict_root_refs or _looks_like_asset_path(path)):
             errors.append(
                 f"{source}: unsupported local reference '{raw}' (only /assets and /brand are allowed)"
             )
@@ -148,7 +151,13 @@ def validate_static_dir(static_dir: Path, errors: list[str]) -> bool:
     available = {path.relative_to(static_dir).as_posix() for path in static_dir.rglob("*") if path.is_file()}
     for file_path, text in _iter_texts_from_static(static_dir):
         refs = _extract_refs(text, file_path=file_path)
-        _validate_text_refs(str(file_path), refs, available, errors)
+        _validate_text_refs(
+            str(file_path),
+            refs,
+            available,
+            errors,
+            strict_root_refs=file_path.suffix.lower() == ".html",
+        )
 
     return True
 
@@ -174,6 +183,11 @@ def validate_wheel(artifact: Path, errors: list[str]) -> bool:
             errors.append(f"{artifact}: no bundled static dir at renforge/ui/static/")
             return False
 
+        for name, count in sorted(Counter(static_names).items()):
+            if count > 1:
+                errors.append(f"{artifact}: duplicate static member '{name}'")
+                valid = False
+
         available = {name[len(static_prefix):] for name in static_names}
         if f"{static_prefix}index.html" not in static_names:
             errors.append(f"{artifact}: bundled static index.html is missing")
@@ -185,7 +199,13 @@ def validate_wheel(artifact: Path, errors: list[str]) -> bool:
             if text is None:
                 continue
             refs = _extract_refs(text, file_path=member)
-            _validate_text_refs(f"{artifact}:{member}", refs, available, errors)
+            _validate_text_refs(
+                f"{artifact}:{member}",
+                refs,
+                available,
+                errors,
+                strict_root_refs=member.endswith(".html"),
+            )
 
     return valid
 
@@ -204,6 +224,11 @@ def validate_sdist(artifact: Path, errors: list[str]) -> bool:
         for root in roots:
             prefix = f"{root}src/renforge/ui/static/"
             names_for_root = [name for name in names if name.startswith(prefix)]
+            for name, count in sorted(Counter(names_for_root).items()):
+                if count > 1:
+                    errors.append(f"{artifact}: duplicate static member '{name}'")
+                    valid = False
+
             available = {
                 name[len(prefix):]
                 for name in names_for_root
@@ -230,7 +255,13 @@ def validate_sdist(artifact: Path, errors: list[str]) -> bool:
                         continue
 
                     refs = _extract_refs(text, file_path=member)
-                    _validate_text_refs(f"{artifact}:{member}", refs, available, errors)
+                    _validate_text_refs(
+                        f"{artifact}:{member}",
+                        refs,
+                        available,
+                        errors,
+                        strict_root_refs=member.endswith(".html"),
+                    )
 
     return valid
 
@@ -252,10 +283,18 @@ def main() -> int:
         if not args.dist_dir.exists():
             errors.append(f"dist-dir not found: {args.dist_dir}")
         else:
-            for artifact in sorted(args.dist_dir.glob("*")):
+            artifacts = [
+                artifact
+                for artifact in sorted(args.dist_dir.glob("*"))
+                if artifact.suffix == ".whl" or artifact.suffixes[-2:] == [".tar", ".gz"]
+            ]
+            if not artifacts:
+                errors.append(f"{args.dist_dir}: no wheel or sdist artifacts found")
+
+            for artifact in artifacts:
                 if artifact.suffix == ".whl":
                     validate_wheel(artifact, errors)
-                elif artifact.suffixes[-2:] == [".tar", ".gz"]:
+                else:
                     validate_sdist(artifact, errors)
 
     if errors:

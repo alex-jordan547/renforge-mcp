@@ -235,6 +235,8 @@ def _run_smoke(host: str = "127.0.0.1", port: int = 0, timeout: int = 30) -> int
             _assert_project(base_url, token)
 
             refs = _collect_local_refs(base_url, payload)
+            if not refs:
+                raise SmokerError("dashboard exposed no local assets")
             _assert_local_assets(base_url, refs)
             print("smoke test passed")
             return 0

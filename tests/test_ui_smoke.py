@@ -97,7 +97,11 @@ def test_isolation_uses_temp_cwd_for_subprocess(monkeypatch: pytest.MonkeyPatch)
         _fake_popen_factory(captured, process),
     )
     monkeypatch.setattr(_smoke_ui, "_request_text", lambda _url, timeout=5: "<html></html>")
-    monkeypatch.setattr(_smoke_ui, "_collect_local_refs", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        _smoke_ui,
+        "_collect_local_refs",
+        lambda *_args, **_kwargs: {"/assets/index.js"},
+    )
     monkeypatch.setattr(_smoke_ui, "_assert_health", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_project", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_local_assets", lambda *_args, **_kwargs: None)
@@ -137,7 +141,11 @@ def test_port_default_is_ephemeral_and_override_respected(monkeypatch: pytest.Mo
         _fake_popen_factory(captured_default, process_default),
     )
     monkeypatch.setattr(_smoke_ui, "_request_text", fake_request)
-    monkeypatch.setattr(_smoke_ui, "_collect_local_refs", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        _smoke_ui,
+        "_collect_local_refs",
+        lambda *_args, **_kwargs: {"/assets/index.js"},
+    )
     monkeypatch.setattr(_smoke_ui, "_assert_health", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_project", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_local_assets", lambda *_args, **_kwargs: None)
@@ -203,6 +211,31 @@ def test_collect_local_refs_recurses_js_css_and_ignores_api_ws_routes(
     }
 
 
+def test_run_smoke_requires_local_asset_references(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    process = _FakeProcess(
+        "RenForge dashboard: http://127.0.0.1:0/dashboard?token=abc123\n"
+    )
+    monkeypatch.setattr(
+        _smoke_ui.subprocess,
+        "Popen",
+        _fake_popen_factory(captured, process),
+    )
+    monkeypatch.setattr(_smoke_ui, "_assert_health", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_smoke_ui, "_assert_project", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        _smoke_ui,
+        "_request_text",
+        lambda _url, timeout=5: "<html></html>",
+    )
+
+    with pytest.raises(_smoke_ui.SmokerError, match="no local assets"):
+        _smoke_ui._run_smoke(host="127.0.0.1", port=0, timeout=1)
+
+    assert process.terminate_count == 1
+    assert process.waited
+
+
 def test_cleanup_terminates_subprocess_on_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_success: dict[str, object] = {}
     process_success = _FakeProcess(
@@ -213,7 +246,11 @@ def test_cleanup_terminates_subprocess_on_success_and_failure(monkeypatch: pytes
         "Popen",
         _fake_popen_factory(captured_success, process_success),
     )
-    monkeypatch.setattr(_smoke_ui, "_collect_local_refs", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        _smoke_ui,
+        "_collect_local_refs",
+        lambda *_args, **_kwargs: {"/assets/index.js"},
+    )
     monkeypatch.setattr(_smoke_ui, "_assert_health", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_project", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(_smoke_ui, "_assert_local_assets", lambda *_args, **_kwargs: None)
