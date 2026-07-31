@@ -842,10 +842,21 @@ class _TimeoutProbeSocket:
         self._timeout = value
 
 
-def test_commit_helper_raises_and_restores_socket_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("initial_timeout", "expected_during_commit"),
+    [
+        (2.0, _COMMIT_SOCKET_TIMEOUT_SECONDS),
+        (_COMMIT_SOCKET_TIMEOUT_SECONDS + 10.0, _COMMIT_SOCKET_TIMEOUT_SECONDS + 10.0),
+    ],
+)
+def test_commit_helper_raises_and_restores_socket_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_timeout: float,
+    expected_during_commit: float,
+) -> None:
     import sys
 
-    sock = _TimeoutProbeSocket(initial_timeout=2.0)
+    sock = _TimeoutProbeSocket(initial_timeout=initial_timeout)
     auth = {"connection_id": "c1", "session_id": "s1"}
     analysis = {
         "result": {
@@ -857,12 +868,12 @@ def test_commit_helper_raises_and_restores_socket_timeout(monkeypatch: pytest.Mo
 
     def fake_send(target: Any, payload: dict[str, Any]) -> None:
         assert target is sock
-        assert target.gettimeout() == _COMMIT_SOCKET_TIMEOUT_SECONDS
+        assert target.gettimeout() == expected_during_commit
         assert payload["command"] == "commit"
 
     def fake_recv(target: Any) -> dict[str, Any]:
         assert target is sock
-        assert target.gettimeout() == _COMMIT_SOCKET_TIMEOUT_SECONDS
+        assert target.gettimeout() == expected_during_commit
         return {"ok": True, "result": {"transaction_id": "tx", "state": "published"}}
 
     monkeypatch.setattr(module, "_send_json", fake_send)
@@ -870,8 +881,8 @@ def test_commit_helper_raises_and_restores_socket_timeout(monkeypatch: pytest.Mo
 
     reply = _commit(sock, auth, analysis, x=1, y=2, request_id="co-timeout-budget")
     assert reply["ok"] is True
-    assert sock.settimeout_calls == [_COMMIT_SOCKET_TIMEOUT_SECONDS, 2.0]
-    assert sock.gettimeout() == 2.0
+    assert sock.settimeout_calls == [expected_during_commit, initial_timeout]
+    assert sock.gettimeout() == initial_timeout
 
 
 def test_commit_helper_restores_timeout_when_recv_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -901,22 +912,29 @@ def test_commit_helper_restores_timeout_when_recv_fails(monkeypatch: pytest.Monk
     assert sock.gettimeout() is None
 
 
-def test_send_json_swallows_closed_peer_errors(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        BrokenPipeError(32, "Broken pipe"),
+        ConnectionResetError(104, "Connection reset by peer"),
+        ConnectionAbortedError(53, "Software caused connection abort"),
+    ],
+)
+def test_send_json_swallows_closed_peer_errors(tmp_path: Path, error: OSError) -> None:
     project, _ = _make_project(tmp_path)
     coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
 
-    class _DeadPeer:
+    class _ClosedPeer:
         def sendall(self, _data: bytes) -> None:
-            raise BrokenPipeError(32, "Broken pipe")
+            raise error
 
     # Must not raise: closed-peer errors are expected after a client timeout.
-    coordinator._send_json(_DeadPeer(), {"ok": True})  # type: ignore[arg-type]
+    coordinator._send_json(_ClosedPeer(), {"ok": True})  # type: ignore[arg-type]
 
-    class _ResetPeer:
-        def sendall(self, _data: bytes) -> None:
-            raise ConnectionResetError(104, "Connection reset by peer")
 
-    coordinator._send_json(_ResetPeer(), {"ok": True})  # type: ignore[arg-type]
+def test_send_json_propagates_unexpected_oserror(tmp_path: Path) -> None:
+    project, _ = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
 
     class _UnexpectedPeer:
         def sendall(self, _data: bytes) -> None:
