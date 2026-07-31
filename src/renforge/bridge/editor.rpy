@@ -27,6 +27,7 @@ screen _renforge_editor_overlay():
         $ _rf_selection = _renforge_editor_selection_snapshot()
         $ _rf_label = _renforge_editor_label_snapshot()
         $ _rf_distance = _renforge_editor_distance_snapshot()
+        $ _rf_measure = _renforge_editor_measure_snapshot()
         $ _rf_tools_visible = _renforge_editor_tools_visible()
 
         fixed:
@@ -45,9 +46,26 @@ screen _renforge_editor_overlay():
                     id "rf_guide_y"
                     xpos 0
                     ypos int(_renforge_editor_guide_y())
+            if _rf_tools_visible and _rf_measure is not None and _rf_measure["line_x"] is not None:
+                add Solid("#ff3b30", xysize=(max(2, int(_rf_measure["line_x"][2])), 2)):
+                    id "rf_measure_x"
+                    xpos int(_rf_measure["line_x"][0])
+                    ypos int(_rf_measure["line_x"][1])
 
-            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_x() is not None:
-                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_renforge_editor_guide_x()) + 8))
+            if _rf_tools_visible and _rf_measure is not None and _rf_measure["line_y"] is not None:
+                add Solid("#ff3b30", xysize=(2, max(2, int(_rf_measure["line_y"][2])))):
+                    id "rf_measure_y"
+                    xpos int(_rf_measure["line_y"][0])
+                    ypos int(_rf_measure["line_y"][1])
+
+            $ _rf_guide_x_val = _renforge_editor_guide_x()
+            $ _rf_guide_y_val = _renforge_editor_guide_y()
+            $ _rf_show_dx = _rf_distance is not None and (_rf_guide_x_val is not None or (_rf_measure is not None and _rf_measure["dx"] != 0))
+            $ _rf_show_dy = _rf_distance is not None and (_rf_guide_y_val is not None or (_rf_measure is not None and _rf_measure["dy"] != 0))
+
+            if _rf_tools_visible and _rf_show_dx:
+                $ _rf_anchor_x = _rf_guide_x_val if _rf_guide_x_val is not None else int(_rf_distance["x"]) + int(_rf_distance["w"])
+                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_anchor_x) + 8))
                 $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_distance["y"]) + int(_rf_distance["h"]) + 6))
                 frame:
                     id "rf_distance_x"
@@ -60,9 +78,10 @@ screen _renforge_editor_overlay():
                         color "#ffffff"
                         size 12
 
-            if _rf_tools_visible and _rf_distance is not None and _renforge_editor_guide_y() is not None:
+            if _rf_tools_visible and _rf_show_dy:
+                $ _rf_anchor_y = _rf_guide_y_val if _rf_guide_y_val is not None else int(_rf_distance["y"]) + int(_rf_distance["h"])
                 $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_distance["x"]) + int(_rf_distance["w"]) + 6))
-                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_renforge_editor_guide_y()) + 8))
+                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_anchor_y) + 8))
                 frame:
                     id "rf_distance_y"
                     xpos _rf_distance_x
@@ -204,6 +223,19 @@ init 1100 python:
     except Exception:
         pygame = None
 
+    _RENFORGE_DRAG_FRAME_EVENT = None
+    if pygame is not None:
+        _register_drag_frame_event = getattr(
+            getattr(pygame, "event", None), "register", None
+        )
+        if callable(_register_drag_frame_event):
+            try:
+                _RENFORGE_DRAG_FRAME_EVENT = _register_drag_frame_event(
+                    "RENFORGE_EDITOR_DRAG_FRAME"
+                )
+            except Exception:
+                _RENFORGE_DRAG_FRAME_EVENT = None
+
     if "_renforge_runtime" not in sys.modules:
         raise Exception("RenForge bridge must load before editor.rpy")
     _renforge_runtime_module = sys.modules["_renforge_runtime"]
@@ -261,6 +293,9 @@ init 1100 python:
             state.drag_active = False
             state.drag_offset = [0, 0]
             state.drag_start_position = None
+            state.pending_drag_pointer = None
+            state.pending_drag_shift = False
+            state.drag_frame_scheduled = False
             state.snap_anchor_x = None
             state.snap_anchor_y = None
             state.snap_offset_x = None
@@ -331,6 +366,12 @@ init 1100 python:
             state.pending_reload_draw_generation = None
         if not hasattr(state, "pending_reload_started"):
             state.pending_reload_started = False
+        if not hasattr(state, "pending_drag_pointer"):
+            state.pending_drag_pointer = None
+        if not hasattr(state, "pending_drag_shift"):
+            state.pending_drag_shift = False
+        if not hasattr(state, "drag_frame_scheduled"):
+            state.drag_frame_scheduled = False
         return state
 
 
@@ -1413,6 +1454,25 @@ init 1100 python:
             state.guide_x = None
             state.guide_y = None
             snapped_x, snapped_y = desired_x, desired_y
+        if (
+            not record
+            and state.preview_position is not None
+            and len(state.preview_position) == 2
+            and [int(snapped_x), int(snapped_y)] == [int(state.preview_position[0]), int(state.preview_position[1])]
+        ):
+            # A pinned snap or a sub-pixel move: rebuilding the screen would
+            # change nothing visible and costs a full interaction restart.
+            if state.drag_active:
+                renpy.restart_interaction()
+            return {
+                "ok": True,
+                "x": int(snapped_x),
+                "y": int(snapped_y),
+                "method": "_widget_properties",
+                "snap": snap_detail,
+                "guide_x": state.guide_x,
+                "guide_y": state.guide_y,
+            }
         if record:
             _renforge_editor_push_history([int(snapped_x), int(snapped_y)])
         result = _renforge_editor_set_target_position(
@@ -1644,6 +1704,7 @@ init 1100 python:
 
     def _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift):
         state = _renforge_editor_state()
+        state.pointer = [int(pointer_x), int(pointer_y)]
         if not state.drag_active:
             base = state.preview_position or state.selected_original_position
             if base is None:
@@ -1665,12 +1726,63 @@ init 1100 python:
         return _renforge_editor_apply_preview(desired_x, desired_y, shift=shift, allow_snap=True, record=False)
 
 
+    _DRAG_FRAME_INTERVAL_MS = 16
+
+    def _renforge_editor_clear_drag_timer():
+        if _RENFORGE_DRAG_FRAME_EVENT is None or pygame is None:
+            return
+        set_timer = getattr(getattr(pygame, "time", None), "set_timer", None)
+        if callable(set_timer):
+            set_timer(_RENFORGE_DRAG_FRAME_EVENT, 0)
+
+
+    def _renforge_editor_queue_drag_frame(pointer_x, pointer_y, shift):
+        state = _renforge_editor_state()
+        state.pending_drag_pointer = [int(pointer_x), int(pointer_y)]
+        state.pending_drag_shift = bool(shift)
+        if state.drag_frame_scheduled:
+            return {"ok": True, "scheduled": True}
+        set_timer = getattr(getattr(pygame, "time", None), "set_timer", None)
+        if _RENFORGE_DRAG_FRAME_EVENT is None or not callable(set_timer):
+            return _renforge_editor_apply_drag_from_pointer(
+                int(pointer_x), int(pointer_y), bool(shift)
+            )
+        state.drag_frame_scheduled = True
+        try:
+            set_timer(_RENFORGE_DRAG_FRAME_EVENT, _DRAG_FRAME_INTERVAL_MS, once=True)
+        except TypeError:
+            set_timer(_RENFORGE_DRAG_FRAME_EVENT, _DRAG_FRAME_INTERVAL_MS)
+        return {"ok": True, "scheduled": True}
+
+
+    def _renforge_editor_flush_drag_frame():
+        state = _renforge_editor_state()
+        pending = state.pending_drag_pointer
+        shift = state.pending_drag_shift
+        _renforge_editor_clear_drag_timer()
+        state.pending_drag_pointer = None
+        state.pending_drag_shift = False
+        state.drag_frame_scheduled = False
+        if (
+            not state.drag_active
+            or not isinstance(pending, (builtins.list, builtins.tuple))
+            or len(pending) != 2
+        ):
+            return {"ok": True, "flushed": False}
+        return _renforge_editor_apply_drag_from_pointer(
+            int(pending[0]), int(pending[1]), shift
+        )
+
     def _renforge_editor_end_drag():
         state = _renforge_editor_state()
         state.drag_active = False
         state.drag_offset = [0, 0]
         state.snap_anchors_x = None
         state.snap_anchors_y = None
+        state.pending_drag_pointer = None
+        state.pending_drag_shift = False
+        state.drag_frame_scheduled = False
+        _renforge_editor_clear_drag_timer()
         if state.preview_position is not None and state.drag_start_position is not None:
             _renforge_editor_push_history(state.preview_position, before=state.drag_start_position)
         state.drag_start_position = None
@@ -1688,6 +1800,10 @@ init 1100 python:
         state.snap_offset_y = None
         state.snap_anchors_x = None
         state.snap_anchors_y = None
+        state.pending_drag_pointer = None
+        state.pending_drag_shift = False
+        state.drag_frame_scheduled = False
+        _renforge_editor_clear_drag_timer()
         state.guide_x = None
         state.guide_y = None
         renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
@@ -1699,8 +1815,16 @@ init 1100 python:
         state = _renforge_editor_state()
         if not state.active:
             return None
-        pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
         event_type = getattr(event, "type", None)
+        if (
+            _RENFORGE_DRAG_FRAME_EVENT is not None
+            and event_type == _RENFORGE_DRAG_FRAME_EVENT
+        ):
+            if state.drag_active and state.drag_frame_scheduled:
+                _renforge_editor_flush_drag_frame()
+                raise renpy.IgnoreEvent()
+            return None
+        pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
         key = getattr(event, "key", None)
         shift = _renforge_editor_event_shift(event)
         state.pointer = [int(pointer_x), int(pointer_y)]
@@ -1712,10 +1836,15 @@ init 1100 python:
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
-                _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
+                _renforge_editor_queue_drag_frame(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEBUTTONUP", None) and getattr(event, "button", 0) == 1:
-                if state.drag_active: _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
+                if state.drag_active:
+                    state.pending_drag_pointer = None
+                    state.pending_drag_shift = False
+                    state.drag_frame_scheduled = False
+                    _renforge_editor_clear_drag_timer()
+                    _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 _renforge_editor_end_drag()
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "KEYDOWN", None):
@@ -2040,6 +2169,13 @@ init 1100 python:
         state.selected_target_key = None
         state.selected_lock_reason = None
         state.preview_position = None
+        state.drag_active = False
+        state.drag_offset = [0, 0]
+        state.drag_start_position = None
+        state.pending_drag_pointer = None
+        state.pending_drag_shift = False
+        state.drag_frame_scheduled = False
+        _renforge_editor_clear_drag_timer()
         state.selected_original_position = None
         state.selected_source_position = None
         state.selected_rect = None
@@ -2541,6 +2677,58 @@ init 1100 python:
             "delta_y": delta_y,
             "text_x": "dx %s%d px" % ("+" if delta_x >= 0 else "", delta_x),
             "text_y": "dy %s%d px" % ("+" if delta_y >= 0 else "", delta_y),
+        }
+
+    def _renforge_editor_measure_snapshot():
+        """Track raw pointer displacement throughout an active drag.
+
+        Snap guides intentionally hold the preview at an anchor. Measurement
+        lines still follow the pointer so a small or directional movement is
+        visible instead of flashing only after snap release.
+        """
+        state = _renforge_editor_state()
+        if not state.drag_active:
+            return None
+        pointer = state.pointer
+        drag_start = state.drag_start_position
+        drag_offset = state.drag_offset
+        preview = state.preview_position
+        original = state.selected_original_position
+        rect = state.selected_rect
+        if (
+            not isinstance(pointer, (builtins.list, builtins.tuple))
+            or len(pointer) != 2
+            or not isinstance(rect, (builtins.list, builtins.tuple))
+            or len(rect) != 4
+        ):
+            return None
+        if (
+            isinstance(drag_start, (builtins.list, builtins.tuple))
+            and len(drag_start) == 2
+            and isinstance(drag_offset, (builtins.list, builtins.tuple))
+            and len(drag_offset) == 2
+        ):
+            origin_x, origin_y = int(drag_start[0]), int(drag_start[1])
+            current_x = int(pointer[0]) - int(drag_offset[0])
+            current_y = int(pointer[1]) - int(drag_offset[1])
+        elif (
+            isinstance(preview, (builtins.list, builtins.tuple))
+            and len(preview) == 2
+            and isinstance(original, (builtins.list, builtins.tuple))
+            and len(original) == 2
+        ):
+            origin_x, origin_y = int(original[0]), int(original[1])
+            current_x, current_y = int(preview[0]), int(preview[1])
+        else:
+            return None
+        width, height = int(rect[2]), int(rect[3])
+        dx = current_x - origin_x
+        dy = current_y - origin_y
+        return {
+            "dx": dx,
+            "dy": dy,
+            "line_x": [min(origin_x, current_x), current_y + height // 2, abs(dx)] if dx else None,
+            "line_y": [current_x + width // 2, min(origin_y, current_y), abs(dy)] if dy else None,
         }
 
     def _renforge_editor_label_snapshot():
