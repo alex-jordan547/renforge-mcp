@@ -27,16 +27,26 @@ ROOT_PREFIXES = ("/assets/", "/brand/")
 ATTRIBUTE_RE = re.compile(r"\b(?:href|src)\s*=\s*(['\"])(.*?)\1", re.IGNORECASE)
 CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 QUOTED_ROOT_RE = re.compile(r"(?<![A-Za-z0-9_])(['\"])(/[^'\"\s]+)\1")
-DASHBOARD_RE = re.compile(r"RenForge dashboard: (.*?\?token=([^\s]+))")
+DASHBOARD_RE = re.compile(
+    r"(https?://[^\s'\"<>]*?[?&]token=([^&\s'\"<>]+)[^\s'\"<>]*)",
+    re.IGNORECASE,
+)
+TOKEN_RE = re.compile(r"([?&]token=)[^&\s]+", re.IGNORECASE)
 
 
 class SmokerError(RuntimeError):
     pass
 
 
-def _read_lines(stream, q: Queue[str]) -> None:
+def _read_lines(stream, q: Queue[str], output: list[str]) -> None:
     for line in iter(stream.readline, ""):
-        q.put(line.rstrip("\n"))
+        stripped = line.rstrip("\n")
+        output.append(stripped)
+        q.put(stripped)
+
+
+def _redact_server_output(output: list[str]) -> str:
+    return TOKEN_RE.sub(r"\1[REDACTED]", "\n".join(output))
 
 
 def _pick_port() -> int:
@@ -178,8 +188,12 @@ def _run_smoke(host: str = "127.0.0.1", port: int = 0, timeout: int = 30) -> int
             "--no-open",
         ]
 
+        # Arguments are passed as a list with shell execution disabled, so user-provided
+        # host/port values cannot be interpreted as shell syntax.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         proc = subprocess.Popen(
             command,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -191,18 +205,21 @@ def _run_smoke(host: str = "127.0.0.1", port: int = 0, timeout: int = 30) -> int
             raise SmokerError("could not capture server output")
 
         q: Queue[str] = queue.Queue()
-        reader = threading.Thread(target=_read_lines, args=(proc.stdout, q), daemon=True)
+        server_output: list[str] = []
+        reader = threading.Thread(
+            target=_read_lines,
+            args=(proc.stdout, q, server_output),
+            daemon=True,
+        )
         reader.start()
 
         start = time.perf_counter()
         token = None
-        startup_output: list[str] = []
 
         try:
             while time.perf_counter() - start < timeout:
                 try:
                     line = q.get(timeout=0.2)
-                    startup_output.append(line)
                     match = DASHBOARD_RE.search(line)
                     if match:
                         token = match.group(2)
@@ -213,10 +230,7 @@ def _run_smoke(host: str = "127.0.0.1", port: int = 0, timeout: int = 30) -> int
                         break
                 except queue.Empty:
                     if proc.poll() is not None:
-                        raise SmokerError(
-                            "server exited during startup\n"
-                            + "\n".join(startup_output),
-                        )
+                        raise SmokerError("server exited during startup")
 
             if token is None:
                 raise SmokerError("did not capture dashboard token from startup output")
@@ -241,6 +255,10 @@ def _run_smoke(host: str = "127.0.0.1", port: int = 0, timeout: int = 30) -> int
             print("smoke test passed")
             return 0
 
+        except Exception as exc:
+            output = _redact_server_output(server_output)
+            details = f"\n\nServer output:\n{output}" if output else ""
+            raise SmokerError(f"{exc}{details}") from exc
         finally:
             if proc.poll() is None:
                 proc.terminate()

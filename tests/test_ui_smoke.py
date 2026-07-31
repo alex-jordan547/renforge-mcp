@@ -67,6 +67,16 @@ def test_json_contract_accepts_compact_ok_payloads(monkeypatch: pytest.MonkeyPat
     _smoke_ui._assert_project("http://127.0.0.1:0", "abc")
 
 
+def test_dashboard_url_parser_does_not_depend_on_log_prefix() -> None:
+    match = _smoke_ui.DASHBOARD_RE.search(
+        "INFO UI ready at http://127.0.0.1:43123/dashboard?token=abc123"
+    )
+
+    assert match is not None
+    assert match.group(1) == "http://127.0.0.1:43123/dashboard?token=abc123"
+    assert match.group(2) == "abc123"
+
+
 def test_json_contract_rejects_invalid_or_false_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _smoke_ui,
@@ -229,9 +239,14 @@ def test_run_smoke_requires_local_asset_references(monkeypatch: pytest.MonkeyPat
         lambda _url, timeout=5: "<html></html>",
     )
 
-    with pytest.raises(_smoke_ui.SmokerError, match="no local assets"):
+    with pytest.raises(_smoke_ui.SmokerError, match="no local assets") as exc_info:
         _smoke_ui._run_smoke(host="127.0.0.1", port=0, timeout=1)
 
+    message = str(exc_info.value)
+    assert "Server output:" in message
+    assert "RenForge dashboard:" in message
+    assert "token=[REDACTED]" in message
+    assert "abc123" not in message
     assert process.terminate_count == 1
     assert process.waited
 
