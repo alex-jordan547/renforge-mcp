@@ -38,6 +38,22 @@ def _renforge_version() -> str:
         return "dev"
 
 
+def _static_dir() -> Path:
+    return Path(__file__).resolve().parent / "static"
+
+
+def _ui_assets_missing(static_root: Path) -> JSONResponse:
+    return error_response(
+        code="ui_assets_missing",
+        error="UI assets are not built yet",
+        status_code=503,
+        details={
+            "path": str(static_root),
+            "hint": "cd ui && npm ci && npm run build or install a RenForge wheel",
+        },
+    )
+
+
 def _unauthorized(_request: Request) -> JSONResponse:
     return error_response(
         code="invalid_token",
@@ -275,7 +291,7 @@ class _ProjectRuntime:
 
 
 def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None = None) -> Starlette:
-    static_dir = Path(__file__).resolve().parent / "static"
+    static_dir = _static_dir()
     assets_dir = static_dir / "assets"
     brand_dir = static_dir / "brand"
     hub = WebSocketHub()
@@ -288,7 +304,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         path = static_dir / "index.html"
         if path.exists():
             return FileResponse(path)
-        return JSONResponse({"ok": False, "error": "missing ui static page"}, status_code=404)
+        return _ui_assets_missing(static_dir)
 
     async def health(request: Request):
         if not await _check_token(request):
@@ -668,6 +684,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         payload = _as_dict(await _read_json(request))
         version = payload.get("version", "stable")
         warp = payload.get("warp")
+        editor = payload.get("editor", False)
         if not isinstance(version, str) or not version:
             return error_response(
                 code="launch_version_invalid",
@@ -682,11 +699,19 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"warp": warp},
             )
+        if not isinstance(editor, bool):
+            return error_response(
+                code="launch_editor_invalid",
+                error="editor must be a boolean",
+                status_code=400,
+                details={"editor": editor},
+            )
         result = await asyncio.to_thread(
             live.launch_game,
             str(runtime.root),
             version=version,
             warp=warp,
+            editor=editor,
         )
         return JSONResponse(result)
 

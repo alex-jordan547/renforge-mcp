@@ -260,6 +260,58 @@ Notes:
   and `max_shift` exceed the work budget, tighten the region around the painted
   content or reduce `max_shift`.
 
+## Whole-scene perception
+
+`renforge_scene_tree` turns the rendered frame into structured data so a
+non-multimodal agent can reason about layout without a screenshot. Unlike
+`renforge_list_ui_elements` (focusable controls only), it walks every layer and
+the active screens, reporting sprites, backgrounds, controls, and text blocks in
+logical coordinates.
+
+```text
+renforge_scene_tree(project_path)
+  -> nodes[] (id, type, bounds, center, zorder, screen), window,
+     omitted{by_type,by_layer,by_reason}, truncated,
+     limits{max_depth,max_nodes,max_text_chars}
+renforge_scene_tree(project_path, include=["color","style","overflow"])
+  -> per node: composited color.dominant, declared style, best-effort text overflow
+renforge_scene_tree(project_path, format="wireframe")
+  -> an ASCII map plus a legend mapping labels to ids/bounds/text
+renforge_scene_tree(project_path, save_as="before")   # persist a snapshot
+# ...edit a screen or advance the game...
+renforge_scene_tree(project_path, diff_against="before")
+  -> diff{added, removed, changed[moved|resized|text_changed|color_changed|z_changed]}
+renforge_measure(project_path, action="align", targets=["quick_menu.Back","quick_menu.Skip"], tolerance=1)
+  -> {result:{left,right,top,bottom,center_x,center_y}, pass}
+renforge_measure(project_path, action="contrast", targets=["screens/say.text#0"])
+  -> {result:{ratio, aa, aaa, fg, bg}}
+```
+
+Notes:
+
+- Coordinates are Ren'Py **logical** pixels (the `xpos`/`ypos` space), so measured
+  values drop straight into a `.rpy`. A node's `bounds` may be `null` with
+  `bounds_available: false` when a displayable cannot be sized.
+- The default `detail="semantic"` returns meaningful leaves and always includes an
+  `omitted` count of what was filtered, so widen with `detail="layout"|"raw"`,
+  `types=[…]`, or `layers=[…]` only when needed.
+- If `truncated` is true, `omitted.by_reason` identifies a traversal cap and
+  `limits` reports the effective bound; do not treat that response as a complete
+  inventory.
+- `max_text_chars` bounds node text, screen names, roles, actions, tags, layers,
+  and types; truncated values retain up to that many characters and end with `…`.
+  IDs use a fixed 256-character cap so they remain stable across output budgets
+  and can be passed unchanged to `renforge_measure`.
+- When a focusable scan hits `max_nodes`, `covered` and `clickable` are `null` with
+  `coverage_reason="max_nodes"` because omitted higher controls may overlap them.
+- MCP replies default to `max_items=50`, `max_output_depth=6`, and
+  `max_output_bytes=65536`; lower these for tighter resource bounds or raise
+  them deliberately for a larger inventory.
+- `renforge_measure` targets are `scene_tree` node `id`s (resolved live) or literal
+  `{x,y,width,height}` bounds; `center` and `fit` also take a `within` container.
+- `color` and `contrast` sample the actual composited frame while `style` reports
+  declared values, so requesting both surfaces intent-vs-render mismatches.
+
 ## ImageButton idle→hover alignment
 
 For `imagebutton` controls with distinct idle/hover art, prefer measuring the
@@ -336,6 +388,8 @@ guards: each capture hashes a new frame.
 | `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
 | `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |
 | `renforge_diff_screenshots` | Diff two frames (or a saved PNG against the live frame) and return the changed region's bounding box. |
+| `renforge_scene_tree` | Perceive the whole scene as logical-coordinate nodes — every layer displayable, focusable control, and text block — with `id`, `type`, `bounds`, `center`, `zorder`, `screen`, and an `omitted` completeness hint. Unlike `renforge_list_ui_elements` (focusables only) it also reports non-focusable text and images. `detail` is `semantic` (default), `layout`, or `raw`; `layers`/`types`/`screen`/`ids` scope it; `include=["color","style","overflow"]` adds composited colour, declared style, and best-effort text overflow; `format="wireframe"` adds an ASCII map; `save_as`/`diff_against` persist and diff snapshots under `<project>/.renforge/scenes/`. |
+| `renforge_measure` | Measure pixel relationships between scene nodes (by `id`) or literal bounds without vision: `align`, `gap`, `distribute`, `center`, `overlap`, `fit`, and WCAG `contrast`. Returns logical-pixel deltas and, with `tolerance`, a `pass` verdict. |
 
 ### State and controlled execution
 
@@ -395,6 +449,12 @@ tool yet: use `renforge_eval` as the controlled style-introspection escape
 hatch when the active screen's resolved style needs investigation. Treat
 `renforge_eval` as arbitrary Python execution and use it only on a trusted
 local project.
+
+`renforge_scene_tree` is read-mostly: it never changes game state, but `save_as`
+writes a JSON snapshot under `<project>/.renforge/scenes/` for later diffing.
+`renforge_measure` is read-only. Requesting `include=["style"]` on
+`renforge_scene_tree` is the structured alternative to the `renforge_eval` style
+escape hatch above.
 
 Recommended practices:
 

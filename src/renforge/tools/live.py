@@ -13,6 +13,7 @@ PNG from :func:`screenshot_png` into an MCP image.
 from __future__ import annotations
 
 import json
+import inspect
 import math
 import os
 import signal
@@ -36,10 +37,15 @@ from ..launch_env import LaunchError
 from ..project import RenpyProject
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
+    apply_serialization_limits,
     compact_state,
     normalize_state_profile,
     validate_limit_args,
 )
+from ..scene_diff import diff_scenes
+from ..scene_measure import measure_geometry
+from ..scene_wireframe import render_wireframe
+from ..util import write_json_atomic
 
 _SESSIONS: dict[str, BridgeSession] = {}
 _LAUNCH_RESPONSE_WAIT_SECONDS = 20.0
@@ -50,8 +56,9 @@ _LAUNCH_LOCK = threading.Lock()
 
 
 class _LaunchTask:
-    def __init__(self) -> None:
+    def __init__(self, *, requested_editor: bool = False) -> None:
         self.started = time.monotonic()
+        self.requested_editor = requested_editor
         self.finished: float | None = None
         self.cancel_event = threading.Event()
         self.done_event = threading.Event()
@@ -80,15 +87,18 @@ def cancelled_launch_result(*, phase: str = "waiting_for_bridge") -> dict[str, A
     }
 
 
-def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict]) -> None:
+def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict], *, editor: bool = False) -> None:
     try:
         task.result = launch(task.cancel_event)
+        if isinstance(task.result, dict):
+            task.result.setdefault("editor", editor)
     except Exception as exc:
         task.result = {
             "ok": False,
             "ready": False,
             "code": "LAUNCH_TASK_FAILED",
             "phase": "starting_renpy",
+            "editor": editor,
             "message": f"{type(exc).__name__}: {exc}",
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -104,6 +114,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
         return {
             "ok": True,
             "ready": False,
+            "editor": task.requested_editor,
             "status": "starting",
             "phase": "waiting_for_bridge",
             "elapsed_ms": elapsed_ms,
@@ -123,6 +134,7 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
     is_ready = bool(result.get("ok") and result.get("ready", True))
     result["ready"] = is_ready
     result["status"] = "ready" if is_ready else "failed"
+    result.setdefault("editor", task.requested_editor)
     result["elapsed_ms"] = elapsed_ms
     return result
 
@@ -132,6 +144,7 @@ def start_launch(
     launch: Callable[[threading.Event], dict],
     *,
     wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
+    editor: bool = False,
 ) -> dict[str, Any]:
     key = _key(project_path)
     should_start = False
@@ -139,7 +152,7 @@ def start_launch(
         _prune_launches(time.monotonic())
         task = _LAUNCHES.get(key)
         if task is None or task.done_event.is_set():
-            task = _LaunchTask()
+            task = _LaunchTask(requested_editor=editor)
             _LAUNCHES[key] = task
             should_start = True
 
@@ -153,7 +166,12 @@ def start_launch(
         )
         return result
 
-    threading.Thread(target=_run_launch, args=(task, launch), daemon=True).start()
+    threading.Thread(
+        target=_run_launch,
+        args=(task, launch),
+        kwargs={"editor": editor},
+        daemon=True,
+    ).start()
 
     task.done_event.wait(max(0.0, wait_timeout))
     return _launch_task_status(task)
@@ -165,6 +183,23 @@ def launch_status(project_path: str) -> dict[str, Any]:
         task = _LAUNCHES.get(key)
     if task is not None:
         return _launch_task_status(task)
+
+    session = _SESSIONS.get(key)
+    if session is not None:
+        process = getattr(session, "process", None)
+        process_alive = callable(getattr(process, "poll", None)) and process.poll() is None
+        if process_alive:
+            try:
+                state = session.client.get_state()
+                return {
+                    "ok": True,
+                    "ready": True,
+                    "status": "ready",
+                    "current_label": state.get("current_label"),
+                    "editor": bool(getattr(session, "editor", False)),
+                }
+            except Exception:
+                pass
 
     try:
         state = _client(project_path).get_state()
@@ -181,6 +216,7 @@ def launch_status(project_path: str) -> dict[str, Any]:
         "status": "ready",
         "external": True,
         "current_label": state.get("current_label"),
+        "editor": False,
     }
 
 
@@ -208,11 +244,30 @@ def _with_client(project_path: str | Path, fn: Callable[[BridgeClient], dict]) -
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _session_mode_mismatch(
+    *,
+    requested_editor: bool,
+    existing_editor: bool,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "ready": False,
+        "code": "SESSION_MODE_MISMATCH",
+        "phase": "validating_session_mode",
+        "message": message,
+        "error": message,
+        "requested_editor": requested_editor,
+        "existing_editor": existing_editor,
+    }
+
+
 def launch_game(
     project_path: str,
     version: str = "stable",
     warp: str | None = None,
     *,
+    editor: bool = False,
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
@@ -245,10 +300,22 @@ def launch_game(
     if isinstance(session_cfg.get("cleanup_on_stop"), bool):
         cleanup_on_stop = session_cfg["cleanup_on_stop"]
     preferences = str(session_cfg.get("preferences", "existing") or "existing")
+    requested_editor = True
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
     if existing is not None:
+        existing_editor = bool(getattr(existing, "editor", False))
+        canonical_editor = bool(existing_editor or requested_editor)
+        if existing_editor != canonical_editor:
+            return _session_mode_mismatch(
+                requested_editor=canonical_editor,
+                existing_editor=existing_editor,
+                message=(
+                    "The requested launch mode does not match the existing owned session. "
+                    "Stop the running session before switching editor mode."
+                ),
+            )
         # Reuse a live session only when no warp is requested and it still
         # answers; otherwise tear it down (a warp needs a fresh --warp launch,
         # and a dead process must be reaped so it does not linger as a zombie).
@@ -260,6 +327,7 @@ def launch_game(
                     "already_running": True,
                     "ready": True,
                     "current_label": state.get("current_label"),
+                    "editor": existing_editor,
                 }
             except Exception:
                 pass  # unreachable session; fall through and relaunch
@@ -296,12 +364,22 @@ def launch_game(
         try:
             external = _client(project.root)
             state = external.get_state()
+            if requested_editor:
+                return _session_mode_mismatch(
+                    requested_editor=True,
+                    existing_editor=False,
+                    message=(
+                        "Editor mode cannot be proven for an external session. "
+                        "Launch from this RenForge process with editor=true instead."
+                    ),
+                )
             return {
                 "ok": True,
                 "already_running": True,
                 "external": True,
                 "ready": True,
                 "current_label": state.get("current_label"),
+                "editor": False,
             }
         except Exception:
             pass
@@ -342,6 +420,13 @@ def launch_game(
             launch_kwargs["savedir"] = savedir
         if timeout is not None:
             launch_kwargs["startup_timeout"] = float(timeout)
+        launch_signature = inspect.signature(launch_with_bridge)
+        supports_editor = "editor" in launch_signature.parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in launch_signature.parameters.values()
+        )
+        if supports_editor:
+            launch_kwargs["editor"] = True
         session_obj = launch_with_bridge(sdk, project, cancel_event=cancel_event, **launch_kwargs)
     except LaunchError as exc:
         return exc.to_dict()
@@ -354,6 +439,7 @@ def launch_game(
             "message": f"{type(exc).__name__}: {exc}",
         }
 
+    session_obj.editor = bool(getattr(session_obj, "editor", True))
     _SESSIONS[key] = session_obj
     label = None
     try:
@@ -365,6 +451,7 @@ def launch_game(
         "ready": True,
         "already_running": False,
         "current_label": label,
+        "editor": bool(session_obj.editor),
         "display": session_obj.display_mode,
         "startup_ms": session_obj.startup_ms,
         "phases": session_obj.phases,
@@ -1561,6 +1648,314 @@ def run_scenario(
     return report
 
 
+# --- Scene perception: full-scene tree, measurement, wireframe, diff -------
+_SCENE_SNAPSHOT_MAX_BYTES = 2_000_000
+
+
+def _scene_snapshot_dir(project_path: str) -> Path:
+    project_root = Path(project_path).expanduser().resolve()
+    directory = project_root
+    for name in (".renforge", "scenes"):
+        directory = directory / name
+        if directory.is_symlink():
+            raise ValueError("scene snapshot directory must not be a symlink: %s" % directory)
+        directory.mkdir(exist_ok=True)
+        if not directory.resolve().is_relative_to(project_root):
+            raise ValueError("scene snapshot directory escapes the project: %s" % directory)
+    return directory
+
+
+def _scene_snapshot_name(name: str) -> str:
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= 64
+        or not name.isascii()
+        or not name[0].isalnum()
+        or any(not (ch.isalnum() or ch in ("-", "_")) for ch in name)
+    ):
+        raise ValueError("snapshot name must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+    return name
+
+
+def _save_scene_snapshot(project_path: str, name: str, reply: dict) -> str:
+    directory = _scene_snapshot_dir(project_path)
+    path = directory / (_scene_snapshot_name(name) + ".json")
+    if path.is_symlink():
+        raise ValueError("scene snapshot file must not be a symlink: %s" % path)
+    snapshot = {
+        "window": reply.get("window"),
+        "coordinate_space": reply.get("coordinate_space"),
+        "nodes": reply.get("nodes") or [],
+    }
+    write_json_atomic(
+        path,
+        snapshot,
+        follow_symlinks=False,
+        max_bytes=_SCENE_SNAPSHOT_MAX_BYTES,
+    )
+    return str(path)
+
+
+def _load_scene_snapshot(
+    project_path: str,
+    name: str,
+    *,
+    max_nodes: int | None = None,
+) -> dict | None:
+    directory = _scene_snapshot_dir(project_path)
+    path = directory / (_scene_snapshot_name(name) + ".json")
+    if path.is_symlink():
+        raise ValueError("scene snapshot file must not be a symlink: %s" % path)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as snapshot_file:
+            encoded = snapshot_file.read(_SCENE_SNAPSHOT_MAX_BYTES + 1)
+        if len(encoded) > _SCENE_SNAPSHOT_MAX_BYTES:
+            return None
+        snapshot = json.loads(encoded.decode("utf-8"))
+        if max_nodes is not None and isinstance(snapshot, dict):
+            snapshot["nodes"] = (snapshot.get("nodes") or [])[:max_nodes]
+        return snapshot
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+
+
+def _clamp_box(box: dict, frame_width: int, frame_height: int) -> dict:
+    x = max(0, min(int(box["x"]), frame_width - 1))
+    y = max(0, min(int(box["y"]), frame_height - 1))
+    w = max(1, min(int(box["width"]), frame_width - x))
+    h = max(1, min(int(box["height"]), frame_height - y))
+    return {"x": x, "y": y, "width": w, "height": h}
+
+
+def _frame_and_scale(client: BridgeClient, window: dict):
+    """Capture the live frame and the logical->screenshot scale factors."""
+    import io
+
+    from PIL import Image
+
+    png = client.screenshot(0, 0)
+    image = Image.open(io.BytesIO(png)).convert("RGBA")
+    frame_width, frame_height = image.size
+    logical_width = (window or {}).get("width") or frame_width
+    logical_height = (window or {}).get("height") or frame_height
+    scale_x = frame_width / logical_width if logical_width else 1.0
+    scale_y = frame_height / logical_height if logical_height else 1.0
+    return image, frame_width, frame_height, scale_x, scale_y
+
+
+def _logical_box_to_frame(bounds: dict, scale_x: float, scale_y: float, fw: int, fh: int) -> dict:
+    return _clamp_box(
+        {
+            "x": bounds["x"] * scale_x,
+            "y": bounds["y"] * scale_y,
+            "width": bounds["width"] * scale_x,
+            "height": bounds["height"] * scale_y,
+        },
+        fw,
+        fh,
+    )
+
+
+def _attach_colors(client: BridgeClient, nodes: list[dict], window: dict) -> None:
+    from .. import scene_color
+
+    try:
+        image, fw, fh, sx, sy = _frame_and_scale(client, window)
+    except Exception:
+        return
+    for node in nodes:
+        bounds = node.get("bounds")
+        if not bounds:
+            continue
+        try:
+            node["color"] = scene_color.region_color(image, _logical_box_to_frame(bounds, sx, sy, fw, fh))
+        except Exception:
+            pass
+
+
+def scene_tree(
+    project_path: str,
+    *,
+    detail: str | None = None,
+    layers: list[str] | None = None,
+    types: list[str] | None = None,
+    screen: str | None = None,
+    ids: list[str] | None = None,
+    include: list[str] | None = None,
+    format: str = "json",
+    save_as: str | None = None,
+    diff_against: str | None = None,
+    max_output_depth: int | None = None,
+    max_items: int | None = None,
+    max_output_bytes: int | None = None,
+) -> dict:
+    """Perceive the whole scene: every layer displayable and focusable control.
+
+    Returns logical-coordinate nodes with an ``omitted`` completeness hint.
+    ``include=["color"]`` samples composited pixels; ``format="wireframe"`` adds
+    an ASCII map; ``save_as`` persists a snapshot and ``diff_against`` diffs the
+    live scene against a saved one.
+    """
+    include_list = [str(x).lower() for x in (include or [])]
+    limit_kwargs = {
+        key: value
+        for key, value in (
+            ("max_depth", max_output_depth),
+            ("max_items", max_items),
+            ("max_output_bytes", max_output_bytes),
+        )
+        if value is not None
+    }
+    limits = validate_limit_args(**limit_kwargs)
+    if isinstance(limits, dict):
+        return limits
+    limit_depth, max_nodes, max_bytes = limits
+
+    def _handler(client: BridgeClient) -> dict:
+        max_text_chars = (
+            4096
+            if max_output_bytes is None
+            else max(16, min(4096, max_bytes // max_nodes))
+        )
+        reply = client.scene_tree(
+            detail=detail,
+            layers=layers,
+            types=types,
+            screen=screen,
+            ids=ids,
+            include=include,
+            max_text_chars=max_text_chars,
+        )
+        if not reply.get("ok", True):
+            return reply
+        nodes = reply.get("nodes") or []
+        node_limit_hit = len(nodes) > max_nodes
+        if node_limit_hit:
+            omitted_count = len(nodes) - max_nodes
+            nodes = nodes[:max_nodes]
+            reply["nodes"] = nodes
+            counts = reply.setdefault("counts", {})
+            counts["returned"] = max_nodes
+            counts["returned_after_limit"] = max_nodes
+            reasons = reply.setdefault("omitted", {}).setdefault("by_reason", {})
+            reasons["max_items"] = reasons.get("max_items", 0) + omitted_count
+            reply.setdefault("limits", {})["max_items"] = max_nodes
+        reply["truncated"] = bool(reply.get("truncated")) or node_limit_hit
+        window = reply.get("window") or {}
+        if "color" in include_list and nodes:
+            _attach_colors(client, nodes, window)
+        if save_as:
+            reply["saved_as"] = _save_scene_snapshot(project_path, save_as, reply)
+        if diff_against:
+            before = _load_scene_snapshot(project_path, diff_against, max_nodes=max_nodes)
+            if before is None:
+                reply["diff_error"] = "no saved scene snapshot %r" % diff_against
+            else:
+                diff = diff_scenes(before, {"nodes": nodes})
+                diff["against"] = diff_against
+                reply["diff"] = diff
+        if format == "wireframe":
+            try:
+                reply["wireframe"] = render_wireframe(nodes, window)
+            except Exception as exc:
+                reply["wireframe_error"] = "%s: %s" % (type(exc).__name__, exc)
+        if max_output_depth is not None or max_output_bytes is not None:
+            return apply_serialization_limits(
+                reply,
+                max_depth=limit_depth if max_output_depth is not None else 64,
+                max_items=max(max_nodes, 64),
+                max_output_bytes=max_bytes if max_output_bytes is not None else 2**31 - 1,
+            )
+        return reply
+
+    return _with_client(project_path, _handler)
+
+
+def _bounds_of(target, id_map: dict) -> tuple[dict | None, dict | None]:
+    if isinstance(target, str):
+        bounds = id_map.get(target)
+        if not bounds:
+            return None, {"ok": False, "error": "target id not found or unmeasurable: %s" % target}
+        return bounds, None
+    keys = ("x", "y", "width", "height")
+    if isinstance(target, dict) and all(key in target for key in keys):
+        bounds = {key: target[key] for key in keys}
+        valid_numbers = all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in bounds.values()
+        )
+        if valid_numbers and bounds["width"] >= 0 and bounds["height"] >= 0:
+            return bounds, None
+        return None, {"ok": False, "error": "invalid target bounds: %r" % (target,)}
+    return None, {"ok": False, "error": "invalid target: %r" % (target,)}
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    value = value.lstrip("#")
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def _measure_contrast(client: BridgeClient, resolved: list[dict], window: dict, tolerance) -> dict:
+    from .. import scene_color
+
+    if len(resolved) not in (1, 2):
+        return {"ok": False, "error": "contrast requires 1 or 2 targets"}
+    try:
+        image, fw, fh, sx, sy = _frame_and_scale(client, window)
+    except Exception as exc:
+        return {"ok": False, "error": "could not capture frame: %s" % exc}
+    if len(resolved) == 1:
+        result = scene_color.region_contrast(image, _logical_box_to_frame(resolved[0], sx, sy, fw, fh))
+    else:
+        c1 = scene_color.dominant_color(image, _logical_box_to_frame(resolved[0], sx, sy, fw, fh))
+        c2 = scene_color.dominant_color(image, _logical_box_to_frame(resolved[1], sx, sy, fw, fh))
+        ratio = round(scene_color.contrast_ratio(_hex_to_rgb(c1), _hex_to_rgb(c2)), 2)
+        result = {"ratio": ratio, "fg": c1, "bg": c2, "aa": ratio >= 4.5, "aaa": ratio >= 7.0}
+    out = {"ok": True, "action": "contrast", "space": "logical", "result": result}
+    if tolerance is not None:
+        out["pass"] = float(result.get("ratio", 0)) >= float(tolerance)
+    return out
+
+
+def measure(project_path: str, *, action: str, targets: list, within=None, tolerance=None) -> dict:
+    """Measure pixel relationships between scene nodes (ids) or literal bounds.
+
+    Actions: align, gap, distribute, center, overlap, fit, contrast. Returns
+    deltas and, when ``tolerance`` is given, a ``pass`` verdict.
+    """
+    def _handler(client: BridgeClient) -> dict:
+        tree = client.scene_tree(detail="raw")
+        if not tree.get("ok", True):
+            return tree
+        window = tree.get("window") or {}
+        id_map = {n.get("id"): n.get("bounds") for n in (tree.get("nodes") or [])}
+        resolved: list[dict] = []
+        for target in (targets or []):
+            bounds, err = _bounds_of(target, id_map)
+            if err:
+                return err
+            resolved.append(bounds)
+        within_bounds = None
+        if within is not None:
+            within_bounds, werr = _bounds_of(within, id_map)
+            if werr:
+                return werr
+        if str(action) == "contrast":
+            return _measure_contrast(client, resolved, window, tolerance)
+        try:
+            return measure_geometry(str(action), resolved, within=within_bounds, tolerance=tolerance)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+
+    return _with_client(project_path, _handler)
+
+
 __all__ = [
     "launch_game",
     "stop_game",
@@ -1588,4 +1983,6 @@ __all__ = [
     "screenshot_png",
     "run_autopilot",
     "run_scenario",
+    "scene_tree",
+    "measure",
 ]

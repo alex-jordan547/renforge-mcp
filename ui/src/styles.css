@@ -340,7 +340,7 @@ a { color: var(--accent); text-decoration: none; }
 .eyebrow { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--meta); margin-bottom: 3px; }
 .project-picker-close { width: 30px; height: 30px; border: 0; border-radius: 50%; background: var(--surface); color: var(--fg-2); cursor: pointer; font-size: 22px; line-height: 1; }
 .project-picker-close:hover { background: var(--raised); color: var(--fg); }
-.project-picker-roots { display: flex; gap: 6px; overflow-x: auto; padding: var(--space-3) var(--space-5) 0; }
+.project-picker-roots { display: flex; gap: 6px; overflow-x: auto; padding: var(--space-3) var(--space-5) 0; flex-shrink: 0; }
 .project-picker-root { flex: none; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); padding: 5px 10px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
 .project-picker-root:hover, .project-picker-root.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .project-picker-path { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-3) var(--space-5); }

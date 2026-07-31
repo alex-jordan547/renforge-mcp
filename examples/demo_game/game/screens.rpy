@@ -230,6 +230,14 @@ style choice_button_text is default:
     properties gui.text_properties("choice_button")
 
 
+screen village_gate_choices():
+    modal True
+    zorder 200
+    text "The gate is silent. Choose your path." xpos 140 ypos 240
+    textbutton "Take the lantern and go." id "demo_lantern_take" xpos 160 ypos 320 action Return("take_lantern")
+    textbutton "Ask the Elder to send someone else." id "demo_lantern_decline" xpos 160 ypos 380 action Return("decline_lantern")
+
+
 ## Quick Menu screen ###########################################################
 ##
 ## The quick menu is displayed in-game to provide easy access to the

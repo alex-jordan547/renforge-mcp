@@ -26,15 +26,22 @@ label start:
 
 label village_gate:
     elder "The mountain light has gone out, child. Someone must carry a new flame to the summit."
-    menu:
-        "Take the lantern and go.":
-            $ lantern = True
-            $ courage += 1
-            elder "Brave heart. The forest path is shorter — the ridge is safer."
-            jump crossroads
-        "Ask the Elder to send someone else.":
-            elder "There is no one else. But I will not force you."
-            jump stay_home
+    $ village_choice = renpy.call_screen("village_gate_choices")
+    if village_choice == "take_lantern":
+        $ renforge_choice = "take_lantern"
+        $ lantern = True
+        $ courage += 1
+        elder "Brave heart. The forest path is shorter — the ridge is safer."
+        jump crossroads
+
+    if village_choice == "decline_lantern":
+        $ renforge_choice = "decline_lantern"
+        elder "There is no one else. But I will not force you."
+        jump stay_home
+
+    $ village_choice = "stay_home"
+    elder "There is no one else. But I will not force you."
+    jump stay_home
 
 label stay_home:
     scene bg village with dissolve

@@ -51,13 +51,34 @@ class _LaunchedSession:
     temporary_savedir = None
     headless = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, editor: bool = False) -> None:
         self.client = _StateClient()
+        self.editor = editor
+
+
+class _RunningProcess:
+    def poll(self) -> None:
+        return None
+
+
+class _OwnedRunningSession:
+    def __init__(self, *, editor: bool = False) -> None:
+        self.editor = editor
+        self.client = _StateClient()
+        self.process = _RunningProcess()
+        self.close_calls = 0
+        self.closed = False
+
+    def close(self) -> dict:
+        self.close_calls += 1
+        self.closed = True
+        return {"cleaned": {"renpy_process": True}, "failed": []}
 
 
 class _RetryingSession:
-    def __init__(self, *, process_exited: bool = False) -> None:
+    def __init__(self, *, process_exited: bool = False, editor: bool = True) -> None:
         self.process_exited = process_exited
+        self.editor = editor
         self.closed = False
         self.close_calls = 0
 
@@ -71,6 +92,7 @@ class _RetryingSession:
 
 class _RaisingSession:
     closed = False
+    editor = True
 
     def close(self) -> dict:
         raise RuntimeError("teardown failed")
@@ -225,13 +247,112 @@ def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypat
 
     result = live.launch_game(str(project))
 
-    assert result == {
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["code"] == "SESSION_MODE_MISMATCH"
+    assert result["requested_editor"] is True
+    assert result["existing_editor"] is False
+    assert "cannot be proven for an external session" in result["message"]
+
+
+def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    key = live._key(project)
+    session = _OwnedRunningSession(editor=True)
+    live._SESSIONS[key] = session
+
+    mismatch = live.launch_game(str(project), editor=False)
+
+    assert mismatch == {
         "ok": True,
         "already_running": True,
-        "external": True,
         "ready": True,
         "current_label": "dashboard_scene",
+        "editor": True,
     }
+    assert live._SESSIONS[key] is session
+    assert session.close_calls == 0
+
+    matched = live.launch_game(str(project), editor=True)
+    assert matched == {
+        "ok": True,
+        "already_running": True,
+        "ready": True,
+        "current_label": "dashboard_scene",
+        "editor": True,
+    }
+    assert live._SESSIONS[key] is session
+    assert session.close_calls == 0
+    live._SESSIONS.pop(key, None)
+
+
+def test_launch_rejects_editor_mode_for_unproven_external_bridge(tmp_path: Path, monkeypatch) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, **_kwargs: _StateClient()),
+    )
+    monkeypatch.setattr(
+        live,
+        "get_or_install_sdk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not relaunch")),
+    )
+
+    result = live.launch_game(str(project), editor=True)
+
+    assert result["ok"] is False
+    assert result["ready"] is False
+    assert result["code"] == "SESSION_MODE_MISMATCH"
+    assert result["requested_editor"] is True
+    assert result["existing_editor"] is False
+    assert "cannot be proven for an external session" in result["message"]
+
+
+def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkeypatch) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    launch_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(live, "get_or_install_sdk", lambda *_args, **_kwargs: "sdk")
+
+    def fake_launch_with_bridge(_sdk, _project, **kwargs):
+        launch_kwargs.update(kwargs)
+        return _LaunchedSession(editor=bool(kwargs.get("editor")))
+
+    monkeypatch.setattr(live, "launch_with_bridge", fake_launch_with_bridge)
+
+    result = live.launch_game(str(project), editor=True)
+
+    assert result["ok"] is True
+    assert result["editor"] is True
+    assert launch_kwargs["editor"] is True
+
+    live._SESSIONS.pop(live._key(project), None)
+    launch_kwargs.clear()
+
+    result = live.launch_game(str(project), editor=False)
+    assert result["ok"] is True
+    assert result["editor"] is True
+    assert launch_kwargs["editor"] is True
+
+    live._SESSIONS.pop(live._key(project), None)
+
+
+def test_launch_status_preserves_editor_for_owned_session(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    key = live._key(project)
+    session = _OwnedRunningSession(editor=True)
+    live._SESSIONS[key] = session
+
+    result = live.launch_status(str(project))
+
+    assert result == {
+        "ok": True,
+        "ready": True,
+        "status": "ready",
+        "current_label": "dashboard_scene",
+        "editor": True,
+    }
+    live._SESSIONS.pop(key, None)
 
 
 def test_warp_refuses_to_stop_a_live_external_bridge(tmp_path: Path, monkeypatch) -> None:
@@ -376,6 +497,63 @@ def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_p
 
     release.set()
     assert _wait_for_launch_status(project, "ready")["ready"] is True
+    live.stop_game(str(project))
+
+
+def test_start_launch_defaults_editor_false(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    release = threading.Event()
+    started = threading.Event()
+
+    def delayed_launch(_cancel_event: threading.Event) -> dict:
+        started.set()
+        assert release.wait(2.0)
+        return {"ok": True, "ready": True, "current_label": "main_menu"}
+
+    result = live.start_launch(str(project), delayed_launch, wait_timeout=0.0)
+
+    assert started.wait(1.0)
+    assert result["ok"] is True
+    assert result["ready"] is False
+    assert result["status"] == "starting"
+    assert result["editor"] is False
+
+    release.set()
+    final = _wait_for_launch_status(project, "ready")
+    assert final["ok"] is True
+    assert final["ready"] is True
+    assert final["editor"] is False
+    live.stop_game(str(project))
+
+
+def test_start_launch_exposes_requested_editor_true_in_status_and_result(tmp_path: Path) -> None:
+    project = _make_project(tmp_path, with_bridge=False)
+    release = threading.Event()
+    started = threading.Event()
+
+    def delayed_launch(_cancel_event: threading.Event) -> dict:
+        started.set()
+        assert release.wait(2.0)
+        return {"ok": True, "ready": True, "current_label": "main_menu"}
+
+    result = live.start_launch(
+        str(project),
+        delayed_launch,
+        editor=True,
+        wait_timeout=0.0,
+    )
+
+    assert started.wait(1.0)
+    assert result["ok"] is True
+    assert result["ready"] is False
+    assert result["status"] == "starting"
+    assert result["editor"] is True
+
+    release.set()
+    final = _wait_for_launch_status(project, "ready")
+    assert final["ok"] is True
+    assert final["ready"] is True
+    assert final["editor"] is True
     live.stop_game(str(project))
 
 

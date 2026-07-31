@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import json
+import hashlib
 import os
 import secrets
 import shutil
@@ -31,10 +32,15 @@ from ..launch_env import (
 from ..project import RenpyProject
 from ..sdk import RenpySdk
 from .client import BridgeClient
+from ..editor import BridgeRuntimeProbe, EditorCoordinator, EditorEndpoint
+from ..editor.paths import atomic_write_file
 
 _BRIDGE_RESOURCE: Path = Path(__file__).parent / "bridge.rpy"
 _INJECTED_NAME: str = "renforge_bridge.rpy"
 _SESSION_INIT_NAME: str = "00renforge_session.rpy"
+_EDITOR_RESOURCE: Path = Path(__file__).parent / "editor.rpy"
+_EDITOR_INJECTED_PREFIX: str = "zzrenforge_editor_"
+_EDITOR_MANIFEST_NAME: str = "editor-session.json"
 
 
 class ProjectBridgeLock:
@@ -122,6 +128,156 @@ class ProjectBridgeLock:
 
 _DEFERRED_LOCKS: set[ProjectBridgeLock] = set()
 
+def _editor_manifest_path(project_root: Path) -> Path:
+    return project_root / ".renforge" / _EDITOR_MANIFEST_NAME
+
+
+def _inject_editor_artifact(project: RenpyProject) -> Path:
+    payload = _EDITOR_RESOURCE.read_bytes()
+    for _attempt in range(32):
+        basename = f"{_EDITOR_INJECTED_PREFIX}{secrets.token_hex(8)}.rpy"
+        source_path = project.game_dir / basename
+        sibling_names = (basename, f"{basename}c", f"{basename}c.bak")
+        sibling_paths = [project.game_dir / name for name in sibling_names]
+        absent_before = {name: not path.exists() for name, path in zip(sibling_names, sibling_paths)}
+        if not all(absent_before.values()):
+            continue
+        if any(path.is_symlink() for path in sibling_paths):
+            continue
+        try:
+            descriptor = os.open(source_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            manifest = {
+                "schema_version": 1,
+                "basename": basename,
+                "source_sha256": hashlib.sha256(payload).hexdigest(),
+                "absent_before": {
+                    "rpy": absent_before[basename],
+                    "rpyc": absent_before[f"{basename}c"],
+                    "rpyc_bak": absent_before[f"{basename}c.bak"],
+                },
+            }
+            atomic_write_file(
+                _editor_manifest_path(project.root),
+                json.dumps(manifest, separators=(",", ":")).encode("utf-8"),
+            )
+            return source_path
+        except BaseException:
+            try:
+                source_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+    raise LaunchError(
+        "EDITOR_ARTIFACT_COLLISION",
+        "Could not allocate a collision-free editor injection filename.",
+        phase="injecting_editor",
+    )
+
+
+def _remove_editor_artifacts(project_root: Path) -> None:
+    manifest_path = _editor_manifest_path(project_root)
+    # Symlink check first: exists() follows symlinks and is False for a dangling
+    # one, which would read a tampered manifest as absent and return, leaving the
+    # symlink behind once the lock is released. Same invariant as the artifacts.
+    if manifest_path.is_symlink():
+        raise RuntimeError("editor artifact manifest became a symlink")
+    if not manifest_path.exists():
+        return
+    if not manifest_path.is_file():
+        raise RuntimeError("editor artifact manifest is not a regular file")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"editor artifact manifest is invalid: {exc}") from exc
+
+    if not isinstance(manifest, dict):
+        raise RuntimeError("editor artifact manifest is not a JSON object")
+
+    basename = manifest.get("basename")
+    expected_sha256 = manifest.get("source_sha256")
+    absence = manifest.get("absent_before") if isinstance(manifest.get("absent_before"), dict) else {}
+    if not isinstance(absence, dict):
+        absence = {}
+
+    if not isinstance(basename, str) or Path(basename).name != basename or not basename.startswith(
+        _EDITOR_INJECTED_PREFIX
+    ) or not basename.endswith(".rpy"):
+        raise RuntimeError("editor artifact manifest failed ownership validation")
+
+    if not isinstance(expected_sha256, str):
+        raise RuntimeError("editor artifact manifest failed ownership validation")
+
+    if len(expected_sha256) != 64:
+        raise RuntimeError("editor artifact manifest failed ownership validation")
+
+    try:
+        int(expected_sha256, 16)
+    except ValueError as exc:
+        raise RuntimeError("editor artifact manifest failed ownership validation") from exc
+
+    should_remove_compiled = {
+        "rpyc": bool(absence.get("rpyc", False)),
+        "rpyc_bak": bool(absence.get("rpyc_bak", False)),
+    }
+
+    source_path = project_root / "game" / basename
+    # Every step below tolerates an already-absent artifact. Cleanup is retried
+    # by BridgeSession.close() and the deferred reaper, so a partial failure must
+    # never leave a state where the next attempt aborts on an artifact the
+    # previous attempt already removed — that would strand the project lock
+    # forever. Ownership is proven by the validated manifest and basename above,
+    # plus the digest whenever the source is still present.
+    #
+    # Each symlink check runs *before* its exists() guard: exists() follows
+    # symlinks and is False for a dangling one, so a tampered artifact would
+    # otherwise read as absent, get skipped, and be left behind once the manifest
+    # is gone. Tampering is the one condition that must stay fail-closed.
+    if source_path.is_symlink():
+        raise RuntimeError("editor source artifact became a symlink")
+    if source_path.exists():
+        if not source_path.is_file():
+            raise RuntimeError("editor source artifact is not a regular file")
+        if hashlib.sha256(source_path.read_bytes()).hexdigest() != expected_sha256:
+            raise RuntimeError("editor source artifact changed after injection")
+
+    sibling_path = source_path.with_name(f"{basename}c")
+    sibling_backup_path = source_path.with_name(f"{basename}c.bak")
+
+    if should_remove_compiled["rpyc"]:
+        if sibling_path.is_symlink():
+            raise RuntimeError("editor compiled artifact became a symlink")
+        if sibling_path.exists():
+            if not sibling_path.is_file():
+                raise RuntimeError("editor compiled artifact is not a regular file")
+            sibling_path.unlink()
+
+    if should_remove_compiled["rpyc_bak"]:
+        if sibling_backup_path.is_symlink():
+            raise RuntimeError("editor compiled backup artifact became a symlink")
+        if sibling_backup_path.exists():
+            if not sibling_backup_path.is_file():
+                raise RuntimeError("editor compiled backup artifact is not a regular file")
+            sibling_backup_path.unlink()
+
+    source_path.unlink(missing_ok=True)
+    manifest_path.unlink(missing_ok=True)
+
+
+def _editor_environment(endpoint: EditorEndpoint) -> dict[str, str]:
+    return {
+        "RENFORGE_EDITOR_HOST": endpoint.host,
+        "RENFORGE_EDITOR_PORT": str(endpoint.port),
+        "RENFORGE_EDITOR_TOKEN": endpoint.token,
+        "RENFORGE_EDITOR_PROTOCOL": str(endpoint.protocol_version),
+    }
+
 
 def remove_bridge_artifacts(project_root: Path) -> None:
     """Delete every file the bridge injects or leaves behind on ``project_root``.
@@ -146,6 +302,7 @@ def remove_bridge_artifacts(project_root: Path) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+    _remove_editor_artifacts(project_root)
 
 
 def _write_session_init(project: RenpyProject, *, savedir: str | None) -> Path | None:
@@ -195,6 +352,7 @@ class BridgeSession:
         startup_ms: int | None = None,
         phases: list[dict[str, Any]] | None = None,
         project_lock: ProjectBridgeLock | None = None,
+        editor_coordinator: EditorCoordinator | None = None,
     ):
         self.process = process
         self.client = client
@@ -205,9 +363,11 @@ class BridgeSession:
         self.environment = environment or {}
         self.startup_ms = startup_ms
         self.phases = phases or []
+        self.editor = editor_coordinator is not None
         self._project_root = project_root
         self._cleaned: dict[str, Any] = {}
         self._project_lock = project_lock
+        self._editor_coordinator = editor_coordinator
         self._close_lock = threading.Lock()
         self._closed = False
         self._close_result: dict[str, Any] | None = None
@@ -229,7 +389,7 @@ class BridgeSession:
             if self._closed:
                 return self._close_result or {"cleaned": self._cleaned, "failed": ["close"]}
             self._close_result = self._close_resources(timeout)
-            ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir"}
+            ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir", "editor_coordinator"}
             if ownership_failures.intersection(self._close_result.get("failed", [])):
                 return self._close_result
             if self._project_lock is not None:
@@ -244,8 +404,17 @@ class BridgeSession:
             "process_group": False,
             "bridge_artifacts": False,
             "temporary_savedir": False,
+            "editor_coordinator": self._editor_coordinator is None,
         }
         failed: list[str] = []
+
+        if self._editor_coordinator is not None:
+            try:
+                self._editor_coordinator.close(timeout=timeout)
+                self._editor_coordinator = None
+                cleaned["editor_coordinator"] = True
+            except Exception:
+                failed.append("editor_coordinator")
 
         if self.process.poll() is None:
             if self.headless or self.display_mode == "xvfb":
@@ -330,6 +499,8 @@ def _launch_after_project_lock(
     persistent: str = "existing",
     cleanup_on_stop: bool = True,
     preferences: str = "existing",
+    editor_endpoint: EditorEndpoint | None = None,
+    editor_coordinator: EditorCoordinator | None = None,
 ) -> BridgeSession:
     """Start ``project`` with the bridge and return a connected session.
 
@@ -393,6 +564,9 @@ def _launch_after_project_lock(
         injected = project.game_dir / _INJECTED_NAME
         injected.write_text(_BRIDGE_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         _write_session_init(project, savedir=savedir_path)
+        if editor_endpoint is not None:
+            _phase("injecting_editor")
+            _inject_editor_artifact(project)
     except OSError as exc:
         raise LaunchError(
             "BRIDGE_FILE_NOT_CREATED",
@@ -403,6 +577,8 @@ def _launch_after_project_lock(
 
     env["RENFORGE_BRIDGE_TOKEN"] = token
     env["RENFORGE_BRIDGE_PORT"] = str(port)
+    if editor_endpoint is not None:
+        env.update(_editor_environment(editor_endpoint))
 
     command = project.renpy_command(sdk, ("run", "--warp", warp) if warp is not None else ("run",))
     if headless:
@@ -505,6 +681,7 @@ def _launch_after_project_lock(
                         startup_ms=startup_ms,
                         phases=phases,
                         project_lock=project_lock,
+                        editor_coordinator=editor_coordinator,
                     )
                 except Exception:
                     pass  # bridge.json not fully written yet, retry
@@ -560,12 +737,19 @@ def launch_with_bridge(
     persistent: str = "existing",
     cleanup_on_stop: bool = True,
     preferences: str = "existing",
+    editor: bool = False,
 ) -> BridgeSession:
     """Launch a bridge while exclusively owning this project's artifacts."""
     project_lock = ProjectBridgeLock(project.root / ".renforge" / "bridge.lock")
     project_lock.acquire()
+    editor_coordinator: EditorCoordinator | None = None
     try:
         remove_bridge_artifacts(project.root)
+        editor_endpoint: EditorEndpoint | None = None
+        if editor:
+            editor_coordinator = EditorCoordinator(project, sdk)
+            editor_coordinator.attach_runtime_probe(BridgeRuntimeProbe(project.root))
+            editor_endpoint = editor_coordinator.start()
         session = _launch_after_project_lock(
             sdk,
             project,
@@ -582,9 +766,16 @@ def launch_with_bridge(
             persistent=persistent,
             cleanup_on_stop=cleanup_on_stop,
             preferences=preferences,
+            editor_endpoint=editor_endpoint,
+            editor_coordinator=editor_coordinator,
         )
         return session
     except BaseException:
+        if editor_coordinator is not None:
+            try:
+                editor_coordinator.close()
+            except Exception:
+                pass
         if project_lock.is_deferred:
             raise
         try:

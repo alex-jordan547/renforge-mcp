@@ -26,8 +26,10 @@ src/renforge/
 ```
 
 The dashboard frontend sources live in `ui/` (Vite + React + TypeScript) and
-build into `src/renforge/ui/static/`, which is committed so the published
-package ships a ready-to-serve dashboard.
+build into `src/renforge/ui/static/`. CI/release regenerates this directory
+with `npm --prefix ui ci && npm --prefix ui run build`, then validates bundled
+assets before packaging. Generated static files stay ignored in source checkouts
+and are included in wheel/sdist artifacts so PyPI and `uvx` users never need Node.
 
 ## Live control flow
 

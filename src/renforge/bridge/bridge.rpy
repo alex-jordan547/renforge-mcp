@@ -1252,6 +1252,28 @@ init python:
                 if value:
                     return value
         return None
+    def _renforge_named_focus_id(screen_name, widget, cache):
+        if not screen_name or widget is None:
+            return None
+        widget_ids = cache.get(screen_name)
+        if widget_ids is None:
+            widget_ids = {}
+            try:
+                screen = renpy.get_screen(screen_name)
+                named_widgets = getattr(screen, "widgets", None) or {}
+                for name, named_widget in named_widgets.items():
+                    widget_ids.setdefault(id(named_widget), str(name))
+            except Exception:
+                pass
+            cache[screen_name] = widget_ids
+        for candidate in (widget, getattr(widget, "child", None)):
+            if candidate is not None:
+                widget_id = widget_ids.get(id(candidate))
+                if widget_id:
+                    return widget_id
+        return None
+
+
 
     def _renforge_focus_action_name(focus, widget):
         """Best-effort human/action name for a focusable control."""
@@ -1326,7 +1348,7 @@ init python:
             )
         return elements
 
-    def _renforge_focusable_elements():
+    def _renforge_focusable_elements(max_items=None, max_text_chars=None):
         """Return ``(focus, element)`` pairs for visible focus rectangles.
 
         ``focus_list`` is Ren'Py's authoritative list of controls that can
@@ -1337,11 +1359,14 @@ init python:
         """
         elements = []
         used_ids = {}
+        named_widget_ids = {}
         try:
             focus_list = renpy.display.focus.focus_list
         except Exception:
             return elements
         for ordinal, focus in enumerate(focus_list):
+            if max_items is not None and len(elements) >= max_items:
+                break
             x = getattr(focus, "x", None)
             y = getattr(focus, "y", None)
             w = getattr(focus, "w", None)
@@ -1356,21 +1381,40 @@ init python:
                 continue
 
             widget = getattr(focus, "widget", None)
-            text = _renforge_focus_text(widget)
-            screen = _renforge_screen_name(focus)
-            role = _renforge_focus_type(focus, widget)
-            action_name = _renforge_focus_action_name(focus, widget)
+            raw_text = _renforge_focus_text(widget)
+            raw_screen = _renforge_screen_name(focus)
+            raw_role = _renforge_focus_type(focus, widget)
+            raw_action_name = _renforge_focus_action_name(focus, widget)
             zorder = _renforge_focus_zorder(focus, widget, ordinal)
             element_id = _renforge_explicit_focus_id(focus, widget)
             if not element_id:
+                element_id = _renforge_named_focus_id(
+                    raw_screen,
+                    widget,
+                    named_widget_ids,
+                )
+            if not element_id:
                 # Prefer screen.action (semantic) over ordinal-heavy paths.
-                if screen and action_name:
-                    base = "%s.%s" % (screen, action_name)
-                elif screen and text:
-                    base = "%s.%s" % (screen, text)
+                if raw_screen and raw_action_name:
+                    element_id = "%s.%s" % (raw_screen, raw_action_name)
+                elif raw_screen and raw_text:
+                    element_id = "%s.%s" % (raw_screen, raw_text)
                 else:
-                    base = "%s:%s:%s" % (screen or "screen", role, text or ordinal)
-                element_id = base
+                    element_id = "%s:%s:%s" % (
+                        raw_screen or "screen",
+                        raw_role,
+                        raw_text or ordinal,
+                    )
+            element_id = _renforge_scene_string(element_id, _RENFORGE_SCENE_MAX_ID_CHARS)
+            text = raw_text
+            screen = raw_screen
+            role = raw_role
+            action_name = raw_action_name
+            if max_text_chars is not None:
+                text = _renforge_scene_string(text, max_text_chars)
+                screen = _renforge_scene_string(screen, max_text_chars)
+                role = _renforge_scene_string(role, max_text_chars)
+                action_name = _renforge_scene_string(action_name, max_text_chars)
             count = used_ids.get(element_id, 0)
             used_ids[element_id] = count + 1
             if count:
@@ -1392,6 +1436,9 @@ init python:
                 "index": ordinal,
                 "coordinate_space": "logical",
             }
+            if max_text_chars is not None:
+                element["_raw_type"] = raw_role
+                element["_raw_screen"] = raw_screen
             elements.append((focus, element))
         return _renforge_mark_coverage(elements)
 
@@ -1448,8 +1495,154 @@ init python:
             pass
         return result
 
+    def _renforge_is_end_interaction(exc):
+        end_interaction = getattr(
+            getattr(getattr(renpy, "display", None), "core", None),
+            "EndInteraction",
+            None,
+        )
+        return end_interaction is not None and isinstance(exc, end_interaction)
+
+
+    def _renforge_reset_testmouse_state():
+        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+        if testmouse is None:
+            return
+        try:
+            setattr(testmouse, "mouse_pos", None)
+        except Exception:
+            pass
+        mouse_buttons = getattr(testmouse, "mouse_buttons", None)
+        if mouse_buttons is None:
+            return
+        if isinstance(mouse_buttons, dict):
+            for key in list(mouse_buttons.keys()):
+                mouse_buttons[key] = False
+            return
+        if isinstance(mouse_buttons, tuple):
+            mouse_buttons = list(mouse_buttons)
+            setattr(testmouse, "mouse_buttons", mouse_buttons)
+        if isinstance(mouse_buttons, list):
+            for index in range(len(mouse_buttons)):
+                try:
+                    mouse_buttons[index] = False
+                except Exception:
+                    mouse_buttons[index] = 0
+
+
+    def _renforge_dispatch_mouse_motion(px, py):
+        if pygame is None:
+            return False
+        event_type = getattr(pygame, "MOUSEMOTION", None)
+        event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+        post = getattr(getattr(pygame, "event", None), "post", None)
+        if event_type is None or not callable(event_factory):
+            return False
+        payload = {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)}
+        try:
+            event = event_factory(event_type, **payload)
+        except TypeError:
+            event = event_factory(event_type, payload)
+        if callable(post):
+            post(event)
+        mouse_handler = getattr(
+            getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None
+        )
+        if callable(mouse_handler):
+            mouse_handler(event, px, py, False)
+        return True
+
+    def _renforge_dispatch_mouse_click(x, y, button=1):
+        if pygame is None:
+            return False
+        event_factory = getattr(getattr(pygame, "event", None), "Event", None)
+        if event_factory is None:
+            return False
+        event_type = getattr(pygame, "MOUSEBUTTONDOWN", None)
+        up_type = getattr(pygame, "MOUSEBUTTONUP", None)
+        if event_type is None or up_type is None:
+            return False
+        payload = {
+            "button": button,
+            "pos": (x, y),
+            "x": x,
+            "y": y,
+            "touch": False,
+            "test": True,
+            "mod": 0,
+        }
+        try:
+            down = event_factory(event_type, **payload)
+            up = event_factory(up_type, **payload)
+        except TypeError:
+            down = event_factory(event_type, payload)
+            up = event_factory(up_type, payload)
+        focus_module = getattr(getattr(renpy, "display", None), "focus", None)
+        mouse_handler = getattr(focus_module, "mouse_handler", None)
+        get_focused = getattr(focus_module, "get_focused", None)
+        if not callable(mouse_handler) or not callable(get_focused):
+            return False
+        mouse_handler(down, x, y, False)
+        focused = get_focused()
+        event_handler = getattr(focused, "event", None)
+        if not callable(event_handler):
+            return False
+        local_x, local_y = x, y
+        for focus in reversed(list(getattr(focus_module, "focus_list", []) or [])):
+            if getattr(focus, "widget", None) is not focused:
+                continue
+            focus_x = getattr(focus, "x", None)
+            focus_y = getattr(focus, "y", None)
+            if focus_x is not None and focus_y is not None:
+                local_x, local_y = x - focus_x, y - focus_y
+            break
+        ignore_event = getattr(getattr(renpy, "display", None), "core", None)
+        ignore_event = getattr(ignore_event, "IgnoreEvent", None)
+        no_interaction_result = object()
+        interaction_result = no_interaction_result
+        for event in (down, up):
+            try:
+                rv = event_handler(event, local_x, local_y, 0)
+                if rv is not None and interaction_result is no_interaction_result:
+                    interaction_result = rv
+            except Exception as exc:
+                if ignore_event is None or not isinstance(exc, ignore_event):
+                    raise
+        if interaction_result is not no_interaction_result:
+            end_interaction = getattr(renpy, "end_interaction", None)
+            if callable(end_interaction):
+                end_interaction(interaction_result)
+        return True
+
+    def _renforge_click_pointer(x, y):
+        interface = getattr(getattr(renpy, "display", None), "interface", None)
+        if interface is not None:
+            try:
+                interface.mouse_focused = True
+            except Exception:
+                pass
+            try:
+                interface.ignore_touch = False
+            except Exception:
+                pass
+
+        _renforge_reset_testmouse_state()
+        try:
+            _renforge_dispatch_mouse_motion(x, y)
+            if _renforge_dispatch_mouse_click(x, y):
+                return "renpy"
+
+            testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
+            click_mouse = getattr(testmouse, "click_mouse", None)
+            if callable(click_mouse):
+                click_mouse(1, x, y)
+                return "renpy-test"
+            raise RuntimeError("Ren'Py synthetic mouse API is unavailable")
+        finally:
+            _renforge_reset_testmouse_state()
+
     def _renforge_click_focus(focus):
-        """Click a focus center through Ren'Py's synthetic test input path."""
+        """Click a focus center through shared synthetic input path."""
         fx = getattr(focus, "x", None)
         fy = getattr(focus, "y", None)
         fw = getattr(focus, "w", None)
@@ -1465,21 +1658,13 @@ init python:
             px, py = find_position(focus, (None, None))
             x, y = int(px), int(py)
 
-        interface = getattr(getattr(renpy, "display", None), "interface", None)
-        if interface is not None:
-            try:
-                interface.mouse_focused = True
-            except Exception:
-                pass
-            try:
-                interface.ignore_touch = False
-            except Exception:
-                pass
-        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
-        click_mouse = getattr(testmouse, "click_mouse", None)
-        if not callable(click_mouse):
-            raise RuntimeError("Ren'Py synthetic mouse API is unavailable")
-        click_mouse(1, x, y)
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            setattr(exc, "renforge_pointer", (x, y))
+            raise
         return x, y
 
     def _renforge_resolve_ui_element(payload, action):
@@ -1540,7 +1725,14 @@ init python:
                 }
         if not element.get("enabled", True):
             return {"ok": False, "error": "UI element is disabled", "element": element}
-        x, y = _renforge_click_focus(focus)
+        pending_end_interaction = None
+        try:
+            x, y = _renforge_click_focus(focus)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
+            x, y = getattr(exc, "renforge_pointer")
         # Report which focusable actually owns this coordinate (coverage).
         hit = _renforge_hit_stack(x, y)
         topmost = hit.get("topmost")
@@ -1597,6 +1789,9 @@ init python:
             )
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
         return result
 
     def _renforge_hit_stack(x, y):
@@ -1681,57 +1876,55 @@ init python:
             except Exception:
                 pass
 
-        def _renforge_dispatch_mouse_motion(px, py):
-            """Drive Ren'Py focus/hover state without a player interact loop.
-
-            Posting MOUSEMOTION to pygame is not enough: ImageButton hover uses
-            ``focus.mouse_handler`` during event dispatch. Bridge RPC must call
-            it directly on the main thread after ``testmouse.move_mouse``.
-            """
-            if pygame is None:
-                return False
-            event_type = getattr(pygame, "MOUSEMOTION", None)
-            event_factory = getattr(getattr(pygame, "event", None), "Event", None)
-            post = getattr(getattr(pygame, "event", None), "post", None)
-            if event_type is None or not callable(event_factory):
-                return False
-            event = event_factory(event_type, {"pos": (px, py), "rel": (0, 0), "buttons": (0, 0, 0)})
-            if callable(post):
-                post(event)
-            mouse_handler = getattr(getattr(getattr(renpy, "display", None), "focus", None), "mouse_handler", None)
-            if callable(mouse_handler):
-                mouse_handler(event, px, py, False)
-            return True
-
-        restart_interaction = getattr(renpy, "restart_interaction", None)
+        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
         testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
         move_mouse = getattr(testmouse, "move_mouse", None)
-        if callable(move_mouse):
-            try:
-                move_mouse(x, y)
-            except TypeError:
-                pass
-            else:
-                _renforge_dispatch_mouse_motion(x, y)
-                if callable(restart_interaction):
-                    restart_interaction()
-                return x, y, "renpy-test"
-        set_mouse_pos = getattr(renpy, "set_mouse_pos", None)
-        if callable(set_mouse_pos):
-            try:
-                set_mouse_pos(x, y)
-            except TypeError:
-                pass
-            else:
-                _renforge_dispatch_mouse_motion(x, y)
-                if callable(restart_interaction):
-                    restart_interaction()
-                return x, y, "renpy"
-        if not _renforge_dispatch_mouse_motion(x, y):
-            raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
-        if callable(restart_interaction):
-            restart_interaction()
-        return x, y, "pygame"
+        restart_interaction = getattr(renpy, "restart_interaction", None)
+        used_native_set_mouse = False
+
+        _renforge_reset_testmouse_state()
+        try:
+            if callable(set_mouse_pos):
+                try:
+                    set_mouse_pos(x, y, duration=0)
+                except TypeError:
+                    try:
+                        set_mouse_pos(x, y, 0)
+                    except TypeError:
+                        try:
+                            set_mouse_pos(x, y)
+                        except TypeError:
+                            pass
+                        else:
+                            used_native_set_mouse = True
+                    else:
+                        used_native_set_mouse = True
+                else:
+                    used_native_set_mouse = True
+                if used_native_set_mouse:
+                    _renforge_dispatch_mouse_motion(x, y)
+                    if callable(restart_interaction):
+                        restart_interaction()
+                    return x, y, "renpy"
+
+            if callable(move_mouse):
+                try:
+                    move_mouse(x, y)
+                except TypeError:
+                    pass
+                else:
+                    _renforge_dispatch_mouse_motion(x, y)
+                    if callable(restart_interaction):
+                        restart_interaction()
+                    return x, y, "renpy-test"
+
+            if not _renforge_dispatch_mouse_motion(x, y):
+                raise RuntimeError("hover unavailable: pygame mouse-motion API is unavailable")
+            if callable(restart_interaction):
+                restart_interaction()
+            return x, y, "pygame"
+        finally:
+            _renforge_reset_testmouse_state()
 
     def _renforge_h_hover_element(payload):
         payload = payload or {}
@@ -1959,24 +2152,19 @@ init python:
         if coordinate_error is not None:
             return {"ok": False, "error": coordinate_error}
 
-        interface = getattr(getattr(renpy, "display", None), "interface", None)
-        if interface is not None:
-            try:
-                interface.mouse_focused = True
-            except Exception:
-                pass
-            try:
-                interface.ignore_touch = False
-            except Exception:
-                pass
-        testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
-        click_mouse = getattr(testmouse, "click_mouse", None)
-        if not callable(click_mouse):
-            return {"ok": False, "error": "Ren'Py synthetic mouse API is unavailable"}
-        click_mouse(1, x, y)
+        pending_end_interaction = None
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
         result = {"ok": True, "x": x, "y": y, "coordinate_space": coordinate_space}
         if screenshot_digest is not None:
             result["sha256"] = screenshot_digest
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
         return result
 
     def _renforge_h_get_displayable_bounds(payload):
@@ -2175,8 +2363,527 @@ init python:
             except Exception:
                 pass
 
-        renpy.test.testmouse.click_mouse(1, x, y)
-        return {"ok": True, "text": chosen, "x": x, "y": y}
+        pending_end_interaction = None
+        try:
+            _renforge_click_pointer(x, y)
+        except Exception as exc:
+            if not _renforge_is_end_interaction(exc):
+                raise
+            pending_end_interaction = exc
+        result = {"ok": True, "text": chosen, "x": x, "y": y}
+        if pending_end_interaction is not None:
+            setattr(pending_end_interaction, "renforge_result", result)
+            raise pending_end_interaction
+        return result
+
+    # -- scene_tree: full-scene perception for non-multimodal agents -------
+    #
+    # list_ui_elements only sees focusables. scene_tree walks every layer's
+    # scene list and reports each displayable's real logical bounds using the
+    # same mechanism as renpy.get_image_bounds (render_for_size sizes the
+    # surface, displayable.place positions it). Focusable controls are merged
+    # from the focus list; non-focusable text is recovered by a guarded
+    # descent through container children/offsets. detail/layers/types/screen
+    # filter the returned set; an omitted-count hint always reports what was
+    # perceived but not returned so an agent can widen precisely.
+    _RENFORGE_SCENE_MAX_NODES = 4000
+    _RENFORGE_SCENE_MAX_DEPTH = 48
+    _RENFORGE_SCENE_MAX_TEXT_CHARS = 4096
+    _RENFORGE_SCENE_MAX_ID_CHARS = 256
+    _RENFORGE_SCENE_SEMANTIC_TYPES = ("image", "text", "button", "bar", "input", "imagemap", "hotspot")
+    def _renforge_scene_string(value, max_chars):
+        if value is None:
+            return None
+        try:
+            text = str(value)
+        except Exception:
+            return None
+        return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
+
+    def _renforge_scene_window():
+        w = getattr(renpy.config, "screen_width", 0) or 0
+        h = getattr(renpy.config, "screen_height", 0) or 0
+        return int(w), int(h)
+
+    def _renforge_scene_type(d):
+        try:
+            if isinstance(d, renpy.text.text.Text):
+                return "text"
+        except Exception:
+            pass
+        name = getattr(getattr(d, "__class__", None), "__name__", "") or ""
+        lowered = name.casefold()
+        for marker, node_type in (
+            ("imagebutton", "button"), ("textbutton", "button"), ("button", "button"),
+            ("imagemap", "imagemap"), ("bar", "bar"), ("input", "input"),
+            ("text", "text"), ("frame", "container"), ("window", "container"),
+            ("viewport", "container"), ("vbox", "container"), ("hbox", "container"),
+            ("fixed", "container"), ("grid", "container"), ("side", "container"),
+            ("multibox", "container"), ("screen", "container"),
+            ("solid", "image"), ("image", "image"), ("transform", "image"),
+        ):
+            if marker in lowered:
+                return node_type
+        return name or "other"
+
+    def _renforge_scene_place(d, width, height, st, at):
+        render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
+        place = getattr(getattr(renpy.display, "displayable", None), "place", None)
+        get_placement = getattr(d, "get_placement", None)
+        if not callable(render_for_size) or not callable(place) or not callable(get_placement):
+            return None
+        try:
+            surf = render_for_size(d, width, height, st, at)
+            sw = getattr(surf, "width", None)
+            sh = getattr(surf, "height", None)
+            if sw is None or sh is None:
+                sw, sh = surf.get_size()
+            x, y = place(width, height, float(sw), float(sh), get_placement())
+            return (int(round(x)), int(round(y)), int(round(sw)), int(round(sh)))
+        except Exception:
+            return None
+
+    def _renforge_scene_text(d, max_chars):
+        tts = getattr(d, "_tts_all", None)
+        if callable(tts):
+            text = None
+            try:
+                text = tts(False)
+            except TypeError:
+                try:
+                    text = tts()
+                except Exception:
+                    text = None
+            except Exception:
+                text = None
+            if text:
+                spoken = str(text).strip()
+                if spoken:
+                    return spoken[:max_chars] + ("…" if len(spoken) > max_chars else "")
+        raw = getattr(d, "text", None)
+        try:
+            if isinstance(raw, (list, tuple)):
+                parts = []
+                remaining = max_chars + 1
+                for part in raw:
+                    if isinstance(part, str) and remaining > 0:
+                        parts.append(part[:remaining])
+                        remaining -= len(parts[-1])
+                joined = "".join(parts).strip()
+            elif raw is not None:
+                joined = str(raw).strip()
+            else:
+                joined = ""
+        except Exception:
+            joined = ""
+        if not joined:
+            return None
+        return joined[:max_chars] + ("…" if len(joined) > max_chars else "")
+
+    def _renforge_scene_node(node_id, node_type, layer, screen, bounds, text=None, action=None, enabled=None):
+        node = {
+            "id": node_id,
+            "type": node_type,
+            "layer": layer,
+            "screen": screen,
+            "visible": True,
+            "coordinate_space": "logical",
+        }
+        if bounds is not None:
+            x, y, w, h = bounds
+            node["bounds"] = {"x": x, "y": y, "width": w, "height": h}
+            node["center"] = {"x": x + w // 2, "y": y + h // 2}
+            node["bounds_available"] = True
+        else:
+            node["bounds"] = None
+            node["center"] = None
+            node["bounds_available"] = False
+            node["bounds_reason"] = "could not size/place displayable"
+        if text is not None:
+            node["text"] = text
+        if action is not None:
+            node["action"] = action
+        if enabled is not None:
+            node["enabled"] = enabled
+        return node
+
+    def _renforge_color_hex(color):
+        try:
+            if isinstance(color, str):
+                return color
+            if isinstance(color, (tuple, list)) and len(color) >= 3:
+                return "#%02X%02X%02X" % (int(color[0]), int(color[1]), int(color[2]))
+        except Exception:
+            pass
+        return str(color)[:24]
+
+    def _renforge_scene_style(d):
+        style = getattr(d, "style", None)
+        if style is None:
+            return None
+        out = {}
+        color = getattr(style, "color", None)
+        if color is not None:
+            out["color"] = _renforge_color_hex(color)
+        size = getattr(style, "size", None)
+        if isinstance(size, int):
+            out["size"] = size
+        font = getattr(style, "font", None)
+        if font:
+            out["font"] = str(font)[:60]
+        bg = getattr(style, "background", None)
+        if bg is not None:
+            out["background"] = str(bg)[:60]
+        return out or None
+
+    def _renforge_scene_overflow(d):
+        style = getattr(d, "style", None)
+        render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
+        if not callable(render_for_size):
+            return {"available": False, "reason": "render API unavailable"}
+        try:
+            surf = render_for_size(d, 1000000, 1000000, 0, 0)
+            nw = int(getattr(surf, "width", 0) or 0)
+            nh = int(getattr(surf, "height", 0) or 0)
+        except Exception as exc:
+            return {"available": False, "reason": "render failed: %s" % exc}
+        xmax = getattr(style, "xmaximum", None) if style is not None else None
+        ymax = getattr(style, "ymaximum", None) if style is not None else None
+        ox = int(nw - xmax) if isinstance(xmax, int) and nw > xmax else 0
+        oy = int(nh - ymax) if isinstance(ymax, int) and nh > ymax else 0
+        return {
+            "available": True,
+            "overflow": bool(ox or oy),
+            "overflow_px": max(ox, oy),
+            "clipped": bool(ox or oy),
+            "natural": {"width": nw, "height": nh},
+        }
+
+    def _renforge_scene_finalize(nodes, include):
+        want_style = "style" in include
+        want_overflow = "overflow" in include
+        for node in nodes:
+            d = node.pop("_d", None)
+            if d is None:
+                continue
+            if want_style:
+                style = _renforge_scene_style(d)
+                if style:
+                    node["style"] = style
+            if want_overflow and node.get("type") == "text":
+                node["overflow"] = _renforge_scene_overflow(d)
+
+    def _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
+        children = getattr(d, "children", None)
+        if not children:
+            child = getattr(d, "child", None)
+            if child is None:
+                return
+            if depth >= counters["_max_depth"]:
+                counters["_omitted_max_depth"] += 1
+                return
+            _renforge_scene_descend(child, base_x, base_y, layer, screen, zorder, seen, out, counters, depth + 1)
+            return
+        if depth >= counters["_max_depth"]:
+            counters["_omitted_max_depth"] += len(children)
+            return
+        offsets = getattr(d, "offsets", None)
+        for index, child in enumerate(children):
+            if len(out) >= counters["_max_nodes"]:
+                counters["_omitted_max_nodes"] += 1
+                break
+            ox = oy = 0
+            if offsets and index < len(offsets):
+                try:
+                    ox, oy = int(offsets[index][0]), int(offsets[index][1])
+                except Exception:
+                    ox = oy = 0
+            _renforge_scene_descend(child, base_x + ox, base_y + oy, layer, screen, zorder, seen, out, counters, depth + 1)
+
+    def _renforge_scene_descend(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth):
+        if len(out) >= counters["_max_nodes"]:
+            counters["_omitted_max_nodes"] += 1
+            return
+        if d is None or id(d) in seen:
+            return
+        seen.add(id(d))
+        node_type = _renforge_scene_type(d)
+        key = (layer, screen or "", node_type)
+        ordinal = counters.get(key, 0)
+        counters[key] = ordinal + 1
+        screen_id = _renforge_scene_string(screen, _RENFORGE_SCENE_MAX_ID_CHARS)
+        if screen_id:
+            node_id = "%s/%s.%s#%d" % (layer, screen_id, node_type, ordinal)
+        else:
+            node_id = "%s/%s#%d" % (layer, node_type, ordinal)
+        type_filter = counters["_flt_types"]
+        eligible = (
+            (node_type.casefold() in type_filter)
+            if type_filter is not None
+            else _renforge_scene_detail_ok(node_type, counters["_detail"])
+        )
+        eligible = eligible and (
+            counters["_flt_layers"] is None or layer in counters["_flt_layers"]
+        )
+        text = None
+        bounds = None
+        if eligible:
+            text = (
+                _renforge_scene_text(d, counters["_max_text_chars"])
+                if node_type == "text"
+                else None
+            )
+            try:
+                aw, ah = _renforge_scene_window()
+                surf = renpy.display.render.render_for_size(d, aw, ah, 0, 0)
+                w = int(getattr(surf, "width", 0) or 0)
+                h = int(getattr(surf, "height", 0) or 0)
+                if w and h:
+                    bounds = (int(base_x), int(base_y), w, h)
+            except Exception:
+                bounds = None
+        node = _renforge_scene_node(node_id, node_type, layer, screen, bounds, text=text)
+        node["zorder"] = zorder
+        node["_d"] = d
+        out.append(node)
+        _renforge_scene_descend_children(d, base_x, base_y, layer, screen, zorder, seen, out, counters, depth)
+
+    def _renforge_scene_unique_ids(nodes, max_text_chars):
+        used = set()
+        for node in nodes:
+            node.setdefault("_raw_type", node.get("type"))
+            node.setdefault("_raw_layer", node.get("layer"))
+            node.setdefault("_raw_screen", node.get("screen"))
+            for key in ("text", "screen", "action", "tag", "layer", "type"):
+                if node.get(key) is not None:
+                    node[key] = _renforge_scene_string(node[key], max_text_chars)
+            base = _renforge_scene_string(
+                node.get("id") or "node",
+                _RENFORGE_SCENE_MAX_ID_CHARS,
+            )
+            candidate = base
+            suffix_number = 2
+            while candidate in used:
+                suffix = "#%d" % suffix_number
+                candidate = base[:max(1, _RENFORGE_SCENE_MAX_ID_CHARS - len(suffix))] + suffix
+                suffix_number += 1
+            node["id"] = candidate
+            used.add(candidate)
+
+
+    def _renforge_scene_detail_ok(node_type, detail):
+        if detail == "raw":
+            return True
+        if detail == "layout":
+            return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES or node_type == "container"
+        return node_type in _RENFORGE_SCENE_SEMANTIC_TYPES
+
+    def _renforge_scene_limit(payload, name, default, minimum):
+        try:
+            requested = int(payload.get(name, default))
+        except Exception:
+            requested = default
+        return min(default, max(minimum, requested))
+
+
+    def _renforge_h_scene_tree(payload):
+        payload = payload or {}
+        detail = str(payload.get("detail") or "semantic").casefold()
+        if detail not in ("semantic", "layout", "raw"):
+            detail = "semantic"
+        flt_layers = payload.get("layers")
+        flt_layers = set(str(x) for x in flt_layers) if flt_layers else None
+        flt_types = payload.get("types")
+        flt_types = set(str(x).casefold() for x in flt_types) if flt_types else None
+        flt_screen = payload.get("screen")
+        flt_screen = str(flt_screen) if flt_screen else None
+        flt_ids = payload.get("ids")
+        flt_ids = set(str(x) for x in flt_ids) if flt_ids else None
+        include = payload.get("include")
+        include = set(str(x).casefold() for x in include) if include else set()
+
+        max_depth = _renforge_scene_limit(payload, "max_depth", _RENFORGE_SCENE_MAX_DEPTH, 0)
+        max_nodes = _renforge_scene_limit(payload, "max_nodes", _RENFORGE_SCENE_MAX_NODES, 1)
+        max_text_chars = _renforge_scene_limit(
+            payload, "max_text_chars", _RENFORGE_SCENE_MAX_TEXT_CHARS, 16
+        )
+        width, height = _renforge_scene_window()
+        seen = set()
+        nodes = []
+        counters = {
+            "_max_depth": max_depth,
+            "_max_nodes": max_nodes,
+            "_max_text_chars": max_text_chars,
+            "_detail": detail,
+            "_flt_layers": flt_layers,
+            "_flt_types": flt_types,
+            "_flt_screen": flt_screen,
+            "_flt_ids": flt_ids,
+            "_omitted_max_depth": 0,
+            "_omitted_max_nodes": 0,
+        }
+
+        # Focusable controls first, so the descent skips their widgets.
+        try:
+            focusables = _renforge_focusable_elements(max_nodes + 1, max_text_chars)
+        except Exception:
+            focusables = []
+        if len(focusables) > max_nodes:
+            counters["_omitted_max_nodes"] += len(focusables) - max_nodes
+            for _focus, element in focusables[:max_nodes]:
+                element["covered"] = None
+                element["clickable"] = None
+                element["coverage_reason"] = "max_nodes"
+            focusables = focusables[:max_nodes]
+        for focus, element in focusables:
+            if len(nodes) >= max_nodes:
+                counters["_omitted_max_nodes"] += len(focusables) - len(nodes)
+                break
+            widget = getattr(focus, "widget", None)
+            if widget is not None:
+                seen.add(id(widget))
+            node = dict(element)
+            node.setdefault("layer", "screens")
+            node["bounds_available"] = node.get("bounds") is not None
+            node.pop("index", None)
+            node.pop("role", None)
+            node["_d"] = widget
+            nodes.append(node)
+
+        # Every layer's top-level displayables, with real logical bounds.
+        try:
+            sl = renpy.game.context().scene_lists
+        except Exception:
+            sl = None
+        try:
+            now = renpy.display.core.get_time()
+        except Exception:
+            now = 0.0
+        if sl is not None:
+            layer_map = getattr(sl, "layers", {}) or {}
+            try:
+                ordered = list(getattr(renpy.display.scenelists, "ordered_layers", None) or renpy.config.layers)
+            except Exception:
+                ordered = list(layer_map.keys())
+            layer_names = [l for l in ordered if l in layer_map] + [l for l in layer_map if l not in ordered]
+            layer_counts = {}
+            limit_hit = False
+            for layer in layer_names:
+                if limit_hit:
+                    break
+                for sle in layer_map.get(layer, []):
+                    if len(nodes) >= max_nodes:
+                        counters["_omitted_max_nodes"] += 1
+                        limit_hit = True
+                        break
+                    d = getattr(sle, "displayable", None)
+                    if d is None or id(d) in seen:
+                        continue
+                    seen.add(id(d))
+                    st = (now - sle.show_time) if getattr(sle, "show_time", None) else 0
+                    at = (now - sle.animation_time) if getattr(sle, "animation_time", None) else 0
+                    bounds = _renforge_scene_place(d, width, height, st, at)
+                    node_type = _renforge_scene_type(d)
+                    tag = getattr(sle, "tag", None)
+                    tag_text = _renforge_scene_string(tag, max_text_chars)
+                    tag_id = _renforge_scene_string(tag, _RENFORGE_SCENE_MAX_ID_CHARS)
+                    screen_name = None
+                    sn = getattr(d, "screen_name", None)
+                    if isinstance(sn, (tuple, list)) and sn:
+                        screen_name = str(sn[0])
+                    elif sn:
+                        screen_name = str(sn)
+                    elif layer == "screens" and tag:
+                        screen_name = str(tag)
+                    if tag:
+                        node_id = "%s/%s" % (layer, tag_id)
+                    else:
+                        idx = layer_counts.get((layer, node_type), 0)
+                        layer_counts[(layer, node_type)] = idx + 1
+                        node_id = "%s/%s#%d" % (layer, node_type, idx)
+                    text = (
+                        _renforge_scene_text(d, max_text_chars)
+                        if node_type == "text"
+                        else None
+                    )
+                    node = _renforge_scene_node(node_id, node_type, layer, screen_name, bounds, text=text)
+                    node["zorder"] = int(getattr(sle, "zorder", 0) or 0)
+                    if tag:
+                        node["tag"] = tag_text
+                    node["_d"] = d
+                    nodes.append(node)
+                    bx = bounds[0] if bounds is not None else 0
+                    by = bounds[1] if bounds is not None else 0
+                    _renforge_scene_descend_children(d, bx, by, layer, screen_name, node["zorder"], seen, nodes, counters, 0)
+
+        _renforge_scene_unique_ids(nodes, max_text_chars)
+        _renforge_scene_finalize(nodes, include)
+
+        perceived_by_type = {}
+        perceived_by_layer = {}
+        for n in nodes:
+            perceived_by_type[n["type"]] = perceived_by_type.get(n["type"], 0) + 1
+            lk = n.get("layer") or "?"
+            perceived_by_layer[lk] = perceived_by_layer.get(lk, 0) + 1
+
+        returned = []
+        for n in nodes:
+            raw_type = n.get("_raw_type")
+            raw_layer = n.get("_raw_layer")
+            raw_screen = n.get("_raw_screen")
+            if flt_types is None and not _renforge_scene_detail_ok(raw_type, detail):
+                continue
+            if flt_layers is not None and raw_layer not in flt_layers:
+                continue
+            if flt_types is not None and str(raw_type).casefold() not in flt_types:
+                continue
+            if flt_screen is not None and raw_screen != flt_screen:
+                continue
+            if flt_ids is not None and (str(n.get("id")) not in flt_ids):
+                continue
+            returned.append(n)
+
+        ret_by_type = {}
+        ret_by_layer = {}
+        for n in returned:
+            ret_by_type[n["type"]] = ret_by_type.get(n["type"], 0) + 1
+            lk = n.get("layer") or "?"
+            ret_by_layer[lk] = ret_by_layer.get(lk, 0) + 1
+        omit_by_type = {t: perceived_by_type[t] - ret_by_type.get(t, 0)
+                        for t in perceived_by_type if perceived_by_type[t] - ret_by_type.get(t, 0) > 0}
+        omit_by_layer = {l: perceived_by_layer[l] - ret_by_layer.get(l, 0)
+                         for l in perceived_by_layer if perceived_by_layer[l] - ret_by_layer.get(l, 0) > 0}
+        for n in nodes:
+            n.pop("_raw_type", None)
+            n.pop("_raw_layer", None)
+            n.pop("_raw_screen", None)
+        omit_by_reason = {}
+        if counters["_omitted_max_depth"]:
+            omit_by_reason["max_depth"] = counters["_omitted_max_depth"]
+        if counters["_omitted_max_nodes"]:
+            omit_by_reason["max_nodes"] = counters["_omitted_max_nodes"]
+
+        return {
+            "ok": True,
+            "coordinate_space": "logical",
+            "window": {"width": width, "height": height},
+            "detail": detail,
+            "nodes": returned,
+            "counts": {"perceived": len(nodes), "returned": len(returned)},
+            "omitted": {
+                "by_type": omit_by_type,
+                "by_layer": omit_by_layer,
+                "by_reason": omit_by_reason,
+            },
+            "truncated": bool(omit_by_reason),
+            "limits": {
+                "max_depth": max_depth,
+                "max_nodes": max_nodes,
+                "max_text_chars": max_text_chars,
+            },
+        }
 
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
@@ -2205,6 +2912,7 @@ init python:
         "hit_test": _renforge_h_hit_test,
         "get_displayable_bounds": _renforge_h_get_displayable_bounds,
         "show_displayable": _renforge_h_show_displayable,
+        "scene_tree": _renforge_h_scene_tree,
     }
 
     def _renforge_skip_stop_reason():
@@ -2279,6 +2987,9 @@ init python:
         bridge = _renforge_runtime.bridge
         if bridge is None:
             return
+        if bridge.stop.is_set():
+            _renforge_reset_testmouse_state()
+            return
         _renforge_watch_runtime_effects()
         while True:
             try:
@@ -2288,6 +2999,7 @@ init python:
             handler = _RENFORGE_HANDLERS.get(req.command)
             correlation = None
             explicit_correlation = None
+            propagate = None
             try:
                 if handler is None:
                     req.error = "unknown_command: %s" % req.command
@@ -2315,10 +3027,30 @@ init python:
                         result.setdefault("interaction_id", explicit_correlation)
                     req.result = result
             except Exception as exc:
-                req.error = "%s: %s" % (type(exc).__name__, exc)
+                end_interaction = getattr(
+                    getattr(getattr(renpy, "display", None), "core", None),
+                    "EndInteraction",
+                    None,
+                )
+                if end_interaction is not None and isinstance(exc, end_interaction):
+                    preserved_result = getattr(exc, "renforge_result", None)
+                    if isinstance(preserved_result, builtins.dict):
+                        preserved_result = builtins.dict(preserved_result)
+                        preserved_result["ended_interaction"] = True
+                        if explicit_correlation is not None:
+                            preserved_result.setdefault("interaction_id", explicit_correlation)
+                        req.result = preserved_result
+                    else:
+                        req.result = {"ok": True, "ended_interaction": True}
+                    propagate = exc
+                else:
+                    req.error = "%s: %s" % (type(exc).__name__, exc)
             finally:
                 bridge.current_correlation_id = None
+                _renforge_reset_testmouse_state()
                 req.event.set()
+            if propagate is not None:
+                raise propagate
 
     # --- listener: background thread --------------------------------------
 

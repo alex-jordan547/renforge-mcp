@@ -37,6 +37,35 @@ def _project_at(path: Path) -> Path:
     return path
 
 
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_root_route_returns_stable_error_when_static_assets_are_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    missing_static_dir = tmp_path / "ui-static-missing"
+    assert not missing_static_dir.exists()
+
+    monkeypatch.setattr(server, "_static_dir", lambda: missing_static_dir)
+
+    app = server.create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "ok": False,
+        "error_code": "ui_assets_missing",
+        "details": {
+            "hint": "cd ui && npm ci && npm run build or install a RenForge wheel",
+            "path": str(missing_static_dir),
+        },
+        "error": "UI assets are not built yet",
+    }
+
+
 def test_resolve_game_file_path_rejects_traversal(tmp_path: Path) -> None:
     project = _project_root(tmp_path)
     result = graph.resolve_game_file_path(project, "../outside.rpy")
@@ -215,9 +244,48 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
     project = _project_root(tmp_path)
     calls = {}
 
-    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None):
-        calls.update(project_path=project_path, version=version, warp=warp)
-        return {"ok": True, "already_running": False, "current_label": "start"}
+    def fake_launch(
+        project_path: str,
+        version: str = "stable",
+        warp: str | None = None,
+        editor: bool = False,
+    ):
+        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
+        return {"ok": True, "already_running": False, "current_label": "start", "editor": editor}
+
+    monkeypatch.setattr(server.live, "launch_game", fake_launch)
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable", "editor": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "already_running": False,
+        "current_label": "start",
+        "editor": True,
+    }
+    assert calls == {"project_path": str(project), "version": "stable", "warp": None, "editor": True}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_launch_defaults_editor_false(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_launch(
+        project_path: str,
+        version: str = "stable",
+        warp: str | None = None,
+        editor: bool = False,
+    ):
+        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
+        return {"ok": True, "already_running": False, "current_label": "start", "editor": editor}
 
     monkeypatch.setattr(server.live, "launch_game", fake_launch)
     app = create_ui_app(project, ui_token="token")
@@ -228,8 +296,39 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "already_running": False, "current_label": "start"}
-    assert calls == {"project_path": str(project), "version": "stable", "warp": None}
+    assert response.json() == {
+        "ok": True,
+        "already_running": False,
+        "current_label": "start",
+        "editor": False,
+    }
+    assert calls == {"project_path": str(project), "version": "stable", "warp": None, "editor": False}
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_launch_rejects_non_boolean_editor(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: pytest.fail("launch_game should not run for invalid editor mode"),
+    )
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable", "editor": "yes"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error_code": "launch_editor_invalid",
+        "details": {"editor": "yes"},
+        "error": "editor must be a boolean",
+    }
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")

@@ -125,9 +125,11 @@ screen renforge_sdk_custom(title, amount):
     modal True
     key "dismiss" action NullAction()
     default status = "ready"
+    add Solid("#123456", xsize=120, ysize=80) xpos 30 ypos 40
     text title
     text str(amount)
     text status
+    textbutton "Click" action NullAction()
 
 label renforge_sdk_input_fixture:
     $ renforge_sdk_input_value = renpy.input("SDK name?", default="")
@@ -285,28 +287,177 @@ def test_live_menu_selection_takes_the_branch(sdk, demo_copy: Path) -> None:
 
     with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
         # Advance until the menu's choices appear on screen.
-        choices = []
+        focus_elements = []
         for _ in range(6):
-            choices = [
-                choice
-                for choice in session.client.list_choices()
-                if choice.get("screen") == "choice"
+            focus_elements = [
+                control
+                for control in session.client.list_ui_elements()
+                if control.get("screen") == "village_gate_choices"
             ]
-            if choices:
+            if len(focus_elements) >= 2:
                 break
             session.client.advance()
             time.sleep(1.0)
-        assert any(c["text"] == "Take the lantern and go." for c in choices), choices
 
-        session.client.select_choice(text="Take the lantern and go.")
+        assert any(
+            control.get("id") == "demo_lantern_take"
+            for control in focus_elements
+        ), focus_elements
+        assert any(
+            control.get("id") == "demo_lantern_decline"
+            for control in focus_elements
+        ), focus_elements
+        for control in focus_elements:
+            bounds = control.get("bounds") or {}
+            assert (
+                isinstance(bounds.get("x"), int)
+                and isinstance(bounds.get("y"), int)
+                and isinstance(bounds.get("width"), int)
+                and isinstance(bounds.get("height"), int)
+                and bounds["width"] > 0
+                and bounds["height"] > 0
+            ), control
+            assert control.get("screen") == "village_gate_choices", control
+
+        selected = session.client.select_choice(text="Take the lantern and go.")
+        assert selected["ok"] is True, selected
+        assert selected["text"] == "Take the lantern and go."
+        assert isinstance(selected["x"], int) and isinstance(selected["y"], int)
+        assert selected.get("ended_interaction") is True
         time.sleep(1.5)
 
         assert session.client.get_var("lantern") is True
         assert session.client.get_var("courage") == 1
+        assert session.client.eval_expr("renpy.test.testmouse.mouse_pos") is None
         # The branch dialogue is still displayed inside ``village_gate``;
         # the jump to ``crossroads`` follows after that line is dismissed.
         assert session.client.get_state()["current_label"] == "village_gate"
 
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_menu_selection_continues_to_next_menu(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90, editor=True) as session:
+        client = session.client
+        for _ in range(40):
+            launcher = client.inspect_screen("_renforge_editor_launcher")
+            if launcher.get("active") is True:
+                break
+            time.sleep(0.25)
+        assert launcher.get("active") is True, launcher
+        assert client.click_element(text="RF", exact=True, screen="_renforge_editor_launcher").get("ok") is True
+        for _ in range(40):
+            overlay = client.inspect_screen("_renforge_editor_overlay")
+            if overlay.get("active") is True:
+                break
+            time.sleep(0.05)
+        assert overlay.get("active") is True, overlay
+        assert client.request("editor_task0_key", {"key": "escape", "repeat": 1}).get("ok") is True
+        for _ in range(6):
+            focus_elements = [
+                control
+                for control in client.list_ui_elements()
+                if control.get("screen") == "village_gate_choices"
+            ]
+            if focus_elements:
+                break
+            client.advance()
+            time.sleep(0.5)
+        selected = client.select_choice(text="Take the lantern and go.")
+        assert selected["ok"] is True, selected
+
+        choices = []
+        for _ in range(8):
+            choices = [choice for choice in client.list_choices() if choice.get("screen") == "choice"]
+            if choices:
+                break
+            client.advance()
+            time.sleep(0.5)
+
+        assert any(choice["text"] == "Cut through the deep woods." for choice in choices), choices
+        assert any(choice["text"] == "Climb along the ridge." for choice in choices), choices
+        selected = client.select_choice(text="Climb along the ridge.")
+        assert selected["ok"] is True, selected
+
+        choices = []
+        for _ in range(8):
+            choices = [choice for choice in client.list_choices() if choice.get("screen") == "choice"]
+            if choices:
+                break
+            client.advance()
+            time.sleep(0.5)
+
+        assert any(choice["text"] == "Shield the lantern from the wind." for choice in choices), choices
+        assert any(choice["text"] == "Grip the rocks with both hands." for choice in choices), choices
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_demo_control_supports_editor_save(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90, editor=True) as session:
+        client = session.client
+        for _ in range(40):
+            launcher = client.inspect_screen("_renforge_editor_launcher")
+            if launcher.get("active") is True:
+                break
+            time.sleep(0.1)
+        assert launcher.get("active") is True, launcher
+        assert client.click_element(text="RF", exact=True, screen="_renforge_editor_launcher").get("ok") is True
+        for _ in range(40):
+            overlay = client.inspect_screen("_renforge_editor_overlay")
+            if overlay.get("active") is True:
+                break
+            time.sleep(0.05)
+        assert overlay.get("active") is True, overlay
+
+        for _ in range(8):
+            controls = [
+                control
+                for control in client.list_ui_elements()
+                if control.get("screen") == "village_gate_choices"
+            ]
+            if controls:
+                break
+            client.advance()
+            time.sleep(0.4)
+        button = next(control for control in controls if control.get("id") == "demo_lantern_take")
+        client.request("editor_task0_start", {"screen": "village_gate_choices"})
+        bounds = button["bounds"]
+        selected = client.request(
+            "editor_task0_select",
+            {"x": int(bounds["x"]) + 5, "y": int(bounds["y"]) + 5},
+        )
+        assert selected["ok"] is True, selected
+
+        status = {}
+        for _ in range(120):
+            status = client.request("editor_task0_status")
+            if status.get("current_analysis_id") or status.get("selected_lock_reason") not in (None, "ANALYZING"):
+                break
+            time.sleep(0.1)
+        assert status.get("selected_lock_reason") is None, status
+        assert status.get("current_analysis_id"), status
+
+        nudged = client.request("editor_task0_key", {"key": "right", "repeat": 1})
+        assert nudged.get("ok") is True, nudged
+        for _ in range(40):
+            status = client.request("editor_task0_status")
+            if status.get("save_enabled") is True:
+                break
+            time.sleep(0.1)
+        assert status.get("save_enabled") is True, status
+
+        saved = client.click_element(id="rf_save", screen="_renforge_editor_overlay")
+        assert saved.get("ok") is True, saved
+        for _ in range(600):
+            status = client.request("editor_task0_status")
+            if not status.get("save_in_progress"):
+                break
+            time.sleep(0.25)
+        assert status.get("status_text") == "Reload committed", status
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
 def test_live_send_input_traverses_real_renpy_input(sdk, demo_copy: Path) -> None:
@@ -397,19 +548,20 @@ def test_live_named_save_state_round_trip(sdk, demo_copy: Path) -> None:
 
     with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
         client = session.client
-        choices = []
+        focus_elements = []
         for _ in range(8):
-            choices = [
-                choice
-                for choice in client.list_choices()
-                if choice.get("screen") == "choice"
+            focus_elements = [
+                control
+                for control in client.list_ui_elements()
+                if control.get("screen") == "village_gate_choices"
             ]
-            if choices:
+            if focus_elements:
                 break
             client.advance()
             time.sleep(0.5)
-        assert any("Take the lantern" in choice["text"] for choice in choices), choices
-        client.select_choice(text="Take the lantern and go.")
+        assert any(control.get("id") == "demo_lantern_take" for control in focus_elements), focus_elements
+        selected = client.select_choice(text="Take the lantern and go.")
+        assert selected["ok"] is True, selected
         time.sleep(1.0)
         assert client.get_var("courage") == 1
 
@@ -569,11 +721,56 @@ def test_live_imagebutton_hover_bounds_and_capture(sdk, demo_copy: Path) -> None
         assert hovered["ok"] is True, hovered
         assert hovered.get("hovered") is True, hovered
         assert hovered["method"] in {"renpy", "renpy-test", "pygame"}
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
         assert client.get_var("renforge_sdk_button_clicks") == clicks_before
 
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors
         assert not errors.get("events"), errors
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_imagebutton_click_paths_release_testmouse(sdk, demo_copy: Path) -> None:
+    """Exercise click_element and click_at against a real Ren'Py ImageButton."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+
+    _add_hover_fixtures(demo_copy)
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr('renpy.show_screen("renforge_sdk_imagebutton_fixture")')
+        client.eval_expr("renpy.restart_interaction()")
+
+        elements = []
+        for _ in range(40):
+            elements = client.list_ui_elements()
+            if elements:
+                break
+            time.sleep(0.25)
+        assert elements, elements
+
+        button = elements[0]
+        center = button["center"]
+        before = client.get_var("renforge_sdk_button_clicks")
+
+        clicked = client.click_element(id=button["id"])
+        assert clicked["ok"] is True, clicked
+        for _ in range(40):
+            if client.get_var("renforge_sdk_button_clicks") == before + 1:
+                break
+            time.sleep(0.1)
+        assert client.get_var("renforge_sdk_button_clicks") == before + 1, clicked
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
+
+        clicked_at = client.click_at(center["x"], center["y"])
+        assert clicked_at["ok"] is True, clicked_at
+        for _ in range(40):
+            if client.get_var("renforge_sdk_button_clicks") == before + 2:
+                break
+            time.sleep(0.1)
+        assert client.get_var("renforge_sdk_button_clicks") == before + 2
+        assert client.eval_expr("renpy.test.testmouse.mouse_pos") is None
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
@@ -656,3 +853,176 @@ def test_live_imagebutton_idle_hover_pipeline(sdk, demo_copy: Path) -> None:
         errors = live.get_errors(str(demo_copy))
         assert errors.get("ok") is True, errors
         assert not errors.get("events"), errors
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_perceives_layers_text_and_measures(sdk, demo_copy: Path) -> None:
+    """Prove full-scene perception on a real engine: non-focusable layer images
+    and dialogue text get real logical bounds, and measure/wireframe run on them.
+    """
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        what = ""
+        for _ in range(8):
+            what = client.eval_expr(
+                "str((getattr(renpy.get_screen('say'), 'scope', None) or {}).get('what') or '')"
+            )
+            if what:
+                break
+            client.advance()
+            time.sleep(1.0)
+        assert what, "no dialogue text appeared"
+
+        scene = client.scene_tree(include=["style"])
+        assert scene["ok"] is True
+        assert scene["window"]["width"] > 0
+        assert scene["coordinate_space"] == "logical"
+        assert "omitted" in scene
+        nodes = scene["nodes"]
+
+        # A non-focusable layer image (e.g. bg) with a real rendered rectangle.
+        images = [n for n in nodes if n["type"] == "image" and n["bounds_available"]]
+        assert images, "no image node with bounds perceived"
+
+        # Dialogue text is NOT a focusable control, yet it is perceived with
+        # bounds and its declared style colour.
+        texts = [n for n in nodes if n["type"] == "text" and n.get("text")]
+        assert texts, "no text node perceived"
+        say_text = next((n for n in texts if n.get("screen") == "say"), texts[0])
+        assert say_text["bounds"]["width"] > 0
+        assert say_text.get("style", {}).get("color")
+
+        # measure: quick-menu buttons live on one row, so their top edges align.
+        buttons = [n["id"] for n in nodes if n["type"] == "button"]
+        if len(buttons) >= 2:
+            aligned = live.measure(str(demo_copy), action="align", targets=buttons[:2], tolerance=2)
+            assert aligned["ok"] is True
+            assert aligned["result"]["top"] == 0
+
+        # wireframe format renders an ASCII map with a legend.
+        wire = live.scene_tree(str(demo_copy), format="wireframe")
+        assert "wireframe" in wire and "Legend" in wire["wireframe"]
+
+        errors = live.get_errors(str(demo_copy))
+        assert errors.get("ok") is True, errors
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_ids_are_unique_across_layers(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        for layer, color in (("master", "#ff0000"), ("screens", "#0000ff")):
+            client.eval_expr(
+                'renpy.show("renforge_duplicate", what=Solid("%s", xsize=80, ysize=80), layer="%s")'
+                % (color, layer)
+            )
+        client.eval_expr("renpy.restart_interaction()")
+        time.sleep(0.5)
+
+        scene = client.scene_tree(detail="raw")
+        duplicates = [
+            node for node in scene["nodes"]
+            if node.get("tag") == "renforge_duplicate"
+        ]
+        assert {node["layer"] for node in duplicates} == {"master", "screens"}
+        assert len({node["id"] for node in duplicates}) == 2
+
+        measured = live.measure(
+            str(demo_copy),
+            action="gap",
+            targets=[node["id"] for node in duplicates],
+        )
+        assert measured["ok"] is True, measured
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
+def test_live_scene_tree_reports_nested_nodes_custom_layers_and_limits(sdk, demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.tools import live
+
+    fixture = _add_sdk_fixtures(demo_copy)
+    with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr(
+            'renpy.show_screen("%s", "X" * 100, 7, _layer="master")' % fixture["screen"]
+        )
+        client.eval_expr("renpy.restart_interaction()")
+        time.sleep(0.5)
+
+        scene = client.scene_tree(detail="raw")
+        node_ids = [node["id"] for node in scene["nodes"]]
+        assert len(node_ids) == len(set(node_ids))
+        screen_nodes = [
+            node for node in scene["nodes"]
+            if node.get("screen") == fixture["screen"] and node.get("layer") == "master"
+        ]
+        nested_image = next(node for node in screen_nodes if node["type"] == "image")
+        assert nested_image["bounds"]["x"] == 30
+        assert nested_image["bounds"]["y"] == 40
+
+        containers = client.scene_tree(types=["container"])
+
+        text_limited = client.scene_tree(detail="raw", max_text_chars=16)
+        truncated_text = [
+            node["text"]
+            for node in text_limited["nodes"]
+            if node.get("text", "").endswith("…")
+        ]
+        assert truncated_text
+        assert max(len(text) for text in truncated_text) == 17
+        assert any((node.get("screen") or "").endswith("…") for node in text_limited["nodes"])
+        for node in text_limited["nodes"]:
+            for key in ("text", "screen", "action", "tag", "layer", "type"):
+                if node.get(key) is not None:
+                    assert len(node[key]) <= 17
+            assert len(node["id"]) <= 257
+        stable_id_node = next(
+            node
+            for node in text_limited["nodes"]
+            if node["type"] == "image"
+            and (node.get("bounds") or {}).get("x") == 30
+            and (node.get("bounds") or {}).get("y") == 40
+        )
+        assert stable_id_node["id"] == nested_image["id"]
+        by_stable_id = client.scene_tree(
+            detail="raw",
+            max_text_chars=16,
+            ids=[stable_id_node["id"]],
+        )
+        assert [node["id"] for node in by_stable_id["nodes"]] == [stable_id_node["id"]]
+        assert by_stable_id["nodes"][0]["bounds"] == stable_id_node["bounds"]
+        by_full_screen = client.scene_tree(
+            detail="raw",
+            max_text_chars=16,
+            screen=fixture["screen"],
+        )
+        assert any(
+            node["id"] == stable_id_node["id"] and node["bounds"] == stable_id_node["bounds"]
+            for node in by_full_screen["nodes"]
+        )
+        assert any(node["type"] == "button" for node in by_full_screen["nodes"])
+        measured = live.measure(
+            str(demo_copy),
+            action="fit",
+            targets=[stable_id_node["id"]],
+            within={"x": 0, "y": 0, **scene["window"]},
+        )
+        assert measured["ok"] is True
+        assert any(node.get("screen") == fixture["screen"] for node in containers["nodes"])
+
+        limited = client.scene_tree(detail="raw", max_depth=0)
+        assert limited["truncated"] is True
+        assert limited["omitted"]["by_reason"]["max_depth"] > 0
+
+        node_limited = client.scene_tree(detail="raw", max_nodes=1)
+        assert len(node_limited["nodes"]) == 1
+        assert node_limited["truncated"] is True
+        assert node_limited["omitted"]["by_reason"]["max_nodes"] > 0

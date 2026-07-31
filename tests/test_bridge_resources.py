@@ -18,3 +18,17 @@ def test_bridge_rpy_exposes_expected_symbols() -> None:
     ]
     for token in required:
         assert token in content, f"missing expected symbol: {token}"
+
+
+def test_editor_rpy_exposes_expected_environment_variables() -> None:
+    path = Path(__file__).resolve().parents[1] / "src/renforge/bridge/editor.rpy"
+    content = path.read_text(encoding="utf-8")
+
+    required = [
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ]
+    for token in required:
+        assert token in content, f"missing expected editor env symbol: {token}"

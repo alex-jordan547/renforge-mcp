@@ -433,6 +433,58 @@ class BridgeClient:
             return result
         return reply
 
+    def scene_tree(
+        self,
+        *,
+        detail: str | None = None,
+        layers: list[str] | tuple[str, ...] | None = None,
+        types: list[str] | tuple[str, ...] | None = None,
+        screen: str | None = None,
+        ids: list[str] | tuple[str, ...] | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        max_depth: int | None = None,
+        max_nodes: int | None = None,
+        max_text_chars: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the full perceived scene in logical coordinates.
+
+        Unlike :meth:`list_ui_elements` (focusables only), this walks every
+        layer's scene list plus the focus list, reporting each node's ``id``,
+        ``type``, ``layer``, ``screen``, ``bounds`` and ``zorder``. ``detail``
+        is ``semantic`` (default), ``layout`` or ``raw``;
+        ``layers``/``types``/``screen``/``ids`` scope the returned nodes;
+        ``include`` opts into extra per-node fields. ``max_depth``,
+        ``max_nodes``, and ``max_text_chars`` can lower bridge traversal and
+        text-size caps for bounded callers.
+        The reply always carries an ``omitted`` completeness hint and reports
+        traversal caps through ``truncated`` and ``limits``.
+        """
+        payload: dict[str, Any] = {}
+        if detail is not None:
+            payload["detail"] = detail
+        if layers is not None:
+            payload["layers"] = list(layers)
+        if types is not None:
+            payload["types"] = list(types)
+        if screen is not None:
+            payload["screen"] = screen
+        if ids is not None:
+            payload["ids"] = list(ids)
+        if include is not None:
+            payload["include"] = list(include)
+        if max_depth is not None:
+            payload["max_depth"] = max_depth
+        if max_nodes is not None:
+            payload["max_nodes"] = max_nodes
+        if max_text_chars is not None:
+            payload["max_text_chars"] = max_text_chars
+        reply = self.request("scene_tree", payload or None)
+        if reply.get("error") is not None:
+            result = dict(reply)
+            result["ok"] = False
+            return result
+        return reply
+
     def hit_test(
         self,
         x: int | float,

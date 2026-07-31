@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "renforge"
-version = "0.6.6"
+version = "0.7.0"
 description = "MCP server, CLI, and web dashboard for Ren'Py visual-novel development"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,20 +33,26 @@ Issues = "https://github.com/alex-jordan547/renforge-mcp/issues"
 
 [project.optional-dependencies]
 fastmcp = []
-test = ["pytest>=8"]
+test = ["pytest>=8", "httpx2>=2.0.0"]
 ui = ["starlette>=0.31", "uvicorn[standard]>=0.30", "watchfiles>=0.22"]
 
 [project.scripts]
 renforge = "renforge.cli:main"
 
 [tool.hatch.build]
-include = ["src/renforge", "src/renforge/**/*.rpy", "src/renforge/ui/static/**"]
+include = ["src/renforge/**/*.py", "src/renforge/**/*.rpy"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/renforge"]
+exclude = ["src/renforge/ui/static/**"]
+force-include = { "src/renforge/ui/static" = "renforge/ui/static" }
 
 [tool.hatch.build.targets.sdist]
 include = ["src/renforge"]
+exclude = ["src/renforge/ui/static/**"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/renforge/ui/static" = "src/renforge/ui/static"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

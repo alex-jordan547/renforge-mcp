@@ -62,6 +62,8 @@ EXPECTED_TOOLS = {
     "renforge_get_displayable_bounds",
     "renforge_position_element",
     "renforge_diff_screenshots",
+    "renforge_scene_tree",
+    "renforge_measure",
     "renforge_autopilot",
     # assets / translation / build / docs
     "renforge_assets",
@@ -263,6 +265,57 @@ def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
     assert calls["project_path"] == str(tmp_path)
     assert calls["version"] == "stable"
     assert calls["warp"] == "game/script.rpy:42"
+    assert calls["kwargs"]["editor"] is True
+
+
+def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setattr(dashboard_client, "launch_game", lambda *_args, **_kwargs: None)
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        calls["kwargs"] = kwargs
+        return {"ok": True, "ready": True, "already_running": False, "editor": kwargs.get("editor", False)}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path))
+
+    assert result["ok"] is True
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["version"] == "stable"
+    assert calls["warp"] is None
+    assert calls["kwargs"]["editor"] is True
+
+
+def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setattr(dashboard_client, "launch_game", lambda *_args, **_kwargs: None)
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
+        calls.update(project_path=project_path, version=version, warp=warp)
+        calls["kwargs"] = kwargs
+        return {"ok": True, "ready": True, "already_running": False, "editor": kwargs.get("editor", False)}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path), editor=True)
+
+    assert result["ok"] is True
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["version"] == "stable"
+    assert calls["warp"] is None
+    assert calls["kwargs"]["editor"] is True
 
 
 def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
@@ -274,8 +327,8 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
 
     calls = {}
 
-    def fake_dashboard_launch(project_path: str, *, version: str, warp: str | None):
-        calls.update(project_path=project_path, version=version, warp=warp)
+    def fake_dashboard_launch(project_path: str, *, version: str, warp: str | None, editor: bool):
+        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
         return {"ok": True, "via": "dashboard"}
 
     monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
@@ -289,7 +342,7 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
         async with Client(create_app()) as client:
             return await client.call_tool(
                 "renforge_launch",
-                {"project_path": str(tmp_path), "warp": "game/script.rpy:42"},
+                {"project_path": str(tmp_path), "warp": "game/script.rpy:42", "editor": True},
             )
 
     result = asyncio.run(_call())
@@ -302,6 +355,7 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
         "project_path": str(tmp_path),
         "version": "stable",
         "warp": "game/script.rpy:42",
+        "editor": True,
     }
 
 
@@ -376,7 +430,7 @@ def test_cancelled_dashboard_launch_stops_through_its_owner(tmp_path, monkeypatc
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(cancel_event),
     )
     monkeypatch.setattr(
         live,
@@ -431,7 +485,7 @@ def test_cancelled_dashboard_launch_reports_owner_stop_failure(
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(cancel_event),
     )
     monkeypatch.setattr(
         live,
@@ -471,7 +525,7 @@ def test_cancelled_launch_propagates_external_lock_conflict(tmp_path, monkeypatc
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(cancel_event),
     )
     monkeypatch.setattr(
         live,
@@ -1460,3 +1514,81 @@ def test_screenshot_can_overlay_a_measurement_grid(tmp_path, monkeypatch) -> Non
     annotated = image_module.open(io.BytesIO(base64.b64decode(image_blocks[0].data)))
     assert annotated.size == (200, 120)
     assert annotated.convert("RGB").getpixel((50, 60)) != (0, 0, 128)
+
+
+def test_scene_tree_tool_dispatches_options(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_scene_tree(project_path, **kwargs):
+        calls.update(project_path=project_path, **kwargs)
+        return {"ok": True, "nodes": [], "counts": {"perceived": 0, "returned": 0}}
+
+    monkeypatch.setattr(live, "scene_tree", fake_scene_tree)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_scene_tree",
+                {
+                    "project_path": str(tmp_path),
+                    "detail": "raw",
+                    "include": ["color", "style"],
+                    "format": "wireframe",
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is True
+    assert calls["project_path"] == str(tmp_path)
+    assert calls["detail"] == "raw"
+    assert calls["include"] == ["color", "style"]
+    assert calls["format"] == "wireframe"
+    assert calls["max_output_depth"] == 6
+    assert calls["max_items"] == 50
+    assert calls["max_output_bytes"] == 65_536
+
+
+def test_measure_tool_dispatches_action_and_targets(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_measure(project_path, *, action, targets, within=None, tolerance=None):
+        calls.update(
+            project_path=project_path,
+            action=action,
+            targets=targets,
+            within=within,
+            tolerance=tolerance,
+        )
+        return {"ok": True, "action": action, "result": {}}
+
+    monkeypatch.setattr(live, "measure", fake_measure)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_measure",
+                {
+                    "project_path": str(tmp_path),
+                    "action": "align",
+                    "targets": ["a", "b"],
+                    "tolerance": 2,
+                },
+            )
+
+    result = asyncio.run(_call())
+    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
+    assert payload["ok"] is True
+    assert calls["action"] == "align"
+    assert calls["targets"] == ["a", "b"]
+    assert calls["tolerance"] == 2

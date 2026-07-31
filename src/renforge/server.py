@@ -103,6 +103,7 @@ def _register_tools(app: Any) -> None:
         *,
         version: str = "stable",
         warp: str | None = None,
+        editor: bool = False,
         display: str = "auto",
         audio: str = "auto",
         savedir: str | None = None,
@@ -112,6 +113,7 @@ def _register_tools(app: Any) -> None:
         session: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict:
+        canonical_editor = True
         if cancel_event is not None and cancel_event.is_set():
             return live.cancelled_launch_result(phase="detecting_environment")
         from .dashboard_client import (
@@ -120,7 +122,12 @@ def _register_tools(app: Any) -> None:
         )
 
         # Dashboard owns its own display process; only warp/version are delegated.
-        delegated = launch_via_dashboard(project_path, version=version, warp=warp)
+        delegated = launch_via_dashboard(
+            project_path,
+            version=version,
+            warp=warp,
+            editor=canonical_editor,
+        )
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
                 stopped = stop_via_dashboard(project_path)
@@ -159,6 +166,7 @@ def _register_tools(app: Any) -> None:
             project_path,
             version=version,
             warp=warp,
+            editor=canonical_editor,
             display=display,
             audio=audio,
             savedir=savedir,
@@ -176,6 +184,8 @@ def _register_tools(app: Any) -> None:
         return delegated if delegated is not None else live.stop_game(project_path)
 
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
+        kwargs["editor"] = True
+
         def _launch(cancel_event: threading.Event) -> dict:
             return _launch_game(
                 project_path,
@@ -183,7 +193,7 @@ def _register_tools(app: Any) -> None:
                 **kwargs,
             )
 
-        return live.start_launch(project_path, _launch)
+        return live.start_launch(project_path, _launch, editor=True)
 
     def _context_payload() -> dict[str, Any]:
         dashboard = session_registry.active_dashboard()
@@ -355,6 +365,7 @@ def _register_tools(app: Any) -> None:
         project_path: str,
         warp: str = "",
         version: str = "stable",
+        editor: bool = False,
         display: str = "auto",
         audio: str = "auto",
         savedir: str = "",
@@ -373,6 +384,7 @@ def _register_tools(app: Any) -> None:
         kwargs: dict[str, Any] = {
             "version": version,
             "warp": warp or None,
+            "editor": editor,
             "display": display or "auto",
             "audio": audio or "auto",
             "persistent": persistent or "existing",
@@ -388,6 +400,7 @@ def _register_tools(app: Any) -> None:
                 "project_path": project_path,
                 "warp": warp,
                 "version": version,
+                "editor": editor,
                 "display": display,
                 "audio": audio,
                 "savedir": savedir,
@@ -1138,6 +1151,108 @@ def _register_tools(app: Any) -> None:
             fn=live.hit_test,
             args=(project_path, x, y),
             kwargs={"coordinate_space": coordinate_space},
+        )
+
+    @tool_decorator()
+    def renforge_scene_tree(
+        project_path: str,
+        detail: str = "semantic",
+        layers: list[str] | None = None,
+        types: list[str] | None = None,
+        screen: str = "",
+        ids: list[str] | None = None,
+        include: list[str] | None = None,
+        format: str = "json",
+        save_as: str = "",
+        diff_against: str = "",
+        max_output_depth: int = 6,
+        max_items: int = 50,
+        max_output_bytes: int = 65_536,
+    ) -> dict:
+        """Perceive the whole scene as structured data (logical coordinates).
+
+        Unlike `renforge_list_ui_elements` (focusables only), this reports every
+        layer displayable, focusable control, and text block with `id`, `type`,
+        `bounds`, `center`, `zorder` and `screen`. Every reply carries an
+        `omitted` completeness hint. `detail` is `semantic` (default), `layout`
+        or `raw`; `layers`/`types`/`screen`/`ids` scope the result.
+        `include=["color","style","overflow"]` opts into composited colour,
+        declared style, and best-effort text overflow. `format="wireframe"` adds
+        an ASCII map. `save_as` persists a snapshot under `.renforge/scenes/`;
+        `diff_against` diffs the live scene against a saved snapshot.
+        """
+        return _log_tool_call(
+            name="renforge_scene_tree",
+            params={
+                "project_path": project_path,
+                "detail": detail,
+                "layers": layers,
+                "types": types,
+                "screen": screen,
+                "ids": ids,
+                "include": include,
+                "format": format,
+                "save_as": save_as,
+                "diff_against": diff_against,
+                "max_items": max_items,
+                "max_output_depth": max_output_depth,
+                "max_output_bytes": max_output_bytes,
+            },
+            project_root=project_path,
+            fn=live.scene_tree,
+            args=(project_path,),
+            kwargs={
+                "detail": detail or None,
+                "layers": layers or None,
+                "types": types or None,
+                "screen": screen or None,
+                "ids": ids or None,
+                "include": include or None,
+                "format": format or "json",
+                "save_as": save_as or None,
+                "diff_against": diff_against or None,
+                "max_items": max_items,
+                "max_output_depth": max_output_depth,
+                "max_output_bytes": max_output_bytes,
+            },
+        )
+
+    @tool_decorator()
+    def renforge_measure(
+        project_path: str,
+        action: str,
+        targets: list[Any],
+        within: Any = None,
+        tolerance: float | None = None,
+    ) -> dict:
+        """Measure pixel relationships between scene nodes, without eyes.
+
+        `action` is one of `align`, `gap`, `distribute`, `center`, `overlap`,
+        `fit`, `contrast`. Each target (and `within`) is a `renforge_scene_tree`
+        node `id` (string, resolved live) or a literal bounds object
+        `{x,y,width,height}`. Returns actionable deltas in logical pixels; when
+        `tolerance` is given, adds a `pass` verdict. `contrast` samples the live
+        frame and reports a WCAG ratio (one target = its internal fg/bg, two
+        targets = between the two elements).
+        """
+        return _log_tool_call(
+            name="renforge_measure",
+            params={
+                "project_path": project_path,
+                "action": action,
+                "targets": targets,
+                "within": within,
+                "tolerance": tolerance,
+            },
+            project_root=project_path,
+            fn=live.measure,
+            args=(project_path,),
+            kwargs={
+                "action": action,
+                "targets": targets,
+                "within": within,
+                "tolerance": tolerance,
+            },
         )
 
     @tool_decorator()

@@ -15,9 +15,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
-      - name: Build frontend
+      - name: Check and build frontend
         working-directory: ui
         run: |
           npm ci
@@ -28,19 +30,59 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate UI artifacts
+        run: python scripts/validate_ui_artifacts.py --static-dir src/renforge/ui/static
+
+      - name: Ensure generated static assets are untracked
+        run: |
+          if [ -n "$(git ls-files 'src/renforge/ui/static/**')" ]; then
+            echo "Generated UI assets must not be tracked by git."
+            git ls-files 'src/renforge/ui/static/**'
+            exit 1
+          fi
+
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade pip build
           python -m build
 
+      - name: Validate package artifacts
+        run: python scripts/validate_ui_artifacts.py --static-dir src/renforge/ui/static --dist-dir dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+
+  smoke:
+    name: UI smoke test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run UI smoke test
+        run: |
+          WHEEL_PATH="$(python -c 'from pathlib import Path; wheels = list(Path("dist").glob("*.whl")); assert len(wheels) == 1, wheels; print(wheels[0].resolve())')"
+          python -m venv .venv-smoke
+          .venv-smoke/bin/python -m pip install --upgrade pip
+          .venv-smoke/bin/python -m pip install "${WHEEL_PATH}[ui]"
+          .venv-smoke/bin/python scripts/smoke_ui.py --timeout 45
 
   publish-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: smoke
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
