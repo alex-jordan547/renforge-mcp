@@ -1014,6 +1014,42 @@ def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
     assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
 
 
+def test_commit_rejects_mismatched_statement_kind(tmp_path: Path) -> None:
+    project, source = _make_imagebutton_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "ImageButton"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-mismatch",
+            "object_id": "obj-independent-mismatch",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-mismatch")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            mismatched_source_key = dict(result["source_key"])
+            mismatched_source_key["statement_kind"] = "textbutton"
+            with coordinator._lock:
+                record = coordinator._analyses[result["analysis_id"]]
+                record.source_key = mismatched_source_key
+            analyzed["result"]["source_key"] = mismatched_source_key
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-mismatch")
+            assert committed["ok"] is False
+            assert committed["error"]["code"] == "STATEMENT_KIND_MISMATCH"
+            assert committed["error"]["message"] == "source_key statement_kind does not match source line"
+            assert "xpos 12 ypos 10" in source.read_text(encoding="utf-8")
+    finally:
+        coordinator.close()
+
+
 def test_analyze_rejects_unsupported_statement_kind(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     source.write_text(

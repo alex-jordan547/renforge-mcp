@@ -13,10 +13,13 @@ from renforge.editor_imagebutton_runner import (
     run_editor_imagebutton_live_scenario,
 )
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("RENFORGE_IMAGEBUTTON_LIVE"),
-    reason="set RENFORGE_IMAGEBUTTON_LIVE=1 to run imagebutton seven-step live proof",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not os.environ.get("RENFORGE_IMAGEBUTTON_LIVE"),
+        reason="set RENFORGE_IMAGEBUTTON_LIVE=1 to run imagebutton seven-step live proof",
+    ),
+]
 
 _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 

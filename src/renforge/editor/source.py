@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import Any
+from typing import TypeVar
 
 
 class EditorSourceError(ValueError):
@@ -27,6 +27,9 @@ class ImagebuttonStatement:
     ypos: int
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
+
+
+_StatementT = TypeVar("_StatementT", bound=TextbuttonStatement | ImagebuttonStatement)
 
 
 @dataclass(frozen=True)
@@ -165,8 +168,8 @@ def _analyze_positioned_kind_statement(
     *,
     expected_widget_id: str,
     expected_kind: str,
-    statement_cls: type[Any],
-) -> Any:
+    statement_cls: type[_StatementT],
+) -> _StatementT:
     statement_text = _statement_text(line)
     tokens = _lex_single_line(statement_text)
     top_level = [token for token in tokens if token.depth == 0]
@@ -319,6 +322,11 @@ def analyze_editable_statement(
         return kind, analyze_textbutton_statement(line, expected_widget_id=expected_widget_id)
     if kind == "imagebutton":
         return kind, analyze_imagebutton_statement(line, expected_widget_id=expected_widget_id)
+    if kind is None:
+        raise EditorSourceError(
+            "STATEMENT_KIND_MISMATCH",
+            "source line does not contain a supported statement kind",
+        )
     raise EditorSourceError("STATEMENT_KIND_MISMATCH", f"unsupported statement kind: {kind!r}")
 
 

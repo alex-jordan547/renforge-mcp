@@ -222,3 +222,9 @@ def test_analyze_editable_statement_routes_kinds() -> None:
             expected_widget_id="b",
         )
     assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+
+def test_analyze_editable_statement_reports_missing_statement_kind() -> None:
+    with pytest.raises(EditorSourceError, match="does not contain a supported statement kind") as excinfo:
+        analyze_editable_statement("    # comment only\n", expected_widget_id="start")
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"

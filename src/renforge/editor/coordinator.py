@@ -29,7 +29,7 @@ from .exceptions import EditorError
 from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_game_path, sha256_bytes
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
-from .source import EditorSourceError, analyze_editable_statement
+from .source import EditorSourceError, analyze_editable_statement, apply_editable_statement_patch
 
 
 def _now_deadline(seconds: float) -> float:
@@ -942,17 +942,10 @@ class EditorCoordinator:
         source_bytes: bytes,
         selected_records: list[tuple[_AnalysisRecord, int, int, dict[str, Any]]],
     ) -> bytes:
-        text = source_bytes.decode("utf-8")
-        lines = text.splitlines(keepends=True)
-        replacements: list[tuple[int, int, str]] = []
+        lines = source_bytes.decode("utf-8").splitlines(keepends=True)
         seen_targets: set[tuple[str, int, str]] = set()
-        offset = 0
-        line_offsets: list[int] = []
-        for line in lines:
-            line_offsets.append(offset)
-            offset += len(line)
 
-        for record, x, y, source_key in selected_records:
+        for _record, x, y, source_key in selected_records:
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
             if not isinstance(line_no, int) or not isinstance(widget_id, str):
@@ -971,15 +964,15 @@ class EditorCoordinator:
                     "STATEMENT_KIND_MISMATCH",
                     "source_key statement_kind does not match source line",
                 )
-            global_offset = line_offsets[line_no - 1]
-            replacements.append((global_offset + statement.xpos_span[0], global_offset + statement.xpos_span[1], str(x)))
-            replacements.append((global_offset + statement.ypos_span[0], global_offset + statement.ypos_span[1], str(y)))
+            lines[line_no - 1] = apply_editable_statement_patch(
+                line_text.encode("utf-8"),
+                kind,
+                statement,
+                x=x,
+                y=y,
+            ).decode("utf-8")
 
-        replacements.sort(key=lambda item: item[0], reverse=True)
-        patched = text
-        for start, end, replacement in replacements:
-            patched = f"{patched[:start]}{replacement}{patched[end:]}"
-        return patched.encode("utf-8")
+        return "".join(lines).encode("utf-8")
 
     def _validate_shadow(self, transaction: _TransactionRecord) -> ShadowLintResult:
         tx_dir = self._transaction_root / transaction.transaction_id
