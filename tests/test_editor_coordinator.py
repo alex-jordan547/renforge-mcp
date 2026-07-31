@@ -211,6 +211,12 @@ def _analyze(sock: socket.socket, auth: dict[str, Any], observation: dict[str, A
     return _recv_json(sock)
 
 
+# Explicit CI recv budget for the commit helper. The fixture SDK lint is a
+# trivial subprocess, but loaded Windows runners can still exceed the 2s
+# create_connection default used by most tests. Non-commit paths keep 2s.
+_COMMIT_SOCKET_TIMEOUT_SECONDS = 10.0
+
+
 def _commit(
     sock: socket.socket,
     auth: dict[str, Any],
@@ -220,12 +226,10 @@ def _commit(
     y: int,
     request_id: str = "co-1",
 ) -> dict[str, Any]:
-    # Commit runs a shadow-project lint subprocess under the coordinator request
-    # lock. On loaded Windows CI hosts that can exceed the 2s create_connection
-    # default used by most tests; keep recv budget above the lint timeout floor
-    # (max(1.0, attestation_timeout * 3)) without changing non-commit paths.
+    # Temporarily raise the socket timeout so slow Windows CI hosts can finish
+    # the commit path (including fixture shadow lint) without client timeouts.
     previous_timeout = sock.gettimeout()
-    sock.settimeout(max(float(previous_timeout or 0.0), 10.0))
+    sock.settimeout(max(float(previous_timeout or 0.0), _COMMIT_SOCKET_TIMEOUT_SECONDS))
     try:
         _send_json(
             sock,
@@ -821,3 +825,102 @@ def test_close_fails_closed_while_a_handler_is_still_running(tmp_path: Path) -> 
     finally:
         release.set()
         coordinator.close(timeout=10.0)
+
+
+class _TimeoutProbeSocket:
+    """Socket stand-in that records settimeout without performing I/O."""
+
+    def __init__(self, initial_timeout: float | None) -> None:
+        self._timeout = initial_timeout
+        self.settimeout_calls: list[float | None] = []
+
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self.settimeout_calls.append(value)
+        self._timeout = value
+
+
+def test_commit_helper_raises_and_restores_socket_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    sock = _TimeoutProbeSocket(initial_timeout=2.0)
+    auth = {"connection_id": "c1", "session_id": "s1"}
+    analysis = {
+        "result": {
+            "analysis_id": "a1",
+            "source_key": {"path": "script.rpy", "line": 2, "baseline_sha256": "deadbeef"},
+        }
+    }
+    module = sys.modules[__name__]
+
+    def fake_send(target: Any, payload: dict[str, Any]) -> None:
+        assert target is sock
+        assert target.gettimeout() == _COMMIT_SOCKET_TIMEOUT_SECONDS
+        assert payload["command"] == "commit"
+
+    def fake_recv(target: Any) -> dict[str, Any]:
+        assert target is sock
+        assert target.gettimeout() == _COMMIT_SOCKET_TIMEOUT_SECONDS
+        return {"ok": True, "result": {"transaction_id": "tx", "state": "published"}}
+
+    monkeypatch.setattr(module, "_send_json", fake_send)
+    monkeypatch.setattr(module, "_recv_json", fake_recv)
+
+    reply = _commit(sock, auth, analysis, x=1, y=2, request_id="co-timeout-budget")
+    assert reply["ok"] is True
+    assert sock.settimeout_calls == [_COMMIT_SOCKET_TIMEOUT_SECONDS, 2.0]
+    assert sock.gettimeout() == 2.0
+
+
+def test_commit_helper_restores_timeout_when_recv_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    sock = _TimeoutProbeSocket(initial_timeout=None)
+    auth = {"connection_id": "c1", "session_id": "s1"}
+    analysis = {
+        "result": {
+            "analysis_id": "a1",
+            "source_key": {"path": "script.rpy", "line": 2, "baseline_sha256": "deadbeef"},
+        }
+    }
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "_send_json", lambda *_args, **_kwargs: None)
+
+    def boom(_target: Any) -> dict[str, Any]:
+        raise TimeoutError("simulated recv failure")
+
+    monkeypatch.setattr(module, "_recv_json", boom)
+
+    with pytest.raises(TimeoutError, match="simulated recv failure"):
+        _commit(sock, auth, analysis, x=1, y=2, request_id="co-timeout-restore")
+
+    assert sock.settimeout_calls[0] == _COMMIT_SOCKET_TIMEOUT_SECONDS
+    assert sock.settimeout_calls[-1] is None
+    assert sock.gettimeout() is None
+
+
+def test_send_json_swallows_closed_peer_errors(tmp_path: Path) -> None:
+    project, _ = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+
+    class _DeadPeer:
+        def sendall(self, _data: bytes) -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    # Must not raise: closed-peer errors are expected after a client timeout.
+    coordinator._send_json(_DeadPeer(), {"ok": True})  # type: ignore[arg-type]
+
+    class _ResetPeer:
+        def sendall(self, _data: bytes) -> None:
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+    coordinator._send_json(_ResetPeer(), {"ok": True})  # type: ignore[arg-type]
+
+    class _UnexpectedPeer:
+        def sendall(self, _data: bytes) -> None:
+            raise OSError(22, "Invalid argument")
+
+    with pytest.raises(OSError, match="Invalid argument"):
+        coordinator._send_json(_UnexpectedPeer(), {"ok": True})  # type: ignore[arg-type]

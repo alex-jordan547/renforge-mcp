@@ -317,7 +317,7 @@ class EditorCoordinator:
     def _send_json(self, conn: socket.socket, payload: dict[str, Any]) -> None:
         try:
             conn.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
-        except OSError:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # Client may have timed out or closed while a long command (e.g. shadow
             # lint) was still running. Teardown is handled by the connection finally.
             return
