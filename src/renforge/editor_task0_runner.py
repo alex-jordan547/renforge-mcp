@@ -368,66 +368,58 @@ def run_editor_task0_live_scenario(
         "_renforge_editor_label_snapshot()"
     )
     report["no_op_save"] = client.request("editor_task0_save")
-    timer_base = client.eval_expr(
+    motion_base = client.eval_expr(
         "list(_renforge_editor_state().preview_position or [])"
     )
-    if len(timer_base) != 2:
-        raise AssertionError(f"timer drag needs a selected preview: {timer_base!r}")
-    timer_start = _require_ok(
+    if len(motion_base) != 2:
+        raise AssertionError(f"motion drag needs a selected preview: {motion_base!r}")
+    motion_start = _require_ok(
         client.eval_expr(
             f"_renforge_editor_apply_drag_from_pointer("
             f"{target_center[0]}, {target_center[1]}, True)"
         ),
-        "timer drag start",
+        "motion drag start",
     )
-    timer_queue = _require_ok(
+    motion_move = _require_ok(
         client.eval_expr(
-            f"_renforge_editor_queue_drag_frame("
+            f"_renforge_editor_apply_drag_from_pointer("
             f"{target_center[0] + 20}, {target_center[1]}, True)"
         ),
-        "timer drag queue",
+        "motion drag move",
     )
-    timer_deadline = time.monotonic() + 1.0
-    timer_after: dict[str, Any] = {}
-    while time.monotonic() < timer_deadline:
-        timer_after = client.eval_expr(
-            "{"
-            "'preview': list(_renforge_editor_state().preview_position or []),"
-            "'pending': _renforge_editor_state().pending_drag_pointer,"
-            "'scheduled': bool(_renforge_editor_state().drag_frame_scheduled),"
-            "'measure': _renforge_editor_measure_snapshot(),"
-            "'measure_x': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_x') is not None,"
-            "'measure_y': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_y') is not None"
-            "}"
+    motion_after = client.eval_expr(
+        "{"
+        "'preview': list(_renforge_editor_state().preview_position or []),"
+        "'drag_active': bool(_renforge_editor_state().drag_active),"
+        "'measure': _renforge_editor_measure_snapshot(),"
+        "'measure_x': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_x') is not None,"
+        "'measure_y': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_y') is not None"
+        "}"
+    )
+    if motion_after.get("preview") == motion_base:
+        raise AssertionError(f"direct motion did not move preview: {motion_after!r}")
+    if not isinstance(motion_after.get("measure"), dict):
+        raise AssertionError(f"direct motion lost measurement: {motion_after!r}")
+    if not (motion_after.get("measure_x") or motion_after.get("measure_y")):
+        raise AssertionError(
+            f"direct motion rendered no measurement line: {motion_after!r}"
         )
-        if (
-            timer_after.get("preview") != timer_base
-            and timer_after.get("pending") is None
-            and timer_after.get("scheduled") is False
-        ):
-            break
-        time.sleep(0.03)
-    else:
-        raise AssertionError(f"private drag timer did not flush: {timer_after!r}")
-    if not isinstance(timer_after.get("measure"), dict):
-        raise AssertionError(f"private drag timer lost measurement: {timer_after!r}")
-    if not (timer_after.get("measure_x") or timer_after.get("measure_y")):
-        raise AssertionError(f"private drag timer rendered no measurement line: {timer_after!r}")
-    report["timer_drag"] = {
-        "base": timer_base,
-        "start": timer_start,
-        "queue": timer_queue,
-        "after": timer_after,
+    report["motion_drag"] = {
+        "base": motion_base,
+        "start": motion_start,
+        "move": motion_move,
+        "after": motion_after,
     }
-    _require_ok(client.eval_expr("_renforge_editor_end_drag()"), "timer drag end")
+    _require_ok(client.eval_expr("_renforge_editor_end_drag()"), "motion drag end")
     _require_ok(
         client.eval_expr(
             f"_renforge_editor_apply_preview("
-            f"{int(timer_base[0])}, {int(timer_base[1])}, allow_snap=False, record=False)"
+            f"{int(motion_base[0])}, {int(motion_base[1])}, allow_snap=False, record=False)"
         ),
-        "timer drag restore",
+        "motion drag restore",
     )
     client.eval_expr("_renforge_editor_reset_history()")
+
 
     anchor_x = int(anchor["bounds"]["x"])
     target_y = int(target["bounds"]["y"])

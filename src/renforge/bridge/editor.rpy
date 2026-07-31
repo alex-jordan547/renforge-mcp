@@ -210,7 +210,6 @@ init 1100 python:
     import hashlib
     import json
     import os
-    import queue
     import socket
     import sys
     import threading
@@ -222,19 +221,6 @@ init 1100 python:
         import pygame_sdl2 as pygame
     except Exception:
         pygame = None
-
-    _RENFORGE_DRAG_FRAME_EVENT = None
-    if pygame is not None:
-        _register_drag_frame_event = getattr(
-            getattr(pygame, "event", None), "register", None
-        )
-        if callable(_register_drag_frame_event):
-            try:
-                _RENFORGE_DRAG_FRAME_EVENT = _register_drag_frame_event(
-                    "RENFORGE_EDITOR_DRAG_FRAME"
-                )
-            except Exception:
-                _RENFORGE_DRAG_FRAME_EVENT = None
 
     if "_renforge_runtime" not in sys.modules:
         raise Exception("RenForge bridge must load before editor.rpy")
@@ -293,9 +279,6 @@ init 1100 python:
             state.drag_active = False
             state.drag_offset = [0, 0]
             state.drag_start_position = None
-            state.pending_drag_pointer = None
-            state.pending_drag_shift = False
-            state.drag_frame_scheduled = False
             state.snap_anchor_x = None
             state.snap_anchor_y = None
             state.snap_offset_x = None
@@ -366,12 +349,6 @@ init 1100 python:
             state.pending_reload_draw_generation = None
         if not hasattr(state, "pending_reload_started"):
             state.pending_reload_started = False
-        if not hasattr(state, "pending_drag_pointer"):
-            state.pending_drag_pointer = None
-        if not hasattr(state, "pending_drag_shift"):
-            state.pending_drag_shift = False
-        if not hasattr(state, "drag_frame_scheduled"):
-            state.drag_frame_scheduled = False
         return state
 
 
@@ -508,8 +485,10 @@ init 1100 python:
 
     class _RenforgeEditorCoordinatorIO(object):
         def __init__(self):
-            self.requests = queue.Queue()
-            self.results = queue.Queue()
+            import queue as queue_module
+
+            self.requests = queue_module.Queue()
+            self.results = queue_module.Queue()
             self.stop = threading.Event()
             self.counter = 0
             state = _renforge_editor_state()
@@ -598,10 +577,13 @@ init 1100 python:
             raise RuntimeError("editor host request failed: %s" % last_error)
 
         def _loop(self):
+            import queue as queue_module
+
+            empty = queue_module.Empty
             while not self.stop.is_set():
                 try:
                     request = self.requests.get(timeout=0.1)
-                except queue.Empty:
+                except empty:
                     continue
                 result = builtins.dict(request)
                 try:
@@ -622,11 +604,14 @@ init 1100 python:
                 self.results.put(result)
 
         def collect_nowait(self):
+            import queue as queue_module
+
+            empty = queue_module.Empty
             items = []
             while True:
                 try:
                     items.append(self.results.get_nowait())
-                except queue.Empty:
+                except empty:
                     break
             return items
 
@@ -1726,63 +1711,12 @@ init 1100 python:
         return _renforge_editor_apply_preview(desired_x, desired_y, shift=shift, allow_snap=True, record=False)
 
 
-    _DRAG_FRAME_INTERVAL_MS = 16
-
-    def _renforge_editor_clear_drag_timer():
-        if _RENFORGE_DRAG_FRAME_EVENT is None or pygame is None:
-            return
-        set_timer = getattr(getattr(pygame, "time", None), "set_timer", None)
-        if callable(set_timer):
-            set_timer(_RENFORGE_DRAG_FRAME_EVENT, 0)
-
-
-    def _renforge_editor_queue_drag_frame(pointer_x, pointer_y, shift):
-        state = _renforge_editor_state()
-        state.pending_drag_pointer = [int(pointer_x), int(pointer_y)]
-        state.pending_drag_shift = bool(shift)
-        if state.drag_frame_scheduled:
-            return {"ok": True, "scheduled": True}
-        set_timer = getattr(getattr(pygame, "time", None), "set_timer", None)
-        if _RENFORGE_DRAG_FRAME_EVENT is None or not callable(set_timer):
-            return _renforge_editor_apply_drag_from_pointer(
-                int(pointer_x), int(pointer_y), bool(shift)
-            )
-        state.drag_frame_scheduled = True
-        try:
-            set_timer(_RENFORGE_DRAG_FRAME_EVENT, _DRAG_FRAME_INTERVAL_MS, once=True)
-        except TypeError:
-            set_timer(_RENFORGE_DRAG_FRAME_EVENT, _DRAG_FRAME_INTERVAL_MS)
-        return {"ok": True, "scheduled": True}
-
-
-    def _renforge_editor_flush_drag_frame():
-        state = _renforge_editor_state()
-        pending = state.pending_drag_pointer
-        shift = state.pending_drag_shift
-        _renforge_editor_clear_drag_timer()
-        state.pending_drag_pointer = None
-        state.pending_drag_shift = False
-        state.drag_frame_scheduled = False
-        if (
-            not state.drag_active
-            or not isinstance(pending, (builtins.list, builtins.tuple))
-            or len(pending) != 2
-        ):
-            return {"ok": True, "flushed": False}
-        return _renforge_editor_apply_drag_from_pointer(
-            int(pending[0]), int(pending[1]), shift
-        )
-
     def _renforge_editor_end_drag():
         state = _renforge_editor_state()
         state.drag_active = False
         state.drag_offset = [0, 0]
         state.snap_anchors_x = None
         state.snap_anchors_y = None
-        state.pending_drag_pointer = None
-        state.pending_drag_shift = False
-        state.drag_frame_scheduled = False
-        _renforge_editor_clear_drag_timer()
         if state.preview_position is not None and state.drag_start_position is not None:
             _renforge_editor_push_history(state.preview_position, before=state.drag_start_position)
         state.drag_start_position = None
@@ -1800,10 +1734,6 @@ init 1100 python:
         state.snap_offset_y = None
         state.snap_anchors_x = None
         state.snap_anchors_y = None
-        state.pending_drag_pointer = None
-        state.pending_drag_shift = False
-        state.drag_frame_scheduled = False
-        _renforge_editor_clear_drag_timer()
         state.guide_x = None
         state.guide_y = None
         renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
@@ -1816,14 +1746,6 @@ init 1100 python:
         if not state.active:
             return None
         event_type = getattr(event, "type", None)
-        if (
-            _RENFORGE_DRAG_FRAME_EVENT is not None
-            and event_type == _RENFORGE_DRAG_FRAME_EVENT
-        ):
-            if state.drag_active and state.drag_frame_scheduled:
-                _renforge_editor_flush_drag_frame()
-                raise renpy.IgnoreEvent()
-            return None
         pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
         key = getattr(event, "key", None)
         shift = _renforge_editor_event_shift(event)
@@ -1836,14 +1758,12 @@ init 1100 python:
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
-                _renforge_editor_queue_drag_frame(pointer_x, pointer_y, shift)
+                # Ren'Py already coalesces MOUSEMOTION to the latest event before
+                # dispatch. Apply that motion immediately; do not re-queue it.
+                _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEBUTTONUP", None) and getattr(event, "button", 0) == 1:
                 if state.drag_active:
-                    state.pending_drag_pointer = None
-                    state.pending_drag_shift = False
-                    state.drag_frame_scheduled = False
-                    _renforge_editor_clear_drag_timer()
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 _renforge_editor_end_drag()
                 raise renpy.IgnoreEvent()
@@ -2172,10 +2092,6 @@ init 1100 python:
         state.drag_active = False
         state.drag_offset = [0, 0]
         state.drag_start_position = None
-        state.pending_drag_pointer = None
-        state.pending_drag_shift = False
-        state.drag_frame_scheduled = False
-        _renforge_editor_clear_drag_timer()
         state.selected_original_position = None
         state.selected_source_position = None
         state.selected_rect = None
@@ -2268,43 +2184,85 @@ init 1100 python:
         state = _renforge_editor_state()
         if not state.active:
             return {"ok": False, "error": "editor is not active"}
-        samples = []
         if pygame is None:
             return {"ok": False, "error": "pygame_sdl2 is unavailable"}
-        first = points[0]
-        if not builtins.isinstance(first, (builtins.list, tuple)) or len(first) < 2:
-            return {"ok": False, "error": "invalid point"}
-        down_reply = _renforge_editor_apply_drag_from_pointer(int(first[0]), int(first[1]), shift)
-        if not down_reply.get("ok", False):
-            return down_reply
+
+        normalized_points = []
         for point in points:
             if not builtins.isinstance(point, (builtins.list, tuple)) or len(point) < 2:
                 return {"ok": False, "error": "invalid point"}
-            px = int(point[0])
-            py = int(point[1])
-            motion_reply = _renforge_editor_apply_drag_from_pointer(px, py, shift)
-            if not motion_reply.get("ok", False):
-                state.drag_active = False
-                state.drag_offset = [0, 0]
-                return motion_reply
-            state_after = _renforge_editor_state()
-            preview = list(state_after.preview_position or [])
-            samples.append(
-                {
-                    "point": [px, py],
-                    "preview_position": preview if len(preview) == 2 else None,
-                    "guide_x": state_after.guide_x,
-                    "guide_y": state_after.guide_y,
-                }
+            normalized_points.append([int(point[0]), int(point[1])])
+
+        def dispatch(event, px, py):
+            try:
+                _renforge_editor_handle_event(event, px, py, 0.0)
+            except renpy.IgnoreEvent:
+                pass
+
+        def sample(point):
+            current = _renforge_editor_state()
+            preview = list(current.preview_position or [])
+            return {
+                "point": list(point),
+                "preview_position": preview if len(preview) == 2 else None,
+                "guide_x": current.guide_x,
+                "guide_y": current.guide_y,
+            }
+
+        mod = getattr(pygame, "KMOD_SHIFT", 0) if shift else 0
+        first_x, first_y = normalized_points[0]
+        dispatch(
+            _renforge_editor_fake_event(
+                getattr(pygame, "MOUSEBUTTONDOWN", None),
+                button=1,
+                pos=(first_x, first_y),
+                mod=mod,
+            ),
+            first_x,
+            first_y,
+        )
+        if not state.drag_active:
+            return {
+                "ok": False,
+                "error": state.selected_lock_reason or "drag did not start",
+            }
+
+        samples = [sample(normalized_points[0])]
+        previous_x, previous_y = first_x, first_y
+        for px, py in normalized_points[1:]:
+            dispatch(
+                _renforge_editor_fake_event(
+                    getattr(pygame, "MOUSEMOTION", None),
+                    pos=(px, py),
+                    rel=(px - previous_x, py - previous_y),
+                    buttons=(1, 0, 0),
+                    mod=mod,
+                ),
+                px,
+                py,
             )
-        up_reply = _renforge_editor_end_drag()
-        if not up_reply.get("ok", False):
-            return up_reply
+            samples.append(sample([px, py]))
+            previous_x, previous_y = px, py
+
+        preview_before_mouse_up = list(state.preview_position or [])
+        drag_active_before_mouse_up = bool(state.drag_active)
+        dispatch(
+            _renforge_editor_fake_event(
+                getattr(pygame, "MOUSEBUTTONUP", None),
+                button=1,
+                pos=(previous_x, previous_y),
+                mod=mod,
+            ),
+            previous_x,
+            previous_y,
+        )
         return {
             "ok": True,
-            "event_method": "Displayable.event",
+            "event_method": "_renforge_editor_handle_event",
             "preview_method": state.last_preview_method,
             "samples": samples,
+            "preview_before_mouse_up": preview_before_mouse_up,
+            "drag_active_before_mouse_up": drag_active_before_mouse_up,
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
         }

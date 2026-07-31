@@ -98,12 +98,15 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     assert snap_samples[2]["guide_x"] == 360
     assert snap_samples[1]["preview_position"][0] == snap_samples[2]["preview_position"][0]
     assert snap_samples[3]["guide_x"] is None
-    timer_drag = report["timer_drag"]
-    assert timer_drag["after"]["preview"] != timer_drag["base"]
-    assert timer_drag["after"]["pending"] is None
-    assert timer_drag["after"]["scheduled"] is False
-    assert isinstance(timer_drag["after"]["measure"], dict)
-    assert timer_drag["after"]["measure_x"] or timer_drag["after"]["measure_y"]
+    assert report["drag_snap"]["event_method"] == "_renforge_editor_handle_event"
+    assert report["drag_snap"]["drag_active_before_mouse_up"] is True
+    assert report["drag_snap"]["preview_before_mouse_up"] == snap_samples[-1]["preview_position"]
+    assert report["drag_snap"]["preview_before_mouse_up"] != snap_samples[0]["preview_position"]
+    motion_drag = report["motion_drag"]
+    assert motion_drag["after"]["preview"] != motion_drag["base"]
+    assert motion_drag["after"]["drag_active"] is True
+    assert isinstance(motion_drag["after"]["measure"], dict)
+    assert motion_drag["after"]["measure_x"] or motion_drag["after"]["measure_y"]
     distance_badge = report["distance_badge"]
     assert isinstance(distance_badge, dict)
     assert int(distance_badge["delta_x"]) != 0
