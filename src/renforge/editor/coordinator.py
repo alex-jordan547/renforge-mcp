@@ -29,7 +29,7 @@ from .exceptions import EditorError
 from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_game_path, sha256_bytes
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
-from .source import EditorSourceError, analyze_textbutton_statement
+from .source import EditorSourceError, analyze_editable_statement
 
 
 def _now_deadline(seconds: float) -> float:
@@ -522,7 +522,9 @@ class EditorCoordinator:
             if source_line < 1 or source_line > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
             widget_id = self._require_runtime_widget_id(runtime_key)
-            statement = analyze_textbutton_statement(lines[source_line - 1], expected_widget_id=widget_id)
+            kind, statement = analyze_editable_statement(
+                lines[source_line - 1], expected_widget_id=widget_id
+            )
             original_position = [statement.xpos, statement.ypos]
             ancestry = runtime_key.get("ancestry")
             normalized_ancestry = (
@@ -553,7 +555,7 @@ class EditorCoordinator:
                 "invocation_path": runtime_key.get("invocation_path"),
                 "instance_discriminator": runtime_key.get("instance_discriminator"),
                 "ancestry": normalized_ancestry,
-                "statement_kind": "textbutton",
+                "statement_kind": kind,
                 "baseline_sha256": source_sha,
             }
             if lock_reason is None:
@@ -962,7 +964,13 @@ class EditorCoordinator:
                 raise EditorError("DUPLICATE_SOURCE_TARGET", "multiple intents target the same source statement")
             seen_targets.add(target_key)
             line_text = lines[line_no - 1]
-            statement = analyze_textbutton_statement(line_text, expected_widget_id=widget_id)
+            kind, statement = analyze_editable_statement(line_text, expected_widget_id=widget_id)
+            recorded_kind = source_key.get("statement_kind")
+            if isinstance(recorded_kind, str) and recorded_kind != kind:
+                raise EditorError(
+                    "STATEMENT_KIND_MISMATCH",
+                    "source_key statement_kind does not match source line",
+                )
             global_offset = line_offsets[line_no - 1]
             replacements.append((global_offset + statement.xpos_span[0], global_offset + statement.xpos_span[1], str(x)))
             replacements.append((global_offset + statement.ypos_span[0], global_offset + statement.ypos_span[1], str(y)))

@@ -16,7 +16,7 @@ and an analogy.
 
 | Adapter | Expected difficulty | Why |
 |---|---|---|
-| `imagebutton` | Low | Same `Button` mechanics proven by Spikes C and D. Focusable, takes an `id`, literal position |
+| `imagebutton` | Low | Same `Button` mechanics proven by Spikes C and D. Focusable, takes an `id`, literal position. **Implemented** with dedicated analyzer + opt-in seven-step live harness (`RENFORGE_IMAGEBUTTON_LIVE=1`); see issue #32 / `2026-08-01-imagebutton-adapter-design.md`. |
 | `button` (explicit block form) | Low | Focusable by construction; the child block may complicate the source-line contract |
 | `bar` / `vbar` / `slider` | Medium | Focusable, but positioning often comes from style or a container |
 

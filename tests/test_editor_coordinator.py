@@ -942,3 +942,102 @@ def test_send_json_propagates_unexpected_oserror(tmp_path: Path) -> None:
 
     with pytest.raises(OSError, match="Invalid argument"):
         coordinator._send_json(_UnexpectedPeer(), {"ok": True})  # type: ignore[arg-type]
+
+
+
+def _make_imagebutton_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
+    root = tmp_path / "project_img"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    imagebutton id "start_btn" idle Solid("#4c6ef5", xysize=(80, 48)) '
+        "xpos 12 ypos 10 action NullAction()\n",
+        encoding="utf-8",
+    )
+    return RenpyProject(root), source
+
+
+def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
+    project, source = _make_imagebutton_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "ImageButton"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-img",
+            "object_id": "obj-independent-img",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-img")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["source_key"]["statement_kind"] == "imagebutton"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-img")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
+            assert 'imagebutton id "start_btn"' in source.read_text(encoding="utf-8")
+
+            _send_json(
+                sock,
+                {
+                    "protocol": "renforge-editor",
+                    "version": 1,
+                    "connection_id": auth["connection_id"],
+                    "request_id": "hs-img",
+                    "command": "reload_handshake",
+                    "payload": {
+                        "transaction_id": committed["result"]["transaction_id"],
+                        "script_generation": 13,
+                    },
+                },
+            )
+            handshake = _recv_json(sock)
+            assert handshake["ok"] is True
+            assert handshake["result"]["state"] == "committed"
+    finally:
+        coordinator.close()
+
+    assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
+
+
+def test_analyze_rejects_unsupported_statement_kind(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    bar id "start_btn" value 1 range 10 xpos 12 ypos 10 xysize (40, 10)\n',
+        encoding="utf-8",
+    )
+    observation = _base_observation()
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-bar",
+            "object_id": "obj-independent-bar",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            reply = _analyze(sock, auth, observation, request_id="an-bar")
+            assert reply["ok"] is True
+            assert reply["result"]["capabilities"] == {"move": False}
+            assert reply["result"]["lock_reason"]["code"] == "STATEMENT_KIND_MISMATCH"
+    finally:
+        coordinator.close()
