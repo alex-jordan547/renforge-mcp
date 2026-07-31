@@ -188,3 +188,10 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 ## License
 
 MIT
+
+## Contributors
+
+Special thanks to the people who have contributed to RenForge:
+
+- [@AxelBeary](https://github.com/AxelBeary) — complete Simplified Chinese
+  dashboard translation and related internationalization fixes.

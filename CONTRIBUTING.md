@@ -40,9 +40,9 @@ for local testing by running `npm run build` from `ui/`.
 ## Locale and i18n integration
 
 - Canonical UI copy lives in `ui/src/i18n/locales/en.json`.
-- `zh-CN` is a partial locale. A missing translation intentionally displays its
-  raw i18n key instead of falling back to English, making untranslated copy easy
-  to identify in the dashboard.
+- `zh-CN` currently has complete coverage. If a future translation is missing,
+  the dashboard intentionally displays its raw i18n key instead of silently
+  falling back to English.
 - Keep key paths stable. Prefer adding keys only when code needs new copy; do not
   rename existing keys unless there is duplicated/conflicting usage.
 - Use interpolated values (`{{count}}`, `{{error}}`, `{{language}}`, etc.) for
@@ -61,11 +61,17 @@ for local testing by running `npm run build` from `ui/`.
   - Only add real Chinese translations for missing keys when available.
   - Preserve existing `zh-CN` values exactly.
   - Do not modify `zh-CN` with fake English/placeholder content.
-  - Issue `#13` remains the dedicated follow-up for full Chinese coverage.
 - Backend API error handling uses `errors.<error_code>` in
   `src/renforge/ui/errors.py`; add matching canonical English entries in
   `ui/src/i18n/locales/en.json` for all stable backend codes and
   `errors.unexpected`.
+
+## Releases and acknowledgements
+
+- Keep contributor acknowledgements under `### Thanks` in the relevant
+  `CHANGELOG.md` release entry so they appear in the GitHub release notes.
+- Mention contributors by GitHub handle and add first-time contributors to the
+  permanent Contributors section at the end of `README.md`.
 
 ## Project layout
 
