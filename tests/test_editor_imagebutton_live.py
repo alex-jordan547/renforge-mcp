@@ -85,13 +85,31 @@ def test_imagebutton_seven_step_live_proof(demo_copy: Path) -> None:
     assert report["resolve"]["move"] is True
     assert report["resolve"]["measurement_method"] == "focus_list"
 
-    assert report["preview"]["after"] != report["preview"]["before"]
-    assert report["preview"]["measurement_method"] == "focus_list"
+    preview = report["preview"]
+    assert preview["bounds_before"] != preview["bounds_after"]
+    observed_delta = [
+        preview["bounds_after"][axis] - preview["bounds_before"][axis]
+        for axis in (0, 1)
+    ]
+    requested_delta = [
+        preview["requested_after"][axis] - preview["requested_before"][axis]
+        for axis in (0, 1)
+    ]
+    assert all(
+        abs(observed_delta[axis] - requested_delta[axis]) <= 1
+        for axis in (0, 1)
+    )
+    assert preview["measurement_method"] == "focus_list"
 
-    assert report["patch"]["after_sha256"] != report["patch"]["before_sha256"]
-    assert report["patch"]["source_position_after"] is not None
-    assert report["patch"]["parsed_after"]["xpos"] == report["patch"]["source_position_after"]["x"]
-    assert report["patch"]["parsed_after"]["ypos"] == report["patch"]["source_position_after"]["y"]
+    patch = report["patch"]
+    assert patch["outside_coordinate_spans_identical"] is True
+    assert patch["after_sha256"] != patch["before_sha256"]
+    assert patch["source_position_after"] == {
+        "x": preview["requested_after"][0],
+        "y": preview["requested_after"][1],
+    }
+    assert patch["parsed_after"]["xpos"] == patch["source_position_after"]["x"]
+    assert patch["parsed_after"]["ypos"] == patch["source_position_after"]["y"]
 
     assert report["reload"]["ok"] is True
     assert report["reload"]["status_text"] == "Reload committed"

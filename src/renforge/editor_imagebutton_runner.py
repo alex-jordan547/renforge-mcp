@@ -84,6 +84,64 @@ def _wait_bounds(
     raise AssertionError(f"bounds for {widget_id!r} unavailable: {last!r}")
 
 
+def _target_line_with_offset(source_text: str) -> tuple[str, int]:
+    offset = 0
+    for line in source_text.splitlines(keepends=True):
+        if f'id "{TARGET_ID}"' in line:
+            return line, offset
+        offset += len(line)
+    raise AssertionError(f"source missing target line for {TARGET_ID!r}")
+
+
+def _normalize_coordinate_spans(
+    source_text: str,
+    *,
+    line_offset: int,
+    statement: Any,
+) -> bytes:
+    replacements = [
+        (
+            line_offset + statement.xpos_span[0],
+            line_offset + statement.xpos_span[1],
+            "__RENFORGE_XPOS__",
+        ),
+        (
+            line_offset + statement.ypos_span[0],
+            line_offset + statement.ypos_span[1],
+            "__RENFORGE_YPOS__",
+        ),
+    ]
+    normalized = source_text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        normalized = f"{normalized[:start]}{replacement}{normalized[end:]}"
+    return normalized.encode("utf-8")
+
+
+def _coordinate_spans_are_only_difference(
+    before_text: str,
+    after_text: str,
+) -> bool:
+    before_line, before_offset = _target_line_with_offset(before_text)
+    after_line, after_offset = _target_line_with_offset(after_text)
+    before_statement = analyze_imagebutton_statement(
+        before_line,
+        expected_widget_id=TARGET_ID,
+    )
+    after_statement = analyze_imagebutton_statement(
+        after_line,
+        expected_widget_id=TARGET_ID,
+    )
+    return _normalize_coordinate_spans(
+        before_text,
+        line_offset=before_offset,
+        statement=before_statement,
+    ) == _normalize_coordinate_spans(
+        after_text,
+        line_offset=after_offset,
+        statement=after_statement,
+    )
+
+
 def run_editor_imagebutton_live_scenario(
     client: Any,
     *,
@@ -109,6 +167,7 @@ def run_editor_imagebutton_live_scenario(
     report["start"] = start
 
     target_bounds = _wait_bounds(client, TARGET_ID)
+    bounds_before = [target_bounds["x"], target_bounds["y"]]
     target_center = _center(target_bounds)
     select = _require_ok(
         client.request(
@@ -147,30 +206,57 @@ def run_editor_imagebutton_live_scenario(
     )
     if not (isinstance(original, (list, tuple)) and len(original) == 2):
         original = [int(baseline_position["x"]), int(baseline_position["y"])]
-    before_preview = [int(original[0]), int(original[1])]
+    requested_before = [int(original[0]), int(original[1])]
 
-    # Preview: nudge +24 x, +16 y without crossing a save boundary.
+    # Preview: nudge without crossing a save boundary. The verdict below is
+    # based on fresh focus bounds, not the editor's requested preview state.
     _require_ok(client.request("editor_task0_key", {"key": "right", "repeat": 24}), "nudge right")
     _require_ok(client.request("editor_task0_key", {"key": "down", "repeat": 16}), "nudge down")
     preview_status = _wait_for_status(
         client,
         lambda status: isinstance(status.get("preview_position"), (list, tuple))
         and len(status.get("preview_position") or []) == 2
-        and list(status.get("preview_position") or []) != before_preview,
+        and list(status.get("preview_position") or []) != requested_before,
         timeout=6.0,
         poll_name="preview moved",
     )
-    after_preview = [int(preview_status["preview_position"][0]), int(preview_status["preview_position"][1])]
+    requested_after = [
+        int(preview_status["preview_position"][0]),
+        int(preview_status["preview_position"][1]),
+    ]
     preview_bounds = _wait_bounds(client, TARGET_ID)
+    bounds_after = [preview_bounds["x"], preview_bounds["y"]]
+    requested_delta = [
+        requested_after[axis] - requested_before[axis]
+        for axis in (0, 1)
+    ]
+    observed_delta = [
+        bounds_after[axis] - bounds_before[axis]
+        for axis in (0, 1)
+    ]
+    if any(
+        abs(observed_delta[axis] - requested_delta[axis]) > 1
+        for axis in (0, 1)
+    ):
+        raise AssertionError(
+            "focus_list preview bounds disagree with requested movement: "
+            f"requested={requested_delta!r}, observed={observed_delta!r}"
+        )
     report["preview"] = {
-        "before": before_preview,
-        "after": after_preview,
-        "bounds_after": [preview_bounds["x"], preview_bounds["y"]],
+        "before": bounds_before,
+        "after": bounds_after,
+        "bounds_before": bounds_before,
+        "bounds_after": bounds_after,
+        "requested_before": requested_before,
+        "requested_after": requested_after,
+        "requested_delta": requested_delta,
+        "observed_delta": observed_delta,
         "measurement_method": "focus_list",
     }
 
-    pre_save_sha = _sha256_file(fixture_path)
-    pre_save_text = fixture_path.read_text(encoding="utf-8")
+    pre_save_bytes = fixture_path.read_bytes()
+    pre_save_sha = hashlib.sha256(pre_save_bytes).hexdigest()
+    pre_save_text = pre_save_bytes.decode("utf-8")
     generation_before = _source_generation(analysis_status)
     save_request = _require_ok(
         client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
@@ -190,21 +276,33 @@ def run_editor_imagebutton_live_scenario(
     source_position_after = _extract_widget_position(post_save_text, TARGET_ID)
     if source_position_after is None:
         raise AssertionError("post-save source missing target position")
+    expected_source_position = {
+        "x": requested_after[0],
+        "y": requested_after[1],
+    }
+    if source_position_after != expected_source_position:
+        raise AssertionError(
+            "source patch disagrees with requested preview position: "
+            f"expected={expected_source_position!r}, observed={source_position_after!r}"
+        )
 
-    # Confirm only xpos/ypos integer spans changed on the target line.
-    target_line = next(
-        line for line in post_save_text.splitlines(keepends=True) if f'id "{TARGET_ID}"' in line
-    )
+    target_line, _target_offset = _target_line_with_offset(post_save_text)
     parsed_after = analyze_imagebutton_statement(target_line, expected_widget_id=TARGET_ID)
+    outside_coordinate_spans_identical = _coordinate_spans_are_only_difference(
+        pre_save_text,
+        post_save_text,
+    )
+    if not outside_coordinate_spans_identical:
+        raise AssertionError("source patch changed bytes outside xpos/ypos spans")
     report["patch"] = {
         "before_sha256": pre_save_sha,
         "after_sha256": post_save_sha,
         "source_position_after": source_position_after,
         "parsed_after": {"xpos": parsed_after.xpos, "ypos": parsed_after.ypos},
         "save_request": save_request,
-        "pre_save_unchanged_prefix": pre_save_text.split(f'id "{TARGET_ID}"', 1)[0]
-        == post_save_text.split(f'id "{TARGET_ID}"', 1)[0],
+        "outside_coordinate_spans_identical": outside_coordinate_spans_identical,
     }
+
     report["reload"] = {
         "ok": True,
         "script_generation": _source_generation(save_status),
