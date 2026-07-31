@@ -28,6 +28,7 @@ screen _renforge_editor_overlay():
         $ _rf_label = _renforge_editor_label_snapshot()
         $ _rf_distance = _renforge_editor_distance_snapshot()
         $ _rf_measure = _renforge_editor_measure_snapshot()
+        $ _rf_guide = _renforge_editor_guide_snapshot()
         $ _rf_tools_visible = _renforge_editor_tools_visible()
 
         fixed:
@@ -35,28 +36,17 @@ screen _renforge_editor_overlay():
             yfill True
             at Transform(alpha=_renforge_editor_opacity())
 
-            if _rf_tools_visible and _renforge_editor_guide_x() is not None:
-                add Solid("#ff3b30", xysize=(1, config.screen_height)):
+            if _rf_tools_visible and _rf_guide["line_x"] is not None:
+                add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
                     id "rf_guide_x"
-                    xpos int(_renforge_editor_guide_x())
-                    ypos 0
+                    xpos int(_rf_guide["line_x"][0])
+                    ypos int(_rf_guide["line_x"][1])
 
-            if _rf_tools_visible and _renforge_editor_guide_y() is not None:
-                add Solid("#ff3b30", xysize=(config.screen_width, 1)):
+            if _rf_tools_visible and _rf_guide["line_y"] is not None:
+                add Solid("#ff3b30", xysize=(max(1, int(_rf_guide["line_y"][2])), 1)):
                     id "rf_guide_y"
-                    xpos 0
-                    ypos int(_renforge_editor_guide_y())
-            if _rf_tools_visible and _rf_measure is not None and _rf_measure["line_x"] is not None:
-                add Solid("#ff3b30", xysize=(max(2, int(_rf_measure["line_x"][2])), 2)):
-                    id "rf_measure_x"
-                    xpos int(_rf_measure["line_x"][0])
-                    ypos int(_rf_measure["line_x"][1])
-
-            if _rf_tools_visible and _rf_measure is not None and _rf_measure["line_y"] is not None:
-                add Solid("#ff3b30", xysize=(2, max(2, int(_rf_measure["line_y"][2])))):
-                    id "rf_measure_y"
-                    xpos int(_rf_measure["line_y"][0])
-                    ypos int(_rf_measure["line_y"][1])
+                    xpos int(_rf_guide["line_y"][0])
+                    ypos int(_rf_guide["line_y"][1])
 
             $ _rf_guide_x_val = _renforge_editor_guide_x()
             $ _rf_guide_y_val = _renforge_editor_guide_y()
@@ -71,7 +61,7 @@ screen _renforge_editor_overlay():
                     id "rf_distance_x"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#b91c1c")
+                    background Solid("#27272a")
                     padding (6, 3)
                     text _rf_distance["text_x"]:
                         id "rf_distance_x_text"
@@ -86,7 +76,7 @@ screen _renforge_editor_overlay():
                     id "rf_distance_y"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#b91c1c")
+                    background Solid("#27272a")
                     padding (6, 3)
                     text _rf_distance["text_y"]:
                         id "rf_distance_y_text"
@@ -283,10 +273,14 @@ init 1100 python:
             state.snap_anchor_y = None
             state.snap_offset_x = None
             state.snap_offset_y = None
-            state.snap_anchors_x = None
-            state.snap_anchors_y = None
+            state.snap_candidates_x = None
+            state.snap_candidates_y = None
+            state.snap_target_x_rect = None
+            state.snap_target_y_rect = None
             state.guide_x = None
             state.guide_y = None
+            state.guide_x_span = None
+            state.guide_y_span = None
             state.opacity = 0.86
             state.tools_visible = True
             state.label_rect = [20, 20, 260, 32]
@@ -333,10 +327,18 @@ init 1100 python:
             state.snap_offset_x = None
         if not hasattr(state, "snap_offset_y"):
             state.snap_offset_y = None
-        if not hasattr(state, "snap_anchors_x"):
-            state.snap_anchors_x = None
-        if not hasattr(state, "snap_anchors_y"):
-            state.snap_anchors_y = None
+        if not hasattr(state, "snap_candidates_x"):
+            state.snap_candidates_x = None
+        if not hasattr(state, "snap_candidates_y"):
+            state.snap_candidates_y = None
+        if not hasattr(state, "snap_target_x_rect"):
+            state.snap_target_x_rect = None
+        if not hasattr(state, "snap_target_y_rect"):
+            state.snap_target_y_rect = None
+        if not hasattr(state, "guide_x_span"):
+            state.guide_x_span = None
+        if not hasattr(state, "guide_y_span"):
+            state.guide_y_span = None
         if not hasattr(state, "tools_visible"):
             state.tools_visible = True
         if not hasattr(state, "selected_source_position"):
@@ -1321,9 +1323,9 @@ init 1100 python:
         return first_key == second_key
 
 
-    def _renforge_editor_anchor_lines(selected_key):
-        anchors_x = []
-        anchors_y = []
+    def _renforge_editor_anchor_candidates(selected_key):
+        candidates_x = []
+        candidates_y = []
         for candidate in _renforge_editor_focus_candidates():
             if candidate.get("editor_owned"):
                 continue
@@ -1335,13 +1337,13 @@ init 1100 python:
             rect = candidate.get("rect") or []
             if len(rect) != 4:
                 continue
-            left = int(rect[0])
-            top = int(rect[1])
-            width = int(rect[2])
-            height = int(rect[3])
-            anchors_x.extend([left, left + width // 2, left + width])
-            anchors_y.extend([top, top + height // 2, top + height])
-        return anchors_x, anchors_y
+            target_rect = [int(value) for value in rect]
+            left, top, width, height = target_rect
+            for anchor in (left, left + width // 2, left + width):
+                candidates_x.append({"anchor": anchor, "rect": target_rect})
+            for anchor in (top, top + height // 2, top + height):
+                candidates_y.append({"anchor": anchor, "rect": target_rect})
+        return candidates_x, candidates_y
 
 
     def _renforge_editor_apply_snap(desired_x, desired_y, shift):
@@ -1351,15 +1353,25 @@ init 1100 python:
             state.snap_anchor_y = None
             state.snap_offset_x = None
             state.snap_offset_y = None
+            state.snap_target_x_rect = None
+            state.snap_target_y_rect = None
             state.guide_x = None
             state.guide_y = None
+            state.guide_x_span = None
+            state.guide_y_span = None
             return int(desired_x), int(desired_y), {"snapped_x": False, "snapped_y": False}
 
-        if state.drag_active and state.snap_anchors_x is not None and state.snap_anchors_y is not None:
-            anchors_x = state.snap_anchors_x
-            anchors_y = state.snap_anchors_y
+        if (
+            state.drag_active
+            and state.snap_candidates_x is not None
+            and state.snap_candidates_y is not None
+        ):
+            candidates_x = state.snap_candidates_x
+            candidates_y = state.snap_candidates_y
         else:
-            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
+            candidates_x, candidates_y = _renforge_editor_anchor_candidates(
+                state.selected_runtime_key
+            )
         selected_rect = state.selected_rect or [desired_x, desired_y, 0, 0]
         width = max(0, int(selected_rect[2]))
         height = max(0, int(selected_rect[3]))
@@ -1373,21 +1385,30 @@ init 1100 python:
         if (
             anchor_x is not None
             and offset_x is not None
+            and state.snap_target_x_rect is not None
             and abs((int(desired_x) + int(offset_x)) - int(anchor_x)) <= _SNAP_RELEASE
         ):
             snapped_x = int(anchor_x) - int(offset_x)
         else:
             state.snap_anchor_x = None
             state.snap_offset_x = None
+            state.snap_target_x_rect = None
             closest_x = None
-            for anchor in anchors_x:
+            for candidate in candidates_x:
+                anchor = int(candidate["anchor"])
                 for offset in offsets_x:
-                    distance = abs((int(desired_x) + int(offset)) - int(anchor))
+                    distance = abs((int(desired_x) + int(offset)) - anchor)
                     if closest_x is None or distance < closest_x[0]:
-                        closest_x = (distance, int(anchor), int(offset))
+                        closest_x = (
+                            distance,
+                            anchor,
+                            int(offset),
+                            list(candidate["rect"]),
+                        )
             if closest_x is not None and closest_x[0] <= _SNAP_ACQUIRE:
                 state.snap_anchor_x = closest_x[1]
                 state.snap_offset_x = closest_x[2]
+                state.snap_target_x_rect = closest_x[3]
                 snapped_x = closest_x[1] - closest_x[2]
 
         anchor_y = state.snap_anchor_y
@@ -1395,25 +1416,50 @@ init 1100 python:
         if (
             anchor_y is not None
             and offset_y is not None
+            and state.snap_target_y_rect is not None
             and abs((int(desired_y) + int(offset_y)) - int(anchor_y)) <= _SNAP_RELEASE
         ):
             snapped_y = int(anchor_y) - int(offset_y)
         else:
             state.snap_anchor_y = None
             state.snap_offset_y = None
+            state.snap_target_y_rect = None
             closest_y = None
-            for anchor in anchors_y:
+            for candidate in candidates_y:
+                anchor = int(candidate["anchor"])
                 for offset in offsets_y:
-                    distance = abs((int(desired_y) + int(offset)) - int(anchor))
+                    distance = abs((int(desired_y) + int(offset)) - anchor)
                     if closest_y is None or distance < closest_y[0]:
-                        closest_y = (distance, int(anchor), int(offset))
+                        closest_y = (
+                            distance,
+                            anchor,
+                            int(offset),
+                            list(candidate["rect"]),
+                        )
             if closest_y is not None and closest_y[0] <= _SNAP_ACQUIRE:
                 state.snap_anchor_y = closest_y[1]
                 state.snap_offset_y = closest_y[2]
+                state.snap_target_y_rect = closest_y[3]
                 snapped_y = closest_y[1] - closest_y[2]
 
         state.guide_x = state.snap_anchor_x
         state.guide_y = state.snap_anchor_y
+        if state.guide_x is not None and state.snap_target_x_rect is not None:
+            target = state.snap_target_x_rect
+            state.guide_x_span = [
+                min(snapped_y, int(target[1])),
+                max(snapped_y + height, int(target[1]) + int(target[3])),
+            ]
+        else:
+            state.guide_x_span = None
+        if state.guide_y is not None and state.snap_target_y_rect is not None:
+            target = state.snap_target_y_rect
+            state.guide_y_span = [
+                min(snapped_x, int(target[0])),
+                max(snapped_x + width, int(target[0]) + int(target[2])),
+            ]
+        else:
+            state.guide_y_span = None
         return snapped_x, snapped_y, {
             "snapped_x": state.snap_anchor_x is not None,
             "snapped_y": state.snap_anchor_y is not None,
@@ -1700,9 +1746,11 @@ init 1100 python:
                 if len(rect) != 4:
                     return {"ok": False, "error": "UNMEASURED"}
                 base = [int(rect[0]), int(rect[1])]
-            anchors_x, anchors_y = _renforge_editor_anchor_lines(state.selected_runtime_key)
-            state.snap_anchors_x = anchors_x
-            state.snap_anchors_y = anchors_y
+            candidates_x, candidates_y = _renforge_editor_anchor_candidates(
+                state.selected_runtime_key
+            )
+            state.snap_candidates_x = candidates_x
+            state.snap_candidates_y = candidates_y
             state.drag_active = True
             state.drag_offset = [int(pointer_x) - int(base[0]), int(pointer_y) - int(base[1])]
             state.drag_start_position = list(base)
@@ -1715,8 +1763,18 @@ init 1100 python:
         state = _renforge_editor_state()
         state.drag_active = False
         state.drag_offset = [0, 0]
-        state.snap_anchors_x = None
-        state.snap_anchors_y = None
+        state.snap_candidates_x = None
+        state.snap_candidates_y = None
+        state.snap_anchor_x = None
+        state.snap_anchor_y = None
+        state.snap_offset_x = None
+        state.snap_offset_y = None
+        state.snap_target_x_rect = None
+        state.snap_target_y_rect = None
+        state.guide_x = None
+        state.guide_y = None
+        state.guide_x_span = None
+        state.guide_y_span = None
         if state.preview_position is not None and state.drag_start_position is not None:
             _renforge_editor_push_history(state.preview_position, before=state.drag_start_position)
         state.drag_start_position = None
@@ -1732,10 +1790,14 @@ init 1100 python:
         state.snap_anchor_y = None
         state.snap_offset_x = None
         state.snap_offset_y = None
-        state.snap_anchors_x = None
-        state.snap_anchors_y = None
+        state.snap_candidates_x = None
+        state.snap_candidates_y = None
+        state.snap_target_x_rect = None
+        state.snap_target_y_rect = None
         state.guide_x = None
         state.guide_y = None
+        state.guide_x_span = None
+        state.guide_y_span = None
         renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
         renpy.restart_interaction()
         return {"ok": True, "active": False}
@@ -2610,6 +2672,19 @@ init 1100 python:
         return _renforge_editor_state().guide_y
 
 
+    def _renforge_editor_guide_snapshot():
+        state = _renforge_editor_state()
+        line_x = None
+        line_y = None
+        if state.guide_x is not None and state.guide_x_span is not None:
+            start, end = state.guide_x_span
+            line_x = [int(state.guide_x), int(start), max(1, int(end) - int(start))]
+        if state.guide_y is not None and state.guide_y_span is not None:
+            start, end = state.guide_y_span
+            line_y = [int(start), int(state.guide_y), max(1, int(end) - int(start))]
+        return {"line_x": line_x, "line_y": line_y}
+
+
     def _renforge_editor_distance_snapshot():
         state = _renforge_editor_state()
         preview = state.preview_position
@@ -2685,8 +2760,6 @@ init 1100 python:
         return {
             "dx": dx,
             "dy": dy,
-            "line_x": [min(origin_x, current_x), current_y + height // 2, abs(dx)] if dx else None,
-            "line_y": [current_x + width // 2, min(origin_y, current_y), abs(dy)] if dy else None,
         }
 
     def _renforge_editor_label_snapshot():

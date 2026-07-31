@@ -105,8 +105,10 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     motion_drag = report["motion_drag"]
     assert motion_drag["after"]["preview"] != motion_drag["base"]
     assert motion_drag["after"]["drag_active"] is True
-    assert isinstance(motion_drag["after"]["measure"], dict)
-    assert motion_drag["after"]["measure_x"] or motion_drag["after"]["measure_y"]
+    assert set(motion_drag["after"]["measure"]) == {"dx", "dy"}
+    assert motion_drag["after"]["measure_x"] is False
+    assert motion_drag["after"]["measure_y"] is False
+    assert motion_drag["after"]["guide"] == {"line_x": None, "line_y": None}
     distance_badge = report["distance_badge"]
     assert isinstance(distance_badge, dict)
     assert int(distance_badge["delta_x"]) != 0
@@ -114,6 +116,12 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     rendered_distance = report["distance_badge_rendered_text"]
     assert isinstance(rendered_distance, str)
     assert distance_badge["text_x"] in rendered_distance
+    guide_snapshot = report["guide_snapshot"]
+    assert guide_snapshot["line_x"] is not None
+    assert guide_snapshot["line_y"] is not None
+    assert 0 < guide_snapshot["line_x"][2] < 720
+    assert 0 < guide_snapshot["line_y"][2] < 1280
+    assert report["guide_after_mouse_up"] == {"line_x": None, "line_y": None}
     tools_visibility = report["tools_visibility"]
     assert tools_visibility["hide_click"]["ok"] is True
     assert tools_visibility["hidden_state"] == [False, True, False, False, False, True]

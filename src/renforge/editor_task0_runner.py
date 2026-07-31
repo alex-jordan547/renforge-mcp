@@ -392,18 +392,19 @@ def run_editor_task0_live_scenario(
         "'preview': list(_renforge_editor_state().preview_position or []),"
         "'drag_active': bool(_renforge_editor_state().drag_active),"
         "'measure': _renforge_editor_measure_snapshot(),"
+        "'guide': _renforge_editor_guide_snapshot(),"
         "'measure_x': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_x') is not None,"
         "'measure_y': renpy.get_widget('_renforge_editor_overlay', 'rf_measure_y') is not None"
         "}"
     )
     if motion_after.get("preview") == motion_base:
         raise AssertionError(f"direct motion did not move preview: {motion_after!r}")
-    if not isinstance(motion_after.get("measure"), dict):
-        raise AssertionError(f"direct motion lost measurement: {motion_after!r}")
-    if not (motion_after.get("measure_x") or motion_after.get("measure_y")):
-        raise AssertionError(
-            f"direct motion rendered no measurement line: {motion_after!r}"
-        )
+    if set((motion_after.get("measure") or {}).keys()) != {"dx", "dy"}:
+        raise AssertionError(f"direct motion mixed measurements with guides: {motion_after!r}")
+    if motion_after.get("measure_x") or motion_after.get("measure_y"):
+        raise AssertionError(f"direct motion rendered a competing measurement line: {motion_after!r}")
+    if motion_after.get("guide") != {"line_x": None, "line_y": None}:
+        raise AssertionError(f"shift drag rendered a snap guide: {motion_after!r}")
     report["motion_drag"] = {
         "base": motion_base,
         "start": motion_start,
@@ -443,25 +444,34 @@ def run_editor_task0_live_scenario(
 
     visual_bounds = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     visual_center = _center(visual_bounds)
-    _require_ok(
-        client.request(
-            "editor_task0_drag",
-            {
-                "points": [
-                    [visual_center[0], visual_center[1]],
-                    [anchor_x + 5, visual_center[1]],
-                ],
-                "shift": False,
-            },
+    visual_start = _require_ok(
+        client.eval_expr(
+            f"_renforge_editor_apply_drag_from_pointer("
+            f"{visual_center[0]}, {visual_center[1]}, False)"
+        ),
+        "visual guide drag start",
+    )
+    visual_snap = _require_ok(
+        client.eval_expr(
+            f"_renforge_editor_apply_drag_from_pointer("
+            f"{anchor_x + 5}, {visual_center[1]}, False)"
         ),
         "visual guide snap",
     )
+    report["visual_guide_drag"] = {
+        "start": visual_start,
+        "snap": visual_snap,
+    }
     guide_status = _require_ok(client.request("editor_task0_status"), "guide status")
     guide_x = guide_status.get("guide_x")
     guide_y = guide_status.get("guide_y")
     if not isinstance(guide_x, int) and not isinstance(guide_y, int):
         raise AssertionError(f"snap did not render a guide: {guide_status!r}")
     report["distance_badge"] = client.eval_expr("_renforge_editor_distance_snapshot()")
+    guide_snapshot = client.eval_expr("_renforge_editor_guide_snapshot()")
+    if guide_snapshot.get("line_x") is None and guide_snapshot.get("line_y") is None:
+        raise AssertionError(f"snap guide was not bounded: {guide_snapshot!r}")
+    report["guide_snapshot"] = guide_snapshot
 
     opacity_before = client.screenshot()
     _require_ok(client.request("editor_task0_set_opacity", {"opacity": 1.0}), "opacity 1.0")
@@ -522,8 +532,12 @@ def run_editor_task0_live_scenario(
             >= 60
         ),
     )
-    sample_x = int(guide_x) if isinstance(guide_x, int) else 10
-    sample_y = int(guide_y) if isinstance(guide_y, int) else int(guide_high.size[1] - 10)
+    if guide_snapshot.get("line_x") is not None:
+        sample_x = int(guide_snapshot["line_x"][0])
+        sample_y = int(guide_snapshot["line_x"][1]) + int(guide_snapshot["line_x"][2]) // 2
+    else:
+        sample_x = int(guide_snapshot["line_y"][0]) + int(guide_snapshot["line_y"][2]) // 2
+        sample_y = int(guide_snapshot["line_y"][1])
     guide_pixel_high = _sample_rgb(guide_high, sample_x, sample_y)
     guide_pixel_low = _sample_rgb(guide_low, sample_x, sample_y)
     report["guide_red"] = {
@@ -543,6 +557,10 @@ def run_editor_task0_live_scenario(
     _wait_for_image(
         client,
         lambda image: _sample_rgb(image, exit_border_x, exit_border_y)[2] < 220,
+    )
+    _require_ok(client.eval_expr("_renforge_editor_end_drag()"), "visual guide drag end")
+    report["guide_after_mouse_up"] = client.eval_expr(
+        "_renforge_editor_guide_snapshot()"
     )
 
 

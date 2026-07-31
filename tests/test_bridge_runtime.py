@@ -848,7 +848,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         globs["_renforge_editor_stop_coordinator"]()
 
 
-def test_editor_measurement_tracks_raw_pointer_while_snap_is_pinned(
+def test_editor_drag_feedback_separates_distance_from_bounded_snap_guide(
     running_bridge, monkeypatch
 ):
     renpy = running_bridge.renpy
@@ -879,13 +879,49 @@ def test_editor_measurement_tracks_raw_pointer_while_snap_is_pinned(
         state.selected_original_position = [100, 200]
         state.preview_position = [100, 200]
         state.selected_rect = [100, 200, 40, 20]
+        state.snap_candidates_x = [
+            {"anchor": 120, "rect": [120, 260, 40, 40]}
+        ]
+        state.snap_candidates_y = []
 
         measurement = globs["_renforge_editor_measure_snapshot"]()
+        snapped_x, snapped_y, detail = globs["_renforge_editor_apply_snap"](
+            81, 200, False
+        )
+        guide = globs["_renforge_editor_guide_snapshot"]()
+        held_x, held_y, held_detail = globs["_renforge_editor_apply_snap"](
+            84, 210, False
+        )
+        held_guide = globs["_renforge_editor_guide_snapshot"]()
+        globs["_renforge_editor_apply_snap"](84, 210, True)
+        state.snap_candidates_x = []
+        state.snap_candidates_y = [
+            {"anchor": 230, "rect": [300, 230, 50, 40]}
+        ]
+        y_snapped_x, y_snapped_y, y_detail = globs[
+            "_renforge_editor_apply_snap"
+        ](100, 211, False)
+        horizontal_guide = globs["_renforge_editor_guide_snapshot"]()
 
-        assert measurement["dx"] == 1
-        assert measurement["dy"] == 1
-        assert measurement["line_x"] == [100, 211, 1]
-        assert measurement["line_y"] == [121, 200, 1]
+        assert measurement == {"dx": 1, "dy": 1}
+        assert (snapped_x, snapped_y) == (80, 200)
+        assert detail == {"snapped_x": True, "snapped_y": False}
+        assert guide == {
+            "line_x": [120, 200, 100],
+            "line_y": None,
+        }
+        assert (held_x, held_y) == (80, 210)
+        assert held_detail == {"snapped_x": True, "snapped_y": False}
+        assert held_guide == {
+            "line_x": [120, 210, 90],
+            "line_y": None,
+        }
+        assert (y_snapped_x, y_snapped_y) == (100, 210)
+        assert y_detail == {"snapped_x": False, "snapped_y": True}
+        assert horizontal_guide == {
+            "line_x": None,
+            "line_y": [100, 230, 250],
+        }
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 
@@ -988,8 +1024,8 @@ def test_editor_motion_applies_preview_immediately(running_bridge, monkeypatch):
         state.selected_source_position = [100, 200]
         state.selected_rect = [100, 200, 40, 20]
         state.preview_position = [100, 200]
-        state.snap_anchors_x = []
-        state.snap_anchors_y = []
+        state.snap_candidates_x = []
+        state.snap_candidates_y = []
         state.targets["target"] = {
             "screen": "drag_target_screen",
             "widget_id": "drag_target",
