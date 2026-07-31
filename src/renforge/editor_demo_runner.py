@@ -9,6 +9,8 @@ from typing import Any
 
 from PIL import Image
 
+from .bridge.client import BridgeError
+
 
 _EDITOR_LAUNCHER = "_renforge_editor_launcher"
 _EDITOR_OVERLAY = "_renforge_editor_overlay"
@@ -185,8 +187,17 @@ def _ed_do_save(client: Any, *, timeout: float = 60.0) -> dict[str, Any]:
         "editor save click",
     )
     while time.monotonic() < deadline:
-        last = _ed_require_ok(client.request("editor_task0_status"), "save status")
-        if not last.get("save_in_progress") and last.get("status_text") == "Reload committed":
+        try:
+            last = _ed_require_ok(
+                client.request("editor_task0_status"), "save status"
+            )
+        except BridgeError:
+            time.sleep(0.2)
+            continue
+        if (
+            not last.get("save_in_progress")
+            and last.get("status_text") == "Reload committed"
+        ):
             return last
         time.sleep(0.2)
     raise AssertionError(f"save did not commit: {last!r}")
