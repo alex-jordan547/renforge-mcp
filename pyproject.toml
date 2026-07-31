@@ -49,6 +49,10 @@ force-include = { "src/renforge/ui/static" = "renforge/ui/static" }
 
 [tool.hatch.build.targets.sdist]
 include = ["src/renforge"]
+exclude = ["src/renforge/ui/static/**"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/renforge/ui/static" = "src/renforge/ui/static"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
