@@ -17,12 +17,32 @@ class EditorSourceError(ValueError):
 DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
 
 # Concurrent axis/placement properties that must not ride along with pure align (fx, fy).
-# offset and axis-split forms are out of scope for the align adapter.
 _ALIGN_CONCURRENT_PROPERTY_WORDS = frozenset(
     {
         "xpos",
         "ypos",
         "pos",
+        "offset",
+        "anchor",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+    }
+)
+
+# Concurrent properties that must not ride along with pure offset (x, y).
+# Axis-split xoffset/yoffset and absolute/relative placement stay locked.
+_OFFSET_CONCURRENT_PROPERTY_WORDS = frozenset(
+    {
+        "xpos",
+        "ypos",
+        "pos",
+        "align",
         "anchor",
         "xalign",
         "yalign",
@@ -60,7 +80,7 @@ _NAME_VALUE_PROPERTY_WORDS = frozenset(
 @dataclass(frozen=True)
 class TextbuttonStatement:
     widget_id: str
-    # Pixel integers for xy/pos; fractional floats for align components.
+    # Pixel integers for xy/pos/offset; fractional floats for align components.
     xpos: int | float
     ypos: int | float
     xpos_span: tuple[int, int]
@@ -69,7 +89,7 @@ class TextbuttonStatement:
     # "block" keeps absolute character spans in the full source file.
     form: str = "single_line"
     source_line: int | None = None
-    # xy | pos | align — write-back preserves the authored form.
+    # xy | pos | align | offset — write-back preserves the authored form.
     position_mode: str = "xy"
     # When True, a pure literal anchor (fx, fy) is present and must be preserved.
     has_anchor: bool = False
@@ -388,6 +408,7 @@ _TEXTBUTTON_PAIR_FOLLOWER_WORDS = frozenset(
         "ypos",
         "pos",
         "align",
+        "offset",
         "anchor",
         "action",
         "style",
@@ -676,17 +697,30 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
     # concurrent or dynamic forms cannot be ignored by the tuple-only scan.
     pos_word_indexes = _top_level_property_keyword_indexes(tokens, "pos")
     align_word_indexes = _top_level_property_keyword_indexes(tokens, "align")
+    offset_word_indexes = _top_level_property_keyword_indexes(tokens, "offset")
 
-    form_count = sum([bool(has_xy), bool(pos_word_indexes), bool(align_word_indexes)])
+    form_count = sum(
+        [
+            bool(has_xy),
+            bool(pos_word_indexes),
+            bool(align_word_indexes),
+            bool(offset_word_indexes),
+        ]
+    )
     if form_count > 1:
         raise EditorSourceError(
             "POSITION_FORM_MIXED",
-            "textbutton cannot mix align/pos/xpos/ypos position forms",
+            "textbutton cannot mix align/pos/offset/xpos/ypos position forms",
         )
     if len(pos_word_indexes) > 1:
         raise EditorSourceError("POS_DUPLICATE", "textbutton statement must contain exactly one pos")
     if len(align_word_indexes) > 1:
         raise EditorSourceError("ALIGN_DUPLICATE", "textbutton statement must contain exactly one align")
+    if len(offset_word_indexes) > 1:
+        raise EditorSourceError(
+            "OFFSET_DUPLICATE",
+            "textbutton statement must contain exactly one offset",
+        )
 
     if len(align_word_indexes) == 1:
         widget_id = _require_single_literal_id(
@@ -761,6 +795,48 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
             source_line=None,
             position_mode="pos",
             has_anchor=has_anchor,
+        )
+
+    if len(offset_word_indexes) == 1:
+        widget_id = _require_single_literal_id(
+            tokens,
+            expected_widget_id=expected_widget_id,
+            human_kind="textbutton",
+        )
+        concurrent = [
+            keyword
+            for keyword in _OFFSET_CONCURRENT_PROPERTY_WORDS
+            if _top_level_property_keyword_indexes(tokens, keyword)
+        ]
+        if concurrent:
+            raise EditorSourceError(
+                "POSITION_FORM_MIXED",
+                "textbutton offset form does not combine with concurrent placement properties",
+            )
+        tuple_indexes = _tuple_property_indexes(tokens, "offset")
+        if not tuple_indexes or tuple_indexes[0] != offset_word_indexes[0]:
+            raise EditorSourceError(
+                "OFFSET_LITERAL_REQUIRED",
+                "offset must be a pure literal pair of integers: offset (x, y)",
+            )
+        # Same integer-pair shape as pos (supports signed NUMBER tokens).
+        parsed_offset = _parse_literal_pos_pair(tokens, tuple_indexes[0])
+        if parsed_offset is None:
+            raise EditorSourceError(
+                "OFFSET_LITERAL_REQUIRED",
+                "offset must be a pure literal pair of integers: offset (x, y)",
+            )
+        ox_value, oy_value, ox_span, oy_span = parsed_offset
+        return TextbuttonStatement(
+            widget_id=widget_id,
+            xpos=ox_value,
+            ypos=oy_value,
+            xpos_span=ox_span,
+            ypos_span=oy_span,
+            form="single_line",
+            source_line=None,
+            position_mode="offset",
+            has_anchor=False,
         )
 
     # xy form (optional pure anchor for issue #40).
@@ -1235,9 +1311,27 @@ def apply_textbutton_patch(
     y: int,
     align_runtime_baseline: tuple[int, int] | list[int] | None = None,
     align_widget_size: tuple[int, int] | list[int] | None = None,
+    offset_runtime_baseline: tuple[int, int] | list[int] | None = None,
 ) -> bytes:
     # Block form spans are absolute in the full source; single-line spans are
     # relative to the single line bytes passed by the coordinator.
+    if statement.position_mode == "offset":
+        # Ren'Py offset is additive on top of the base placement. Commit x/y are
+        # measured runtime top-left; write authored + (runtime − baseline).
+        if offset_runtime_baseline is None or len(offset_runtime_baseline) != 2:
+            raise EditorSourceError(
+                "OFFSET_BASELINE_REQUIRED",
+                "offset write-back requires a measured runtime baseline",
+            )
+        ox = int(statement.xpos) + (int(x) - int(offset_runtime_baseline[0]))
+        oy = int(statement.ypos) + (int(y) - int(offset_runtime_baseline[1]))
+        return _apply_integer_span_patch(
+            source_bytes,
+            xpos_span=statement.xpos_span,
+            ypos_span=statement.ypos_span,
+            x=ox,
+            y=oy,
+        )
     if statement.position_mode == "align":
         # Proven geometry only: measured baseline + widget size are mandatory.
         # Ren'Py ``align (a, b)`` sets anchor to (a, b), so ΔTL = Δalign × (parent − widget).

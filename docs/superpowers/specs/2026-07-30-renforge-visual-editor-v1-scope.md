@@ -134,6 +134,21 @@ the anchor point.
 
 Live: `RENFORGE_ANCHOR_LIVE=1 … tests/test_editor_anchor_live.py` on Ren'Py **8.5.3**.
 
+### Literal `offset (x, y)` on textbutton (issue #41)
+
+```renpy
+textbutton "MOVE ME" id "offset_target" offset (200, 180) action NullAction()
+```
+
+Host analysis records `position_mode == "offset"` and stores authored integer offsets plus the
+measured focus baseline. Preview uses absolute xpos/ypos with offset/align/anchor neutralized;
+write-back applies `authored + Δpixel` (offset is additive) and preserves the `offset` form.
+Non-literal pairs, axis-split `xoffset`/`yoffset`, and mixed placement forms are locked
+(`OFFSET_LITERAL_REQUIRED`, `POSITION_FORM_MIXED`, `OFFSET_DUPLICATE`). Attestation requires
+agreement within **1 px**.
+
+Live: `RENFORGE_OFFSET_LIVE=1 … tests/test_editor_offset_live.py` on Ren'Py **8.5.3**.
+
 The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:` headers. Computed
 coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime
 instances remain selectable but locked with an exact reason.

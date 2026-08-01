@@ -1842,6 +1842,54 @@ def test_analyze_textbutton_align_locks_unproven_parent_geometry(tmp_path: Path)
         coordinator.close()
 
 
+def test_analyze_and_commit_textbutton_offset_preserves_form(tmp_path: Path) -> None:
+    root = tmp_path / "project_offset"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" offset (12, 10) action NullAction()\n',
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    # Runtime TL equals authored offset for base placement 0,0.
+    observation = _base_observation(script_generation=14)
+    observation["rect"] = [12, 10, 80, 40]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-offset",
+            "object_id": "obj-independent-offset",
+            "rect": [12, 10, 80, 40],
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-offset")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["original_position"] == [12, 10]
+            assert result["source_key"]["position_mode"] == "offset"
+            assert result["source_key"]["offset_authored"] == [12, 10]
+            assert result["source_key"]["offset_runtime_baseline"] == [12, 10]
+            # Move runtime TL by +20,+30 → offset becomes 32, 40.
+            committed = _commit(sock, auth, analyzed, x=32, y=40, request_id="co-offset")
+            assert committed["ok"] is True
+            text = source.read_text(encoding="utf-8")
+            assert "offset (32, 40)" in text
+            assert "xpos" not in text and "ypos" not in text
+    finally:
+        coordinator.close()
+
+
 def test_analyze_and_commit_textbutton_anchor_preserves_anchor_bytes(tmp_path: Path) -> None:
     root = tmp_path / "project_anchor"
     game_dir = root / "game"

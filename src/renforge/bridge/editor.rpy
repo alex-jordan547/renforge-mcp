@@ -1135,10 +1135,10 @@ init 1100 python:
             next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
             source_key = target.get("source_key") or {}
             position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
-            # Align-authored targets: preview with absolute xpos/ypos so focus_list
-            # tracks the requested pixel delta 1:1. Source write-back still uses
-            # align fractions (host apply converts using the measured baseline).
-            if position_mode == "align":
+            # Align/offset-authored targets: preview with absolute xpos/ypos so
+            # focus_list tracks the requested pixel delta 1:1. Source write-back
+            # still uses the authored form (host apply converts via baseline).
+            if position_mode in ("align", "offset"):
                 # Absolute placement for preview; neutralize align/anchor/offset so
                 # concurrent axis props cannot stack on top of the requested TL.
                 properties[str(widget_id)] = {

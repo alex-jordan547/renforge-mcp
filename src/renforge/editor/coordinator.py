@@ -559,10 +559,10 @@ class EditorCoordinator:
                     header_line,
                     expected_widget_id=widget_id,
                 )
-            # Align is fractional in source; the editor delta formula works in
-            # logical pixels, so original_position is the measured runtime rect.
+            # Align is fractional and offset is additive; both write via measured
+            # runtime deltas, so original_position is the focus_list top-left.
             position_mode = getattr(statement, "position_mode", "xy")
-            if position_mode == "align":
+            if position_mode in {"align", "offset"}:
                 original_position = list(runtime_position)
             else:
                 original_position = [int(statement.xpos), int(statement.ypos)]
@@ -655,6 +655,16 @@ class EditorCoordinator:
                             "ALIGN_WIDGET_SIZE_UNPROVEN",
                             "independent observation must provide positive widget width and height",
                         )
+            if position_mode == "offset":
+                # Authored offset integers + independent runtime baseline for ΔTL.
+                source_key["offset_authored"] = [
+                    int(statement.xpos),
+                    int(statement.ypos),
+                ]
+                source_key["offset_runtime_baseline"] = [
+                    int(runtime_position[0]),
+                    int(runtime_position[1]),
+                ]
             if lock_reason is None:
                 if observation.get("measurement_method") != "focus_list":
                     lock_reason = self._lock_reason(
@@ -1109,9 +1119,10 @@ class EditorCoordinator:
                     lines[line_no - 1],
                     expected_widget_id=widget_id,
                 )
-                align_baseline = source_key.get("align_runtime_baseline")
-                align_size = source_key.get("align_widget_size")
-                if kind == "textbutton" and getattr(statement, "position_mode", "xy") == "align":
+                mode = getattr(statement, "position_mode", "xy") if kind == "textbutton" else "xy"
+                if kind == "textbutton" and mode == "align":
+                    align_baseline = source_key.get("align_runtime_baseline")
+                    align_size = source_key.get("align_widget_size")
                     lines[line_no - 1] = apply_textbutton_patch(
                         lines[line_no - 1].encode("utf-8"),
                         statement,
@@ -1125,6 +1136,19 @@ class EditorCoordinator:
                         align_widget_size=(
                             tuple(align_size)
                             if isinstance(align_size, (list, tuple)) and len(align_size) == 2
+                            else None
+                        ),
+                    ).decode("utf-8")
+                elif kind == "textbutton" and mode == "offset":
+                    offset_baseline = source_key.get("offset_runtime_baseline")
+                    lines[line_no - 1] = apply_textbutton_patch(
+                        lines[line_no - 1].encode("utf-8"),
+                        statement,
+                        x=x,
+                        y=y,
+                        offset_runtime_baseline=(
+                            tuple(offset_baseline)
+                            if isinstance(offset_baseline, (list, tuple)) and len(offset_baseline) == 2
                             else None
                         ),
                     ).decode("utf-8")
