@@ -333,13 +333,36 @@ def test_analyze_editable_statement_routes_kinds() -> None:
     assert kind_tb == "textbutton"
     assert stmt_tb.ypos == 9
 
+    bar_line = '    bar value StaticValue(50) range 100 id "b" xpos 1 ypos 2 xsize 40 ysize 10\n'
     kind_bar, stmt_bar = analyze_editable_statement(
-        '    bar value StaticValue(50) range 100 id "b" xpos 1 ypos 2 xsize 40 ysize 10\n',
+        bar_line,
         expected_widget_id="b",
     )
     assert kind_bar == "bar"
     assert isinstance(stmt_bar, BarStatement)
     assert stmt_bar.xpos == 1
+    patched_bar = apply_editable_statement_patch(
+        bar_line.encode("utf-8"),
+        kind_bar,
+        stmt_bar,
+        x=11,
+        y=22,
+    ).decode("utf-8")
+    assert patched_bar == (
+        '    bar value StaticValue(50) range 100 id "b" xpos 11 ypos 22 xsize 40 ysize 10\n'
+    )
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_editable_statement_patch(
+            bar_line.encode("utf-8"),
+            "bar",
+            analyze_textbutton_statement(
+                '    textbutton "Play" id "start" xpos 8 ypos 9 action NullAction()\n',
+                expected_widget_id="start",
+            ),
+            x=1,
+            y=2,
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
 
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_editable_statement(
@@ -377,6 +400,39 @@ def test_analyze_bar_statement_accepts_single_line_and_patches_spans() -> None:
         '    bar value StaticValue(50) range 100 id "bar_target" '
         "xpos 240 ypos 196 xsize 240 ysize 24\n"
     )
+
+
+def test_analyze_bar_statement_accepts_negative_coordinates_and_patches_spans() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos -10 ypos -20 xsize 240 ysize 24\n"
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    assert isinstance(parsed, BarStatement)
+    assert parsed.widget_id == "bar_target"
+    assert parsed.xpos == -10
+    assert parsed.ypos == -20
+    patched = apply_bar_patch(line.encode("utf-8"), parsed, x=-30, y=-40).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos -30 ypos -40 xsize 240 ysize 24\n"
+    )
+
+
+def test_analyze_bar_statement_rejects_keyword_expression_coordinates() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 100 if flag else 20 ypos 10\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 10 ypos 100 or base_y\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
 
 
 def test_analyze_bar_statement_preserves_bytes_outside_coordinate_spans() -> None:

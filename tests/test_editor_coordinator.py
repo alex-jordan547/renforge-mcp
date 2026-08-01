@@ -12,6 +12,7 @@ import pytest
 
 from renforge.editor import EditorCoordinator, RuntimeProbe
 from renforge.editor.exceptions import EditorError
+from renforge.editor.source import peek_statement_kind
 from renforge.project import RenpyProject
 from renforge.sdk import RenpySdk
 
@@ -1194,6 +1195,8 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
         (
             '    vbar value StaticValue(50) range 100 id "start_btn" xpos 12 ypos 10\n',
             "VBAR_NOT_SUPPORTED",
+            "vbar",
+            False,
             [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
               "screen_owner": "game", "crop_state": "none", "editor_owned": False},
              {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
@@ -1202,6 +1205,8 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
         (
             '    bar value StaticValue(50) range 100 id "start_btn" xpos base_x ypos 10\n',
             "XPOS_LITERAL_REQUIRED",
+            "bar",
+            False,
             [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
               "screen_owner": "game", "crop_state": "none", "editor_owned": False},
              {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
@@ -1210,6 +1215,8 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
         (
             '    bar value StaticValue(50) range 100 style "pos_style" id "start_btn"\n',
             "BAR_STYLE_POSITION_UNSUPPORTED",
+            "bar",
+            False,
             [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
               "screen_owner": "game", "crop_state": "none", "editor_owned": False},
              {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
@@ -1218,6 +1225,8 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
         (
             '    bar value StaticValue(50) range 100 id "start_btn" xpos 12 ypos 10\n',
             "CONTAINER_POSITION_UNSUPPORTED",
+            "bar",
+            True,
             [
                 {
                     "index": 0,
@@ -1248,7 +1257,8 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
         ),
     )
     sdk = _make_sdk(tmp_path)
-    for index, (line, expected_code, ancestry) in enumerate(cases):
+    for index, (line, expected_code, expected_kind, source_key_present, ancestry) in enumerate(cases):
+        assert peek_statement_kind(line) == expected_kind
         source.write_text("screen test_screen:\n" + line, encoding="utf-8")
         observation = _base_observation(script_generation=20 + index)
         observation["runtime_key"]["ancestry"] = ancestry
@@ -1271,5 +1281,13 @@ def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_in
                 assert reply["ok"] is True
                 assert reply["result"]["capabilities"] == {"move": False}
                 assert reply["result"]["lock_reason"]["code"] == expected_code
+                source_key = reply["result"].get("source_key")
+                if source_key_present:
+                    assert source_key is not None
+                    assert source_key["statement_kind"] == expected_kind
+                else:
+                    # Source analysis failed before source_key was recorded; the
+                    # peeked keyword still proves bar/vbar were not conflated.
+                    assert source_key is None
         finally:
             coordinator.close()

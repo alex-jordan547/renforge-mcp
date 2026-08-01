@@ -288,12 +288,63 @@ def analyze_imagebutton_statement(line: str, *, expected_widget_id: str) -> Imag
     )
 
 
+# Words that may legally follow a literal xpos/ypos on a bar line (property
+# keywords). Expression operators such as `if` / `or` are intentionally absent
+# so `xpos 100 if flag else 20` is rejected rather than half-patched.
+_BAR_POSITION_FOLLOWER_WORDS = frozenset(
+    {
+        "id",
+        "xpos",
+        "ypos",
+        "value",
+        "range",
+        "style",
+        "xsize",
+        "ysize",
+        "xmaximum",
+        "ymaximum",
+        "xminimum",
+        "yminimum",
+        "xfill",
+        "yfill",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+        "tooltip",
+        "sensitive",
+        "focus",
+        "keyboard_focus",
+        "hovered",
+        "unhovered",
+        "released",
+        "changed",
+        "thumb",
+        "thumb_offset",
+        "thumb_shadow",
+        "left_bar",
+        "right_bar",
+        "top_bar",
+        "bottom_bar",
+        "bar_invert",
+        "bar_resizing",
+        "bar_vertical",
+    }
+)
+
+
 def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement:
     """Dedicated single-line bar adapter. Does not accept vbar."""
     statement_text = _statement_text(line)
     tokens = _lex_single_line(statement_text)
     top_level = [token for token in tokens if token.depth == 0]
     if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "bar":
+        # Keep VBAR_NOT_SUPPORTED here (not only in the dispatcher) so direct
+        # callers never fall through to STATEMENT_KIND_MISMATCH for vbar.
         if top_level and top_level[0].kind == "WORD" and top_level[0].text == "vbar":
             raise EditorSourceError("VBAR_NOT_SUPPORTED", "vbar statements are not editable")
         raise EditorSourceError("STATEMENT_KIND_MISMATCH", "source statement is not a bar")
@@ -329,9 +380,13 @@ def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement
             invalid_literals.add(keyword)
             continue
         following_index = _next_top_level_index(tokens, value_index)
-        if following_index is not None and tokens[following_index].kind != "WORD":
-            invalid_literals.add(keyword)
-            continue
+        if following_index is not None:
+            following = tokens[following_index]
+            # Reject symbols (`100-20`) and expression words (`100 if flag`).
+            # Only another bar property keyword or EOS proves a pure integer.
+            if following.kind != "WORD" or following.text not in _BAR_POSITION_FOLLOWER_WORDS:
+                invalid_literals.add(keyword)
+                continue
         value = int(value_token.text)
         if keyword == "xpos":
             xpos_value = value

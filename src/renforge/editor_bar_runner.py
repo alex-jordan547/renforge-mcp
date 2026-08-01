@@ -109,8 +109,8 @@ def _target_line_with_offset(source_text: str) -> tuple[str, int]:
 def _independent_expected_after_patch(before_text: str, *, x: int, y: int) -> str:
     """Build expected fixture text without calling apply_bar_patch/analyze_bar_statement."""
     line, offset = _target_line_with_offset(before_text)
-    patched_line = re.sub(r"(\bxpos\s+)\d+", rf"\g<1>{int(x)}", line, count=1)
-    patched_line = re.sub(r"(\bypos\s+)\d+", rf"\g<1>{int(y)}", patched_line, count=1)
+    patched_line = re.sub(r"(\bxpos\s+)-?\d+", rf"\g<1>{int(x)}", line, count=1)
+    patched_line = re.sub(r"(\bypos\s+)-?\d+", rf"\g<1>{int(y)}", patched_line, count=1)
     if patched_line == line:
         raise AssertionError("independent patch constructor did not change target line")
     return f"{before_text[:offset]}{patched_line}{before_text[offset + len(line) :]}"
@@ -119,10 +119,10 @@ def _independent_expected_after_patch(before_text: str, *, x: int, y: int) -> st
 def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bool:
     before_line, _ = _target_line_with_offset(before_text)
     after_line, _ = _target_line_with_offset(after_text)
-    before_norm = re.sub(r"(\bxpos\s+)\d+", r"\1__X__", before_line, count=1)
-    before_norm = re.sub(r"(\bypos\s+)\d+", r"\1__Y__", before_norm, count=1)
-    after_norm = re.sub(r"(\bxpos\s+)\d+", r"\1__X__", after_line, count=1)
-    after_norm = re.sub(r"(\bypos\s+)\d+", r"\1__Y__", after_norm, count=1)
+    before_norm = re.sub(r"(\bxpos\s+)-?\d+", r"\1__X__", before_line, count=1)
+    before_norm = re.sub(r"(\bypos\s+)-?\d+", r"\1__Y__", before_norm, count=1)
+    after_norm = re.sub(r"(\bxpos\s+)-?\d+", r"\1__X__", after_line, count=1)
+    after_norm = re.sub(r"(\bypos\s+)-?\d+", r"\1__Y__", after_norm, count=1)
     if before_norm != after_norm:
         return False
     before_rest = before_text.replace(before_line, "", 1)
