@@ -2366,3 +2366,64 @@ def test_list_slots_skips_corrupt_metadata_and_keeps_valid_slots(running_bridge)
             {"name": "valid", "extra_info": "ok", "mtime": 42.0},
         ],
     }
+
+
+def test_editor_allowed_ancestry_accepts_bar_and_rejects_unknown_and_side(
+    running_bridge, monkeypatch
+):
+    """Bar is the measured runtime class for bar/vbar; Side remains unproven."""
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(width=width, height=height)
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.session = {}
+    renpy.get_screen = lambda name: None
+    renpy.show_screen = lambda *a, **k: None
+    renpy.hide_screen = lambda *a, **k: None
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        allowed = globs["_ALLOWED_ANCESTRY_TYPES"]
+        assert "Bar" in allowed
+        assert "Side" not in allowed
+        assert "VBox" in allowed  # layout containers stay classified, not open-ended
+
+        validate = globs["_renforge_editor_validate_runtime_key"]
+        bar_key = {
+            "ancestry": [
+                {"type": "ScreenDisplayable", "crop_state": "none"},
+                {"type": "Fixed", "crop_state": "none"},
+                {"type": "Bar", "crop_state": "none"},
+            ]
+        }
+        assert validate(bar_key) is None
+
+        unknown_key = {
+            "ancestry": [
+                {"type": "ScreenDisplayable", "crop_state": "none"},
+                {"type": "UnknownWidget", "crop_state": "none"},
+                {"type": "Bar", "crop_state": "none"},
+            ]
+        }
+        assert validate(unknown_key) == "UNKNOWN_ANCESTRY_TYPE"
+
+        side_key = {
+            "ancestry": [
+                {"type": "ScreenDisplayable", "crop_state": "none"},
+                {"type": "Side", "crop_state": "none"},
+                {"type": "Bar", "crop_state": "none"},
+            ]
+        }
+        assert validate(side_key) == "UNKNOWN_ANCESTRY_TYPE"
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()

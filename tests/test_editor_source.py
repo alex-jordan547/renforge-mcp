@@ -6,12 +6,15 @@ import pytest
 
 from renforge.editor.paths import EditorPathError, resolve_game_path
 from renforge.editor.source import (
+    BarStatement,
     ButtonStatement,
     EditorSourceError,
+    analyze_bar_statement,
     analyze_button_statement,
     analyze_editable_statement,
     analyze_imagebutton_statement,
     analyze_textbutton_statement,
+    apply_bar_patch,
     apply_button_patch,
     apply_editable_statement_patch,
     apply_imagebutton_patch,
@@ -330,18 +333,239 @@ def test_analyze_editable_statement_routes_kinds() -> None:
     assert kind_tb == "textbutton"
     assert stmt_tb.ypos == 9
 
+    bar_line = '    bar value StaticValue(50) range 100 id "b" xpos 1 ypos 2 xsize 40 ysize 10\n'
+    kind_bar, stmt_bar = analyze_editable_statement(
+        bar_line,
+        expected_widget_id="b",
+    )
+    assert kind_bar == "bar"
+    assert isinstance(stmt_bar, BarStatement)
+    assert stmt_bar.xpos == 1
+    patched_bar = apply_editable_statement_patch(
+        bar_line.encode("utf-8"),
+        kind_bar,
+        stmt_bar,
+        x=11,
+        y=22,
+    ).decode("utf-8")
+    assert patched_bar == (
+        '    bar value StaticValue(50) range 100 id "b" xpos 11 ypos 22 xsize 40 ysize 10\n'
+    )
     with pytest.raises(EditorSourceError) as excinfo:
-        analyze_editable_statement(
-            '    bar id "b" value 1 range 2 xpos 1 ypos 2\n',
-            expected_widget_id="b",
+        apply_editable_statement_patch(
+            bar_line.encode("utf-8"),
+            "bar",
+            analyze_textbutton_statement(
+                '    textbutton "Play" id "start" xpos 8 ypos 9 action NullAction()\n',
+                expected_widget_id="start",
+            ),
+            x=1,
+            y=2,
         )
     assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_editable_statement(
+            '    frame id "f" xpos 1 ypos 2:\n',
+            expected_widget_id="f",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_editable_statement(
+            '    vbar value StaticValue(50) range 100 id "vb" xpos 1 ypos 2\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "VBAR_NOT_SUPPORTED"
 
 
 def test_analyze_editable_statement_reports_missing_statement_kind() -> None:
     with pytest.raises(EditorSourceError, match="does not contain a supported statement kind") as excinfo:
         analyze_editable_statement("    # comment only\n", expected_widget_id="start")
     assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+
+def test_analyze_bar_statement_accepts_single_line_and_patches_spans() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos 200 ypos 180 xsize 240 ysize 24\n"
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    assert isinstance(parsed, BarStatement)
+    assert parsed.widget_id == "bar_target"
+    assert parsed.xpos == 200
+    assert parsed.ypos == 180
+    patched = apply_bar_patch(line.encode("utf-8"), parsed, x=240, y=196).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos 240 ypos 196 xsize 240 ysize 24\n"
+    )
+
+
+def test_analyze_bar_statement_accepts_negative_coordinates_and_patches_spans() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos -10 ypos -20 xsize 240 ysize 24\n"
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    assert isinstance(parsed, BarStatement)
+    assert parsed.widget_id == "bar_target"
+    assert parsed.xpos == -10
+    assert parsed.ypos == -20
+    patched = apply_bar_patch(line.encode("utf-8"), parsed, x=-30, y=-40).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos -30 ypos -40 xsize 240 ysize 24\n"
+    )
+
+
+def test_analyze_bar_statement_rejects_keyword_expression_coordinates() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 100 if flag else 20 ypos 10\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 10 ypos 100 or base_y\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
+
+
+def test_analyze_bar_statement_preserves_bytes_outside_coordinate_spans() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 style "bar" id "bar_target" '
+        "xpos 12 ypos 34 xsize 100 ysize 12 # keep\n"
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    patched = apply_bar_patch(line.encode("utf-8"), parsed, x=99, y=88).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 style "bar" id "bar_target" '
+        "xpos 99 ypos 88 xsize 100 ysize 12 # keep\n"
+    )
+
+
+def test_analyze_bar_dispatch_and_vbar_refusal() -> None:
+    assert (
+        peek_statement_kind(
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2\n'
+        )
+        == "bar"
+    )
+    assert (
+        peek_statement_kind(
+            '    vbar value StaticValue(1) range 10 id "vb" xpos 1 ypos 2\n'
+        )
+        == "vbar"
+    )
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    vbar value StaticValue(1) range 10 id "vb" xpos 1 ypos 2\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "VBAR_NOT_SUPPORTED"
+
+
+def test_analyze_bar_statement_rejects_computed_and_style_and_missing_position() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos base_x ypos 10\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 10 ypos base_y\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 style "pos_style" id "b"\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "BAR_STYLE_POSITION_UNSUPPORTED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xsize 40 ysize 10\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "BAR_POSITION_NOT_DIRECTLY_AUTHORED"
+
+
+def test_analyze_bar_statement_rejects_id_and_coordinate_problems() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            "    bar value StaticValue(1) range 10 xpos 1 ypos 2\n",
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "a" id "b" xpos 1 ypos 2\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "other" xpos 1 ypos 2\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "ID_MISMATCH"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 xpos 2 ypos 3\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "XPOS_DUPLICATE"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 ypos 3\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "YPOS_DUPLICATE"
+
+
+def test_analyze_bar_statement_ignores_keywords_in_strings_comments_and_calls() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        'xpos 12 ypos 34 xsize 40 ysize 10 action Function(noop, xpos=9) # xpos 99\n'
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    assert (parsed.xpos, parsed.ypos) == (12, 34)
+    # Style present with literal coordinates must remain editable.
+    with_style = (
+        '    bar value StaticValue(50) range 100 style "bar" id "bar_target" '
+        "xpos 12 ypos 34 xsize 40 ysize 10\n"
+    )
+    parsed_style = analyze_bar_statement(with_style, expected_widget_id="bar_target")
+    assert (parsed_style.xpos, parsed_style.ypos) == (12, 34)
+
+
+def test_analyze_bar_statement_rejects_multiline_block() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar:\n        id "b"\n        xpos 1\n        ypos 2\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "MULTILINE_STATEMENT_REJECTED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_bar_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 100-20 ypos 10\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
 def test_analyze_button_statement_patches_header_only_and_preserves_child_bytes() -> None:
     source = (
         "screen test_screen:\n"
