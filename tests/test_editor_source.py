@@ -668,6 +668,30 @@ def test_analyze_slider_dispatch_uses_bar_plus_style_slider() -> None:
     assert not is_slider_style_bar_line(
         '    bar value StaticValue(1) range 10 style "bar" id "b" xpos 1 ypos 2\n'
     )
+    # Computed style expressions must not masquerade as the slider adapter.
+    assert not is_slider_style_bar_line(
+        '    bar value StaticValue(1) range 10 style "slider" if flag else "bar" '
+        'id "sl" xpos 1 ypos 2\n'
+    )
+    assert not is_slider_style_bar_line(
+        '    bar value StaticValue(1) range 10 style "slider" or "bar" '
+        'id "sl" xpos 1 ypos 2\n'
+    )
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" if flag else "bar" '
+            'id "sl" xpos 1 ypos 2\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+    # Dispatch falls through to plain bar, not slider, for style expressions.
+    kind_expr, stmt_expr = analyze_editable_statement(
+        '    bar value StaticValue(1) range 10 style "slider" if flag else "bar" '
+        'id "sl" xpos 1 ypos 2\n',
+        expected_widget_id="sl",
+    )
+    assert kind_expr == "bar"
+    assert isinstance(stmt_expr, BarStatement)
     # Bare keyword "slider" is not a supported statement form.
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_slider_statement(

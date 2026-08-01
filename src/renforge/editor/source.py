@@ -506,11 +506,14 @@ def analyze_vbar_statement(line: str, *, expected_widget_id: str) -> VbarStateme
 
 
 def is_slider_style_bar_line(line: str) -> bool:
-    """True when the line is a single-line ``bar`` with literal ``style "slider"``.
+    """True when the line is a single-line ``bar`` with pure literal ``style "slider"``.
 
     Ren'Py 8.5.3 has no screen-language ``slider`` keyword (measured). Games author
     sliders as ``bar`` statements that select the ``slider`` style. Adapter identity
     is therefore ``bar`` + literal style ``"slider"``, not a first-word keyword.
+
+    Computed style expressions such as ``style "slider" if flag else "bar"`` are
+    rejected (same purity rule as literal xpos/ypos followers).
     """
     try:
         statement_text = _statement_text(line)
@@ -522,21 +525,27 @@ def is_slider_style_bar_line(line: str) -> bool:
         return False
     if any(token.kind == "SYMBOL" and token.text == ":" for token in top_level):
         return False
-    style_names: list[str] = []
+    pure_style_names: list[str] = []
     for index, token in enumerate(tokens):
         if token.depth != 0 or token.kind != "WORD" or token.text != "style":
             continue
         value_index = _next_top_level_index(tokens, index)
         if value_index is None:
-            continue
+            return False
         value_token = tokens[value_index]
         if value_token.kind != "STRING":
-            continue
+            return False
+        following_index = _next_top_level_index(tokens, value_index)
+        if following_index is not None:
+            following = tokens[following_index]
+            # Only another bar property keyword or EOS proves a pure style literal.
+            if following.kind != "WORD" or following.text not in _BAR_POSITION_FOLLOWER_WORDS:
+                return False
         try:
-            style_names.append(_parse_string_token(value_token))
+            pure_style_names.append(_parse_string_token(value_token))
         except EditorSourceError:
-            continue
-    return len(style_names) == 1 and style_names[0] == "slider"
+            return False
+    return len(pure_style_names) == 1 and pure_style_names[0] == "slider"
 
 
 def analyze_slider_statement(line: str, *, expected_widget_id: str) -> SliderStatement:
