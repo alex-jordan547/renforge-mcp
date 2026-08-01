@@ -300,11 +300,44 @@ def _analyze_positioned_kind_statement(
     )
 
 
+def _require_single_literal_id(
+    tokens: list[_Token],
+    *,
+    expected_widget_id: str,
+    human_kind: str,
+) -> str:
+    """Return the single top-level literal id string, or raise a shared id error."""
+    keyword_counts_id = 0
+    widget_id: str | None = None
+    id_invalid = False
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "id":
+            continue
+        keyword_counts_id += 1
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None or tokens[value_index].kind != "STRING":
+            id_invalid = True
+            continue
+        widget_id = _parse_string_token(tokens[value_index])
+    if keyword_counts_id != 1 or id_invalid or widget_id is None:
+        raise EditorSourceError(
+            "ID_LITERAL_REQUIRED",
+            f"{human_kind} statement must contain exactly one literal id",
+        )
+    if widget_id != expected_widget_id:
+        raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+    return widget_id
+
+
 def _parse_literal_pos_pair(
     tokens: list[_Token],
     pos_index: int,
 ) -> tuple[int, int, tuple[int, int], tuple[int, int]] | None:
-    """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans."""
+    """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans.
+
+    A pure pair is either end-of-statement after ``)``, or followed by a top-level
+    property/action WORD (same purity rule as literal xpos/ypos followers).
+    """
     open_index = pos_index + 1
     if open_index >= len(tokens):
         return None
@@ -328,11 +361,10 @@ def _parse_literal_pos_pair(
         return None
     if close_token.kind != "SYMBOL" or close_token.text != ")":
         return None
-    # Reject trailing junk still inside the paren depth (e.g. third component).
-    # The next token after ')' must be top-level WORD or EOS (same purity as xpos).
     following = close_index + 1
     if following < len(tokens):
         next_token = tokens[following]
+        # EOS is allowed (no following token). Otherwise require a top-level WORD.
         if next_token.depth != 0 or next_token.kind != "WORD":
             return None
     return (
@@ -372,26 +404,11 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
     if len(pos_indexes) > 1:
         raise EditorSourceError("POS_DUPLICATE", "textbutton statement must contain exactly one pos")
     if len(pos_indexes) == 1:
-        # id required + pure pos pair; do not fall through to xpos/ypos analyzer.
-        keyword_counts_id = 0
-        widget_id: str | None = None
-        id_invalid = False
-        for index, token in enumerate(tokens):
-            if token.depth != 0 or token.kind != "WORD" or token.text != "id":
-                continue
-            keyword_counts_id += 1
-            value_index = _next_top_level_index(tokens, index)
-            if value_index is None or tokens[value_index].kind != "STRING":
-                id_invalid = True
-                continue
-            widget_id = _parse_string_token(tokens[value_index])
-        if keyword_counts_id != 1 or id_invalid or widget_id is None:
-            raise EditorSourceError(
-                "ID_LITERAL_REQUIRED",
-                "textbutton statement must contain exactly one literal id",
-            )
-        if widget_id != expected_widget_id:
-            raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+        widget_id = _require_single_literal_id(
+            tokens,
+            expected_widget_id=expected_widget_id,
+            human_kind="textbutton",
+        )
         parsed_pos = _parse_literal_pos_pair(tokens, pos_indexes[0])
         if parsed_pos is None:
             raise EditorSourceError(
