@@ -430,7 +430,7 @@ init 1100 python:
 
 
     def _renforge_editor_lock_code(lock_reason):
-        if isinstance(lock_reason, dict):
+        if isinstance(lock_reason, builtins.dict):
             return str(lock_reason.get("code") or "")
         if lock_reason is None:
             return None
@@ -820,6 +820,11 @@ init 1100 python:
                 or getattr(node, "_renforge_editor_owner", None) == _EDITOR_OWNER
                 or getattr(named_widget, "_renforge_editor_owner", None) == _EDITOR_OWNER
             )
+            style = getattr(node, "style", None)
+            layout = getattr(style, "box_layout", None) if style is not None else None
+            if layout is None:
+                layout = getattr(node, "default_layout", None)
+            layout_name = layout if isinstance(layout, builtins.str) else None
             ancestry.append(
                 {
                     "index": int(index),
@@ -828,6 +833,7 @@ init 1100 python:
                     "screen_owner": _EDITOR_OWNER if editor_owned else "game",
                     "crop_state": crop_state,
                     "editor_owned": editor_owned,
+                    "layout": layout_name,
                 }
             )
         key = {

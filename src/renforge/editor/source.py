@@ -20,6 +20,17 @@ class TextbuttonStatement:
     ypos_span: tuple[int, int]
 
 
+
+@dataclass(frozen=True)
+class ButtonStatement:
+    widget_id: str
+    xpos: int
+    ypos: int
+    xpos_span: tuple[int, int]
+    ypos_span: tuple[int, int]
+    source_line: int
+
+
 @dataclass(frozen=True)
 class ImagebuttonStatement:
     widget_id: str
@@ -347,3 +358,146 @@ def apply_editable_statement_patch(
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match imagebutton kind")
         return apply_imagebutton_patch(source_bytes, statement, x=x, y=y)
     raise EditorSourceError("STATEMENT_KIND_MISMATCH", f"unsupported statement kind: {kind!r}")
+
+
+def _button_child_line_indexes(lines: list[str], source_line: int, header_indent: int) -> list[int]:
+    child_indexes: list[int] = []
+    for index in range(source_line, len(lines)):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if indent <= header_indent:
+            break
+        child_indexes.append(index)
+
+    if not child_indexes:
+        raise EditorSourceError(
+            "BUTTON_BLOCK_REQUIRED",
+            "button statement must contain an explicit child block",
+        )
+    return child_indexes
+
+
+def analyze_button_statement(
+    source_text: str,
+    *,
+    source_line: int,
+    expected_widget_id: str,
+) -> ButtonStatement:
+    lines = source_text.splitlines(keepends=True)
+    if source_line < 1 or source_line > len(lines):
+        raise EditorSourceError("SOURCE_LINE_INVALID", "button source line is outside the source file")
+
+    header_line = lines[source_line - 1]
+    header_text = header_line.rstrip("\r\n")
+    tokens = _lex_single_line(header_text)
+    top_level = [token for token in tokens if token.depth == 0]
+    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "button":
+        raise EditorSourceError("STATEMENT_KIND_MISMATCH", "source statement is not a button")
+
+    colon_tokens = [token for token in top_level if token.kind == "SYMBOL" and token.text == ":"]
+    if len(colon_tokens) != 1 or top_level[-1] is not colon_tokens[0]:
+        raise EditorSourceError(
+            "BUTTON_BLOCK_REQUIRED",
+            "button statement must end with an explicit block header",
+        )
+
+    header_indent = len(header_line) - len(header_line.lstrip(" \t"))
+    child_indexes = _button_child_line_indexes(lines, source_line, header_indent)
+    child_indent = min(
+        len(lines[index]) - len(lines[index].lstrip(" \t"))
+        for index in child_indexes
+    )
+    for child_index in child_indexes:
+        child_line = lines[child_index]
+        child_indent_value = len(child_line) - len(child_line.lstrip(" \t"))
+        if child_indent_value != child_indent:
+            continue
+        child_tokens = _lex_single_line(child_line.rstrip("\r\n"))
+        child_top_level = [token for token in child_tokens if token.depth == 0]
+        if (
+            child_top_level
+            and child_top_level[0].kind == "WORD"
+            and child_top_level[0].text in {"xpos", "ypos"}
+        ):
+            raise EditorSourceError(
+                "POSITION_IN_BLOCK",
+                "button xpos/ypos inside the child block are not editable",
+            )
+
+    keyword_counts = {"id": 0, "xpos": 0, "ypos": 0}
+    widget_id: str | None = None
+    xpos_value: int | None = None
+    ypos_value: int | None = None
+    xpos_span: tuple[int, int] | None = None
+    ypos_span: tuple[int, int] | None = None
+    invalid_literals: set[str] = set()
+
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text not in keyword_counts:
+            continue
+        keyword = token.text
+        keyword_counts[keyword] += 1
+        value_token = _next_top_level_token(tokens, index)
+        if value_token is None:
+            invalid_literals.add(keyword)
+            continue
+        if keyword == "id":
+            if value_token.kind != "STRING":
+                invalid_literals.add(keyword)
+                continue
+            widget_id = _parse_string_token(value_token)
+            continue
+        if value_token.kind != "NUMBER":
+            invalid_literals.add(keyword)
+            continue
+        value = int(value_token.text)
+        if keyword == "xpos":
+            xpos_value = value
+            xpos_span = (value_token.start, value_token.end)
+        else:
+            ypos_value = value
+            ypos_span = (value_token.start, value_token.end)
+
+    if keyword_counts["id"] != 1:
+        raise EditorSourceError("ID_LITERAL_REQUIRED", "button statement must contain exactly one literal id")
+    if "id" in invalid_literals or widget_id is None:
+        raise EditorSourceError("ID_LITERAL_REQUIRED", "button id must be a literal string")
+    if widget_id != expected_widget_id:
+        raise EditorSourceError("ID_MISMATCH", "literal button id does not match runtime widget id")
+    if keyword_counts["xpos"] != 1:
+        raise EditorSourceError("XPOS_DUPLICATE", "button statement must contain exactly one xpos")
+    if keyword_counts["ypos"] != 1:
+        raise EditorSourceError("YPOS_DUPLICATE", "button statement must contain exactly one ypos")
+    if "xpos" in invalid_literals or xpos_value is None or xpos_span is None:
+        raise EditorSourceError("XPOS_LITERAL_REQUIRED", "button xpos must be a literal integer")
+    if "ypos" in invalid_literals or ypos_value is None or ypos_span is None:
+        raise EditorSourceError("YPOS_LITERAL_REQUIRED", "button ypos must be a literal integer")
+
+    return ButtonStatement(
+        widget_id=widget_id,
+        xpos=xpos_value,
+        ypos=ypos_value,
+        xpos_span=xpos_span,
+        ypos_span=ypos_span,
+        source_line=source_line,
+    )
+
+
+def apply_button_patch(source_bytes: bytes, statement: ButtonStatement, *, x: int, y: int) -> bytes:
+    source_text = source_bytes.decode("utf-8")
+    lines = source_text.splitlines(keepends=True)
+    if statement.source_line < 1 or statement.source_line > len(lines):
+        raise EditorSourceError("SOURCE_LINE_INVALID", "button source line is outside the source file")
+    header_offset = sum(len(line) for line in lines[: statement.source_line - 1])
+    replacements = [
+        (header_offset + statement.xpos_span[0], header_offset + statement.xpos_span[1], str(int(x))),
+        (header_offset + statement.ypos_span[0], header_offset + statement.ypos_span[1], str(int(y))),
+    ]
+    replacements.sort(key=lambda item: item[0], reverse=True)
+    patched = source_text
+    for start, end, replacement in replacements:
+        patched = f"{patched[:start]}{replacement}{patched[end:]}"
+    return patched.encode("utf-8")

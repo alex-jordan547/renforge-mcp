@@ -29,11 +29,20 @@ from .exceptions import EditorError
 from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_game_path, sha256_bytes
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
-from .source import EditorSourceError, analyze_editable_statement, apply_editable_statement_patch
+from .source import (
+    EditorSourceError,
+    analyze_button_statement,
+    analyze_editable_statement,
+    apply_button_patch,
+    apply_editable_statement_patch,
+    peek_statement_kind,
+)
 
 
 def _now_deadline(seconds: float) -> float:
     return time.monotonic() + max(0.01, seconds)
+
+
 
 
 @dataclass(frozen=True)
@@ -518,13 +527,23 @@ class EditorCoordinator:
             source_path = resolve_game_path(self._project.root, relative_path)
             source_bytes = source_path.read_bytes()
             source_sha = sha256_bytes(source_bytes)
-            lines = source_bytes.decode("utf-8").splitlines(keepends=True)
+            source_text = source_bytes.decode("utf-8")
+            lines = source_text.splitlines(keepends=True)
             if source_line < 1 or source_line > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
             widget_id = self._require_runtime_widget_id(runtime_key)
-            kind, statement = analyze_editable_statement(
-                lines[source_line - 1], expected_widget_id=widget_id
-            )
+            if peek_statement_kind(lines[source_line - 1]) == "button":
+                statement = analyze_button_statement(
+                    source_text,
+                    source_line=source_line,
+                    expected_widget_id=widget_id,
+                )
+                statement_kind = "button"
+            else:
+                statement_kind, statement = analyze_editable_statement(
+                    lines[source_line - 1],
+                    expected_widget_id=widget_id,
+                )
             original_position = [statement.xpos, statement.ypos]
             ancestry = runtime_key.get("ancestry")
             normalized_ancestry = (
@@ -555,7 +574,7 @@ class EditorCoordinator:
                 "invocation_path": runtime_key.get("invocation_path"),
                 "instance_discriminator": runtime_key.get("instance_discriminator"),
                 "ancestry": normalized_ancestry,
-                "statement_kind": kind,
+                "statement_kind": statement_kind,
                 "baseline_sha256": source_sha,
             }
             if lock_reason is None:
@@ -902,6 +921,14 @@ class EditorCoordinator:
                 return self._lock_reason("ANCESTRY_TYPE_UNPROVEN", "ancestor type is missing")
             if ancestor_type not in allowed_types:
                 return self._lock_reason("ANCESTRY_TYPE_UNPROVEN", f"unproven ancestor type: {ancestor_type}")
+            if ancestor_type in {"VBox", "HBox", "Grid"} or (
+                ancestor_type == "MultiBox"
+                and ancestor.get("layout") in {"horizontal", "vertical"}
+            ):
+                return self._lock_reason(
+                    "CONTAINER_POSITION_UNSUPPORTED",
+                    "direct movement inside layout containers is not editable",
+                )
             if ancestor_type == "Viewport":
                 return self._lock_reason("VIEWPORT_ANCESTRY_UNSUPPORTED", "viewport ancestry is not editable in V1")
             if ancestor_type == "Crop":
@@ -956,21 +983,40 @@ class EditorCoordinator:
             if target_key in seen_targets:
                 raise EditorError("DUPLICATE_SOURCE_TARGET", "multiple intents target the same source statement")
             seen_targets.add(target_key)
-            line_text = lines[line_no - 1]
-            kind, statement = analyze_editable_statement(line_text, expected_widget_id=widget_id)
+            source_text = "".join(lines)
             recorded_kind = source_key.get("statement_kind")
-            if isinstance(recorded_kind, str) and recorded_kind != kind:
+            actual_kind = peek_statement_kind(lines[line_no - 1])
+            if not isinstance(actual_kind, str):
+                raise EditorError("SOURCE_KEY_INVALID", "source line statement kind is invalid")
+            if isinstance(recorded_kind, str) and recorded_kind != actual_kind:
                 raise EditorError(
                     "STATEMENT_KIND_MISMATCH",
                     "source_key statement_kind does not match source line",
                 )
-            lines[line_no - 1] = apply_editable_statement_patch(
-                line_text.encode("utf-8"),
-                kind,
-                statement,
-                x=x,
-                y=y,
-            ).decode("utf-8")
+            if actual_kind == "button":
+                statement = analyze_button_statement(
+                    source_text,
+                    source_line=line_no,
+                    expected_widget_id=widget_id,
+                )
+                lines = apply_button_patch(
+                    "".join(lines).encode("utf-8"),
+                    statement,
+                    x=x,
+                    y=y,
+                ).decode("utf-8").splitlines(keepends=True)
+            else:
+                kind, statement = analyze_editable_statement(
+                    lines[line_no - 1],
+                    expected_widget_id=widget_id,
+                )
+                lines[line_no - 1] = apply_editable_statement_patch(
+                    lines[line_no - 1].encode("utf-8"),
+                    kind,
+                    statement,
+                    x=x,
+                    y=y,
+                ).decode("utf-8")
 
         return "".join(lines).encode("utf-8")
 
