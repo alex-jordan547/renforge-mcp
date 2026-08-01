@@ -238,6 +238,40 @@ screen village_gate_choices():
     textbutton "Ask the Elder to send someone else." id "demo_lantern_decline" xpos 160 ypos 380 action Return("decline_lantern")
     textbutton "Hold the gate (locked demo)." id "demo_locked_expr" xpos gui.choice_spacing ypos 440 action NullAction()
 
+default renforge_story_button_x = 820
+
+screen renforge_hidden_shrine_controls():
+    zorder 150
+    text "Shrine controls" id "story_shrine_label" xpos 60 ypos 120
+    imagebutton id "story_imgbtn" idle Transform("wisp glow", zoom=0.18) xpos 900 ypos 170 action NullAction()
+    button id "story_button" xpos 520 ypos 230:
+        text "Touch the shrine" xpos 7
+        action NullAction()
+
+screen renforge_cave_mouth_controls():
+    zorder 150
+    text "Cave controls" id "story_cave_label" xpos 60 ypos 120
+    button id "story_button_computed" xpos renforge_story_button_x ypos 220:
+        text "Computed button"
+        action NullAction()
+
+screen renforge_crossroads_controls():
+    zorder 150
+    text "Crossroads controls" id "story_crossroads_label" xpos 60 ypos 120
+    vbox id "story_layout_controls" xpos 900 ypos 170 spacing 8:
+        button id "story_layout_button" xpos 0 ypos 0:
+            text "Layout button"
+            action NullAction()
+
+screen renforge_summit_controls():
+    zorder 150
+    text "Summit controls" id "story_summit_label" xpos 60 ypos 120
+    button id "story_button_in_block":
+        xpos 720
+        ypos 240
+        text "Position in block"
+        action NullAction()
+
 
 ## Quick Menu screen ###########################################################
 ##
