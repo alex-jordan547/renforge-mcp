@@ -18,7 +18,9 @@ and an analogy.
 |---|---|---|
 | `imagebutton` | Low | Same `Button` mechanics proven by Spikes C and D. Focusable, takes an `id`, literal position. **Implemented** with dedicated analyzer; seven-step live proof green locally via `RENFORGE_IMAGEBUTTON_LIVE=1` (issue #32 / `2026-08-01-imagebutton-adapter-design.md`). |
 | `button` (explicit block form) | Low | Focusable by construction; the child block may complicate the source-line contract |
-| `bar` / `vbar` / `slider` | Medium | Focusable, but positioning often comes from style or a container |
+| `bar` (single-line literal position) | Medium | Focusable when adjustable; often style/container-positioned. **Implemented** for the minimal single-line literal form; seven-step live proof green via `RENFORGE_BAR_LIVE=1` on Ren'Py 8.5.3 (issue #34). Runtime class `Bar` is shared with `vbar` — source keyword decides the adapter. |
+| `vbar` | Medium | Same runtime `Bar` class as `bar`; source keyword is distinct. **Not implemented** — locked with `VBAR_NOT_SUPPORTED` when measured. |
+| `slider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Not implemented** / not claimed. |
 
 **Exit criterion per adapter:** its own 7-step live proof — resolve → preview → patch → reload →
 pixel agreement → rebinding → byte-identical undo — with every position measured from `focus_list`.

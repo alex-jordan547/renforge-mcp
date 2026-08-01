@@ -235,6 +235,7 @@ init 1100 python:
             "MultiBox",
             "Button",
             "ImageButton",
+            "Bar",
             "Text",
             "Frame",
             "Window",

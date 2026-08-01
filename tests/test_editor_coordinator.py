@@ -1109,15 +1109,16 @@ def test_analyze_rejects_unsupported_statement_kind(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     source.write_text(
         "screen test_screen:\n"
-        '    bar id "start_btn" value 1 range 10 xpos 12 ypos 10 xysize (40, 10)\n',
+        '    frame id "start_btn" xpos 12 ypos 10:\n'
+        '        text "x"\n',
         encoding="utf-8",
     )
     observation = _base_observation()
     probe = _Probe(
         observe_reply={
             **json.loads(json.dumps(observation)),
-            "frame_id": "independent-frame-bar",
-            "object_id": "obj-independent-bar",
+            "frame_id": "independent-frame-frame",
+            "object_id": "obj-independent-frame",
         }
     )
     coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
@@ -1126,9 +1127,149 @@ def test_analyze_rejects_unsupported_statement_kind(tmp_path: Path) -> None:
     try:
         with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
             auth = _auth(sock, endpoint)
-            reply = _analyze(sock, auth, observation, request_id="an-bar")
+            reply = _analyze(sock, auth, observation, request_id="an-frame")
             assert reply["ok"] is True
             assert reply["result"]["capabilities"] == {"move": False}
             assert reply["result"]["lock_reason"]["code"] == "STATEMENT_KIND_MISMATCH"
     finally:
         coordinator.close()
+
+
+def _make_bar_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
+    root = tmp_path / "project_bar"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    bar value StaticValue(50) range 100 id "start_btn" '
+        "xpos 12 ypos 10 xsize 40 ysize 10\n",
+        encoding="utf-8",
+    )
+    return RenpyProject(root), source
+
+
+def test_analyze_and_commit_bar_statement(tmp_path: Path) -> None:
+    project, source = _make_bar_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-bar",
+            "object_id": "obj-independent-bar",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-bar")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["source_key"]["statement_kind"] == "bar"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-bar")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            text = source.read_text(encoding="utf-8")
+            assert "xpos 40 ypos 50" in text
+            assert 'bar value StaticValue(50) range 100 id "start_btn"' in text
+            assert "xsize 40 ysize 10" in text
+    finally:
+        coordinator.close()
+
+
+def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_inference(
+    tmp_path: Path,
+) -> None:
+    project, source = _make_bar_project(tmp_path)
+    cases = (
+        (
+            '    vbar value StaticValue(50) range 100 id "start_btn" xpos 12 ypos 10\n',
+            "VBAR_NOT_SUPPORTED",
+            [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False},
+             {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False}],
+        ),
+        (
+            '    bar value StaticValue(50) range 100 id "start_btn" xpos base_x ypos 10\n',
+            "XPOS_LITERAL_REQUIRED",
+            [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False},
+             {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False}],
+        ),
+        (
+            '    bar value StaticValue(50) range 100 style "pos_style" id "start_btn"\n',
+            "BAR_STYLE_POSITION_UNSUPPORTED",
+            [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False},
+             {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
+              "screen_owner": "game", "crop_state": "none", "editor_owned": False}],
+        ),
+        (
+            '    bar value StaticValue(50) range 100 id "start_btn" xpos 12 ypos 10\n',
+            "CONTAINER_POSITION_UNSUPPORTED",
+            [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["script.rpy", 1],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "VBox",
+                    "source_location": ["script.rpy", 2],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                    "layout": "vertical",
+                },
+                {
+                    "index": 2,
+                    "type": "Bar",
+                    "source_location": ["script.rpy", 3],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        ),
+    )
+    sdk = _make_sdk(tmp_path)
+    for index, (line, expected_code, ancestry) in enumerate(cases):
+        source.write_text("screen test_screen:\n" + line, encoding="utf-8")
+        observation = _base_observation(script_generation=20 + index)
+        observation["runtime_key"]["ancestry"] = ancestry
+        # Runtime node_type is always "bar" for both bar and vbar; host must not use it.
+        observation["runtime_key"]["node_type"] = "bar"
+        probe = _Probe(
+            observe_reply={
+                **json.loads(json.dumps(observation)),
+                "frame_id": f"independent-frame-bar-lock-{index}",
+                "object_id": f"obj-independent-bar-lock-{index}",
+            }
+        )
+        coordinator = EditorCoordinator(project, sdk)
+        coordinator.attach_runtime_probe(probe)
+        endpoint = coordinator.start()
+        try:
+            with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+                auth = _auth(sock, endpoint)
+                reply = _analyze(sock, auth, observation, request_id=f"an-bar-lock-{index}")
+                assert reply["ok"] is True
+                assert reply["result"]["capabilities"] == {"move": False}
+                assert reply["result"]["lock_reason"]["code"] == expected_code
+        finally:
+            coordinator.close()

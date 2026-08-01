@@ -909,6 +909,7 @@ class EditorCoordinator:
             "Container",
             "Frame",
             "ImageButton",
+            "Bar",
             "Null",
             "Viewport",
             "Crop",
