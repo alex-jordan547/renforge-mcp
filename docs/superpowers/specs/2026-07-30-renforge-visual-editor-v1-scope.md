@@ -33,7 +33,7 @@ requires it — none is arbitrary.
 |---|---|---|
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
-| 3 | A proven adapter statement (`textbutton`, `imagebutton`, single-line `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; the button adapter preserves child block bytes |
+| 3 | A proven adapter statement (`textbutton`, `imagebutton`, single-line `bar`/`vbar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; the button adapter preserves child block bytes |
 | 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
@@ -59,6 +59,7 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 | `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path + seven-step live proof | **Implemented** (live proof green via `RENFORGE_IMAGEBUTTON_LIVE=1`) |
 | `button` | focusable by construction | Seven-step live proof (explicit block) | **Shipped in V1** |
 | `bar` | focusable when adjustable (measured on Ren'Py 8.5.3) | dedicated single-line analyzer + seven-step live proof | **Implemented** (live proof green via `RENFORGE_BAR_LIVE=1`) |
+| `vbar` | focusable when adjustable (measured on Ren'Py 8.5.3) | dedicated `VbarStatement` analyzer + patcher + seven-step live proof | **Implemented** (live proof green via `RENFORGE_VBAR_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_vbar_live.py`) |
 | `text`, `add`, `frame` | **not selectable** | Spike B proved write on a literal `text`, but by key, not by click | Out of V1 |
 
 `imagebutton` has a dedicated single-line adapter (issue #32) rather than a textbutton allowlist widen.
@@ -69,17 +70,28 @@ The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:
 coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime
 instances remain selectable but locked with an exact reason.
 
-The `bar` adapter is limited to a **single-line** statement with one literal string `id` and literal
-integer `xpos`/`ypos` (issue #34). Host dispatch uses the real source keyword, not the runtime
-`node_type` (both `bar` and `vbar` compile to displayable class `Bar`). Supported form example:
+The `bar` and `vbar` adapters each accept exactly one **physical source line** with one literal string
+`id` and literal integer `xpos`/`ypos` (the #34 form, with #35 adding the dedicated vbar adapter):
 
 ```renpy
 bar value VariableValue("some_var", range=100) id "bar_target" xpos 200 ypos 180 xsize 240 ysize 24
+vbar value VariableValue("some_var", range=100) id "vbar_target" xpos 200 ypos 180 xsize 24 ysize 240
 ```
 
-Live proof: `RENFORGE_BAR_LIVE=1 pytest tests/test_editor_bar_live.py` against Ren'Py **8.5.3**.
-`vbar`, slider, style-driven position, container-driven position, computed coordinates, multi-line
-blocks, and unproven ancestry remain selectable but locked with an exact measured reason.
+Host dispatch uses the exact source keyword, not runtime `node_type`: both `bar` and `vbar` expose the
+runtime displayable class `Bar`, but `vbar` is analyzed and patched through dedicated
+`VbarStatement`/analyzer/patcher paths. The vbar proof uses fresh `focus_list` observations for every
+visual position and preserves the underlying vbar value across preview and reload.
+
+Live proof: `RENFORGE_VBAR_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_vbar_live.py`
+against Ren'Py **8.5.3**. Vbar inherits the exact #34 lock boundaries: computed/non-literal `xpos`
+and `ypos` (`XPOS_LITERAL_REQUIRED` / `YPOS_LITERAL_REQUIRED`), style-driven position
+(`BAR_STYLE_POSITION_UNSUPPORTED`), missing direct position (`BAR_POSITION_NOT_DIRECTLY_AUTHORED`),
+container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), duplicate instances (`SYNTHETIC_WIDGET_ID`),
+unknown ancestry (`UNKNOWN_ANCESTRY_TYPE`), and multi-line statements
+(`MULTILINE_STATEMENT_REJECTED`). These targets remain selectable but locked with their measured reason.
+`slider`, `vslider`, style-driven position, container-driven position, computed coordinates, multi-line
+blocks, and unproven ancestry remain pending or locked; no other forms are claimed.
 
 ## Proven mechanisms (do not redesign)
 

@@ -5,7 +5,6 @@ default renforge_editor_bar_style_val = 40
 default renforge_editor_bar_container_val = 40
 default renforge_editor_bar_dupe_val = 40
 default renforge_editor_bar_side_val = 40
-default renforge_editor_vbar_val = 40
 
 
 style renforge_bar_style_pos is bar:
@@ -42,7 +41,6 @@ screen renforge_editor_bar_fixture():
 
             bar value VariableValue("renforge_editor_bar_container_val", range=100) id "bar_container" xpos 0 ypos 0 xsize 160 ysize 24
 
-        vbar value VariableValue("renforge_editor_vbar_val", range=100) id "vbar_target" xpos 40 ypos 120 xsize 24 ysize 200
 
         side "c":
             bar value VariableValue("renforge_editor_bar_side_val", range=100) id "bar_side" xpos 100 ypos 520 xsize 200 ysize 24

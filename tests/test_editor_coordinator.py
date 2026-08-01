@@ -1187,21 +1187,99 @@ def test_analyze_and_commit_bar_statement(tmp_path: Path) -> None:
         coordinator.close()
 
 
-def test_analyze_bar_locks_vbar_computed_style_container_without_runtime_type_inference(
+def _make_vbar_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
+    root = tmp_path / "project_vbar"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    vbar value StaticValue(50) range 100 id "start_btn" '
+        "xpos 12 ypos 10 xsize 24 ysize 200\n",
+        encoding="utf-8",
+    )
+    return RenpyProject(root), source
+
+
+def test_analyze_and_commit_vbar_statement_uses_source_kind(tmp_path: Path) -> None:
+    project, source = _make_vbar_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["runtime_key"]["node_type"] = "bar"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-vbar",
+            "object_id": "obj-independent-vbar",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-vbar")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["source_key"]["statement_kind"] == "vbar"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-vbar")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            assert source.read_text(encoding="utf-8") == (
+                "screen test_screen:\n"
+                '    vbar value StaticValue(50) range 100 id "start_btn" '
+                "xpos 40 ypos 50 xsize 24 ysize 200\n"
+            )
+    finally:
+        coordinator.close()
+
+
+def test_analyze_vbar_block_header_stays_locked(tmp_path: Path) -> None:
+    project, source = _make_vbar_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    vbar value StaticValue(50) range 100 id "start_btn" '
+        "xpos 12 ypos 10 xsize 24 ysize 200:\n"
+        "        null\n",
+        encoding="utf-8",
+    )
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["runtime_key"]["node_type"] = "bar"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-vbar-block",
+            "object_id": "obj-independent-vbar-block",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-vbar-block")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["lock_reason"]["code"] == "MULTILINE_STATEMENT_REJECTED"
+    finally:
+        coordinator.close()
+
+
+
+def test_analyze_bar_locks_computed_style_container_without_runtime_type_inference(
     tmp_path: Path,
 ) -> None:
     project, source = _make_bar_project(tmp_path)
     cases = (
-        (
-            '    vbar value StaticValue(50) range 100 id "start_btn" xpos 12 ypos 10\n',
-            "VBAR_NOT_SUPPORTED",
-            "vbar",
-            False,
-            [{"index": 0, "type": "ScreenDisplayable", "source_location": ["script.rpy", 1],
-              "screen_owner": "game", "crop_state": "none", "editor_owned": False},
-             {"index": 1, "type": "Bar", "source_location": ["script.rpy", 2],
-              "screen_owner": "game", "crop_state": "none", "editor_owned": False}],
-        ),
         (
             '    bar value StaticValue(50) range 100 id "start_btn" xpos base_x ypos 10\n',
             "XPOS_LITERAL_REQUIRED",
