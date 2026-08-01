@@ -124,9 +124,13 @@ def _independent_expected_after_patch(
     parsed = analyze_textbutton_statement(line, expected_widget_id=TARGET_ID)
     from renforge.editor.source import _format_align_component
     parent_w, parent_h = parsed.align_parent_size
-    base = baseline or {"x": 0, "y": 0}
-    ax = float(parsed.xpos) + (int(x) - int(base["x"])) / float(parent_w)
-    ay = float(parsed.ypos) + (int(y) - int(base["y"])) / float(parent_h)
+    base = baseline or {"x": 0, "y": 0, "w": 0, "h": 0}
+    widget_w = max(0, int(base.get("w") or 0))
+    widget_h = max(0, int(base.get("h") or 0))
+    extent_w = float(max(1, int(parent_w) - widget_w))
+    extent_h = float(max(1, int(parent_h) - widget_h))
+    ax = float(parsed.xpos) + (int(x) - int(base["x"])) / extent_w
+    ay = float(parsed.ypos) + (int(y) - int(base["y"])) / extent_h
     ax_t = _format_align_component(ax)
     ay_t = _format_align_component(ay)
     patched_line = re.sub(
@@ -435,7 +439,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         pre_save_text,
         x=requested_after[0],
         y=requested_after[1],
-        baseline={"x": bounds_before[0], "y": bounds_before[1]},
+        baseline={"x": bounds_before[0], "y": bounds_before[1], "w": before_rect[2] if len(before_rect)>2 else 0, "h": before_rect[3] if len(before_rect)>3 else 0},
     )
     if post_save_text != expected_text:
         raise AssertionError("patched fixture bytes disagree with independent expected content")

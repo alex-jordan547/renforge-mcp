@@ -1254,3 +1254,10 @@ def test_analyze_textbutton_anchor_rejects_non_literal() -> None:
             expected_widget_id="start",
         )
     assert excinfo.value.code == "ANCHOR_LITERAL_REQUIRED"
+    # Bare expression (not a tuple) must not enable moves (Codex P2).
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" xpos 1 ypos 2 anchor anchor_value action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "ANCHOR_LITERAL_REQUIRED"

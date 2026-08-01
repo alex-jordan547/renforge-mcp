@@ -529,13 +529,28 @@ def _format_align_component(value: float) -> str:
 
 
 def _require_pure_anchor_if_present(tokens: list[_Token]) -> bool:
-    """Return True if a pure literal anchor is present; raise if impure/duplicate."""
-    indexes = _tuple_property_indexes(tokens, "anchor")
-    if not indexes:
+    """Return True if a pure literal anchor is present; raise if impure/duplicate.
+
+    Counts every top-level ``anchor`` keyword (including bare expressions such as
+    ``anchor anchor_value``), not only tuple forms.
+    """
+    anchor_word_indexes = [
+        index
+        for index, token in enumerate(tokens)
+        if token.depth == 0 and token.kind == "WORD" and token.text == "anchor"
+    ]
+    if not anchor_word_indexes:
         return False
-    if len(indexes) > 1:
+    if len(anchor_word_indexes) > 1:
         raise EditorSourceError("ANCHOR_DUPLICATE", "textbutton statement must contain exactly one anchor")
-    if _parse_literal_float_pair(tokens, indexes[0]) is None:
+    # Must be the supported property form: anchor (
+    tuple_indexes = _tuple_property_indexes(tokens, "anchor")
+    if not tuple_indexes or tuple_indexes[0] != anchor_word_indexes[0]:
+        raise EditorSourceError(
+            "ANCHOR_LITERAL_REQUIRED",
+            "anchor must be a pure literal pair of numbers: anchor (x, y)",
+        )
+    if _parse_literal_float_pair(tokens, tuple_indexes[0]) is None:
         raise EditorSourceError(
             "ANCHOR_LITERAL_REQUIRED",
             "anchor must be a pure literal pair of numbers: anchor (x, y)",
@@ -1102,15 +1117,24 @@ def apply_textbutton_patch(
     x: int,
     y: int,
     align_runtime_baseline: tuple[int, int] | list[int] | None = None,
+    align_widget_size: tuple[int, int] | list[int] | None = None,
 ) -> bytes:
     # Block form spans are absolute in the full source; single-line spans are
     # relative to the single line bytes passed by the coordinator.
     if statement.position_mode == "align":
         parent_w, parent_h = statement.align_parent_size
+        # Ren'Py ``align (a, b)`` sets both align and anchor to (a, b), so the
+        # focus top-left moves by Δalign * (parent - widget), not Δalign * parent.
+        widget_w = 0
+        widget_h = 0
+        if align_widget_size is not None and len(align_widget_size) == 2:
+            widget_w = max(0, int(align_widget_size[0]))
+            widget_h = max(0, int(align_widget_size[1]))
+        extent_w = float(max(1, int(parent_w) - widget_w))
+        extent_h = float(max(1, int(parent_h) - widget_h))
         if align_runtime_baseline is not None and len(align_runtime_baseline) == 2:
-            # Pixel delta relative to the measured focus baseline at analyze time.
-            ax = float(statement.xpos) + (int(x) - int(align_runtime_baseline[0])) / float(parent_w)
-            ay = float(statement.ypos) + (int(y) - int(align_runtime_baseline[1])) / float(parent_h)
+            ax = float(statement.xpos) + (int(x) - int(align_runtime_baseline[0])) / extent_w
+            ay = float(statement.ypos) + (int(y) - int(align_runtime_baseline[1])) / extent_h
         else:
             ax, ay = pixels_to_align(int(x), int(y), parent_size=statement.align_parent_size)
         source_text = source_bytes.decode("utf-8")

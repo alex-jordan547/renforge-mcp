@@ -598,8 +598,8 @@ class EditorCoordinator:
                 "position_mode": position_mode,
             }
             if position_mode == "align":
-                # Authored fractions + runtime baseline let preview/write apply a
-                # pure pixel delta without assuming focus TL == align*parent.
+                # Authored fractions + measured baseline/size: Ren'Py align also
+                # sets anchor, so TL moves over (parent - widget) extent.
                 source_key["align_authored"] = [
                     float(statement.xpos),
                     float(statement.ypos),
@@ -611,6 +611,14 @@ class EditorCoordinator:
                 source_key["align_parent_size"] = list(
                     getattr(statement, "align_parent_size", (1280, 720))
                 )
+                # observation rect is [x, y, w, h] when available on the input
+                # observation used for analysis (stored on runtime_position only
+                # as x,y). Prefer full rect from the analyze payload when present.
+                rect = observation.get("rect") if isinstance(observation, dict) else None
+                if isinstance(rect, list) and len(rect) >= 4:
+                    source_key["align_widget_size"] = [int(rect[2]), int(rect[3])]
+                else:
+                    source_key["align_widget_size"] = [0, 0]
             if lock_reason is None:
                 if observation.get("measurement_method") != "focus_list":
                     lock_reason = self._lock_reason(
@@ -1066,6 +1074,7 @@ class EditorCoordinator:
                     expected_widget_id=widget_id,
                 )
                 align_baseline = source_key.get("align_runtime_baseline")
+                align_size = source_key.get("align_widget_size")
                 if kind == "textbutton" and getattr(statement, "position_mode", "xy") == "align":
                     lines[line_no - 1] = apply_textbutton_patch(
                         lines[line_no - 1].encode("utf-8"),
@@ -1075,6 +1084,11 @@ class EditorCoordinator:
                         align_runtime_baseline=(
                             tuple(align_baseline)
                             if isinstance(align_baseline, (list, tuple)) and len(align_baseline) == 2
+                            else None
+                        ),
+                        align_widget_size=(
+                            tuple(align_size)
+                            if isinstance(align_size, (list, tuple)) and len(align_size) == 2
                             else None
                         ),
                     ).decode("utf-8")

@@ -1794,11 +1794,12 @@ def test_analyze_and_commit_textbutton_align_preserves_form(tmp_path: Path) -> N
             assert result["original_position"] == [640, 360]
             assert result["source_key"]["position_mode"] == "align"
             assert result["source_key"]["align_authored"] == [0.5, 0.5]
-            # Commit with intent x = baseline+24 => align x = 0.5 + 24/1280 = 0.51875
+            # extent = parent - widget = 1280-80; delta 24 => +24/1200 = 0.02
+            assert result["source_key"]["align_widget_size"] == [80, 40]
             committed = _commit(sock, auth, analyzed, x=664, y=360, request_id="co-align")
             assert committed["ok"] is True
             text = source.read_text(encoding="utf-8")
-            assert "align (0.51875, 0.5)" in text
+            assert "align (0.52, 0.5)" in text
             assert "xpos" not in text and "ypos" not in text
     finally:
         coordinator.close()
