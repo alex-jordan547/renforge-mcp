@@ -64,7 +64,7 @@ Real screens are messier.
 | Form | Problem | Possible approach |
 |---|---|---|
 | Multi-line statement with a block | Position keywords may sit on any line of the block | **Partially implemented (issue #37):** multi-line `textbutton` with `id`/`xpos`/`ypos` in the child block only; seven-step live proof green via `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1`. Other adapters remain single-line or header-only (`button`). |
-| `pos (x, y)` / `align` / `anchor` / `offset` | Different property, same intent | **`pos` implemented (issue #38)** for single-line `textbutton` with pure `pos (x, y)`; write-back preserves `pos` (never rewrites to xpos/ypos). Live: `RENFORGE_POS_LIVE=1`. `align` / `anchor` / `offset` still pending. |
+| `pos (x, y)` / `align` / `anchor` / `offset` | Different property, same intent | **`pos` (#38)**, **`align` (#39)**, **`anchor` (#40)** implemented for single-line `textbutton`. Write-back preserves form. Lives: `RENFORGE_POS_LIVE=1`, `RENFORGE_ALIGN_LIVE=1`, `RENFORGE_ANCHOR_LIVE=1`. `offset` still pending. |
 | Position from a **variable or expression** | Cannot be rewritten without changing semantics | **Stays locked.** Offer to show the computed value, never to overwrite the expression |
 | Element inside `hbox` / `vbox` / `grid` | Position is computed by the layout, not authored | **Stays locked** for direct move. A layout-aware edit is a different feature |
 | Multiple instances from one loop / `use` | One source line, N runtime widgets | Needs a disambiguation UI; the stable key already carries `ordinal` |

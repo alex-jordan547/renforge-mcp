@@ -11,19 +11,28 @@ class EditorSourceError(ValueError):
         self.code = code
 
 
+# Logical parent size used to convert between align fractions and pixels for the
+# evidence-gated full-screen fixed fixtures (demo game is 1280×720).
+DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
+
+
 @dataclass(frozen=True)
 class TextbuttonStatement:
     widget_id: str
-    xpos: int
-    ypos: int
+    # Pixel integers for xy/pos; fractional floats for align components.
+    xpos: int | float
+    ypos: int | float
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
     # "single_line" keeps spans relative to the statement line.
     # "block" keeps absolute character spans in the full source file.
     form: str = "single_line"
     source_line: int | None = None
-    # "xy" = authored xpos/ypos; "pos" = authored pos (x, y). Write-back preserves form.
+    # xy | pos | align — write-back preserves the authored form.
     position_mode: str = "xy"
+    # When True, a pure literal anchor (fx, fy) is present and must be preserved.
+    has_anchor: bool = False
+    align_parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE
 
 
 @dataclass(frozen=True)
@@ -329,14 +338,16 @@ def _require_single_literal_id(
     return widget_id
 
 
-# Property keywords that may follow a pure ``pos (x, y)`` on a textbutton line.
-# Expression operators (if/or/else/and) are intentionally absent so
-# ``pos (1, 2) if flag else (3, 4)`` is rejected rather than half-patched.
-_TEXTBUTTON_POS_FOLLOWER_WORDS = frozenset(
+# Property keywords that may follow pure pair forms on a textbutton line.
+# Expression operators (if/or/else/and) are intentionally absent.
+_TEXTBUTTON_PAIR_FOLLOWER_WORDS = frozenset(
     {
         "id",
         "xpos",
         "ypos",
+        "pos",
+        "align",
+        "anchor",
         "action",
         "style",
         "xsize",
@@ -369,14 +380,11 @@ _TEXTBUTTON_POS_FOLLOWER_WORDS = frozenset(
 )
 
 
-def _pos_property_indexes(tokens: list[_Token]) -> list[int]:
-    """Indexes of top-level ``pos`` used as a property keyword (value starts with ``(``).
-
-    Distinguishes ``pos (1, 2)`` from expression identifiers such as ``action pos``.
-    """
+def _tuple_property_indexes(tokens: list[_Token], keyword: str) -> list[int]:
+    """Indexes of top-level ``keyword`` used as a property (value starts with ``(``)."""
     indexes: list[int] = []
     for index, token in enumerate(tokens):
-        if token.depth != 0 or token.kind != "WORD" or token.text != "pos":
+        if token.depth != 0 or token.kind != "WORD" or token.text != keyword:
             continue
         next_index = index + 1
         if next_index >= len(tokens):
@@ -387,46 +395,94 @@ def _pos_property_indexes(tokens: list[_Token]) -> list[int]:
     return indexes
 
 
+def _pos_property_indexes(tokens: list[_Token]) -> list[int]:
+    return _tuple_property_indexes(tokens, "pos")
+
+
+def _parse_float_at(
+    tokens: list[_Token], start_index: int
+) -> tuple[float, int, tuple[int, int]] | None:
+    """Parse a pure float or integer token run starting at start_index.
+
+    Accepts ``N``, ``N.M``, and ``-N.M`` (lexer may emit NUMBER / . / NUMBER).
+    Returns (value, index_after_last_token, full_span).
+    """
+    if start_index >= len(tokens) or tokens[start_index].kind != "NUMBER":
+        return None
+    first = tokens[start_index]
+    if (
+        start_index + 2 < len(tokens)
+        and tokens[start_index + 1].kind == "SYMBOL"
+        and tokens[start_index + 1].text == "."
+        and tokens[start_index + 2].kind == "NUMBER"
+    ):
+        text = f"{first.text}.{tokens[start_index + 2].text}"
+        end = tokens[start_index + 2].end
+        return float(text), start_index + 3, (first.start, end)
+    return float(first.text), start_index + 1, (first.start, first.end)
+
+
+def _parse_literal_float_pair(
+    tokens: list[_Token],
+    keyword_index: int,
+) -> tuple[float, float, tuple[int, int], tuple[int, int]] | None:
+    """Parse ``keyword (X, Y)`` with pure float/int literals."""
+    open_index = keyword_index + 1
+    if open_index >= len(tokens):
+        return None
+    if tokens[open_index].kind != "SYMBOL" or tokens[open_index].text != "(":
+        return None
+    x_parsed = _parse_float_at(tokens, open_index + 1)
+    if x_parsed is None:
+        return None
+    x_value, after_x, x_span = x_parsed
+    if after_x >= len(tokens) or tokens[after_x].kind != "SYMBOL" or tokens[after_x].text != ",":
+        return None
+    y_parsed = _parse_float_at(tokens, after_x + 1)
+    if y_parsed is None:
+        return None
+    y_value, after_y, y_span = y_parsed
+    if after_y >= len(tokens) or tokens[after_y].kind != "SYMBOL" or tokens[after_y].text != ")":
+        return None
+    following = after_y + 1
+    if following < len(tokens):
+        next_token = tokens[following]
+        if (
+            next_token.depth != 0
+            or next_token.kind != "WORD"
+            or next_token.text not in _TEXTBUTTON_PAIR_FOLLOWER_WORDS
+        ):
+            return None
+    return x_value, y_value, x_span, y_span
+
+
 def _parse_literal_pos_pair(
     tokens: list[_Token],
     pos_index: int,
 ) -> tuple[int, int, tuple[int, int], tuple[int, int]] | None:
-    """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans.
-
-    A pure pair is either end-of-statement after ``)``, or followed by a top-level
-    textbutton property WORD (not expression operators like ``if`` / ``or``).
-    """
+    """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans."""
     open_index = pos_index + 1
-    if open_index >= len(tokens):
+    if open_index + 4 >= len(tokens):
         return None
-    open_token = tokens[open_index]
-    if open_token.kind != "SYMBOL" or open_token.text != "(":
+    if tokens[open_index].kind != "SYMBOL" or tokens[open_index].text != "(":
         return None
-    # Inside the tuple: NUMBER , NUMBER )
-    x_index = open_index + 1
-    comma_index = open_index + 2
-    y_index = open_index + 3
-    close_index = open_index + 4
-    if close_index >= len(tokens):
-        return None
-    x_token = tokens[x_index]
-    comma_token = tokens[comma_index]
-    y_token = tokens[y_index]
-    close_token = tokens[close_index]
+    x_token = tokens[open_index + 1]
+    comma_token = tokens[open_index + 2]
+    y_token = tokens[open_index + 3]
+    close_token = tokens[open_index + 4]
     if x_token.kind != "NUMBER" or y_token.kind != "NUMBER":
         return None
     if comma_token.kind != "SYMBOL" or comma_token.text != ",":
         return None
     if close_token.kind != "SYMBOL" or close_token.text != ")":
         return None
-    following = close_index + 1
+    following = open_index + 5
     if following < len(tokens):
         next_token = tokens[following]
-        # EOS is allowed (no following token). Otherwise require a property keyword.
         if (
             next_token.depth != 0
             or next_token.kind != "WORD"
-            or next_token.text not in _TEXTBUTTON_POS_FOLLOWER_WORDS
+            or next_token.text not in _TEXTBUTTON_PAIR_FOLLOWER_WORDS
         ):
             return None
     return (
@@ -435,6 +491,56 @@ def _parse_literal_pos_pair(
         (x_token.start, x_token.end),
         (y_token.start, y_token.end),
     )
+
+
+def align_to_pixels(
+    xalign: float,
+    yalign: float,
+    *,
+    parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE,
+) -> tuple[int, int]:
+    """Convert authored align fractions to logical pixel top-left (default anchor 0,0)."""
+    parent_w, parent_h = parent_size
+    return int(round(float(xalign) * parent_w)), int(round(float(yalign) * parent_h))
+
+
+def pixels_to_align(
+    x: int,
+    y: int,
+    *,
+    parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE,
+) -> tuple[float, float]:
+    """Convert logical pixel position to align fractions for write-back."""
+    parent_w, parent_h = parent_size
+    if parent_w <= 0 or parent_h <= 0:
+        raise EditorSourceError("ALIGN_PARENT_INVALID", "align parent size must be positive")
+    return float(x) / float(parent_w), float(y) / float(parent_h)
+
+
+def _format_align_component(value: float) -> str:
+    # High precision so reload pixel agreement stays within 1 logical pixel after
+    # align fraction round-trips (demo parent is 1280×720).
+    text = f"{float(value):.12f}".rstrip("0").rstrip(".")
+    if text in {"-0", ""}:
+        text = "0"
+    if "." not in text:
+        text = f"{text}.0"
+    return text
+
+
+def _require_pure_anchor_if_present(tokens: list[_Token]) -> bool:
+    """Return True if a pure literal anchor is present; raise if impure/duplicate."""
+    indexes = _tuple_property_indexes(tokens, "anchor")
+    if not indexes:
+        return False
+    if len(indexes) > 1:
+        raise EditorSourceError("ANCHOR_DUPLICATE", "textbutton statement must contain exactly one anchor")
+    if _parse_literal_float_pair(tokens, indexes[0]) is None:
+        raise EditorSourceError(
+            "ANCHOR_LITERAL_REQUIRED",
+            "anchor must be a pure literal pair of numbers: anchor (x, y)",
+        )
+    return True
 
 
 def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> TextbuttonStatement:
@@ -454,19 +560,58 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
         for token in tokens
     )
     pos_indexes = _pos_property_indexes(tokens)
-    if pos_indexes and has_xy:
+    align_indexes = _tuple_property_indexes(tokens, "align")
+
+    form_count = sum([bool(has_xy), bool(pos_indexes), bool(align_indexes)])
+    if form_count > 1:
         raise EditorSourceError(
             "POSITION_FORM_MIXED",
-            "textbutton cannot mix pos with xpos/ypos",
+            "textbutton cannot mix align/pos/xpos/ypos position forms",
         )
     if len(pos_indexes) > 1:
         raise EditorSourceError("POS_DUPLICATE", "textbutton statement must contain exactly one pos")
+    if len(align_indexes) > 1:
+        raise EditorSourceError("ALIGN_DUPLICATE", "textbutton statement must contain exactly one align")
+
+    if len(align_indexes) == 1:
+        widget_id = _require_single_literal_id(
+            tokens,
+            expected_widget_id=expected_widget_id,
+            human_kind="textbutton",
+        )
+        # Align form does not combine with anchor in this evidence-gated shape.
+        if _tuple_property_indexes(tokens, "anchor"):
+            raise EditorSourceError(
+                "POSITION_FORM_MIXED",
+                "textbutton align form does not combine with anchor in V1",
+            )
+        parsed_align = _parse_literal_float_pair(tokens, align_indexes[0])
+        if parsed_align is None:
+            raise EditorSourceError(
+                "ALIGN_LITERAL_REQUIRED",
+                "align must be a pure literal pair: align (x, y)",
+            )
+        xalign, yalign, x_span, y_span = parsed_align
+        return TextbuttonStatement(
+            widget_id=widget_id,
+            xpos=xalign,
+            ypos=yalign,
+            xpos_span=x_span,
+            ypos_span=y_span,
+            form="single_line",
+            source_line=None,
+            position_mode="align",
+            has_anchor=False,
+            align_parent_size=DEFAULT_ALIGN_PARENT_SIZE,
+        )
+
     if len(pos_indexes) == 1:
         widget_id = _require_single_literal_id(
             tokens,
             expected_widget_id=expected_widget_id,
             human_kind="textbutton",
         )
+        has_anchor = _require_pure_anchor_if_present(tokens)
         parsed_pos = _parse_literal_pos_pair(tokens, pos_indexes[0])
         if parsed_pos is None:
             raise EditorSourceError(
@@ -483,14 +628,31 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
             form="single_line",
             source_line=None,
             position_mode="pos",
+            has_anchor=has_anchor,
         )
 
-    return _analyze_positioned_kind_statement(
+    # xy form (optional pure anchor for issue #40).
+    statement = _analyze_positioned_kind_statement(
         line,
         expected_widget_id=expected_widget_id,
         expected_kind="textbutton",
         statement_cls=TextbuttonStatement,
     )
+    has_anchor = _require_pure_anchor_if_present(tokens)
+    if has_anchor:
+        return TextbuttonStatement(
+            widget_id=statement.widget_id,
+            xpos=statement.xpos,
+            ypos=statement.ypos,
+            xpos_span=statement.xpos_span,
+            ypos_span=statement.ypos_span,
+            form=statement.form,
+            source_line=statement.source_line,
+            position_mode="xy",
+            has_anchor=True,
+        )
+    return statement
+
 
 
 def is_textbutton_block_header(line: str) -> bool:
@@ -933,9 +1095,34 @@ def _apply_integer_span_patch(
     return patched.encode("utf-8")
 
 
-def apply_textbutton_patch(source_bytes: bytes, statement: TextbuttonStatement, *, x: int, y: int) -> bytes:
+def apply_textbutton_patch(
+    source_bytes: bytes,
+    statement: TextbuttonStatement,
+    *,
+    x: int,
+    y: int,
+    align_runtime_baseline: tuple[int, int] | list[int] | None = None,
+) -> bytes:
     # Block form spans are absolute in the full source; single-line spans are
     # relative to the single line bytes passed by the coordinator.
+    if statement.position_mode == "align":
+        parent_w, parent_h = statement.align_parent_size
+        if align_runtime_baseline is not None and len(align_runtime_baseline) == 2:
+            # Pixel delta relative to the measured focus baseline at analyze time.
+            ax = float(statement.xpos) + (int(x) - int(align_runtime_baseline[0])) / float(parent_w)
+            ay = float(statement.ypos) + (int(y) - int(align_runtime_baseline[1])) / float(parent_h)
+        else:
+            ax, ay = pixels_to_align(int(x), int(y), parent_size=statement.align_parent_size)
+        source_text = source_bytes.decode("utf-8")
+        replacements = [
+            (statement.xpos_span[0], statement.xpos_span[1], _format_align_component(ax)),
+            (statement.ypos_span[0], statement.ypos_span[1], _format_align_component(ay)),
+        ]
+        replacements.sort(key=lambda item: item[0], reverse=True)
+        patched = source_text
+        for start, end, replacement in replacements:
+            patched = f"{patched[:start]}{replacement}{patched[end:]}"
+        return patched.encode("utf-8")
     return _apply_integer_span_patch(
         source_bytes,
         xpos_span=statement.xpos_span,

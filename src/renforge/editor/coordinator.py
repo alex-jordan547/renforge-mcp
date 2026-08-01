@@ -557,7 +557,13 @@ class EditorCoordinator:
                     header_line,
                     expected_widget_id=widget_id,
                 )
-            original_position = [statement.xpos, statement.ypos]
+            # Align is fractional in source; the editor delta formula works in
+            # logical pixels, so original_position is the measured runtime rect.
+            position_mode = getattr(statement, "position_mode", "xy")
+            if position_mode == "align":
+                original_position = list(runtime_position)
+            else:
+                original_position = [int(statement.xpos), int(statement.ypos)]
             ancestry = runtime_key.get("ancestry")
             normalized_ancestry = (
                 [
@@ -589,7 +595,22 @@ class EditorCoordinator:
                 "ancestry": normalized_ancestry,
                 "statement_kind": statement_kind,
                 "baseline_sha256": source_sha,
+                "position_mode": position_mode,
             }
+            if position_mode == "align":
+                # Authored fractions + runtime baseline let preview/write apply a
+                # pure pixel delta without assuming focus TL == align*parent.
+                source_key["align_authored"] = [
+                    float(statement.xpos),
+                    float(statement.ypos),
+                ]
+                source_key["align_runtime_baseline"] = [
+                    int(runtime_position[0]),
+                    int(runtime_position[1]),
+                ]
+                source_key["align_parent_size"] = list(
+                    getattr(statement, "align_parent_size", (1280, 720))
+                )
             if lock_reason is None:
                 if observation.get("measurement_method") != "focus_list":
                     lock_reason = self._lock_reason(
@@ -1044,13 +1065,27 @@ class EditorCoordinator:
                     lines[line_no - 1],
                     expected_widget_id=widget_id,
                 )
-                lines[line_no - 1] = apply_editable_statement_patch(
-                    lines[line_no - 1].encode("utf-8"),
-                    kind,
-                    statement,
-                    x=x,
-                    y=y,
-                ).decode("utf-8")
+                align_baseline = source_key.get("align_runtime_baseline")
+                if kind == "textbutton" and getattr(statement, "position_mode", "xy") == "align":
+                    lines[line_no - 1] = apply_textbutton_patch(
+                        lines[line_no - 1].encode("utf-8"),
+                        statement,
+                        x=x,
+                        y=y,
+                        align_runtime_baseline=(
+                            tuple(align_baseline)
+                            if isinstance(align_baseline, (list, tuple)) and len(align_baseline) == 2
+                            else None
+                        ),
+                    ).decode("utf-8")
+                else:
+                    lines[line_no - 1] = apply_editable_statement_patch(
+                        lines[line_no - 1].encode("utf-8"),
+                        kind,
+                        statement,
+                        x=x,
+                        y=y,
+                    ).decode("utf-8")
 
         return "".join(lines).encode("utf-8")
 

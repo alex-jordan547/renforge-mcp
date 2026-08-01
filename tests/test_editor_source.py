@@ -1188,3 +1188,69 @@ def test_analyze_button_statement_requires_literal_header_coordinates_and_child_
     with pytest.raises(EditorSourceError) as exc_info:
         analyze_button_statement(without_child, source_line=2, expected_widget_id="button_target")
     assert exc_info.value.code == "BUTTON_BLOCK_REQUIRED"
+
+
+def test_align_pixel_conversion_roundtrip() -> None:
+    from renforge.editor.source import align_to_pixels, pixels_to_align
+
+    assert align_to_pixels(0.0, 0.0) == (0, 0)
+    assert align_to_pixels(0.5, 0.5) == (640, 360)
+    assert align_to_pixels(1.0, 1.0) == (1280, 720)
+    assert pixels_to_align(640, 360) == (0.5, 0.5)
+    px, py = align_to_pixels(0.25, 0.75)
+    assert pixels_to_align(px, py) == (0.25, 0.75)
+
+
+def test_analyze_textbutton_align_accepts_and_patches_form() -> None:
+    line = '    textbutton "Play" id "start" align (0.5, 0.5) action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    assert parsed.position_mode == "align"
+    assert (parsed.xpos, parsed.ypos) == (0.5, 0.5)
+    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=320, y=180).decode("utf-8")
+    assert "align (0.25, 0.25)" in patched
+    assert "xpos" not in patched and "ypos" not in patched
+
+
+def test_analyze_textbutton_align_rejects_impure_and_mixed() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" align (0.5, base_y) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "ALIGN_LITERAL_REQUIRED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" align (0.5, 0.5) xpos 1 ypos 2 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" align (0.5, 0.5) if f else (0, 0) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "ALIGN_LITERAL_REQUIRED"
+
+
+def test_analyze_textbutton_anchor_preserved_with_xy() -> None:
+    line = (
+        '    textbutton "Play" id "start" xpos 200 ypos 180 '
+        "anchor (0.5, 0.5) action NullAction()\n"
+    )
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    assert parsed.position_mode == "xy"
+    assert parsed.has_anchor is True
+    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=240, y=196).decode("utf-8")
+    assert patched == (
+        '    textbutton "Play" id "start" xpos 240 ypos 196 '
+        "anchor (0.5, 0.5) action NullAction()\n"
+    )
+
+
+def test_analyze_textbutton_anchor_rejects_non_literal() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" xpos 1 ypos 2 anchor (base, 0.5) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "ANCHOR_LITERAL_REQUIRED"

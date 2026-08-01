@@ -1131,10 +1131,27 @@ init 1100 python:
                 and widget_id
             ):
                 continue
-            properties[str(widget_id)] = {
-                "xpos": int(source_position[0]) + int(position[0]) - int(runtime_baseline[0]),
-                "ypos": int(source_position[1]) + int(position[1]) - int(runtime_baseline[1]),
-            }
+            next_x = int(source_position[0]) + int(position[0]) - int(runtime_baseline[0])
+            next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
+            source_key = target.get("source_key") or {}
+            position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
+            # Align-authored targets: preview with absolute xpos/ypos so focus_list
+            # tracks the requested pixel delta 1:1. Source write-back still uses
+            # align fractions (host apply converts using the measured baseline).
+            if position_mode == "align":
+                properties[str(widget_id)] = {
+                    "xpos": next_x,
+                    "ypos": next_y,
+                    "xalign": 0.0,
+                    "yalign": 0.0,
+                    "xanchor": 0.0,
+                    "yanchor": 0.0,
+                }
+            else:
+                properties[str(widget_id)] = {
+                    "xpos": next_x,
+                    "ypos": next_y,
+                }
         return properties
 
 
@@ -2594,7 +2611,11 @@ init 1100 python:
                 expected_x = int(expected_position[0])
                 expected_y = int(expected_position[1])
                 rect = observation.get("rect") or []
-                if not (abs(int(rect[0]) - expected_x) <= 1 and abs(int(rect[1]) - expected_y) <= 1):
+                # Align fraction round-trips can be off by 1–2 logical px on textbutton
+                # styles after reload; keep 1px for all other position modes.
+                position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
+                tolerance = 2 if position_mode == "align" else 1
+                if not (abs(int(rect[0]) - expected_x) <= tolerance and abs(int(rect[1]) - expected_y) <= tolerance):
                     return {
                         "ok": False,
                         "error": "TARGET_POSITION_MISMATCH",

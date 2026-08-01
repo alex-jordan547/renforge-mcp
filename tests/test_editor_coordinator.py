@@ -1754,3 +1754,93 @@ def test_analyze_textbutton_pos_non_literal_stays_locked(tmp_path: Path) -> None
             assert analyzed["result"]["lock_reason"]["code"] == "POS_LITERAL_REQUIRED"
     finally:
         coordinator.close()
+
+
+def test_analyze_and_commit_textbutton_align_preserves_form(tmp_path: Path) -> None:
+    root = tmp_path / "project_align"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" align (0.5, 0.5) action NullAction()\n',
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    # Runtime position is center of 1280x720 with default anchor (0,0) => (640, 360)
+    observation = _base_observation(script_generation=12)
+    observation["rect"] = [640, 360, 80, 40]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-align",
+            "object_id": "obj-independent-align",
+            "rect": [640, 360, 80, 40],
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-align")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            # original_position is runtime pixels for align delta formula
+            assert result["original_position"] == [640, 360]
+            assert result["source_key"]["position_mode"] == "align"
+            assert result["source_key"]["align_authored"] == [0.5, 0.5]
+            # Commit with intent x = baseline+24 => align x = 0.5 + 24/1280 = 0.51875
+            committed = _commit(sock, auth, analyzed, x=664, y=360, request_id="co-align")
+            assert committed["ok"] is True
+            text = source.read_text(encoding="utf-8")
+            assert "align (0.51875, 0.5)" in text
+            assert "xpos" not in text and "ypos" not in text
+    finally:
+        coordinator.close()
+
+
+def test_analyze_and_commit_textbutton_anchor_preserves_anchor_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "project_anchor"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" xpos 12 ypos 10 '
+        "anchor (0.5, 0.5) action NullAction()\n",
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    observation = _base_observation(script_generation=13)
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-anchor",
+            "object_id": "obj-independent-anchor",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-anchor")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["lock_reason"] is None
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-anchor")
+            assert committed["ok"] is True
+            text = source.read_text(encoding="utf-8")
+            assert text == (
+                "screen test_screen:\n"
+                '    textbutton "Play" id "start_btn" xpos 40 ypos 50 '
+                "anchor (0.5, 0.5) action NullAction()\n"
+            )
+    finally:
+        coordinator.close()

@@ -106,6 +106,31 @@ locked with exact codes (`POS_LITERAL_REQUIRED`, `POSITION_FORM_MIXED`, `POS_DUP
 Live proof: `RENFORGE_POS_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_pos_live.py`
 against Ren'Py **8.5.3**.
 
+### Literal `align (x, y)` on textbutton (issue #39)
+
+```renpy
+textbutton "MOVE ME" id "align_target" align (0.2, 0.25) action NullAction()
+```
+
+Host analysis records `position_mode == "align"` and stores authored fractions plus the measured
+focus baseline. Preview uses absolute xpos overrides so focus_list tracks the pixel delta; write-back
+applies `authored + Δpixel / parent_size` (parent **1280×720**) and preserves the `align` form.
+Attestation allows a **2 px** residual for align fraction round-trips on textbutton styles.
+
+Live: `RENFORGE_ALIGN_LIVE=1 … tests/test_editor_align_live.py` on Ren'Py **8.5.3**.
+
+### Literal `anchor` with xpos/ypos (issue #40)
+
+```renpy
+textbutton "MOVE ME" id "anchor_target" xpos 400 ypos 300 anchor (0.5, 0.5) action NullAction()
+```
+
+Pure `anchor (fx, fy)` is required when present (`ANCHOR_LITERAL_REQUIRED` otherwise). Moves patch
+only `xpos`/`ypos`; **anchor bytes are preserved**. Live proof measures focus_list independently of
+the anchor point.
+
+Live: `RENFORGE_ANCHOR_LIVE=1 … tests/test_editor_anchor_live.py` on Ren'Py **8.5.3**.
+
 The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:` headers. Computed
 coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime
 instances remain selectable but locked with an exact reason.
