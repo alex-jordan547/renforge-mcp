@@ -760,6 +760,212 @@ def test_dispatch_mouse_click_uses_focused_displayable_local_coordinates(running
     assert seen == [(30, 50, 0), (30, 50, 0)]
 
 
+def test_editor_reactivation_does_not_restore_a_previous_game_screen(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name, value in (
+        ("RENFORGE_EDITOR_HOST", "127.0.0.1"),
+        ("RENFORGE_EDITOR_PORT", "12345"),
+        ("RENFORGE_EDITOR_TOKEN", "editor-token"),
+        ("RENFORGE_EDITOR_PROTOCOL", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    active_screens = {"page_a", "_renforge_editor_overlay"}
+    shown_screens = []
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.session = {}
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+
+    def show_screen(name, **_kwargs):
+        shown_screens.append(name)
+        active_screens.add(name)
+
+    renpy.show_screen = show_screen
+    renpy.hide_screen = lambda name, **_kwargs: active_screens.discard(name)
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.screen = "page_a"
+        state.editor_session_screen = "page_a"
+
+        globs["_renforge_editor_exit"]()
+        active_screens.discard("page_a")
+        active_screens.add("page_b")
+        assert globs["_renforge_editor_activate"]()["ok"] is True
+        globs["_renforge_editor_periodic"]()
+
+        assert "page_b" in active_screens
+        assert "page_a" not in active_screens
+        assert "page_a" not in shown_screens
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_periodic_restores_active_session_after_reload(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = set()
+    shown_screens = []
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.session = {}
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+
+    def show_screen(name, **_kwargs):
+        shown_screens.append(name)
+        active_screens.add(name)
+
+    renpy.show_screen = show_screen
+    renpy.hide_screen = lambda name, **_kwargs: active_screens.discard(name)
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.screen = "page_a"
+        state.editor_session_screen = "page_a"
+        state.save_in_progress = True
+
+        globs["_renforge_editor_periodic"]()
+
+        assert shown_screens == ["page_a", "_renforge_editor_overlay"]
+        assert active_screens == {"page_a", "_renforge_editor_overlay"}
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_exit_reverts_unsaved_previews_before_clearing_state(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = {"page_a", "_renforge_editor_overlay"}
+    shown_screens = []
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+
+    def show_screen(name, **kwargs):
+        shown_screens.append((name, kwargs))
+        active_screens.add(name)
+
+    renpy.show_screen = show_screen
+    renpy.hide_screen = lambda name, **_kwargs: active_screens.discard(name)
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.screen = "page_a"
+        state.editor_session_screen = "page_a"
+        state.targets["target"] = {
+            "screen": "page_a",
+            "widget_id": "choice",
+            "runtime_baseline": [100, 200],
+            "source_position": [100, 200],
+            "position": [140, 230],
+            "dirty": True,
+        }
+
+        result = globs["_renforge_editor_exit"]()
+
+        assert result == {"ok": True, "active": False}
+        assert shown_screens == [("page_a", {"_layer": "screens"})]
+        assert state.targets == {}
+        assert state.history_entries == []
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_exit_during_save_preserves_transaction_state(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = {"page_a", "_renforge_editor_overlay"}
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+    renpy.show_screen = lambda name, **_kwargs: active_screens.add(name)
+    renpy.hide_screen = lambda name, **_kwargs: active_screens.discard(name)
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.screen = "page_a"
+        state.editor_session_screen = "page_a"
+        state.save_in_progress = True
+        state.pending_transaction_id = "transaction-1"
+        state.pending_commit_request_id = 41
+        state.pending_reload_requested = True
+        state.pending_handshake_generation = 7
+
+        globs["pygame"].K_ESCAPE = 27
+        result = globs["_renforge_editor_h_key"]({"key": "escape"})
+
+        assert result == {"ok": False, "error": "SAVE_IN_PROGRESS", "active": True}
+        assert state.active is True
+        assert state.screen == "page_a"
+        assert state.editor_session_screen == "page_a"
+        assert state.save_in_progress is True
+        assert state.pending_transaction_id == "transaction-1"
+        assert state.pending_commit_request_id == 41
+        assert state.pending_reload_requested is True
+        assert state.pending_handshake_generation == 7
+        assert "_renforge_editor_overlay" in active_screens
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_mouse_up_applies_final_drag_position_without_motion(
     running_bridge, monkeypatch
 ):
