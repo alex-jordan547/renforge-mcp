@@ -215,6 +215,60 @@ def test_analyze_textbutton_block_rejects_header_positions_and_expressions() -> 
     assert excinfo.value.code == "MULTILINE_STATEMENT_REJECTED"
 
 
+@pytest.mark.parametrize(
+    ("block_body", "expected_code"),
+    (
+        (
+            '        xpos 1\n        ypos 2\n        action NullAction()\n',
+            "ID_LITERAL_REQUIRED",
+        ),
+        (
+            '        id "a"\n        id "ml"\n        xpos 1\n        ypos 2\n'
+            "        action NullAction()\n",
+            "ID_LITERAL_REQUIRED",
+        ),
+        (
+            '        id "other"\n        xpos 1\n        ypos 2\n        action NullAction()\n',
+            "ID_MISMATCH",
+        ),
+        (
+            '        id "ml"\n        ypos 2\n        action NullAction()\n',
+            "XPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '        id "ml"\n        xpos 1\n        action NullAction()\n',
+            "YPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '        id "ml"\n        xpos 1\n        xpos 2\n        ypos 3\n'
+            "        action NullAction()\n",
+            "XPOS_DUPLICATE",
+        ),
+        (
+            '        id "ml"\n        xpos 1\n        ypos 2\n        ypos 3\n'
+            "        action NullAction()\n",
+            "YPOS_DUPLICATE",
+        ),
+        (
+            '        id "ml"\n        xpos 1\n        ypos base_y\n        action NullAction()\n',
+            "YPOS_LITERAL_REQUIRED",
+        ),
+    ),
+)
+def test_analyze_textbutton_block_rejects_id_and_coordinate_problems(
+    block_body: str,
+    expected_code: str,
+) -> None:
+    source = 'screen s:\n    textbutton "X":\n' + block_body
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_block_statement(
+            source,
+            source_line=2,
+            expected_widget_id="ml",
+        )
+    assert excinfo.value.code == expected_code
+
+
 def test_analyze_button_statement_rejects_compound_numeric_position_expressions() -> None:
     invalid_headers = (
         (

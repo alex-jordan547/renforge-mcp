@@ -218,7 +218,7 @@ def run_editor_multiline_textbutton_live_scenario(client: Any, *, fixture_path: 
     """Seven-step live proof for multi-line textbutton block form (issue #37)."""
     report: dict[str, Any] = {}
     baseline_bytes = fixture_path.read_bytes()
-    baseline_sha = hashlib.sha256(baseline_bytes).hexdigest()
+    baseline_sha = _sha256_file(fixture_path)
     baseline_text = baseline_bytes.decode("utf-8")
     # Prove analyzer accepts the authored multi-line shape before any UI work.
     header_line = _target_header_source_line(baseline_text)
@@ -419,7 +419,7 @@ def run_editor_multiline_textbutton_live_scenario(client: Any, *, fixture_path: 
 
     # Step 3: patch via real Save overlay control.
     pre_save_bytes = fixture_path.read_bytes()
-    pre_save_sha = hashlib.sha256(pre_save_bytes).hexdigest()
+    pre_save_sha = _sha256_file(fixture_path)
     pre_save_text = pre_save_bytes.decode("utf-8")
     generation_before = _source_generation(analysis_status)
     save_request = _require_ok(
@@ -435,7 +435,7 @@ def run_editor_multiline_textbutton_live_scenario(client: Any, *, fixture_path: 
         poll_name="ml tb save complete",
     )
     post_save_bytes = fixture_path.read_bytes()
-    post_save_sha = hashlib.sha256(post_save_bytes).hexdigest()
+    post_save_sha = _sha256_file(fixture_path)
     post_save_text = post_save_bytes.decode("utf-8")
     source_position_after = _parse_xy_from_target_line(post_save_text)
     expected_source_position = {"x": requested_after[0], "y": requested_after[1]}
