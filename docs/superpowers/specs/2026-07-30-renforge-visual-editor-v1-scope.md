@@ -33,7 +33,7 @@ requires it — none is arbitrary.
 |---|---|---|
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
-| 3 | Single-line `textbutton` with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only those two integer spans |
+| 3 | Single-line statement from the proven adapter allowlist (`textbutton`, `imagebutton`) with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only those two integer spans |
 | 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
@@ -56,12 +56,13 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 | Adapter | Selection | Write chain | Status |
 |---|---|---|---|
 | `textbutton` | Spike C `pass` | Spike D `pass` | **Shipped in V1** |
-| `imagebutton` | Spike C `pass` (focusable) | **not exercised** | Blocked until proven |
+| `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path + seven-step live proof | **Implemented** (live proof green via `RENFORGE_IMAGEBUTTON_LIVE=1`) |
 | `button` | focusable by construction | not exercised | Blocked until proven |
 | `text`, `add`, `frame` | **not selectable** | Spike B proved write on a literal `text`, but by key, not by click | Out of V1 |
 
-`imagebutton` shares the `Button` mechanics proven in Spikes C and D, so it is the cheapest next
-adapter — but it ships only after its own end-to-end proof, not by analogy.
+`imagebutton` has a dedicated single-line adapter (issue #32) rather than a textbutton allowlist widen.
+Host unit/coordinator coverage lands in default CI; the seven-step live proof is opt-in in CI but was
+executed green locally against Ren'Py 8.5.3 (`RENFORGE_IMAGEBUTTON_LIVE=1 pytest tests/test_editor_imagebutton_live.py`).
 
 ## Proven mechanisms (do not redesign)
 

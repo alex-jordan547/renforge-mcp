@@ -5,7 +5,16 @@ from pathlib import Path
 import pytest
 
 from renforge.editor.paths import EditorPathError, resolve_game_path
-from renforge.editor.source import EditorSourceError, analyze_textbutton_statement, apply_textbutton_patch
+from renforge.editor.source import (
+    EditorSourceError,
+    analyze_editable_statement,
+    analyze_imagebutton_statement,
+    analyze_textbutton_statement,
+    apply_editable_statement_patch,
+    apply_imagebutton_patch,
+    apply_textbutton_patch,
+    peek_statement_kind,
+)
 
 
 def test_analyze_textbutton_statement_rejects_expressions_and_duplicates() -> None:
@@ -95,3 +104,127 @@ def test_apply_textbutton_patch_preserves_non_ascii_bytes_outside_coordinate_spa
     assert patched.decode("utf-8") == (
         '    textbutton "Café — 東京" id "start" xpos 901 ypos -7 action NullAction()\n'
     )
+
+
+def test_analyze_rejects_compound_numeric_position_expressions() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" xpos 100-20 ypos 10 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_imagebutton_statement(
+            '    imagebutton id "icon" idle Solid("#0f0") xpos 12 ypos 10+4 action NullAction()\n',
+            expected_widget_id="icon",
+        )
+    assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
+
+
+def test_peek_statement_kind_reads_first_top_level_word() -> None:
+    assert (
+        peek_statement_kind(
+            '    imagebutton id "icon" idle Solid("#0f0") xpos 1 ypos 2 action NullAction()\n'
+        )
+        == "imagebutton"
+    )
+    assert (
+        peek_statement_kind('    textbutton "Play" id "start" xpos 1 ypos 2 action NullAction()\n')
+        == "textbutton"
+    )
+    assert peek_statement_kind("    # comment only\n") is None
+
+
+def test_analyze_imagebutton_statement_accepts_single_line_and_patches_spans() -> None:
+    line = (
+        '    imagebutton id "icon" idle Solid("#4c6ef5", xysize=(80, 48)) '
+        "xpos 200 ypos 180 action NullAction()\n"
+    )
+    parsed = analyze_imagebutton_statement(line, expected_widget_id="icon")
+    assert parsed.widget_id == "icon"
+    assert parsed.xpos == 200
+    assert parsed.ypos == 180
+    patched = apply_imagebutton_patch(line.encode("utf-8"), parsed, x=240, y=196).decode("utf-8")
+    assert patched == (
+        '    imagebutton id "icon" idle Solid("#4c6ef5", xysize=(80, 48)) '
+        "xpos 240 ypos 196 action NullAction()\n"
+    )
+
+
+def test_analyze_imagebutton_statement_rejects_textbutton_kind() -> None:
+    with pytest.raises(EditorSourceError, match="imagebutton") as excinfo:
+        analyze_imagebutton_statement(
+            '    textbutton "Play" id "start" xpos 12 ypos 10 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+
+def test_analyze_imagebutton_statement_rejects_expressions_duplicates_and_multiline() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_imagebutton_statement(
+            '    imagebutton id "icon" idle Solid("#0f0") xpos xpos_base ypos 10 action NullAction()\n',
+            expected_widget_id="icon",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_imagebutton_statement(
+            '    imagebutton id "icon" idle Solid("#0f0") xpos 1 xpos 2 ypos 10 action NullAction()\n',
+            expected_widget_id="icon",
+        )
+    assert excinfo.value.code == "XPOS_DUPLICATE"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_imagebutton_statement(
+            '    imagebutton:\n        id "icon"\n        xpos 1\n        ypos 2\n',
+            expected_widget_id="icon",
+        )
+    assert excinfo.value.code == "MULTILINE_STATEMENT_REJECTED"
+
+
+def test_analyze_imagebutton_ignores_keywords_inside_nested_calls() -> None:
+    line = (
+        '    imagebutton id "icon" idle Transform("x", xpos=9) '
+        "xpos 12 ypos 34 action NullAction() # xpos 99\n"
+    )
+    parsed = analyze_imagebutton_statement(line, expected_widget_id="icon")
+    assert (parsed.xpos, parsed.ypos) == (12, 34)
+
+
+def test_analyze_editable_statement_routes_kinds() -> None:
+    kind, stmt = analyze_editable_statement(
+        '    imagebutton id "icon" idle Solid("#0f0") xpos 3 ypos 4 action NullAction()\n',
+        expected_widget_id="icon",
+    )
+    assert kind == "imagebutton"
+    assert stmt.xpos == 3
+    patched = apply_editable_statement_patch(
+        '    imagebutton id "icon" idle Solid("#0f0") xpos 3 ypos 4 action NullAction()\n'.encode("utf-8"),
+        kind,
+        stmt,
+        x=30,
+        y=40,
+    ).decode("utf-8")
+    assert "xpos 30 ypos 40" in patched
+
+    kind_tb, stmt_tb = analyze_editable_statement(
+        '    textbutton "Play" id "start" xpos 8 ypos 9 action NullAction()\n',
+        expected_widget_id="start",
+    )
+    assert kind_tb == "textbutton"
+    assert stmt_tb.ypos == 9
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_editable_statement(
+            '    bar id "b" value 1 range 2 xpos 1 ypos 2\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
+
+def test_analyze_editable_statement_reports_missing_statement_kind() -> None:
+    with pytest.raises(EditorSourceError, match="does not contain a supported statement kind") as excinfo:
+        analyze_editable_statement("    # comment only\n", expected_widget_id="start")
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"

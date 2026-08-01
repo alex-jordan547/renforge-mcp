@@ -29,7 +29,7 @@ from .exceptions import EditorError
 from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_game_path, sha256_bytes
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
-from .source import EditorSourceError, analyze_textbutton_statement
+from .source import EditorSourceError, analyze_editable_statement, apply_editable_statement_patch
 
 
 def _now_deadline(seconds: float) -> float:
@@ -522,7 +522,9 @@ class EditorCoordinator:
             if source_line < 1 or source_line > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
             widget_id = self._require_runtime_widget_id(runtime_key)
-            statement = analyze_textbutton_statement(lines[source_line - 1], expected_widget_id=widget_id)
+            kind, statement = analyze_editable_statement(
+                lines[source_line - 1], expected_widget_id=widget_id
+            )
             original_position = [statement.xpos, statement.ypos]
             ancestry = runtime_key.get("ancestry")
             normalized_ancestry = (
@@ -553,7 +555,7 @@ class EditorCoordinator:
                 "invocation_path": runtime_key.get("invocation_path"),
                 "instance_discriminator": runtime_key.get("instance_discriminator"),
                 "ancestry": normalized_ancestry,
-                "statement_kind": "textbutton",
+                "statement_kind": kind,
                 "baseline_sha256": source_sha,
             }
             if lock_reason is None:
@@ -940,17 +942,10 @@ class EditorCoordinator:
         source_bytes: bytes,
         selected_records: list[tuple[_AnalysisRecord, int, int, dict[str, Any]]],
     ) -> bytes:
-        text = source_bytes.decode("utf-8")
-        lines = text.splitlines(keepends=True)
-        replacements: list[tuple[int, int, str]] = []
+        lines = source_bytes.decode("utf-8").splitlines(keepends=True)
         seen_targets: set[tuple[str, int, str]] = set()
-        offset = 0
-        line_offsets: list[int] = []
-        for line in lines:
-            line_offsets.append(offset)
-            offset += len(line)
 
-        for record, x, y, source_key in selected_records:
+        for _record, x, y, source_key in selected_records:
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
             if not isinstance(line_no, int) or not isinstance(widget_id, str):
@@ -962,16 +957,22 @@ class EditorCoordinator:
                 raise EditorError("DUPLICATE_SOURCE_TARGET", "multiple intents target the same source statement")
             seen_targets.add(target_key)
             line_text = lines[line_no - 1]
-            statement = analyze_textbutton_statement(line_text, expected_widget_id=widget_id)
-            global_offset = line_offsets[line_no - 1]
-            replacements.append((global_offset + statement.xpos_span[0], global_offset + statement.xpos_span[1], str(x)))
-            replacements.append((global_offset + statement.ypos_span[0], global_offset + statement.ypos_span[1], str(y)))
+            kind, statement = analyze_editable_statement(line_text, expected_widget_id=widget_id)
+            recorded_kind = source_key.get("statement_kind")
+            if isinstance(recorded_kind, str) and recorded_kind != kind:
+                raise EditorError(
+                    "STATEMENT_KIND_MISMATCH",
+                    "source_key statement_kind does not match source line",
+                )
+            lines[line_no - 1] = apply_editable_statement_patch(
+                line_text.encode("utf-8"),
+                kind,
+                statement,
+                x=x,
+                y=y,
+            ).decode("utf-8")
 
-        replacements.sort(key=lambda item: item[0], reverse=True)
-        patched = text
-        for start, end, replacement in replacements:
-            patched = f"{patched[:start]}{replacement}{patched[end:]}"
-        return patched.encode("utf-8")
+        return "".join(lines).encode("utf-8")
 
     def _validate_shadow(self, transaction: _TransactionRecord) -> ShadowLintResult:
         tx_dir = self._transaction_root / transaction.transaction_id

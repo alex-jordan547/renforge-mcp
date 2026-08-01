@@ -56,3 +56,4 @@ exclude = ["src/renforge/ui/static/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+markers = ["live: full Ren'Py and bridge live scenario"]
