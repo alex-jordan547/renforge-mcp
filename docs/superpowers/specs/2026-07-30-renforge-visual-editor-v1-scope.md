@@ -90,6 +90,22 @@ remain locked with the measured codes (`XPOS_LITERAL_REQUIRED`, `CONTAINER_POSIT
 Live proof: `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_multiline_textbutton_live.py`
 against Ren'Py **8.5.3**.
 
+### Literal `pos (x, y)` on textbutton (issue #38)
+
+Single-line textbuttons may author position as a pure integer pair:
+
+```renpy
+textbutton "MOVE ME" id "pos_target" pos (200, 180) action NullAction()
+```
+
+The analyzer records `position_mode == "pos"` and patches only the two integer tokens inside
+the tuple, preserving `pos (...)` and never converting the statement to `xpos`/`ypos`. Non-literal
+pairs (`pos (base_x, 10)`), mixed forms (`pos` + `xpos`/`ypos`), and duplicate `pos` keywords are
+locked with exact codes (`POS_LITERAL_REQUIRED`, `POSITION_FORM_MIXED`, `POS_DUPLICATE`).
+
+Live proof: `RENFORGE_POS_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_pos_live.py`
+against Ren'Py **8.5.3**.
+
 The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:` headers. Computed
 coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime
 instances remain selectable but locked with an exact reason.

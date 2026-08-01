@@ -122,6 +122,73 @@ def test_apply_textbutton_patch_preserves_non_ascii_bytes_outside_coordinate_spa
     )
 
 
+def test_analyze_textbutton_pos_literal_accepts_and_patches_pair_only() -> None:
+    line = '    textbutton "Play" id "start" pos (12, 10) action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    assert isinstance(parsed, TextbuttonStatement)
+    assert parsed.position_mode == "pos"
+    assert (parsed.xpos, parsed.ypos) == (12, 10)
+    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=301, y=409).decode("utf-8")
+    assert patched == '    textbutton "Play" id "start" pos (301, 409) action NullAction()\n'
+    # Form preserved — never rewritten to xpos/ypos.
+    assert "xpos" not in patched
+    assert "ypos" not in patched
+    assert "pos (" in patched
+
+    negative = '    textbutton "Play" id "start" pos (-12, -10) action NullAction()\n'
+    neg_parsed = analyze_textbutton_statement(negative, expected_widget_id="start")
+    assert (neg_parsed.xpos, neg_parsed.ypos) == (-12, -10)
+    neg_patched = apply_textbutton_patch(
+        negative.encode("utf-8"), neg_parsed, x=-1, y=2
+    ).decode("utf-8")
+    assert neg_patched == '    textbutton "Play" id "start" pos (-1, 2) action NullAction()\n'
+
+
+def test_analyze_textbutton_pos_rejects_non_literal_mixed_and_duplicate() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (base_x, 10) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (10+1, 10) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (1, 2) xpos 3 ypos 4 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (1, 2) pos (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POS_DUPLICATE"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "other" pos (1, 2) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "ID_MISMATCH"
+
+    kind, stmt = analyze_editable_statement(
+        '    textbutton "Play" id "start" pos (8, 9) action NullAction()\n',
+        expected_widget_id="start",
+    )
+    assert kind == "textbutton"
+    assert isinstance(stmt, TextbuttonStatement)
+    assert stmt.position_mode == "pos"
+
+
 def test_analyze_rejects_compound_numeric_position_expressions() -> None:
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_textbutton_statement(

@@ -1674,3 +1674,83 @@ def test_analyze_textbutton_block_computed_position_stays_locked(tmp_path: Path)
             assert analyzed["result"]["lock_reason"]["code"] == "XPOS_LITERAL_REQUIRED"
     finally:
         coordinator.close()
+
+
+def test_analyze_and_commit_textbutton_pos_preserves_form(tmp_path: Path) -> None:
+    root = tmp_path / "project_pos"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" pos (12, 10) action NullAction()\n',
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    observation = _base_observation(script_generation=12)
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-pos",
+            "object_id": "obj-independent-pos",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-pos")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["source_key"]["statement_kind"] == "textbutton"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-pos")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            text = source.read_text(encoding="utf-8")
+            assert text == (
+                "screen test_screen:\n"
+                '    textbutton "Play" id "start_btn" pos (40, 50) action NullAction()\n'
+            )
+            assert "xpos" not in text and "ypos" not in text
+    finally:
+        coordinator.close()
+
+
+def test_analyze_textbutton_pos_non_literal_stays_locked(tmp_path: Path) -> None:
+    root = tmp_path / "project_pos_lock"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" pos (base_x, 10) action NullAction()\n',
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    observation = _base_observation(script_generation=13)
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-pos-lock",
+            "object_id": "obj-independent-pos-lock",
+        },
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-pos-lock")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["lock_reason"]["code"] == "POS_LITERAL_REQUIRED"
+    finally:
+        coordinator.close()
