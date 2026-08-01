@@ -22,6 +22,8 @@ class TextbuttonStatement:
     # "block" keeps absolute character spans in the full source file.
     form: str = "single_line"
     source_line: int | None = None
+    # "xy" = authored xpos/ypos; "pos" = authored pos (x, y). Write-back preserves form.
+    position_mode: str = "xy"
 
 
 @dataclass(frozen=True)
@@ -298,12 +300,191 @@ def _analyze_positioned_kind_statement(
     )
 
 
+def _require_single_literal_id(
+    tokens: list[_Token],
+    *,
+    expected_widget_id: str,
+    human_kind: str,
+) -> str:
+    """Return the single top-level literal id string, or raise a shared id error."""
+    keyword_counts_id = 0
+    widget_id: str | None = None
+    id_invalid = False
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "id":
+            continue
+        keyword_counts_id += 1
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None or tokens[value_index].kind != "STRING":
+            id_invalid = True
+            continue
+        widget_id = _parse_string_token(tokens[value_index])
+    if keyword_counts_id != 1 or id_invalid or widget_id is None:
+        raise EditorSourceError(
+            "ID_LITERAL_REQUIRED",
+            f"{human_kind} statement must contain exactly one literal id",
+        )
+    if widget_id != expected_widget_id:
+        raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+    return widget_id
+
+
+# Property keywords that may follow a pure ``pos (x, y)`` on a textbutton line.
+# Expression operators (if/or/else/and) are intentionally absent so
+# ``pos (1, 2) if flag else (3, 4)`` is rejected rather than half-patched.
+_TEXTBUTTON_POS_FOLLOWER_WORDS = frozenset(
+    {
+        "id",
+        "xpos",
+        "ypos",
+        "action",
+        "style",
+        "xsize",
+        "ysize",
+        "xmaximum",
+        "ymaximum",
+        "xminimum",
+        "yminimum",
+        "xfill",
+        "yfill",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+        "tooltip",
+        "sensitive",
+        "focus",
+        "keyboard_focus",
+        "hovered",
+        "unhovered",
+        "selected",
+        "alternate",
+        "keysym",
+        "alternate_keysym",
+    }
+)
+
+
+def _pos_property_indexes(tokens: list[_Token]) -> list[int]:
+    """Indexes of top-level ``pos`` used as a property keyword (value starts with ``(``).
+
+    Distinguishes ``pos (1, 2)`` from expression identifiers such as ``action pos``.
+    """
+    indexes: list[int] = []
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "pos":
+            continue
+        next_index = index + 1
+        if next_index >= len(tokens):
+            continue
+        next_token = tokens[next_index]
+        if next_token.kind == "SYMBOL" and next_token.text == "(":
+            indexes.append(index)
+    return indexes
+
+
+def _parse_literal_pos_pair(
+    tokens: list[_Token],
+    pos_index: int,
+) -> tuple[int, int, tuple[int, int], tuple[int, int]] | None:
+    """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans.
+
+    A pure pair is either end-of-statement after ``)``, or followed by a top-level
+    textbutton property WORD (not expression operators like ``if`` / ``or``).
+    """
+    open_index = pos_index + 1
+    if open_index >= len(tokens):
+        return None
+    open_token = tokens[open_index]
+    if open_token.kind != "SYMBOL" or open_token.text != "(":
+        return None
+    # Inside the tuple: NUMBER , NUMBER )
+    x_index = open_index + 1
+    comma_index = open_index + 2
+    y_index = open_index + 3
+    close_index = open_index + 4
+    if close_index >= len(tokens):
+        return None
+    x_token = tokens[x_index]
+    comma_token = tokens[comma_index]
+    y_token = tokens[y_index]
+    close_token = tokens[close_index]
+    if x_token.kind != "NUMBER" or y_token.kind != "NUMBER":
+        return None
+    if comma_token.kind != "SYMBOL" or comma_token.text != ",":
+        return None
+    if close_token.kind != "SYMBOL" or close_token.text != ")":
+        return None
+    following = close_index + 1
+    if following < len(tokens):
+        next_token = tokens[following]
+        # EOS is allowed (no following token). Otherwise require a property keyword.
+        if (
+            next_token.depth != 0
+            or next_token.kind != "WORD"
+            or next_token.text not in _TEXTBUTTON_POS_FOLLOWER_WORDS
+        ):
+            return None
+    return (
+        int(x_token.text),
+        int(y_token.text),
+        (x_token.start, x_token.end),
+        (y_token.start, y_token.end),
+    )
+
+
 def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> TextbuttonStatement:
     if is_textbutton_block_header(line):
         raise EditorSourceError(
             "MULTILINE_STATEMENT_REJECTED",
             "textbutton block headers require analyze_textbutton_block_statement",
         )
+    statement_text = _statement_text(line)
+    tokens = _lex_single_line(statement_text)
+    top_level = [token for token in tokens if token.depth == 0]
+    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "textbutton":
+        raise EditorSourceError("STATEMENT_KIND_MISMATCH", "source statement is not a textbutton")
+
+    has_xy = any(
+        token.depth == 0 and token.kind == "WORD" and token.text in {"xpos", "ypos"}
+        for token in tokens
+    )
+    pos_indexes = _pos_property_indexes(tokens)
+    if pos_indexes and has_xy:
+        raise EditorSourceError(
+            "POSITION_FORM_MIXED",
+            "textbutton cannot mix pos with xpos/ypos",
+        )
+    if len(pos_indexes) > 1:
+        raise EditorSourceError("POS_DUPLICATE", "textbutton statement must contain exactly one pos")
+    if len(pos_indexes) == 1:
+        widget_id = _require_single_literal_id(
+            tokens,
+            expected_widget_id=expected_widget_id,
+            human_kind="textbutton",
+        )
+        parsed_pos = _parse_literal_pos_pair(tokens, pos_indexes[0])
+        if parsed_pos is None:
+            raise EditorSourceError(
+                "POS_LITERAL_REQUIRED",
+                "pos must be a pure literal pair of integers: pos (x, y)",
+            )
+        xpos_value, ypos_value, xpos_span, ypos_span = parsed_pos
+        return TextbuttonStatement(
+            widget_id=widget_id,
+            xpos=xpos_value,
+            ypos=ypos_value,
+            xpos_span=xpos_span,
+            ypos_span=ypos_span,
+            form="single_line",
+            source_line=None,
+            position_mode="pos",
+        )
+
     return _analyze_positioned_kind_statement(
         line,
         expected_widget_id=expected_widget_id,
