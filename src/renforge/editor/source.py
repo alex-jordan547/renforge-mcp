@@ -150,9 +150,6 @@ def _next_top_level_index(tokens: list[_Token], index: int) -> int | None:
     return None
 
 
-def _next_top_level_token(tokens: list[_Token], index: int) -> _Token | None:
-    found = _next_top_level_index(tokens, index)
-    return None if found is None else tokens[found]
 
 
 def _statement_text(line: str) -> str:
@@ -440,10 +437,11 @@ def analyze_button_statement(
             continue
         keyword = token.text
         keyword_counts[keyword] += 1
-        value_token = _next_top_level_token(tokens, index)
-        if value_token is None:
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None:
             invalid_literals.add(keyword)
             continue
+        value_token = tokens[value_index]
         if keyword == "id":
             if value_token.kind != "STRING":
                 invalid_literals.add(keyword)
@@ -453,6 +451,16 @@ def analyze_button_statement(
         if value_token.kind != "NUMBER":
             invalid_literals.add(keyword)
             continue
+        following_index = _next_top_level_index(tokens, value_index)
+        if following_index is not None:
+            following_token = tokens[following_index]
+            if following_token.kind != "WORD" and not (
+                following_token.kind == "SYMBOL"
+                and following_token.text == ":"
+                and following_index == len(tokens) - 1
+            ):
+                invalid_literals.add(keyword)
+                continue
         value = int(value_token.text)
         if keyword == "xpos":
             xpos_value = value

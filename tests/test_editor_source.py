@@ -125,6 +125,117 @@ def test_analyze_rejects_compound_numeric_position_expressions() -> None:
     assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
 
 
+def test_analyze_button_statement_rejects_compound_numeric_position_expressions() -> None:
+    invalid_headers = (
+        (
+            '    button id "button_target" xpos 100-20 ypos 10:\n',
+            "XPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '    button id "button_target" xpos 100 ypos 10+4:\n',
+            "YPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '    button id "button_target" xpos 100.5 ypos 10:\n',
+            "XPOS_LITERAL_REQUIRED",
+        ),
+    )
+    for header, expected_code in invalid_headers:
+        source = "screen test_screen:\n" + header + '        text "Child"\n'
+        with pytest.raises(EditorSourceError) as exc_info:
+            analyze_button_statement(source, source_line=2, expected_widget_id="button_target")
+        assert exc_info.value.code == expected_code
+
+    for header in (
+        '    button id "button_target" xpos 100 ypos 200:\n',
+        '    button id "button_target" xpos 100 ypos 200 :\n',
+    ):
+        source = "screen test_screen:\n" + header + '        text "Child"\n'
+        parsed = analyze_button_statement(source, source_line=2, expected_widget_id="button_target")
+        assert (parsed.xpos, parsed.ypos) == (100, 200)
+
+
+@pytest.mark.parametrize(
+    ("source_line", "header", "expected_widget_id", "expected_code"),
+    (
+        (
+            2,
+            '    text "not_a_button":\n',
+            "not_a_button",
+            "STATEMENT_KIND_MISMATCH",
+        ),
+        (
+            0,
+            '    button id "button_target" xpos 120 ypos 80:\n',
+            "button_target",
+            "SOURCE_LINE_INVALID",
+        ),
+        (
+            10,
+            '    button id "button_target" xpos 120 ypos 80:\n',
+            "button_target",
+            "SOURCE_LINE_INVALID",
+        ),
+        (
+            2,
+            "    button xpos 120 ypos 80:\n",
+            "button_target",
+            "ID_LITERAL_REQUIRED",
+        ),
+        (
+            2,
+            '    button id "first" id "second" xpos 120 ypos 80:\n',
+            "button_target",
+            "ID_LITERAL_REQUIRED",
+        ),
+        (
+            2,
+            "    button id 123 xpos 120 ypos 80:\n",
+            "button_target",
+            "ID_LITERAL_REQUIRED",
+        ),
+        (
+            2,
+            '    button id "actual" xpos 120 ypos 80:\n',
+            "expected",
+            "ID_MISMATCH",
+        ),
+        (
+            2,
+            '    button id "button_target" xpos 10 xpos 20 ypos 80:\n',
+            "button_target",
+            "XPOS_DUPLICATE",
+        ),
+        (
+            2,
+            '    button id "button_target" xpos 10:\n',
+            "button_target",
+            "YPOS_DUPLICATE",
+        ),
+        (
+            2,
+            '    button id "button_target" xpos 10 ypos "not_a_number":\n',
+            "button_target",
+            "YPOS_LITERAL_REQUIRED",
+        ),
+    ),
+)
+def test_analyze_button_statement_rejects_invalid_headers(
+    source_line: int,
+    header: str,
+    expected_widget_id: str,
+    expected_code: str,
+) -> None:
+    source = "screen test_screen:\n" + header + '        text "Child"\n'
+    with pytest.raises(EditorSourceError) as exc_info:
+        analyze_button_statement(
+            source,
+            source_line=source_line,
+            expected_widget_id=expected_widget_id,
+        )
+    assert exc_info.value.code == expected_code
+
+
 def test_peek_statement_kind_reads_first_top_level_word() -> None:
     assert (
         peek_statement_kind(
