@@ -159,6 +159,21 @@ def test_analyze_textbutton_pos_rejects_non_literal_mixed_and_duplicate() -> Non
         )
     assert excinfo.value.code == "POS_LITERAL_REQUIRED"
 
+    # Expression continues after a leading literal tuple (Codex P1).
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (1, 2) if flag else (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" pos (1, 2) or (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POS_LITERAL_REQUIRED"
+
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_textbutton_statement(
             '    textbutton "Play" id "start" pos (1, 2) xpos 3 ypos 4 action NullAction()\n',
@@ -179,6 +194,12 @@ def test_analyze_textbutton_pos_rejects_non_literal_mixed_and_duplicate() -> Non
             expected_widget_id="start",
         )
     assert excinfo.value.code == "ID_MISMATCH"
+
+    # ``pos`` as an action value must not be treated as the position property (Codex P2).
+    xy_line = '    textbutton "Play" id "start" xpos 1 ypos 2 action pos\n'
+    xy_parsed = analyze_textbutton_statement(xy_line, expected_widget_id="start")
+    assert xy_parsed.position_mode == "xy"
+    assert (xy_parsed.xpos, xy_parsed.ypos) == (1, 2)
 
     kind, stmt = analyze_editable_statement(
         '    textbutton "Play" id "start" pos (8, 9) action NullAction()\n',

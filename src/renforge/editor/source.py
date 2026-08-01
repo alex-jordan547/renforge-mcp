@@ -329,6 +329,64 @@ def _require_single_literal_id(
     return widget_id
 
 
+# Property keywords that may follow a pure ``pos (x, y)`` on a textbutton line.
+# Expression operators (if/or/else/and) are intentionally absent so
+# ``pos (1, 2) if flag else (3, 4)`` is rejected rather than half-patched.
+_TEXTBUTTON_POS_FOLLOWER_WORDS = frozenset(
+    {
+        "id",
+        "xpos",
+        "ypos",
+        "action",
+        "style",
+        "xsize",
+        "ysize",
+        "xmaximum",
+        "ymaximum",
+        "xminimum",
+        "yminimum",
+        "xfill",
+        "yfill",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+        "tooltip",
+        "sensitive",
+        "focus",
+        "keyboard_focus",
+        "hovered",
+        "unhovered",
+        "selected",
+        "alternate",
+        "keysym",
+        "alternate_keysym",
+    }
+)
+
+
+def _pos_property_indexes(tokens: list[_Token]) -> list[int]:
+    """Indexes of top-level ``pos`` used as a property keyword (value starts with ``(``).
+
+    Distinguishes ``pos (1, 2)`` from expression identifiers such as ``action pos``.
+    """
+    indexes: list[int] = []
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "pos":
+            continue
+        next_index = index + 1
+        if next_index >= len(tokens):
+            continue
+        next_token = tokens[next_index]
+        if next_token.kind == "SYMBOL" and next_token.text == "(":
+            indexes.append(index)
+    return indexes
+
+
 def _parse_literal_pos_pair(
     tokens: list[_Token],
     pos_index: int,
@@ -336,7 +394,7 @@ def _parse_literal_pos_pair(
     """Parse ``pos (X, Y)`` with pure integer literals; return values and number spans.
 
     A pure pair is either end-of-statement after ``)``, or followed by a top-level
-    property/action WORD (same purity rule as literal xpos/ypos followers).
+    textbutton property WORD (not expression operators like ``if`` / ``or``).
     """
     open_index = pos_index + 1
     if open_index >= len(tokens):
@@ -364,8 +422,12 @@ def _parse_literal_pos_pair(
     following = close_index + 1
     if following < len(tokens):
         next_token = tokens[following]
-        # EOS is allowed (no following token). Otherwise require a top-level WORD.
-        if next_token.depth != 0 or next_token.kind != "WORD":
+        # EOS is allowed (no following token). Otherwise require a property keyword.
+        if (
+            next_token.depth != 0
+            or next_token.kind != "WORD"
+            or next_token.text not in _TEXTBUTTON_POS_FOLLOWER_WORDS
+        ):
             return None
     return (
         int(x_token.text),
@@ -391,11 +453,7 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
         token.depth == 0 and token.kind == "WORD" and token.text in {"xpos", "ypos"}
         for token in tokens
     )
-    pos_indexes = [
-        index
-        for index, token in enumerate(tokens)
-        if token.depth == 0 and token.kind == "WORD" and token.text == "pos"
-    ]
+    pos_indexes = _pos_property_indexes(tokens)
     if pos_indexes and has_xy:
         raise EditorSourceError(
             "POSITION_FORM_MIXED",
