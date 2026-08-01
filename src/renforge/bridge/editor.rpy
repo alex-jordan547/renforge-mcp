@@ -298,6 +298,7 @@ init 1100 python:
             state.save_error = None
             state.current_analysis_id = None
             state.current_source_key = None
+            state.current_capabilities = {}
             state.selected_analysis_pending = False
             state.history = []
             state.history_index = -1
@@ -354,6 +355,8 @@ init 1100 python:
             state.pending_reload_draw_generation = None
         if not hasattr(state, "pending_reload_started"):
             state.pending_reload_started = False
+        if not hasattr(state, "current_capabilities"):
+            state.current_capabilities = {}
         return state
 
 
@@ -1153,6 +1156,7 @@ init 1100 python:
             state.selected_source_position = list(target.get("source_position") or [])
             state.current_analysis_id = target.get("analysis_id")
             state.current_source_key = target.get("source_key")
+            state.current_capabilities = builtins.dict(target.get("capabilities") or {})
             if state.selected_rect is not None and len(state.selected_rect) == 4:
                 state.selected_rect = [
                     int(next_position[0]),
@@ -1597,6 +1601,10 @@ init 1100 python:
                 continue
             state.pointer = [int(x), int(y)]
             state.selected_target_key = None
+            state.current_analysis_id = None
+            state.current_source_key = None
+            state.current_capabilities = {}
+            state.save_enabled = False
             runtime_key = candidate.get("runtime_key")
             selected_screen = runtime_key.get("screen") if isinstance(runtime_key, builtins.dict) else None
             if isinstance(selected_screen, str) and selected_screen:
@@ -1654,6 +1662,7 @@ init 1100 python:
                 state.selected_rect = [int(position[0]), int(position[1]), int(rect[2]), int(rect[3])]
                 state.current_analysis_id = target.get("analysis_id")
                 state.current_source_key = target.get("source_key")
+                state.current_capabilities = builtins.dict(target.get("capabilities") or {})
                 state.selected_analysis_pending = False
                 state.status_text = "Analyzed"
                 _renforge_editor_refresh_save_enabled()
@@ -1664,6 +1673,7 @@ init 1100 python:
                 state.preview_position = None
                 state.current_analysis_id = None
                 state.current_source_key = None
+                state.current_capabilities = {}
                 state.selected_analysis_pending = True if _renforge_editor_host_config() is not None else False
                 state.save_enabled = False
                 _renforge_editor_set_label(x, y)
@@ -1819,6 +1829,7 @@ init 1100 python:
         state.preview_position = None
         state.current_analysis_id = None
         state.current_source_key = None
+        state.current_capabilities = {}
         state.pending_analysis_key = None
         state.history = []
         state.history_entries = []
@@ -1925,6 +1936,7 @@ init 1100 python:
                         state.selected_analysis_pending = False
                         state.current_analysis_id = None
                         state.current_source_key = None
+                        state.current_capabilities = {}
                         state.status_text = "Analyze failed"
                     elif command == "commit":
                         state.save_in_progress = False
@@ -1958,6 +1970,7 @@ init 1100 python:
                     state.selected_analysis_pending = False
                     state.current_analysis_id = result.get("analysis_id")
                     state.current_source_key = result.get("source_key")
+                    state.current_capabilities = builtins.dict(result.get("capabilities") or {})
                     lock_reason = result.get("lock_reason")
                     if lock_reason is None:
                         state.selected_lock_reason = None
@@ -1979,6 +1992,7 @@ init 1100 python:
                             state.targets[target_key] = {
                                 "analysis_id": state.current_analysis_id,
                                 "source_key": state.current_source_key,
+                                "capabilities": builtins.dict(state.current_capabilities),
                                 "runtime_key": analyze_runtime_key,
                                 "screen": analyze_runtime_key.get("screen"),
                                 "widget_id": analyze_runtime_key.get("widget_id"),
@@ -1995,6 +2009,7 @@ init 1100 python:
                         state.status_text = "Locked"
                         state.current_analysis_id = None
                         state.current_source_key = None
+                        state.current_capabilities = {}
                 elif command == "commit":
                     state.pending_transaction_id = result.get("transaction_id")
                     state.pending_transaction_state = result.get("state")
@@ -2046,6 +2061,7 @@ init 1100 python:
                         _renforge_editor_reset_history()
                         state.current_analysis_id = None
                         state.current_source_key = None
+                        state.current_capabilities = {}
                         state.selected_target_key = None
                         if len(selected_rect) == 4:
                             _renforge_editor_select(
@@ -2080,6 +2096,7 @@ init 1100 python:
                     state.selected_analysis_pending = False
                     state.current_analysis_id = None
                     state.current_source_key = None
+                    state.current_capabilities = {}
                     state.status_text = "Analyze failed"
                 elif command == "commit":
                     state.save_in_progress = False
@@ -2202,6 +2219,7 @@ init 1100 python:
         state.selected_analysis_pending = False
         state.current_analysis_id = None
         state.current_source_key = None
+        state.current_capabilities = {}
         state.history = []
         state.history_entries = []
         state.history_index = -1
@@ -2690,6 +2708,11 @@ init 1100 python:
             "history_length": len(state.history_entries),
             "current_analysis_id": state.current_analysis_id,
             "current_source_key": state.current_source_key,
+            "current_capabilities": (
+                builtins.dict(state.current_capabilities)
+                if state.current_analysis_id is not None
+                else {}
+            ),
             "pending_transaction_id": state.pending_transaction_id,
             "pending_handshake_generation": state.pending_handshake_generation,
             "pending_handshake_sent": state.pending_handshake_sent,

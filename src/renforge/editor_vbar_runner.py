@@ -7,28 +7,29 @@ import time
 from pathlib import Path
 from typing import Any
 
+from renforge.editor.source import analyze_vbar_statement
 from renforge.editor_task0_runner import (
     _require_ok,
     _source_generation,
     _wait_for_status,
 )
 
-FIXTURE_SCREEN = "renforge_editor_bar_fixture"
-TARGET_ID = "bar_target"
+FIXTURE_SCREEN = "renforge_editor_vbar_fixture"
+TARGET_ID = "vbar_target"
 EDITOR_RESOURCE = Path(__file__).resolve().parent / "bridge" / "editor.rpy"
 FIXTURE_RESOURCE = (
     Path(__file__).resolve().parents[2]
     / "tests"
     / "live_fixtures"
-    / "renforge_editor_bar_fixture.rpy"
+    / "renforge_editor_vbar_fixture.rpy"
 )
 
 
-def inject_editor_bar_resources(project_root: Path) -> dict[str, str]:
+def inject_editor_vbar_resources(project_root: Path) -> dict[str, str]:
     game_dir = project_root / "game"
     game_dir.mkdir(parents=True, exist_ok=True)
-    editor_target = game_dir / "zz_renforge_editor_bar.rpy"
-    fixture_target = game_dir / "zz_renforge_editor_bar_fixture.rpy"
+    editor_target = game_dir / "zz_renforge_editor_vbar.rpy"
+    fixture_target = game_dir / "zz_renforge_editor_vbar_fixture.rpy"
     shutil.copyfile(EDITOR_RESOURCE, editor_target)
     shutil.copyfile(FIXTURE_RESOURCE, fixture_target)
     return {
@@ -100,14 +101,15 @@ def _wait_bounds(client: Any, widget_id: str, *, timeout: float = 6.0) -> dict[s
 def _target_line_with_offset(source_text: str) -> tuple[str, int]:
     offset = 0
     for line in source_text.splitlines(keepends=True):
-        if f'id "{TARGET_ID}"' in line and line.lstrip().startswith("bar "):
+        if f'id "{TARGET_ID}"' in line and line.lstrip().startswith("vbar "):
+            analyze_vbar_statement(line, expected_widget_id=TARGET_ID)
             return line, offset
         offset += len(line)
     raise AssertionError(f"source missing target line for {TARGET_ID!r}")
 
 
 def _independent_expected_after_patch(before_text: str, *, x: int, y: int) -> str:
-    """Build expected fixture text without calling apply_bar_patch/analyze_bar_statement."""
+    """Build expected fixture text without calling apply_vbar_patch."""
     line, offset = _target_line_with_offset(before_text)
     patched_line = re.sub(r"(\bxpos\s+)-?\d+", rf"\g<1>{int(x)}", line, count=1)
     patched_line = re.sub(r"(\bypos\s+)-?\d+", rf"\g<1>{int(y)}", patched_line, count=1)
@@ -171,8 +173,8 @@ def _observe_selected(client: Any) -> dict[str, Any]:
     return observation
 
 
-def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
-    """Seven-step live proof for the dedicated single-line bar adapter."""
+def run_editor_vbar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
+    """Seven-step live proof for the dedicated single-line vbar adapter."""
     report: dict[str, Any] = {}
     baseline_bytes = fixture_path.read_bytes()
     baseline_sha = hashlib.sha256(baseline_bytes).hexdigest()
@@ -191,29 +193,32 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
 
     # Lock matrix first on real focusable widgets (measured codes).
     report["locks"] = {
-        "computed": _select_lock(client, "bar_computed", "XPOS_LITERAL_REQUIRED"),
-        "style": _select_lock(client, "bar_style", "BAR_STYLE_POSITION_UNSUPPORTED"),
-        "container": _select_lock(client, "bar_container", "CONTAINER_POSITION_UNSUPPORTED"),
+        "computed": _select_lock(client, "vbar_computed", "XPOS_LITERAL_REQUIRED"),
+        "style": _select_lock(client, "vbar_style", "BAR_STYLE_POSITION_UNSUPPORTED"),
+        "missing_position": _select_lock(
+            client, "vbar_missing_position", "BAR_POSITION_NOT_DIRECTLY_AUTHORED"
+        ),
+        "container": _select_lock(client, "vbar_container", "CONTAINER_POSITION_UNSUPPORTED"),
     }
 
     # Measured live: two use-statements with the same id surface as
-    # bar_dupe_target / bar_dupe_target#2 and resolve with SYNTHETIC_WIDGET_ID.
+    # vbar_dupe_target / vbar_dupe_target#2 and resolve with SYNTHETIC_WIDGET_ID.
     dupe_info = _list_info(client)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     dupe_candidates = [
         element
         for element in (dupe_elements if isinstance(dupe_elements, list) else [])
-        if str(element.get("id") or "").startswith("bar_dupe_target")
+        if str(element.get("id") or "").startswith("vbar_dupe_target")
     ]
     if len(dupe_candidates) < 2:
-        raise AssertionError(f"expected two bar_dupe_target instances: {dupe_candidates!r}")
+        raise AssertionError(f"expected two vbar_dupe_target instances: {dupe_candidates!r}")
     dupe = next(
-        (element for element in dupe_candidates if str(element.get("id") or "") == "bar_dupe_target"),
+        (element for element in dupe_candidates if str(element.get("id") or "") == "vbar_dupe_target"),
         dupe_candidates[0],
     )
     dupe_bounds = dupe.get("bounds")
     if not isinstance(dupe_bounds, dict):
-        raise AssertionError(f"duplicate bar has no focus bounds: {dupe!r}")
+        raise AssertionError(f"duplicate vbar has no focus bounds: {dupe!r}")
     dupe_select = client.request(
         "editor_task0_select",
         {
@@ -225,17 +230,17 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     if ambiguous in (None, ""):
         status = _wait_for_status(
             client,
-            lambda current: current.get("selected_lock_reason") not in (None, ""),
+            lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
             timeout=10.0,
-            poll_name="bar dupe lock",
+            poll_name="vbar dupe lock",
         )
         ambiguous = status.get("selected_lock_reason")
     if ambiguous != "SYNTHETIC_WIDGET_ID":
-        raise AssertionError(f"duplicate bar lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}")
+        raise AssertionError(f"duplicate vbar lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}")
     report["locks"]["ambiguous"] = ambiguous
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.
-    side_bounds = _wait_bounds(client, "bar_side", timeout=3.0)
+    side_bounds = _wait_bounds(client, "vbar_side", timeout=3.0)
     side_select = client.request(
         "editor_task0_select",
         {"x": _center(side_bounds)[0], "y": _center(side_bounds)[1]},
@@ -246,16 +251,16 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
             client,
             lambda current: current.get("selected_lock_reason") == "UNKNOWN_ANCESTRY_TYPE",
             timeout=10.0,
-            poll_name="bar side lock",
+            poll_name="vbar side lock",
         )
         unproven = status.get("selected_lock_reason")
     if unproven != "UNKNOWN_ANCESTRY_TYPE":
         raise AssertionError(
-            f"side-ancestor bar lock was not UNKNOWN_ANCESTRY_TYPE: {unproven!r}"
+            f"side-ancestor vbar lock was not UNKNOWN_ANCESTRY_TYPE: {unproven!r}"
         )
     report["locks"]["unproven"] = unproven
 
-    # Step 1: resolve the editable bar from a fresh focus rect.
+    # Step 1: resolve the editable vbar from a fresh focus rect.
     target_bounds = _wait_bounds(client, TARGET_ID)
     target_center = _center(target_bounds)
     select = _require_ok(
@@ -275,14 +280,11 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         and status.get("selected_widget_id") == TARGET_ID
         and status.get("selected_lock_reason") in (None, ""),
         timeout=10.0,
-        poll_name="bar analysis",
+        poll_name="vbar analysis",
     )
     source_key = analysis_status.get("current_source_key") or {}
-    # Host keeps current_analysis_id only when analyze_target returned lock_reason=None,
-    # and coordinator sets capabilities.move from that same condition (not statement_kind).
-    host_move = bool(analysis_status.get("current_analysis_id")) and analysis_status.get(
-        "selected_lock_reason"
-    ) in (None, "")
+    capabilities = analysis_status.get("current_capabilities") or {}
+    host_move = capabilities.get("move")
     report["resolve"] = {
         "statement_kind": source_key.get("statement_kind"),
         "lock_reason": analysis_status.get("selected_lock_reason"),
@@ -292,10 +294,10 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "frame_id": observation.get("frame_id"),
         "source_key": source_key,
     }
-    if source_key.get("statement_kind") != "bar":
-        raise AssertionError(f"expected bar statement_kind: {source_key!r}")
+    if source_key.get("statement_kind") != "vbar":
+        raise AssertionError(f"expected vbar statement_kind: {source_key!r}")
     if host_move is not True:
-        raise AssertionError(f"host did not unlock move for bar: {analysis_status!r}")
+        raise AssertionError(f"host did not unlock move for vbar: {analysis_status!r}")
 
     original = analysis_status.get("selected_original_position") or analysis_status.get(
         "selected_source_position"
@@ -305,6 +307,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     requested_before = [int(original[0]), int(original[1])]
 
     # Fresh focus_list observation before preview movement.
+    value_baseline = client.eval_expr("renforge_editor_vbar_value")
     before_obs = _observe_selected(client)
     before_rect = before_obs.get("rect") or []
     if len(before_rect) < 2:
@@ -321,13 +324,14 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         and len(status.get("preview_position") or []) == 2
         and list(status.get("preview_position") or []) != requested_before,
         timeout=8.0,
-        poll_name="bar preview moved",
+        poll_name="vbar preview moved",
     )
     requested_after = [
         int(preview_status["preview_position"][0]),
         int(preview_status["preview_position"][1]),
     ]
     after_obs = _observe_selected(client)
+    value_preview = client.eval_expr("renforge_editor_vbar_value")
     after_rect = after_obs.get("rect") or []
     if len(after_rect) < 2:
         raise AssertionError(f"post-preview observation missing rect: {after_obs!r}")
@@ -371,7 +375,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     generation_before = _source_generation(analysis_status)
     save_request = _require_ok(
         client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
-        "bar save",
+        "vbar save",
     )
     save_status = _wait_for_status(
         client,
@@ -379,7 +383,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         and status.get("status_text") == "Reload committed"
         and _source_generation(status) == generation_before + 1,
         timeout=60.0,
-        poll_name="bar save complete",
+        poll_name="vbar save complete",
     )
     post_save_bytes = fixture_path.read_bytes()
     post_save_sha = hashlib.sha256(post_save_bytes).hexdigest()
@@ -408,10 +412,6 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "before_sha256": pre_save_sha,
         "after_sha256": post_save_sha,
         "source_position_after": source_position_after,
-        "parsed_after": {
-            "xpos": source_position_after["x"],
-            "ypos": source_position_after["y"],
-        },
         "outside_coordinate_spans_identical": outside_coordinate_spans_identical,
         "matches_independent_expected": True,
         "save_request": save_request,
@@ -434,9 +434,10 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         and status.get("selected_widget_id") == TARGET_ID
         and status.get("selected_lock_reason") in (None, ""),
         timeout=10.0,
-        poll_name="bar post-save rebind analysis",
+        poll_name="vbar post-save rebind analysis",
     )
     reload_obs = _observe_selected(client)
+    value_reload = client.eval_expr("renforge_editor_vbar_value")
     reload_rect = reload_obs.get("rect") or []
     if len(reload_rect) < 2:
         raise AssertionError(f"post-reload observation missing rect: {reload_obs!r}")
@@ -460,6 +461,22 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "frame_id_preview": frame_after,
         "frame_id_reload": reload_obs.get("frame_id"),
     }
+    reload_frame = reload_obs.get("frame_id")
+    if not reload_frame or reload_frame == frame_after:
+        raise AssertionError(
+            f"reload observation must have a distinct real frame_id: "
+            f"preview={frame_after!r}, reload={reload_frame!r}"
+        )
+    report["value_invariance"] = {
+        "baseline": value_baseline,
+        "preview": value_preview,
+        "reload": value_reload,
+    }
+    if value_preview != value_baseline or value_reload != value_baseline:
+        raise AssertionError(
+            "vbar runtime value changed during preview/reload: "
+            f"baseline={value_baseline!r}, preview={value_preview!r}, reload={value_reload!r}"
+        )
     report["reload"]["frame_id"] = reload_obs.get("frame_id")
 
     # Step 6: rebinding.
@@ -467,8 +484,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "ok": successor.get("selected_widget_id") == TARGET_ID
         and successor.get("current_analysis_id")
         not in (None, analysis_status.get("current_analysis_id"))
-        and (successor.get("current_source_key") or {}).get("statement_kind") == "bar"
-        and successor.get("selected_lock_reason") in (None, ""),
+        and (successor.get("current_source_key") or {}).get("statement_kind") == "vbar",
         "widget_id": successor.get("selected_widget_id"),
         "analysis_id": successor.get("current_analysis_id"),
         "previous_analysis_id": analysis_status.get("current_analysis_id"),
@@ -489,5 +505,5 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "patched_differed": post_save_sha != baseline_sha and post_save_bytes != baseline_bytes,
     }
     if restored_bytes != baseline_bytes:
-        raise AssertionError("bar byte-identical undo did not restore the baseline")
+        raise AssertionError("vbar byte-identical undo did not restore the baseline")
     return report

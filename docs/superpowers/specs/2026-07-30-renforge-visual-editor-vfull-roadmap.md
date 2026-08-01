@@ -1,6 +1,6 @@
 # RenForge Visual Editor — Road to V-full
 
-Status: **roadmap, not a commitment.** Every item is gated on evidence that does not exist yet.
+Status: **roadmap, not a commitment.** Every future item is gated on evidence that does not exist yet.
 V1's scope is in `2026-07-30-renforge-visual-editor-v1-scope.md`; this document is what stands
 between V1 and "move any element".
 
@@ -11,17 +11,33 @@ first precisely so the expensive unknown is attacked with a working product alre
 
 ## Stage 1 — Widen the adapter allowlist (low risk)
 
-V1 ships with one adapter. Each new one is a day of work and an end-to-end proof, not a day of work
-and an analogy.
+V1's adapter allowlist expands one adapter at a time. Each new one is a day of work and an end-to-end proof,
+not a day of work and an analogy.
 
 | Adapter | Expected difficulty | Why |
 |---|---|---|
 | `imagebutton` | Low | Same `Button` mechanics proven by Spikes C and D. Focusable, takes an `id`, literal position. **Implemented** with dedicated analyzer; seven-step live proof green locally via `RENFORGE_IMAGEBUTTON_LIVE=1` (issue #32 / `2026-08-01-imagebutton-adapter-design.md`). |
 | `button` (explicit block form) | Low | Focusable by construction; the child block may complicate the source-line contract |
 | `bar` (single-line literal position) | Medium | Focusable when adjustable; often style/container-positioned. **Implemented** for the minimal single-line literal form; seven-step live proof green via `RENFORGE_BAR_LIVE=1` on Ren'Py 8.5.3 (issue #34). Runtime class `Bar` is shared with `vbar` — source keyword decides the adapter. |
-| `vbar` | Medium | Same runtime `Bar` class as `bar`; source keyword is distinct. **Not implemented** — locked with `VBAR_NOT_SUPPORTED` when measured. |
-| `slider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Not implemented** / not claimed. |
+| `vbar` (single-line literal position) | Medium | Same runtime `Bar` class as `bar`; dedicated `VbarStatement` analyzer/patcher dispatches from the source keyword. **Implemented** for one physical line with one literal `id` and literal integer `xpos`/`ypos`; seven-step live proof green on Ren'Py 8.5.3 via `RENFORGE_VBAR_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_vbar_live.py` (issue #35). |
+| `slider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Pending** — no live proof; not claimed. |
+| `vslider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Pending** — no live proof; not claimed. |
 
+The supported vbar source form is exactly one physical line, for example:
+
+```renpy
+vbar value VariableValue("some_var", range=100) id "vbar_target" xpos 200 ypos 180 xsize 24 ysize 240
+```
+
+Host dispatch uses the exact source keyword rather than runtime `node_type`: both `bar` and `vbar` expose
+the runtime displayable class `Bar`, while vbar uses its dedicated `VbarStatement`, analyzer, and patcher.
+The proof uses fresh `focus_list` observations for every visual position and verifies the underlying vbar
+value is invariant across preview and reload. Vbar inherits #34's exact measured lock boundaries:
+computed/non-literal coordinates (`XPOS_LITERAL_REQUIRED` / `YPOS_LITERAL_REQUIRED`), style-driven
+position (`BAR_STYLE_POSITION_UNSUPPORTED`), missing direct position (`BAR_POSITION_NOT_DIRECTLY_AUTHORED`),
+container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), duplicate instances (`SYNTHETIC_WIDGET_ID`),
+unknown ancestry (`UNKNOWN_ANCESTRY_TYPE`), and multi-line statements (`MULTILINE_STATEMENT_REJECTED`).
+These remain selectable but locked; all other vbar forms remain pending.
 **Exit criterion per adapter:** its own 7-step live proof — resolve → preview → patch → reload →
 pixel agreement → rebinding → byte-identical undo — with every position measured from `focus_list`.
 
@@ -32,7 +48,8 @@ system is that "it looks similar" is not evidence.
 
 ## Stage 2 — Statement forms beyond the single literal line (medium risk)
 
-V1's patcher accepts one shape: a single-line statement carrying literal integer `xpos` and `ypos`.
+The `bar`/`vbar` patchers accept one shape: a single physical source line carrying literal integer `xpos`
+and `ypos`.
 Real screens are messier.
 
 | Form | Problem | Possible approach |

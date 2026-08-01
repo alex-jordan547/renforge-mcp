@@ -1015,6 +1015,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         state.targets[target_key] = {
             "analysis_id": "analysis-drag-target",
             "source_key": {"relative_path": "screens.rpy", "line": 12},
+            "capabilities": {"move": True},
             "screen": screen_name,
             "widget_id": "drag_target",
             "runtime_baseline": list(baseline),
@@ -1027,6 +1028,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         )
         assert analyzed["ok"] is True
         assert state.preview_position == baseline
+        assert state.current_capabilities == {"move": True}
 
         down = pygame.event.Event(
             pygame.MOUSEBUTTONDOWN,
@@ -2425,5 +2427,76 @@ def test_editor_allowed_ancestry_accepts_bar_and_rejects_unknown_and_side(
             ]
         }
         assert validate(side_key) == "UNKNOWN_ANCESTRY_TYPE"
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_status_exposes_current_host_capabilities(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.current_analysis_id = "analysis-vbar"
+        state.current_capabilities = {"move": True}
+
+        status = globs["_renforge_editor_h_status"]({})
+        assert status["current_capabilities"] == {"move": True}
+
+        state.current_analysis_id = None
+        assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_locked_selection_clears_current_host_capabilities(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.current_analysis_id = "analysis-editable"
+        state.current_source_key = {"relative_path": "screens.rpy", "line": 12}
+        state.current_capabilities = {"move": True}
+        globs["_renforge_editor_focus_candidates"] = lambda: [
+            {
+                "rect": [0, 0, 20, 20],
+                "runtime_key": {"screen": "test_screen", "widget_id": "locked"},
+                "resolve_error": "SYNTHETIC_WIDGET_ID",
+            }
+        ]
+
+        selected = globs["_renforge_editor_select"](5, 5)
+        assert selected["lock_reason"] == "SYNTHETIC_WIDGET_ID"
+        assert state.current_analysis_id is None
+        assert state.current_source_key is None
+        assert state.current_capabilities == {}
+        assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
     finally:
         globs["_renforge_editor_stop_coordinator"]()

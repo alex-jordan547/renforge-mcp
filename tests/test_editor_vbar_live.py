@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from renforge.editor_bar_runner import (
+from renforge.editor_vbar_runner import (
     FIXTURE_SCREEN,
-    inject_editor_bar_resources,
-    run_editor_bar_live_scenario,
+    inject_editor_vbar_resources,
+    run_editor_vbar_live_scenario,
 )
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("RENFORGE_BAR_LIVE"),
-    reason="set RENFORGE_BAR_LIVE=1 to run bar seven-step live proof",
+    not os.environ.get("RENFORGE_VBAR_LIVE"),
+    reason="set RENFORGE_VBAR_LIVE=1 to run vbar seven-step live proof",
 )
 
 _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
@@ -25,18 +25,18 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 def demo_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "demo"
     shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
-    inject_editor_bar_resources(destination)
+    inject_editor_vbar_resources(destination)
     return destination
 
 
-def test_bar_seven_step_live_proof(demo_copy: Path) -> None:
+def test_vbar_seven_step_live_proof(demo_copy: Path) -> None:
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
     from renforge.sdk import get_or_install_sdk
 
     sdk = get_or_install_sdk("8.5.3", project_root=demo_copy)
     project = RenpyProject(demo_copy)
-    fixture_path = demo_copy / "game" / "zz_renforge_editor_bar_fixture.rpy"
+    fixture_path = demo_copy / "game" / "zz_renforge_editor_vbar_fixture.rpy"
 
     with launch_with_bridge(
         sdk,
@@ -72,14 +72,14 @@ def test_bar_seven_step_live_proof(demo_copy: Path) -> None:
                 break
             time.sleep(0.1)
         else:
-            pytest.fail("bar fixture screen never became available")
+            pytest.fail("vbar fixture screen never became available")
 
-        report = run_editor_bar_live_scenario(
+        report = run_editor_vbar_live_scenario(
             session.client,
             fixture_path=fixture_path,
         )
 
-    assert report["resolve"]["statement_kind"] == "bar"
+    assert report["resolve"]["statement_kind"] == "vbar"
     assert report["resolve"]["lock_reason"] in (None, "")
     assert report["resolve"]["move"] is True
     assert report["resolve"]["measurement_method"] == "focus_list"
@@ -106,8 +106,6 @@ def test_bar_seven_step_live_proof(demo_copy: Path) -> None:
         "x": preview["requested_after"][0],
         "y": preview["requested_after"][1],
     }
-    assert patch["parsed_after"]["xpos"] == patch["source_position_after"]["x"]
-    assert patch["parsed_after"]["ypos"] == patch["source_position_after"]["y"]
 
     assert report["reload"]["ok"] is True
     assert report["reload"]["status_text"] == "Reload committed"
@@ -120,14 +118,20 @@ def test_bar_seven_step_live_proof(demo_copy: Path) -> None:
     assert report["pixel_agreement"]["measurement_method_reload"] == "focus_list"
     assert report["pixel_agreement"]["frame_id_preview"]
     assert report["pixel_agreement"]["frame_id_reload"]
+    assert report["pixel_agreement"]["frame_id_preview"] != report["pixel_agreement"]["frame_id_reload"]
+
+    value_invariance = report["value_invariance"]
+    assert value_invariance["preview"] == value_invariance["baseline"]
+    assert value_invariance["reload"] == value_invariance["baseline"]
 
     assert report["rebinding"]["ok"] is True
-    assert report["rebinding"]["widget_id"] == "bar_target"
-    assert (report["rebinding"]["source_key"] or {}).get("statement_kind") == "bar"
+    assert report["rebinding"]["widget_id"] == "vbar_target"
+    assert (report["rebinding"]["source_key"] or {}).get("statement_kind") == "vbar"
 
     locks = report["locks"]
     assert locks["computed"] == "XPOS_LITERAL_REQUIRED"
     assert locks["style"] == "BAR_STYLE_POSITION_UNSUPPORTED"
+    assert locks["missing_position"] == "BAR_POSITION_NOT_DIRECTLY_AUTHORED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
     assert locks["ambiguous"] == "SYNTHETIC_WIDGET_ID"
     assert locks["unproven"] == "UNKNOWN_ANCESTRY_TYPE"

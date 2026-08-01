@@ -49,7 +49,19 @@ class BarStatement:
     ypos_span: tuple[int, int]
 
 
-_StatementT = TypeVar("_StatementT", bound=TextbuttonStatement | ImagebuttonStatement | BarStatement)
+@dataclass(frozen=True)
+class VbarStatement:
+    widget_id: str
+    xpos: int
+    ypos: int
+    xpos_span: tuple[int, int]
+    ypos_span: tuple[int, int]
+
+
+_StatementT = TypeVar(
+    "_StatementT",
+    bound=TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement,
+)
 
 
 @dataclass(frozen=True)
@@ -337,17 +349,32 @@ _BAR_POSITION_FOLLOWER_WORDS = frozenset(
 )
 
 
-def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement:
-    """Dedicated single-line bar adapter. Does not accept vbar."""
+def _analyze_bar_like_statement(
+    line: str,
+    *,
+    expected_widget_id: str,
+    expected_source_kind: str,
+    statement_cls: type[_StatementT],
+    human_kind: str,
+) -> _StatementT:
     statement_text = _statement_text(line)
     tokens = _lex_single_line(statement_text)
     top_level = [token for token in tokens if token.depth == 0]
-    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "bar":
-        # Keep VBAR_NOT_SUPPORTED here (not only in the dispatcher) so direct
-        # callers never fall through to STATEMENT_KIND_MISMATCH for vbar.
-        if top_level and top_level[0].kind == "WORD" and top_level[0].text == "vbar":
-            raise EditorSourceError("VBAR_NOT_SUPPORTED", "vbar statements are not editable")
-        raise EditorSourceError("STATEMENT_KIND_MISMATCH", "source statement is not a bar")
+    if (
+        not top_level
+        or top_level[0].kind != "WORD"
+        or top_level[0].text != expected_source_kind
+    ):
+        raise EditorSourceError(
+            "STATEMENT_KIND_MISMATCH",
+            f"source statement is not a {human_kind}",
+        )
+
+    if any(token.kind == "SYMBOL" and token.text == ":" for token in top_level):
+        raise EditorSourceError(
+            "MULTILINE_STATEMENT_REJECTED",
+            f"{human_kind} block statements are not writable",
+        )
 
     has_style_keyword = any(
         token.depth == 0 and token.kind == "WORD" and token.text == "style" for token in tokens
@@ -398,7 +425,7 @@ def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement
     if keyword_counts["id"] != 1:
         raise EditorSourceError(
             "ID_LITERAL_REQUIRED",
-            "bar statement must contain exactly one literal id",
+            f"{human_kind} statement must contain exactly one literal id",
         )
     if "id" in invalid_literals or widget_id is None:
         raise EditorSourceError("ID_LITERAL_REQUIRED", "id must be a literal string")
@@ -413,28 +440,54 @@ def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement
     if keyword_counts["xpos"] == 0:
         raise EditorSourceError(
             _missing_position_code(),
-            "bar position is not directly authored as literal xpos/ypos",
+            f"{human_kind} position is not directly authored as literal xpos/ypos",
         )
     if keyword_counts["xpos"] != 1:
-        raise EditorSourceError("XPOS_DUPLICATE", "bar statement must contain exactly one xpos")
+        raise EditorSourceError(
+            "XPOS_DUPLICATE",
+            f"{human_kind} statement must contain exactly one xpos",
+        )
     if keyword_counts["ypos"] == 0:
         raise EditorSourceError(
             _missing_position_code(),
-            "bar position is not directly authored as literal xpos/ypos",
+            f"{human_kind} position is not directly authored as literal xpos/ypos",
         )
     if keyword_counts["ypos"] != 1:
-        raise EditorSourceError("YPOS_DUPLICATE", "bar statement must contain exactly one ypos")
+        raise EditorSourceError(
+            "YPOS_DUPLICATE",
+            f"{human_kind} statement must contain exactly one ypos",
+        )
     if "xpos" in invalid_literals or xpos_value is None or xpos_span is None:
         raise EditorSourceError("XPOS_LITERAL_REQUIRED", "xpos must be a literal integer")
     if "ypos" in invalid_literals or ypos_value is None or ypos_span is None:
         raise EditorSourceError("YPOS_LITERAL_REQUIRED", "ypos must be a literal integer")
 
-    return BarStatement(
+    return statement_cls(
         widget_id=widget_id,
         xpos=xpos_value,
         ypos=ypos_value,
         xpos_span=xpos_span,
         ypos_span=ypos_span,
+    )
+
+
+def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement:
+    return _analyze_bar_like_statement(
+        line,
+        expected_widget_id=expected_widget_id,
+        expected_source_kind="bar",
+        statement_cls=BarStatement,
+        human_kind="bar",
+    )
+
+
+def analyze_vbar_statement(line: str, *, expected_widget_id: str) -> VbarStatement:
+    return _analyze_bar_like_statement(
+        line,
+        expected_widget_id=expected_widget_id,
+        expected_source_kind="vbar",
+        statement_cls=VbarStatement,
+        human_kind="vbar",
     )
 
 
@@ -490,9 +543,19 @@ def apply_bar_patch(source_bytes: bytes, statement: BarStatement, *, x: int, y: 
     )
 
 
+def apply_vbar_patch(source_bytes: bytes, statement: VbarStatement, *, x: int, y: int) -> bytes:
+    return _apply_integer_span_patch(
+        source_bytes,
+        xpos_span=statement.xpos_span,
+        ypos_span=statement.ypos_span,
+        x=x,
+        y=y,
+    )
+
+
 def analyze_editable_statement(
     line: str, *, expected_widget_id: str
-) -> tuple[str, TextbuttonStatement | ImagebuttonStatement | BarStatement]:
+) -> tuple[str, TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement]:
     """Dispatch to a dedicated analyzer. Not a merged grammar."""
     kind = peek_statement_kind(line)
     if kind == "textbutton":
@@ -502,7 +565,7 @@ def analyze_editable_statement(
     if kind == "bar":
         return kind, analyze_bar_statement(line, expected_widget_id=expected_widget_id)
     if kind == "vbar":
-        raise EditorSourceError("VBAR_NOT_SUPPORTED", "vbar statements are not editable")
+        return kind, analyze_vbar_statement(line, expected_widget_id=expected_widget_id)
     if kind is None:
         raise EditorSourceError(
             "STATEMENT_KIND_MISMATCH",
@@ -514,7 +577,7 @@ def analyze_editable_statement(
 def apply_editable_statement_patch(
     source_bytes: bytes,
     kind: str,
-    statement: TextbuttonStatement | ImagebuttonStatement | BarStatement,
+    statement: TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement,
     *,
     x: int,
     y: int,
@@ -531,6 +594,10 @@ def apply_editable_statement_patch(
         if not isinstance(statement, BarStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match bar kind")
         return apply_bar_patch(source_bytes, statement, x=x, y=y)
+    if kind == "vbar":
+        if not isinstance(statement, VbarStatement):
+            raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match vbar kind")
+        return apply_vbar_patch(source_bytes, statement, x=x, y=y)
     raise EditorSourceError("STATEMENT_KIND_MISMATCH", f"unsupported statement kind: {kind!r}")
 
 
