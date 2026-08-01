@@ -349,6 +349,28 @@ _BAR_POSITION_FOLLOWER_WORDS = frozenset(
 )
 
 
+def _bar_like_error(human_kind: str, code: str) -> EditorSourceError:
+    messages = {
+        "STATEMENT_KIND_MISMATCH": f"source statement is not a {human_kind}",
+        "MULTILINE_STATEMENT_REJECTED": f"{human_kind} block statements are not writable",
+        "ID_LITERAL_REQUIRED_COUNT": f"{human_kind} statement must contain exactly one literal id",
+        "ID_LITERAL_REQUIRED": "id must be a literal string",
+        "ID_MISMATCH": "literal id does not match runtime widget id",
+        "BAR_STYLE_POSITION_UNSUPPORTED": (
+            f"{human_kind} position is not directly authored as literal xpos/ypos"
+        ),
+        "BAR_POSITION_NOT_DIRECTLY_AUTHORED": (
+            f"{human_kind} position is not directly authored as literal xpos/ypos"
+        ),
+        "XPOS_DUPLICATE": f"{human_kind} statement must contain exactly one xpos",
+        "YPOS_DUPLICATE": f"{human_kind} statement must contain exactly one ypos",
+        "XPOS_LITERAL_REQUIRED": "xpos must be a literal integer",
+        "YPOS_LITERAL_REQUIRED": "ypos must be a literal integer",
+    }
+    message_code = "ID_LITERAL_REQUIRED" if code == "ID_LITERAL_REQUIRED_COUNT" else code
+    return EditorSourceError(message_code, messages[code])
+
+
 def _analyze_bar_like_statement(
     line: str,
     *,
@@ -365,16 +387,10 @@ def _analyze_bar_like_statement(
         or top_level[0].kind != "WORD"
         or top_level[0].text != expected_source_kind
     ):
-        raise EditorSourceError(
-            "STATEMENT_KIND_MISMATCH",
-            f"source statement is not a {human_kind}",
-        )
+        raise _bar_like_error(human_kind, "STATEMENT_KIND_MISMATCH")
 
     if any(token.kind == "SYMBOL" and token.text == ":" for token in top_level):
-        raise EditorSourceError(
-            "MULTILINE_STATEMENT_REJECTED",
-            f"{human_kind} block statements are not writable",
-        )
+        raise _bar_like_error(human_kind, "MULTILINE_STATEMENT_REJECTED")
 
     has_style_keyword = any(
         token.depth == 0 and token.kind == "WORD" and token.text == "style" for token in tokens
@@ -423,14 +439,11 @@ def _analyze_bar_like_statement(
             ypos_span = (value_token.start, value_token.end)
 
     if keyword_counts["id"] != 1:
-        raise EditorSourceError(
-            "ID_LITERAL_REQUIRED",
-            f"{human_kind} statement must contain exactly one literal id",
-        )
+        raise _bar_like_error(human_kind, "ID_LITERAL_REQUIRED_COUNT")
     if "id" in invalid_literals or widget_id is None:
-        raise EditorSourceError("ID_LITERAL_REQUIRED", "id must be a literal string")
+        raise _bar_like_error(human_kind, "ID_LITERAL_REQUIRED")
     if widget_id != expected_widget_id:
-        raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+        raise _bar_like_error(human_kind, "ID_MISMATCH")
 
     def _missing_position_code() -> str:
         if has_style_keyword:
@@ -438,29 +451,17 @@ def _analyze_bar_like_statement(
         return "BAR_POSITION_NOT_DIRECTLY_AUTHORED"
 
     if keyword_counts["xpos"] == 0:
-        raise EditorSourceError(
-            _missing_position_code(),
-            f"{human_kind} position is not directly authored as literal xpos/ypos",
-        )
+        raise _bar_like_error(human_kind, _missing_position_code())
     if keyword_counts["xpos"] != 1:
-        raise EditorSourceError(
-            "XPOS_DUPLICATE",
-            f"{human_kind} statement must contain exactly one xpos",
-        )
+        raise _bar_like_error(human_kind, "XPOS_DUPLICATE")
     if keyword_counts["ypos"] == 0:
-        raise EditorSourceError(
-            _missing_position_code(),
-            f"{human_kind} position is not directly authored as literal xpos/ypos",
-        )
+        raise _bar_like_error(human_kind, _missing_position_code())
     if keyword_counts["ypos"] != 1:
-        raise EditorSourceError(
-            "YPOS_DUPLICATE",
-            f"{human_kind} statement must contain exactly one ypos",
-        )
+        raise _bar_like_error(human_kind, "YPOS_DUPLICATE")
     if "xpos" in invalid_literals or xpos_value is None or xpos_span is None:
-        raise EditorSourceError("XPOS_LITERAL_REQUIRED", "xpos must be a literal integer")
+        raise _bar_like_error(human_kind, "XPOS_LITERAL_REQUIRED")
     if "ypos" in invalid_literals or ypos_value is None or ypos_span is None:
-        raise EditorSourceError("YPOS_LITERAL_REQUIRED", "ypos must be a literal integer")
+        raise _bar_like_error(human_kind, "YPOS_LITERAL_REQUIRED")
 
     return statement_cls(
         widget_id=widget_id,

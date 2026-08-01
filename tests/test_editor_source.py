@@ -393,6 +393,18 @@ def test_analyze_editable_statement_routes_kinds() -> None:
     assert patched_vbar == (
         '    vbar value StaticValue(50) range 100 id "vb" xpos 11 ypos 22 xsize 10 ysize 40\n'
     )
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_editable_statement_patch(
+            vbar_line.encode("utf-8"),
+            "vbar",
+            analyze_bar_statement(
+                '    bar value StaticValue(50) range 100 id "b" xpos 1 ypos 2 xsize 10 ysize 40\n',
+                expected_widget_id="b",
+            ),
+            x=1,
+            y=2,
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
 
 
 def test_analyze_editable_statement_reports_missing_statement_kind() -> None:
@@ -545,6 +557,43 @@ def test_analyze_vbar_statement_reuses_proven_position_lock_contract(
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_vbar_statement(line, expected_widget_id="vb")
     assert excinfo.value.code == expected_code
+
+
+def test_analyze_vbar_statement_rejects_id_and_coordinate_problems() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_vbar_statement(
+            "    vbar value StaticValue(1) range 10 xpos 1 ypos 2\n",
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_vbar_statement(
+            '    vbar value StaticValue(1) range 10 id "a" id "vb" xpos 1 ypos 2\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_vbar_statement(
+            '    vbar value StaticValue(1) range 10 id "other" xpos 1 ypos 2\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "ID_MISMATCH"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_vbar_statement(
+            '    vbar value StaticValue(1) range 10 id "vb" xpos 1 xpos 2 ypos 3\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "XPOS_DUPLICATE"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_vbar_statement(
+            '    vbar value StaticValue(1) range 10 id "vb" xpos 1 ypos 2 ypos 3\n',
+            expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "YPOS_DUPLICATE"
 
 
 def test_analyze_bar_statement_rejects_computed_and_style_and_missing_position() -> None:
