@@ -35,6 +35,7 @@ from .source import (
     analyze_editable_statement,
     apply_button_patch,
     apply_editable_statement_patch,
+    is_slider_style_bar_line,
     peek_statement_kind,
 )
 
@@ -989,11 +990,19 @@ class EditorCoordinator:
             actual_kind = peek_statement_kind(lines[line_no - 1])
             if not isinstance(actual_kind, str):
                 raise EditorError("SOURCE_KEY_INVALID", "source line statement kind is invalid")
-            if isinstance(recorded_kind, str) and recorded_kind != actual_kind:
-                raise EditorError(
-                    "STATEMENT_KIND_MISMATCH",
-                    "source_key statement_kind does not match source line",
-                )
+            if isinstance(recorded_kind, str):
+                # Slider adapters are authored as bar + style "slider" (no SL keyword).
+                if recorded_kind == "slider":
+                    if actual_kind != "bar" or not is_slider_style_bar_line(lines[line_no - 1]):
+                        raise EditorError(
+                            "STATEMENT_KIND_MISMATCH",
+                            "source_key statement_kind does not match source line",
+                        )
+                elif recorded_kind != actual_kind:
+                    raise EditorError(
+                        "STATEMENT_KIND_MISMATCH",
+                        "source_key statement_kind does not match source line",
+                    )
             if actual_kind == "button":
                 statement = analyze_button_statement(
                     source_text,
