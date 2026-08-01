@@ -113,9 +113,12 @@ textbutton "MOVE ME" id "align_target" align (0.2, 0.25) action NullAction()
 ```
 
 Host analysis records `position_mode == "align"` and stores authored fractions plus the measured
-focus baseline. Preview uses absolute xpos overrides so focus_list tracks the pixel delta; write-back
-applies `authored + Δpixel / parent_size` (parent **1280×720**) and preserves the `align` form.
-Attestation allows a **2 px** residual for align fraction round-trips on textbutton styles.
+focus baseline and widget size from the **independent** `focus_list` observation. Parent size is
+unlocked only when that geometry matches the proven full-screen **1280×720** model. Preview uses
+absolute xpos/ypos (with align/anchor/offset neutralized) so focus_list tracks the pixel delta;
+write-back applies `authored + Δpixel / (parent − widget)` because Ren'Py `align` also sets the
+anchor, and preserves the `align` form. Attestation requires agreement within **1 px**. Zero
+placement extent on an axis is locked; concurrent `offset` / axis-split properties are locked.
 
 Live: `RENFORGE_ALIGN_LIVE=1 … tests/test_editor_align_live.py` on Ren'Py **8.5.3**.
 

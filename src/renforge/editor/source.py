@@ -11,9 +11,50 @@ class EditorSourceError(ValueError):
         self.code = code
 
 
-# Logical parent size used to convert between align fractions and pixels for the
-# evidence-gated full-screen fixed fixtures (demo game is 1280×720).
+# Logical parent size for evidence-gated full-screen Fixed fixtures (demo is 1280×720).
+# Align write-back is only unlocked when independent focus geometry matches this parent
+# under Ren'Py's align-sets-anchor placement: TL = fraction × (parent − widget).
 DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
+
+# Concurrent axis/placement properties that must not ride along with pure align (fx, fy).
+# offset and axis-split forms are out of scope for the align adapter.
+_ALIGN_CONCURRENT_PROPERTY_WORDS = frozenset(
+    {
+        "xpos",
+        "ypos",
+        "pos",
+        "anchor",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+    }
+)
+
+# Properties whose value may be a bare top-level WORD (e.g. ``action pos``).
+# Such WORDs are values, not position-form keywords.
+_NAME_VALUE_PROPERTY_WORDS = frozenset(
+    {
+        "action",
+        "hovered",
+        "unhovered",
+        "selected",
+        "alternate",
+        "style",
+        "at",
+        "default",
+        "tooltip",
+        "sensitive",
+        "focus",
+        "keyboard_focus",
+        "keysym",
+        "alternate_keysym",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -380,12 +421,38 @@ _TEXTBUTTON_PAIR_FOLLOWER_WORDS = frozenset(
 )
 
 
-def _tuple_property_indexes(tokens: list[_Token], keyword: str) -> list[int]:
-    """Indexes of top-level ``keyword`` used as a property (value starts with ``(``)."""
+def _previous_top_level_token(tokens: list[_Token], index: int) -> _Token | None:
+    for cursor in range(index - 1, -1, -1):
+        if tokens[cursor].depth == 0:
+            return tokens[cursor]
+    return None
+
+
+def _top_level_property_keyword_indexes(tokens: list[_Token], keyword: str) -> list[int]:
+    """Indexes of top-level ``keyword`` used as a property name (any value form).
+
+    Bare values of other properties are excluded so ``action pos`` does not count
+    as a ``pos`` position form (Codex P2 on issue #38).
+    """
     indexes: list[int] = []
     for index, token in enumerate(tokens):
         if token.depth != 0 or token.kind != "WORD" or token.text != keyword:
             continue
+        previous = _previous_top_level_token(tokens, index)
+        if (
+            previous is not None
+            and previous.kind == "WORD"
+            and previous.text in _NAME_VALUE_PROPERTY_WORDS
+        ):
+            continue
+        indexes.append(index)
+    return indexes
+
+
+def _tuple_property_indexes(tokens: list[_Token], keyword: str) -> list[int]:
+    """Indexes of top-level ``keyword`` used as a property (value starts with ``(``)."""
+    indexes: list[int] = []
+    for index in _top_level_property_keyword_indexes(tokens, keyword):
         next_index = index + 1
         if next_index >= len(tokens):
             continue
@@ -498,10 +565,19 @@ def align_to_pixels(
     yalign: float,
     *,
     parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE,
+    widget_size: tuple[int, int],
 ) -> tuple[int, int]:
-    """Convert authored align fractions to logical pixel top-left (default anchor 0,0)."""
+    """Convert authored align fractions to logical pixel top-left.
+
+    Ren'Py ``align (a, b)`` also sets the anchor to ``(a, b)``, so the focus
+    top-left is ``fraction × (parent − widget)``, not ``fraction × parent``.
+    """
     parent_w, parent_h = parent_size
-    return int(round(float(xalign) * parent_w)), int(round(float(yalign) * parent_h))
+    widget_w, widget_h = int(widget_size[0]), int(widget_size[1])
+    return (
+        int(round(float(xalign) * (parent_w - widget_w))),
+        int(round(float(yalign) * (parent_h - widget_h))),
+    )
 
 
 def pixels_to_align(
@@ -509,12 +585,37 @@ def pixels_to_align(
     y: int,
     *,
     parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE,
+    widget_size: tuple[int, int],
 ) -> tuple[float, float]:
-    """Convert logical pixel position to align fractions for write-back."""
+    """Convert logical pixel top-left to align fractions (requires non-zero extent)."""
     parent_w, parent_h = parent_size
-    if parent_w <= 0 or parent_h <= 0:
-        raise EditorSourceError("ALIGN_PARENT_INVALID", "align parent size must be positive")
-    return float(x) / float(parent_w), float(y) / float(parent_h)
+    widget_w, widget_h = int(widget_size[0]), int(widget_size[1])
+    extent_w = int(parent_w) - widget_w
+    extent_h = int(parent_h) - widget_h
+    if extent_w == 0 or extent_h == 0:
+        raise EditorSourceError(
+            "ALIGN_EXTENT_ZERO",
+            "align conversion requires non-zero placement extent on both axes",
+        )
+    return float(x) / float(extent_w), float(y) / float(extent_h)
+
+
+def align_geometry_matches_parent(
+    *,
+    authored: tuple[float, float],
+    runtime_xy: tuple[int, int],
+    widget_size: tuple[int, int],
+    parent_size: tuple[int, int] = DEFAULT_ALIGN_PARENT_SIZE,
+    tolerance: int = 1,
+) -> bool:
+    """True when independent focus TL matches ``align × (parent − widget)`` within tolerance."""
+    ax, ay = float(authored[0]), float(authored[1])
+    rx, ry = int(runtime_xy[0]), int(runtime_xy[1])
+    widget_w, widget_h = int(widget_size[0]), int(widget_size[1])
+    parent_w, parent_h = int(parent_size[0]), int(parent_size[1])
+    expected_x = ax * float(parent_w - widget_w)
+    expected_y = ay * float(parent_h - widget_h)
+    return abs(rx - expected_x) <= tolerance and abs(ry - expected_y) <= tolerance
 
 
 def _format_align_component(value: float) -> str:
@@ -531,14 +632,11 @@ def _format_align_component(value: float) -> str:
 def _require_pure_anchor_if_present(tokens: list[_Token]) -> bool:
     """Return True if a pure literal anchor is present; raise if impure/duplicate.
 
-    Counts every top-level ``anchor`` keyword (including bare expressions such as
-    ``anchor anchor_value``), not only tuple forms.
+    Counts every top-level ``anchor`` *property* (including bare expressions such
+    as ``anchor anchor_value``), not only tuple forms. Bare values of other
+    properties (e.g. ``action anchor``) are ignored.
     """
-    anchor_word_indexes = [
-        index
-        for index, token in enumerate(tokens)
-        if token.depth == 0 and token.kind == "WORD" and token.text == "anchor"
-    ]
+    anchor_word_indexes = _top_level_property_keyword_indexes(tokens, "anchor")
     if not anchor_word_indexes:
         return False
     if len(anchor_word_indexes) > 1:
@@ -574,33 +672,46 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
         token.depth == 0 and token.kind == "WORD" and token.text in {"xpos", "ypos"}
         for token in tokens
     )
-    pos_indexes = _pos_property_indexes(tokens)
-    align_indexes = _tuple_property_indexes(tokens, "align")
+    # Count every top-level *property* keyword (including bare expressions) so
+    # concurrent or dynamic forms cannot be ignored by the tuple-only scan.
+    pos_word_indexes = _top_level_property_keyword_indexes(tokens, "pos")
+    align_word_indexes = _top_level_property_keyword_indexes(tokens, "align")
 
-    form_count = sum([bool(has_xy), bool(pos_indexes), bool(align_indexes)])
+    form_count = sum([bool(has_xy), bool(pos_word_indexes), bool(align_word_indexes)])
     if form_count > 1:
         raise EditorSourceError(
             "POSITION_FORM_MIXED",
             "textbutton cannot mix align/pos/xpos/ypos position forms",
         )
-    if len(pos_indexes) > 1:
+    if len(pos_word_indexes) > 1:
         raise EditorSourceError("POS_DUPLICATE", "textbutton statement must contain exactly one pos")
-    if len(align_indexes) > 1:
+    if len(align_word_indexes) > 1:
         raise EditorSourceError("ALIGN_DUPLICATE", "textbutton statement must contain exactly one align")
 
-    if len(align_indexes) == 1:
+    if len(align_word_indexes) == 1:
         widget_id = _require_single_literal_id(
             tokens,
             expected_widget_id=expected_widget_id,
             human_kind="textbutton",
         )
-        # Align form does not combine with anchor in this evidence-gated shape.
-        if _tuple_property_indexes(tokens, "anchor"):
+        # Reject concurrent axis/placement properties (offset, xalign, anchor, …).
+        concurrent = [
+            keyword
+            for keyword in _ALIGN_CONCURRENT_PROPERTY_WORDS
+            if _top_level_property_keyword_indexes(tokens, keyword)
+        ]
+        if concurrent:
             raise EditorSourceError(
                 "POSITION_FORM_MIXED",
-                "textbutton align form does not combine with anchor in V1",
+                "textbutton align form does not combine with concurrent placement properties",
             )
-        parsed_align = _parse_literal_float_pair(tokens, align_indexes[0])
+        tuple_indexes = _tuple_property_indexes(tokens, "align")
+        if not tuple_indexes or tuple_indexes[0] != align_word_indexes[0]:
+            raise EditorSourceError(
+                "ALIGN_LITERAL_REQUIRED",
+                "align must be a pure literal pair: align (x, y)",
+            )
+        parsed_align = _parse_literal_float_pair(tokens, tuple_indexes[0])
         if parsed_align is None:
             raise EditorSourceError(
                 "ALIGN_LITERAL_REQUIRED",
@@ -620,14 +731,20 @@ def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> Textb
             align_parent_size=DEFAULT_ALIGN_PARENT_SIZE,
         )
 
-    if len(pos_indexes) == 1:
+    if len(pos_word_indexes) == 1:
         widget_id = _require_single_literal_id(
             tokens,
             expected_widget_id=expected_widget_id,
             human_kind="textbutton",
         )
         has_anchor = _require_pure_anchor_if_present(tokens)
-        parsed_pos = _parse_literal_pos_pair(tokens, pos_indexes[0])
+        tuple_indexes = _pos_property_indexes(tokens)
+        if not tuple_indexes or tuple_indexes[0] != pos_word_indexes[0]:
+            raise EditorSourceError(
+                "POS_LITERAL_REQUIRED",
+                "pos must be a pure literal pair of integers: pos (x, y)",
+            )
+        parsed_pos = _parse_literal_pos_pair(tokens, tuple_indexes[0])
         if parsed_pos is None:
             raise EditorSourceError(
                 "POS_LITERAL_REQUIRED",
@@ -1122,21 +1239,44 @@ def apply_textbutton_patch(
     # Block form spans are absolute in the full source; single-line spans are
     # relative to the single line bytes passed by the coordinator.
     if statement.position_mode == "align":
+        # Proven geometry only: measured baseline + widget size are mandatory.
+        # Ren'Py ``align (a, b)`` sets anchor to (a, b), so ΔTL = Δalign × (parent − widget).
+        if align_runtime_baseline is None or len(align_runtime_baseline) != 2:
+            raise EditorSourceError(
+                "ALIGN_BASELINE_REQUIRED",
+                "align write-back requires a measured runtime baseline",
+            )
+        if align_widget_size is None or len(align_widget_size) != 2:
+            raise EditorSourceError(
+                "ALIGN_WIDGET_SIZE_REQUIRED",
+                "align write-back requires a measured widget size",
+            )
         parent_w, parent_h = statement.align_parent_size
-        # Ren'Py ``align (a, b)`` sets both align and anchor to (a, b), so the
-        # focus top-left moves by Δalign * (parent - widget), not Δalign * parent.
-        widget_w = 0
-        widget_h = 0
-        if align_widget_size is not None and len(align_widget_size) == 2:
-            widget_w = max(0, int(align_widget_size[0]))
-            widget_h = max(0, int(align_widget_size[1]))
-        extent_w = float(max(1, int(parent_w) - widget_w))
-        extent_h = float(max(1, int(parent_h) - widget_h))
-        if align_runtime_baseline is not None and len(align_runtime_baseline) == 2:
-            ax = float(statement.xpos) + (int(x) - int(align_runtime_baseline[0])) / extent_w
-            ay = float(statement.ypos) + (int(y) - int(align_runtime_baseline[1])) / extent_h
+        widget_w = int(align_widget_size[0])
+        widget_h = int(align_widget_size[1])
+        # Signed extents: preserve direction when widget > parent; lock zero axes.
+        extent_w = int(parent_w) - widget_w
+        extent_h = int(parent_h) - widget_h
+        dx = int(x) - int(align_runtime_baseline[0])
+        dy = int(y) - int(align_runtime_baseline[1])
+        if extent_w == 0:
+            if dx != 0:
+                raise EditorSourceError(
+                    "ALIGN_EXTENT_ZERO",
+                    "cannot move on X when placement extent is zero",
+                )
+            ax = float(statement.xpos)
         else:
-            ax, ay = pixels_to_align(int(x), int(y), parent_size=statement.align_parent_size)
+            ax = float(statement.xpos) + dx / float(extent_w)
+        if extent_h == 0:
+            if dy != 0:
+                raise EditorSourceError(
+                    "ALIGN_EXTENT_ZERO",
+                    "cannot move on Y when placement extent is zero",
+                )
+            ay = float(statement.ypos)
+        else:
+            ay = float(statement.ypos) + dy / float(extent_h)
         source_text = source_bytes.decode("utf-8")
         replacements = [
             (statement.xpos_span[0], statement.xpos_span[1], _format_align_component(ax)),

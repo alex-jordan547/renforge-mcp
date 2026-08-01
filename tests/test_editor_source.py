@@ -1193,12 +1193,14 @@ def test_analyze_button_statement_requires_literal_header_coordinates_and_child_
 def test_align_pixel_conversion_roundtrip() -> None:
     from renforge.editor.source import align_to_pixels, pixels_to_align
 
-    assert align_to_pixels(0.0, 0.0) == (0, 0)
-    assert align_to_pixels(0.5, 0.5) == (640, 360)
-    assert align_to_pixels(1.0, 1.0) == (1280, 720)
-    assert pixels_to_align(640, 360) == (0.5, 0.5)
-    px, py = align_to_pixels(0.25, 0.75)
-    assert pixels_to_align(px, py) == (0.25, 0.75)
+    # Widget 80×40 in parent 1280×720 → extent 1200×680.
+    widget = (80, 40)
+    assert align_to_pixels(0.0, 0.0, widget_size=widget) == (0, 0)
+    assert align_to_pixels(0.5, 0.5, widget_size=widget) == (600, 340)
+    assert align_to_pixels(1.0, 1.0, widget_size=widget) == (1200, 680)
+    assert pixels_to_align(600, 340, widget_size=widget) == (0.5, 0.5)
+    px, py = align_to_pixels(0.25, 0.75, widget_size=widget)
+    assert pixels_to_align(px, py, widget_size=widget) == (0.25, 0.75)
 
 
 def test_analyze_textbutton_align_accepts_and_patches_form() -> None:
@@ -1206,8 +1208,16 @@ def test_analyze_textbutton_align_accepts_and_patches_form() -> None:
     parsed = analyze_textbutton_statement(line, expected_widget_id="start")
     assert parsed.position_mode == "align"
     assert (parsed.xpos, parsed.ypos) == (0.5, 0.5)
-    patched = apply_textbutton_patch(line.encode("utf-8"), parsed, x=320, y=180).decode("utf-8")
-    assert "align (0.25, 0.25)" in patched
+    # Baseline TL for align 0.5 with widget 80×40 is (600, 340); +120 px → 0.6.
+    patched = apply_textbutton_patch(
+        line.encode("utf-8"),
+        parsed,
+        x=720,
+        y=340,
+        align_runtime_baseline=(600, 340),
+        align_widget_size=(80, 40),
+    ).decode("utf-8")
+    assert "align (0.6, 0.5)" in patched
     assert "xpos" not in patched and "ypos" not in patched
 
 
@@ -1230,6 +1240,74 @@ def test_analyze_textbutton_align_rejects_impure_and_mixed() -> None:
             expected_widget_id="start",
         )
     assert excinfo.value.code == "ALIGN_LITERAL_REQUIRED"
+    # Bare / dynamic concurrent properties must not be ignored (Codex P1/P2).
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "x" id "w" align (0.2, 0.3) anchor anchor_value action NullAction()\n',
+            expected_widget_id="w",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "x" id "w" xpos 10 ypos 20 align align_value action NullAction()\n',
+            expected_widget_id="w",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "x" id "w" align (0.2, 0.3) xoffset 8 action NullAction()\n',
+            expected_widget_id="w",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "x" id "w" align (0.2, 0.3) xalign 0.9 xanchor 0.4 action NullAction()\n',
+            expected_widget_id="w",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+
+
+def test_apply_textbutton_align_locks_zero_extent_axis() -> None:
+    line = '    textbutton "Play" id "start" align (0.5, 0.5) action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    # Widget fills parent → extent 0; any non-zero delta must lock.
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_textbutton_patch(
+            line.encode("utf-8"),
+            parsed,
+            x=1,
+            y=0,
+            align_runtime_baseline=(0, 0),
+            align_widget_size=(1280, 720),
+        )
+    assert excinfo.value.code == "ALIGN_EXTENT_ZERO"
+    # Zero delta keeps authored fractions (no false rewrite to 1.5).
+    patched = apply_textbutton_patch(
+        line.encode("utf-8"),
+        parsed,
+        x=0,
+        y=0,
+        align_runtime_baseline=(0, 0),
+        align_widget_size=(1280, 720),
+    ).decode("utf-8")
+    assert "align (0.5, 0.5)" in patched
+
+
+def test_apply_textbutton_align_requires_proven_geometry() -> None:
+    line = '    textbutton "Play" id "start" align (0.5, 0.5) action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_textbutton_patch(line.encode("utf-8"), parsed, x=100, y=100)
+    assert excinfo.value.code == "ALIGN_BASELINE_REQUIRED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_textbutton_patch(
+            line.encode("utf-8"),
+            parsed,
+            x=100,
+            y=100,
+            align_runtime_baseline=(600, 340),
+        )
+    assert excinfo.value.code == "ALIGN_WIDGET_SIZE_REQUIRED"
 
 
 def test_analyze_textbutton_anchor_preserved_with_xy() -> None:

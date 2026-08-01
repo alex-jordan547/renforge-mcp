@@ -16,7 +16,7 @@ screen renforge_editor_align_fixture():
         yfill True
 
         # Supported form: single-line textbutton with pure align (fx, fy).
-        # Full-screen fixed parent => pixels ≈ (fx * 1280, fy * 720) with default anchor.
+        # Full-screen fixed parent: TL = (fx, fy) × (parent − widget) because align sets anchor.
         textbutton "MOVE ME" id "align_target" align (0.2, 0.25) action SetVariable("renforge_editor_align_clicks", renforge_editor_align_clicks + 1)
 
         textbutton "COMPUTED" id "align_computed" align (renforge_editor_align_computed, 0.4) action NullAction()

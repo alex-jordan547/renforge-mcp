@@ -30,7 +30,9 @@ from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
 from .source import (
+    DEFAULT_ALIGN_PARENT_SIZE,
     EditorSourceError,
+    align_geometry_matches_parent,
     analyze_button_statement,
     analyze_editable_statement,
     analyze_textbutton_block_statement,
@@ -598,8 +600,10 @@ class EditorCoordinator:
                 "position_mode": position_mode,
             }
             if position_mode == "align":
-                # Authored fractions + measured baseline/size: Ren'Py align also
-                # sets anchor, so TL moves over (parent - widget) extent.
+                # Authored fractions + independent geometry: Ren'Py align also
+                # sets anchor, so TL moves over (parent − widget) extent.
+                # Parent size is only unlocked when independent focus proves the
+                # full-screen 1280×720 placement model (issue #39).
                 source_key["align_authored"] = [
                     float(statement.xpos),
                     float(statement.ypos),
@@ -608,17 +612,49 @@ class EditorCoordinator:
                     int(runtime_position[0]),
                     int(runtime_position[1]),
                 ]
-                source_key["align_parent_size"] = list(
-                    getattr(statement, "align_parent_size", (1280, 720))
+                parent_size = tuple(
+                    getattr(statement, "align_parent_size", DEFAULT_ALIGN_PARENT_SIZE)
                 )
-                # observation rect is [x, y, w, h] when available on the input
-                # observation used for analysis (stored on runtime_position only
-                # as x,y). Prefer full rect from the analyze payload when present.
-                rect = observation.get("rect") if isinstance(observation, dict) else None
-                if isinstance(rect, list) and len(rect) >= 4:
-                    source_key["align_widget_size"] = [int(rect[2]), int(rect[3])]
+                source_key["align_parent_size"] = list(parent_size)
+                # Widget size must come from the independent focus_list rect —
+                # never fall back to a missing/stale input observation.
+                ind_rect = independent.get("rect") if isinstance(independent, dict) else None
+                if (
+                    isinstance(ind_rect, list)
+                    and len(ind_rect) >= 4
+                    and type(ind_rect[2]) is int
+                    and type(ind_rect[3]) is int
+                    and int(ind_rect[2]) > 0
+                    and int(ind_rect[3]) > 0
+                ):
+                    widget_size = (int(ind_rect[2]), int(ind_rect[3]))
+                    source_key["align_widget_size"] = list(widget_size)
+                    if lock_reason is None:
+                        extent_w = int(parent_size[0]) - widget_size[0]
+                        extent_h = int(parent_size[1]) - widget_size[1]
+                        if extent_w == 0 and extent_h == 0:
+                            lock_reason = self._lock_reason(
+                                "ALIGN_EXTENT_ZERO",
+                                "align placement extent is zero on both axes",
+                            )
+                        elif not align_geometry_matches_parent(
+                            authored=(float(statement.xpos), float(statement.ypos)),
+                            runtime_xy=(int(runtime_position[0]), int(runtime_position[1])),
+                            widget_size=widget_size,
+                            parent_size=parent_size,
+                            tolerance=1,
+                        ):
+                            lock_reason = self._lock_reason(
+                                "ALIGN_PARENT_UNPROVEN",
+                                "independent geometry does not match proven full-screen align parent",
+                            )
                 else:
                     source_key["align_widget_size"] = [0, 0]
+                    if lock_reason is None:
+                        lock_reason = self._lock_reason(
+                            "ALIGN_WIDGET_SIZE_UNPROVEN",
+                            "independent observation must provide positive widget width and height",
+                        )
             if lock_reason is None:
                 if observation.get("measurement_method") != "focus_list":
                     lock_reason = self._lock_reason(

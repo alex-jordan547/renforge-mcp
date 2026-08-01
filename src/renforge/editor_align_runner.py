@@ -125,12 +125,25 @@ def _independent_expected_after_patch(
     from renforge.editor.source import _format_align_component
     parent_w, parent_h = parsed.align_parent_size
     base = baseline or {"x": 0, "y": 0, "w": 0, "h": 0}
-    widget_w = max(0, int(base.get("w") or 0))
-    widget_h = max(0, int(base.get("h") or 0))
-    extent_w = float(max(1, int(parent_w) - widget_w))
-    extent_h = float(max(1, int(parent_h) - widget_h))
-    ax = float(parsed.xpos) + (int(x) - int(base["x"])) / extent_w
-    ay = float(parsed.ypos) + (int(y) - int(base["y"])) / extent_h
+    widget_w = int(base.get("w") or 0)
+    widget_h = int(base.get("h") or 0)
+    # Signed extents; zero-extent axes keep authored fractions (no clamp-to-1).
+    extent_w = int(parent_w) - widget_w
+    extent_h = int(parent_h) - widget_h
+    dx = int(x) - int(base["x"])
+    dy = int(y) - int(base["y"])
+    if extent_w == 0:
+        if dx != 0:
+            raise AssertionError("independent constructor: zero X extent with non-zero delta")
+        ax = float(parsed.xpos)
+    else:
+        ax = float(parsed.xpos) + dx / float(extent_w)
+    if extent_h == 0:
+        if dy != 0:
+            raise AssertionError("independent constructor: zero Y extent with non-zero delta")
+        ay = float(parsed.ypos)
+    else:
+        ay = float(parsed.ypos) + dy / float(extent_h)
     ax_t = _format_align_component(ax)
     ay_t = _format_align_component(ay)
     patched_line = re.sub(
@@ -166,14 +179,18 @@ def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bo
     return before_text.replace(before_line, "", 1) == after_text.replace(after_line, "", 1)
 
 
-def _parse_xy_from_target_line(source_text: str) -> dict[str, int]:
+def _parse_xy_from_target_line(source_text: str, *, widget_size: tuple[int, int]) -> dict[str, int]:
     """Return pixel position derived from authored align via the conversion contract."""
     line, _ = _target_line_with_offset(source_text)
     parsed = analyze_textbutton_statement(line, expected_widget_id=TARGET_ID)
     if parsed.position_mode != "align":
         raise AssertionError(f"expected align mode: {parsed!r}")
     from renforge.editor.source import align_to_pixels
-    px, py = align_to_pixels(float(parsed.xpos), float(parsed.ypos))
+    px, py = align_to_pixels(
+        float(parsed.xpos),
+        float(parsed.ypos),
+        widget_size=widget_size,
+    )
     return {"x": px, "y": py}
 
 
@@ -215,15 +232,14 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
     baseline_bytes = fixture_path.read_bytes()
     baseline_sha = _sha256_file(fixture_path)
     baseline_text = baseline_bytes.decode("utf-8")
-    # Prove analyzer accepts the authored pos form before any UI work.
+    # Prove analyzer accepts the authored align form before any UI work.
     target_line, _ = _target_line_with_offset(baseline_text)
     parsed = analyze_textbutton_statement(target_line, expected_widget_id=TARGET_ID)
     if parsed.position_mode != "align":
         raise AssertionError(f"expected position_mode align, got {parsed.position_mode!r}")
-    baseline_position = _parse_xy_from_target_line(baseline_text)
     report["fixture_before"] = {
         "sha256": baseline_sha,
-        "position": baseline_position,
+        "authored_align": [float(parsed.xpos), float(parsed.ypos)],
         "position_mode": parsed.position_mode,
     }
 
@@ -345,16 +361,28 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         "selected_source_position"
     )
     if not (isinstance(original, (list, tuple)) and len(original) == 2):
-        original = [int(baseline_position["x"]), int(baseline_position["y"])]
+        raise AssertionError(f"missing selected original position: {analysis_status!r}")
     requested_before = [int(original[0]), int(original[1])]
 
     # Fresh focus_list observation before preview movement.
     value_baseline = client.eval_expr("renforge_editor_align_clicks")
     before_obs = _observe_selected(client)
     before_rect = before_obs.get("rect") or []
-    if len(before_rect) < 2:
-        raise AssertionError(f"pre-preview observation missing rect: {before_obs!r}")
+    if len(before_rect) < 4:
+        raise AssertionError(f"pre-preview observation missing full rect: {before_obs!r}")
     bounds_before = [int(before_rect[0]), int(before_rect[1])]
+    widget_size = (int(before_rect[2]), int(before_rect[3]))
+    if widget_size[0] <= 0 or widget_size[1] <= 0:
+        raise AssertionError(f"pre-preview widget size unusable: {before_rect!r}")
+    # Contract check: authored align + measured size must match measured TL.
+    expected_tl = _parse_xy_from_target_line(baseline_text, widget_size=widget_size)
+    if abs(expected_tl["x"] - bounds_before[0]) > 1 or abs(expected_tl["y"] - bounds_before[1]) > 1:
+        raise AssertionError(
+            "authored align conversion disagrees with measured focus TL: "
+            f"expected={expected_tl!r}, measured={bounds_before!r}, widget={widget_size!r}"
+        )
+    report["fixture_before"]["position"] = expected_tl
+    report["fixture_before"]["widget_size"] = list(widget_size)
     frame_before = before_obs.get("frame_id")
 
     # Step 2: preview.
@@ -487,7 +515,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         reload_bounds[0] - bounds_after[0],
         reload_bounds[1] - bounds_after[1],
     ]
-    if any(abs(value) > 2 for value in pixel_delta):  # align residual after reload
+    if any(abs(value) > 1 for value in pixel_delta):  # issue #39: within one logical pixel
         raise AssertionError(
             "post-reload focus rect disagrees with post-preview focus rect: "
             f"preview={bounds_after!r}, reload={reload_bounds!r}, delta={pixel_delta!r}"

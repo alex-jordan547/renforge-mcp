@@ -76,7 +76,7 @@ def test_align_seven_step_live_proof(demo_copy: Path) -> None:
     assert patch["outside_coordinate_spans_identical"] is True
     assert patch["matches_independent_expected"] is True
     assert report["reload"]["status_text"] == "Reload committed"
-    assert all(abs(int(v)) <= 2 for v in report["pixel_agreement"]["delta"])  # align fraction residual
+    assert all(abs(int(v)) <= 1 for v in report["pixel_agreement"]["delta"])  # issue #39: 1 px
     assert report["value_invariance"]["preview"] == report["value_invariance"]["baseline"]
     assert report["rebinding"]["widget_id"] == "align_target"
     locks = report["locks"]

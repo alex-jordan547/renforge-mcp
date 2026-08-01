@@ -1139,6 +1139,8 @@ init 1100 python:
             # tracks the requested pixel delta 1:1. Source write-back still uses
             # align fractions (host apply converts using the measured baseline).
             if position_mode == "align":
+                # Absolute placement for preview; neutralize align/anchor/offset so
+                # concurrent axis props cannot stack on top of the requested TL.
                 properties[str(widget_id)] = {
                     "xpos": next_x,
                     "ypos": next_y,
@@ -1146,6 +1148,8 @@ init 1100 python:
                     "yalign": 0.0,
                     "xanchor": 0.0,
                     "yanchor": 0.0,
+                    "xoffset": 0,
+                    "yoffset": 0,
                 }
             else:
                 properties[str(widget_id)] = {
@@ -2611,11 +2615,8 @@ init 1100 python:
                 expected_x = int(expected_position[0])
                 expected_y = int(expected_position[1])
                 rect = observation.get("rect") or []
-                # Align fraction round-trips can be off by 1–2 logical px on textbutton
-                # styles after reload; keep 1px for all other position modes.
-                position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
-                tolerance = 2 if position_mode == "align" else 1
-                if not (abs(int(rect[0]) - expected_x) <= tolerance and abs(int(rect[1]) - expected_y) <= tolerance):
+                # Issue #39 requires pixel agreement within one logical pixel.
+                if not (abs(int(rect[0]) - expected_x) <= 1 and abs(int(rect[1]) - expected_y) <= 1):
                     return {
                         "ok": False,
                         "error": "TARGET_POSITION_MISMATCH",
