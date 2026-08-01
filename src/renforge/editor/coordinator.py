@@ -33,9 +33,12 @@ from .source import (
     EditorSourceError,
     analyze_button_statement,
     analyze_editable_statement,
+    analyze_textbutton_block_statement,
     apply_button_patch,
     apply_editable_statement_patch,
+    apply_textbutton_patch,
     is_slider_style_bar_line,
+    is_textbutton_block_header,
     peek_statement_kind,
 )
 
@@ -533,16 +536,25 @@ class EditorCoordinator:
             if source_line < 1 or source_line > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
             widget_id = self._require_runtime_widget_id(runtime_key)
-            if peek_statement_kind(lines[source_line - 1]) == "button":
+            header_line = lines[source_line - 1]
+            header_kind = peek_statement_kind(header_line)
+            if header_kind == "button":
                 statement = analyze_button_statement(
                     source_text,
                     source_line=source_line,
                     expected_widget_id=widget_id,
                 )
                 statement_kind = "button"
+            elif header_kind == "textbutton" and is_textbutton_block_header(header_line):
+                statement = analyze_textbutton_block_statement(
+                    source_text,
+                    source_line=source_line,
+                    expected_widget_id=widget_id,
+                )
+                statement_kind = "textbutton"
             else:
                 statement_kind, statement = analyze_editable_statement(
-                    lines[source_line - 1],
+                    header_line,
                     expected_widget_id=widget_id,
                 )
             original_position = [statement.xpos, statement.ypos]
@@ -1010,6 +1022,18 @@ class EditorCoordinator:
                     expected_widget_id=widget_id,
                 )
                 lines = apply_button_patch(
+                    "".join(lines).encode("utf-8"),
+                    statement,
+                    x=x,
+                    y=y,
+                ).decode("utf-8").splitlines(keepends=True)
+            elif actual_kind == "textbutton" and is_textbutton_block_header(lines[line_no - 1]):
+                statement = analyze_textbutton_block_statement(
+                    source_text,
+                    source_line=line_no,
+                    expected_widget_id=widget_id,
+                )
+                lines = apply_textbutton_patch(
                     "".join(lines).encode("utf-8"),
                     statement,
                     x=x,

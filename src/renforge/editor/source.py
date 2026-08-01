@@ -18,7 +18,10 @@ class TextbuttonStatement:
     ypos: int
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
-
+    # "single_line" keeps spans relative to the statement line.
+    # "block" keeps absolute character spans in the full source file.
+    form: str = "single_line"
+    source_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -296,11 +299,179 @@ def _analyze_positioned_kind_statement(
 
 
 def analyze_textbutton_statement(line: str, *, expected_widget_id: str) -> TextbuttonStatement:
+    if is_textbutton_block_header(line):
+        raise EditorSourceError(
+            "MULTILINE_STATEMENT_REJECTED",
+            "textbutton block headers require analyze_textbutton_block_statement",
+        )
     return _analyze_positioned_kind_statement(
         line,
         expected_widget_id=expected_widget_id,
         expected_kind="textbutton",
         statement_cls=TextbuttonStatement,
+    )
+
+
+def is_textbutton_block_header(line: str) -> bool:
+    """True when the line is a textbutton header ending with an explicit block colon."""
+    try:
+        statement_text = _statement_text(line)
+    except EditorSourceError:
+        return False
+    tokens = _lex_single_line(statement_text)
+    top_level = [token for token in tokens if token.depth == 0]
+    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "textbutton":
+        return False
+    colon_tokens = [token for token in top_level if token.kind == "SYMBOL" and token.text == ":"]
+    return len(colon_tokens) == 1 and top_level[-1] is colon_tokens[0]
+
+
+def analyze_textbutton_block_statement(
+    source_text: str,
+    *,
+    source_line: int,
+    expected_widget_id: str,
+) -> TextbuttonStatement:
+    """Analyze multi-line textbutton with id/xpos/ypos authored in the child block.
+
+    Supported shape (one physical form, already-proven adapter)::
+
+        textbutton "Label":
+            id "widget_id"
+            xpos 100
+            ypos 200
+            action NullAction()
+
+    Header must not carry id/xpos/ypos. Only direct child properties at the block
+    indent are considered. Patch spans are absolute within ``source_text``.
+    """
+    lines = source_text.splitlines(keepends=True)
+    if source_line < 1 or source_line > len(lines):
+        raise EditorSourceError("SOURCE_LINE_INVALID", "textbutton source line is outside the source file")
+
+    header_line = lines[source_line - 1]
+    if not is_textbutton_block_header(header_line):
+        raise EditorSourceError(
+            "MULTILINE_STATEMENT_REJECTED",
+            "textbutton statement is not a supported multi-line block header",
+        )
+
+    header_text = header_line.rstrip("\r\n")
+    header_tokens = _lex_single_line(header_text)
+    for token in header_tokens:
+        if token.depth == 0 and token.kind == "WORD" and token.text in {"id", "xpos", "ypos"}:
+            raise EditorSourceError(
+                "POSITION_ON_HEADER_UNSUPPORTED",
+                "textbutton block form requires id/xpos/ypos in the child block only",
+            )
+
+    header_indent = len(header_line) - len(header_line.lstrip(" \t"))
+    try:
+        child_indexes = _button_child_line_indexes(lines, source_line, header_indent)
+    except EditorSourceError as exc:
+        if exc.code == "BUTTON_BLOCK_REQUIRED":
+            raise EditorSourceError(
+                "MULTILINE_STATEMENT_REJECTED",
+                "textbutton block must contain a child block",
+            ) from exc
+        raise
+    child_indent = min(
+        len(lines[index]) - len(lines[index].lstrip(" \t")) for index in child_indexes
+    )
+
+    keyword_counts = {"id": 0, "xpos": 0, "ypos": 0}
+    widget_id: str | None = None
+    xpos_value: int | None = None
+    ypos_value: int | None = None
+    xpos_span: tuple[int, int] | None = None
+    ypos_span: tuple[int, int] | None = None
+    invalid_literals: set[str] = set()
+
+    for child_index in child_indexes:
+        child_line = lines[child_index]
+        child_indent_value = len(child_line) - len(child_line.lstrip(" \t"))
+        if child_indent_value != child_indent:
+            # Nested deeper (e.g. inside a child container) is ignored for identity.
+            continue
+        child_text = child_line.rstrip("\r\n")
+        tokens = _lex_single_line(child_text)
+        top_level = [token for token in tokens if token.depth == 0]
+        if not top_level or top_level[0].kind != "WORD":
+            continue
+        keyword = top_level[0].text
+        if keyword not in keyword_counts:
+            continue
+        keyword_counts[keyword] += 1
+        value_index = _next_top_level_index(tokens, 0)
+        line_offset = sum(len(line) for line in lines[:child_index])
+        if value_index is None:
+            invalid_literals.add(keyword)
+            continue
+        value_token = tokens[value_index]
+        if keyword == "id":
+            if value_token.kind != "STRING":
+                invalid_literals.add(keyword)
+                continue
+            widget_id = _parse_string_token(value_token)
+            continue
+        if value_token.kind != "NUMBER":
+            invalid_literals.add(keyword)
+            continue
+        following_index = _next_top_level_index(tokens, value_index)
+        if following_index is not None and tokens[following_index].kind != "WORD":
+            invalid_literals.add(keyword)
+            continue
+        value = int(value_token.text)
+        absolute_span = (line_offset + value_token.start, line_offset + value_token.end)
+        if keyword == "xpos":
+            xpos_value = value
+            xpos_span = absolute_span
+        else:
+            ypos_value = value
+            ypos_span = absolute_span
+
+    if keyword_counts["id"] != 1:
+        raise EditorSourceError(
+            "ID_LITERAL_REQUIRED",
+            "textbutton block must contain exactly one literal id",
+        )
+    if "id" in invalid_literals or widget_id is None:
+        raise EditorSourceError("ID_LITERAL_REQUIRED", "id must be a literal string")
+    if widget_id != expected_widget_id:
+        raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+    if keyword_counts["xpos"] == 0:
+        raise EditorSourceError(
+            "XPOS_LITERAL_REQUIRED",
+            "textbutton block must author a literal xpos",
+        )
+    if keyword_counts["xpos"] != 1:
+        raise EditorSourceError(
+            "XPOS_DUPLICATE",
+            "textbutton block must contain exactly one xpos",
+        )
+    if keyword_counts["ypos"] == 0:
+        raise EditorSourceError(
+            "YPOS_LITERAL_REQUIRED",
+            "textbutton block must author a literal ypos",
+        )
+    if keyword_counts["ypos"] != 1:
+        raise EditorSourceError(
+            "YPOS_DUPLICATE",
+            "textbutton block must contain exactly one ypos",
+        )
+    if "xpos" in invalid_literals or xpos_value is None or xpos_span is None:
+        raise EditorSourceError("XPOS_LITERAL_REQUIRED", "xpos must be a literal integer")
+    if "ypos" in invalid_literals or ypos_value is None or ypos_span is None:
+        raise EditorSourceError("YPOS_LITERAL_REQUIRED", "ypos must be a literal integer")
+
+    return TextbuttonStatement(
+        widget_id=widget_id,
+        xpos=xpos_value,
+        ypos=ypos_value,
+        xpos_span=xpos_span,
+        ypos_span=ypos_span,
+        form="block",
+        source_line=source_line,
     )
 
 
@@ -582,6 +753,8 @@ def _apply_integer_span_patch(
 
 
 def apply_textbutton_patch(source_bytes: bytes, statement: TextbuttonStatement, *, x: int, y: int) -> bytes:
+    # Block form spans are absolute in the full source; single-line spans are
+    # relative to the single line bytes passed by the coordinator.
     return _apply_integer_span_patch(
         source_bytes,
         xpos_span=statement.xpos_span,
@@ -639,7 +812,13 @@ def analyze_editable_statement(
     str,
     TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement | SliderStatement,
 ]:
-    """Dispatch to a dedicated analyzer. Not a merged grammar."""
+    """Dispatch to a dedicated analyzer. Not a merged grammar.
+
+    Multi-line textbutton blocks are handled by
+    :func:`analyze_textbutton_block_statement` via the coordinator (needs full
+    source text). A block header alone is rejected here with
+    ``MULTILINE_STATEMENT_REJECTED``.
+    """
     kind = peek_statement_kind(line)
     if kind == "textbutton":
         return kind, analyze_textbutton_statement(line, expected_widget_id=expected_widget_id)

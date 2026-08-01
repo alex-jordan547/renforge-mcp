@@ -63,7 +63,7 @@ Real screens are messier.
 
 | Form | Problem | Possible approach |
 |---|---|---|
-| Multi-line statement with a block | Position keywords may sit on any line of the block | Parse the statement span, not one line |
+| Multi-line statement with a block | Position keywords may sit on any line of the block | **Partially implemented (issue #37):** multi-line `textbutton` with `id`/`xpos`/`ypos` in the child block only; seven-step live proof green via `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1`. Other adapters remain single-line or header-only (`button`). |
 | `pos (x, y)` / `align` / `anchor` / `offset` | Different property, same intent | Normalise to a position model; write back in the form the author used |
 | Position from a **variable or expression** | Cannot be rewritten without changing semantics | **Stays locked.** Offer to show the computed value, never to overwrite the expression |
 | Element inside `hbox` / `vbox` / `grid` | Position is computed by the layout, not authored | **Stays locked** for direct move. A layout-aware edit is a different feature |
