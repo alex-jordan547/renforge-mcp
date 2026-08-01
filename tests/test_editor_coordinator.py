@@ -1274,6 +1274,219 @@ def test_analyze_vbar_block_header_stays_locked(tmp_path: Path) -> None:
         coordinator.close()
 
 
+def _make_slider_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
+    root = tmp_path / "project_slider"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    bar value StaticValue(50) range 100 style "slider" id "start_btn" '
+        "xpos 12 ypos 10 xsize 240 ysize 24\n",
+        encoding="utf-8",
+    )
+    return RenpyProject(root), source
+
+
+def test_analyze_and_commit_slider_statement_uses_source_kind(tmp_path: Path) -> None:
+    project, source = _make_slider_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["runtime_key"]["node_type"] = "bar"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-slider",
+            "object_id": "obj-independent-slider",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-slider")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            # Adapter identity is style-based; source keyword remains "bar".
+            assert result["source_key"]["statement_kind"] == "slider"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-slider")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            assert source.read_text(encoding="utf-8") == (
+                "screen test_screen:\n"
+                '    bar value StaticValue(50) range 100 style "slider" id "start_btn" '
+                "xpos 40 ypos 50 xsize 240 ysize 24\n"
+            )
+    finally:
+        coordinator.close()
+
+
+def test_analyze_slider_block_header_stays_locked(tmp_path: Path) -> None:
+    project, source = _make_slider_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    bar value StaticValue(50) range 100 style "slider" id "start_btn" '
+        "xpos 12 ypos 10 xsize 240 ysize 24:\n"
+        "        null\n",
+        encoding="utf-8",
+    )
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["runtime_key"]["node_type"] = "bar"
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-slider-block",
+            "object_id": "obj-independent-slider-block",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-slider-block")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["lock_reason"]["code"] == "MULTILINE_STATEMENT_REJECTED"
+    finally:
+        coordinator.close()
+
+
+def test_analyze_slider_locks_computed_style_container_without_runtime_type_inference(
+    tmp_path: Path,
+) -> None:
+    project, source = _make_slider_project(tmp_path)
+    cases = (
+        (
+            '    bar value StaticValue(50) range 100 style "slider" id "start_btn" '
+            "xpos base_x ypos 10\n",
+            "XPOS_LITERAL_REQUIRED",
+            "slider",
+            False,
+            [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["script.rpy", 1],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Bar",
+                    "source_location": ["script.rpy", 2],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        ),
+        (
+            '    bar value StaticValue(50) range 100 style "slider" id "start_btn"\n',
+            "BAR_STYLE_POSITION_UNSUPPORTED",
+            "slider",
+            False,
+            [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["script.rpy", 1],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Bar",
+                    "source_location": ["script.rpy", 2],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        ),
+        (
+            '    bar value StaticValue(50) range 100 style "slider" id "start_btn" '
+            "xpos 12 ypos 10\n",
+            "CONTAINER_POSITION_UNSUPPORTED",
+            "slider",
+            True,
+            [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["script.rpy", 1],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "VBox",
+                    "source_location": ["script.rpy", 2],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                    "layout": "vertical",
+                },
+                {
+                    "index": 2,
+                    "type": "Bar",
+                    "source_location": ["script.rpy", 3],
+                    "screen_owner": "game",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        ),
+    )
+    sdk = _make_sdk(tmp_path)
+    for index, (line, expected_code, expected_kind, source_key_present, ancestry) in enumerate(
+        cases
+    ):
+        # Source keyword is always "bar"; adapter kind is style-specialized "slider".
+        assert peek_statement_kind(line) == "bar"
+        source.write_text("screen test_screen:\n" + line, encoding="utf-8")
+        observation = _base_observation(script_generation=30 + index)
+        observation["runtime_key"]["ancestry"] = ancestry
+        observation["runtime_key"]["node_type"] = "bar"
+        probe = _Probe(
+            observe_reply={
+                **json.loads(json.dumps(observation)),
+                "frame_id": f"independent-frame-slider-lock-{index}",
+                "object_id": f"obj-independent-slider-lock-{index}",
+            }
+        )
+        coordinator = EditorCoordinator(project, sdk)
+        coordinator.attach_runtime_probe(probe)
+        endpoint = coordinator.start()
+        try:
+            with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+                auth = _auth(sock, endpoint)
+                reply = _analyze(sock, auth, observation, request_id=f"an-slider-lock-{index}")
+                assert reply["ok"] is True
+                assert reply["result"]["capabilities"] == {"move": False}
+                assert reply["result"]["lock_reason"]["code"] == expected_code
+                source_key = reply["result"].get("source_key")
+                if source_key_present:
+                    assert source_key is not None
+                    assert source_key["statement_kind"] == expected_kind
+                else:
+                    assert source_key is None
+        finally:
+            coordinator.close()
+
 
 def test_analyze_bar_locks_computed_style_container_without_runtime_type_inference(
     tmp_path: Path,

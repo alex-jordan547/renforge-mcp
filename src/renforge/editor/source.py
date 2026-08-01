@@ -58,9 +58,22 @@ class VbarStatement:
     ypos_span: tuple[int, int]
 
 
+@dataclass(frozen=True)
+class SliderStatement:
+    widget_id: str
+    xpos: int
+    ypos: int
+    xpos_span: tuple[int, int]
+    ypos_span: tuple[int, int]
+
+
 _StatementT = TypeVar(
     "_StatementT",
-    bound=TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement,
+    bound=TextbuttonStatement
+    | ImagebuttonStatement
+    | BarStatement
+    | VbarStatement
+    | SliderStatement,
 )
 
 
@@ -492,6 +505,53 @@ def analyze_vbar_statement(line: str, *, expected_widget_id: str) -> VbarStateme
     )
 
 
+def is_slider_style_bar_line(line: str) -> bool:
+    """True when the line is a single-line ``bar`` with literal ``style "slider"``.
+
+    Ren'Py 8.5.3 has no screen-language ``slider`` keyword (measured). Games author
+    sliders as ``bar`` statements that select the ``slider`` style. Adapter identity
+    is therefore ``bar`` + literal style ``"slider"``, not a first-word keyword.
+    """
+    try:
+        statement_text = _statement_text(line)
+    except EditorSourceError:
+        return False
+    tokens = _lex_single_line(statement_text)
+    top_level = [token for token in tokens if token.depth == 0]
+    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "bar":
+        return False
+    if any(token.kind == "SYMBOL" and token.text == ":" for token in top_level):
+        return False
+    style_names: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "style":
+            continue
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None:
+            continue
+        value_token = tokens[value_index]
+        if value_token.kind != "STRING":
+            continue
+        try:
+            style_names.append(_parse_string_token(value_token))
+        except EditorSourceError:
+            continue
+    return len(style_names) == 1 and style_names[0] == "slider"
+
+
+def analyze_slider_statement(line: str, *, expected_widget_id: str) -> SliderStatement:
+    """Analyze a single-line slider-styled bar (source keyword ``bar``, style ``"slider"``)."""
+    if not is_slider_style_bar_line(line):
+        raise _bar_like_error("slider", "STATEMENT_KIND_MISMATCH")
+    return _analyze_bar_like_statement(
+        line,
+        expected_widget_id=expected_widget_id,
+        expected_source_kind="bar",
+        statement_cls=SliderStatement,
+        human_kind="slider",
+    )
+
+
 def _apply_integer_span_patch(
     source_bytes: bytes,
     *,
@@ -554,9 +614,22 @@ def apply_vbar_patch(source_bytes: bytes, statement: VbarStatement, *, x: int, y
     )
 
 
+def apply_slider_patch(source_bytes: bytes, statement: SliderStatement, *, x: int, y: int) -> bytes:
+    return _apply_integer_span_patch(
+        source_bytes,
+        xpos_span=statement.xpos_span,
+        ypos_span=statement.ypos_span,
+        x=x,
+        y=y,
+    )
+
+
 def analyze_editable_statement(
     line: str, *, expected_widget_id: str
-) -> tuple[str, TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement]:
+) -> tuple[
+    str,
+    TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement | SliderStatement,
+]:
     """Dispatch to a dedicated analyzer. Not a merged grammar."""
     kind = peek_statement_kind(line)
     if kind == "textbutton":
@@ -564,6 +637,9 @@ def analyze_editable_statement(
     if kind == "imagebutton":
         return kind, analyze_imagebutton_statement(line, expected_widget_id=expected_widget_id)
     if kind == "bar":
+        # Slider is not a Ren'Py screen-language keyword; route bar+style "slider".
+        if is_slider_style_bar_line(line):
+            return "slider", analyze_slider_statement(line, expected_widget_id=expected_widget_id)
         return kind, analyze_bar_statement(line, expected_widget_id=expected_widget_id)
     if kind == "vbar":
         return kind, analyze_vbar_statement(line, expected_widget_id=expected_widget_id)
@@ -578,7 +654,11 @@ def analyze_editable_statement(
 def apply_editable_statement_patch(
     source_bytes: bytes,
     kind: str,
-    statement: TextbuttonStatement | ImagebuttonStatement | BarStatement | VbarStatement,
+    statement: TextbuttonStatement
+    | ImagebuttonStatement
+    | BarStatement
+    | VbarStatement
+    | SliderStatement,
     *,
     x: int,
     y: int,
@@ -599,6 +679,10 @@ def apply_editable_statement_patch(
         if not isinstance(statement, VbarStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match vbar kind")
         return apply_vbar_patch(source_bytes, statement, x=x, y=y)
+    if kind == "slider":
+        if not isinstance(statement, SliderStatement):
+            raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match slider kind")
+        return apply_slider_patch(source_bytes, statement, x=x, y=y)
     raise EditorSourceError("STATEMENT_KIND_MISMATCH", f"unsupported statement kind: {kind!r}")
 
 

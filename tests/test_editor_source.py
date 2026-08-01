@@ -7,21 +7,25 @@ import pytest
 from renforge.editor.paths import EditorPathError, resolve_game_path
 from renforge.editor.source import (
     BarStatement,
-    VbarStatement,
     ButtonStatement,
     EditorSourceError,
+    SliderStatement,
+    VbarStatement,
     analyze_bar_statement,
-    analyze_vbar_statement,
     analyze_button_statement,
     analyze_editable_statement,
     analyze_imagebutton_statement,
+    analyze_slider_statement,
     analyze_textbutton_statement,
+    analyze_vbar_statement,
     apply_bar_patch,
-    apply_vbar_patch,
     apply_button_patch,
     apply_editable_statement_patch,
     apply_imagebutton_patch,
+    apply_slider_patch,
     apply_textbutton_patch,
+    apply_vbar_patch,
+    is_slider_style_bar_line,
     peek_statement_kind,
 )
 
@@ -406,6 +410,40 @@ def test_analyze_editable_statement_routes_kinds() -> None:
         )
     assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
 
+    slider_line = (
+        '    bar value StaticValue(50) range 100 style "slider" id "sl" '
+        "xpos 1 ypos 2 xsize 40 ysize 10\n"
+    )
+    kind_slider, stmt_slider = analyze_editable_statement(
+        slider_line,
+        expected_widget_id="sl",
+    )
+    assert kind_slider == "slider"
+    assert isinstance(stmt_slider, SliderStatement)
+    patched_slider = apply_editable_statement_patch(
+        slider_line.encode("utf-8"),
+        kind_slider,
+        stmt_slider,
+        x=11,
+        y=22,
+    ).decode("utf-8")
+    assert patched_slider == (
+        '    bar value StaticValue(50) range 100 style "slider" id "sl" '
+        "xpos 11 ypos 22 xsize 40 ysize 10\n"
+    )
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_editable_statement_patch(
+            slider_line.encode("utf-8"),
+            "slider",
+            analyze_bar_statement(
+                '    bar value StaticValue(50) range 100 id "b" xpos 1 ypos 2 xsize 10 ysize 40\n',
+                expected_widget_id="b",
+            ),
+            x=1,
+            y=2,
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+
 
 def test_analyze_editable_statement_reports_missing_statement_kind() -> None:
     with pytest.raises(EditorSourceError, match="does not contain a supported statement kind") as excinfo:
@@ -592,6 +630,150 @@ def test_analyze_vbar_statement_rejects_id_and_coordinate_problems() -> None:
         analyze_vbar_statement(
             '    vbar value StaticValue(1) range 10 id "vb" xpos 1 ypos 2 ypos 3\n',
             expected_widget_id="vb",
+        )
+    assert excinfo.value.code == "YPOS_DUPLICATE"
+
+
+def test_analyze_slider_statement_accepts_single_line_and_preserves_other_bytes() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 style "slider" id "slider_target" '
+        "xpos -10 ypos -20 xsize 240 ysize 24 # keep\n"
+    )
+    assert is_slider_style_bar_line(line)
+    parsed = analyze_slider_statement(line, expected_widget_id="slider_target")
+    assert isinstance(parsed, SliderStatement)
+    assert (parsed.xpos, parsed.ypos) == (-10, -20)
+
+    patched = apply_slider_patch(line.encode("utf-8"), parsed, x=30, y=40).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 style "slider" id "slider_target" '
+        "xpos 30 ypos 40 xsize 240 ysize 24 # keep\n"
+    )
+
+
+def test_analyze_slider_dispatch_uses_bar_plus_style_slider() -> None:
+    # Ren'Py has no screen-language "slider" keyword; peeks as bar.
+    assert (
+        peek_statement_kind(
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 ypos 2\n'
+        )
+        == "bar"
+    )
+    assert is_slider_style_bar_line(
+        '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 ypos 2\n'
+    )
+    assert not is_slider_style_bar_line(
+        '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2\n'
+    )
+    assert not is_slider_style_bar_line(
+        '    bar value StaticValue(1) range 10 style "bar" id "b" xpos 1 ypos 2\n'
+    )
+    # Bare keyword "slider" is not a supported statement form.
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    slider value StaticValue(1) range 10 id "sl" xpos 1 ypos 2\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+    # bar without style "slider" is not the slider adapter.
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2\n',
+            expected_widget_id="b",
+        )
+    assert excinfo.value.code == "STATEMENT_KIND_MISMATCH"
+    # Dispatch routes bar+style "slider" to dedicated slider path.
+    kind, stmt = analyze_editable_statement(
+        '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 ypos 2\n',
+        expected_widget_id="sl",
+    )
+    assert kind == "slider"
+    assert isinstance(stmt, SliderStatement)
+    # Plain bar stays on the bar path.
+    kind_bar, stmt_bar = analyze_editable_statement(
+        '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2\n',
+        expected_widget_id="b",
+    )
+    assert kind_bar == "bar"
+    assert isinstance(stmt_bar, BarStatement)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_code"),
+    (
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos base_x ypos 10\n',
+            "XPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 10 ypos base_y\n',
+            "YPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl"\n',
+            "BAR_STYLE_POSITION_UNSUPPORTED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xsize 240 ysize 24\n',
+            "BAR_STYLE_POSITION_UNSUPPORTED",
+        ),
+        (
+            # Block form is rejected before the slider-style identity check.
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 ypos 2:\n',
+            "STATEMENT_KIND_MISMATCH",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 100-20 ypos 10\n',
+            "XPOS_LITERAL_REQUIRED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 10 ypos 10+4\n',
+            "YPOS_LITERAL_REQUIRED",
+        ),
+    ),
+)
+def test_analyze_slider_statement_reuses_proven_position_lock_contract(
+    line: str,
+    expected_code: str,
+) -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(line, expected_widget_id="sl")
+    assert excinfo.value.code == expected_code
+
+
+def test_analyze_slider_statement_rejects_id_and_coordinate_problems() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" xpos 1 ypos 2\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" id "a" id "sl" xpos 1 ypos 2\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "ID_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" id "other" xpos 1 ypos 2\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "ID_MISMATCH"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 xpos 2 ypos 3\n',
+            expected_widget_id="sl",
+        )
+    assert excinfo.value.code == "XPOS_DUPLICATE"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_slider_statement(
+            '    bar value StaticValue(1) range 10 style "slider" id "sl" xpos 1 ypos 2 ypos 3\n',
+            expected_widget_id="sl",
         )
     assert excinfo.value.code == "YPOS_DUPLICATE"
 

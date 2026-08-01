@@ -20,8 +20,8 @@ not a day of work and an analogy.
 | `button` (explicit block form) | Low | Focusable by construction; the child block may complicate the source-line contract |
 | `bar` (single-line literal position) | Medium | Focusable when adjustable; often style/container-positioned. **Implemented** for the minimal single-line literal form; seven-step live proof green via `RENFORGE_BAR_LIVE=1` on Ren'Py 8.5.3 (issue #34). Runtime class `Bar` is shared with `vbar` — source keyword decides the adapter. |
 | `vbar` (single-line literal position) | Medium | Same runtime `Bar` class as `bar`; dedicated `VbarStatement` analyzer/patcher dispatches from the source keyword. **Implemented** for one physical line with one literal `id` and literal integer `xpos`/`ypos`; seven-step live proof green on Ren'Py 8.5.3 via `RENFORGE_VBAR_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_vbar_live.py` (issue #35). |
-| `slider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Pending** — no live proof; not claimed. |
-| `vslider` | Medium | May also surface as runtime `Bar`; positioning often style/container-driven. **Pending** — no live proof; not claimed. |
+| `slider` (as `bar` + `style "slider"`) | Medium | **Implemented** (issue #36). Measured: Ren'Py 8.5.3 has no screen-language `slider` keyword; sliders are authored as `bar` with literal `style "slider"`. Dedicated `SliderStatement` path + seven-step live proof green via `RENFORGE_SLIDER_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_slider_live.py`. |
+| `vslider` | Medium | May surface as runtime `Bar` / style `"vslider"`; positioning often style/container-driven. **Pending** — no live proof; not claimed. |
 
 The supported vbar source form is exactly one physical line, for example:
 
@@ -38,6 +38,15 @@ position (`BAR_STYLE_POSITION_UNSUPPORTED`), missing direct position (`BAR_POSIT
 container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), duplicate instances (`SYNTHETIC_WIDGET_ID`),
 unknown ancestry (`UNKNOWN_ANCESTRY_TYPE`), and multi-line statements (`MULTILINE_STATEMENT_REJECTED`).
 These remain selectable but locked; all other vbar forms remain pending.
+
+The supported slider source form is a single physical `bar` line with literal `style "slider"`:
+
+```renpy
+bar value VariableValue("some_var", range=100) style "slider" id "slider_target" xpos 200 ypos 180 xsize 240 ysize 24
+```
+
+`statement_kind` is `"slider"` for that specialized form; the first source keyword remains `bar`. Live
+proof command: `RENFORGE_SLIDER_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_slider_live.py`.
 **Exit criterion per adapter:** its own 7-step live proof — resolve → preview → patch → reload →
 pixel agreement → rebinding → byte-identical undo — with every position measured from `focus_list`.
 
