@@ -10,12 +10,14 @@ from renforge.editor.source import (
     ButtonStatement,
     EditorSourceError,
     SliderStatement,
+    TextbuttonStatement,
     VbarStatement,
     analyze_bar_statement,
     analyze_button_statement,
     analyze_editable_statement,
     analyze_imagebutton_statement,
     analyze_slider_statement,
+    analyze_textbutton_block_statement,
     analyze_textbutton_statement,
     analyze_vbar_statement,
     apply_bar_patch,
@@ -26,6 +28,7 @@ from renforge.editor.source import (
     apply_textbutton_patch,
     apply_vbar_patch,
     is_slider_style_bar_line,
+    is_textbutton_block_header,
     peek_statement_kind,
 )
 
@@ -133,6 +136,83 @@ def test_analyze_rejects_compound_numeric_position_expressions() -> None:
             expected_widget_id="icon",
         )
     assert excinfo.value.code == "YPOS_LITERAL_REQUIRED"
+
+
+def test_analyze_textbutton_block_preserves_bytes_outside_coordinate_spans() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    textbutton "MOVE ME":\n'
+        '        id "ml_target"\n'
+        "        xpos 180\n"
+        "        ypos 210\n"
+        "        action NullAction()\n"
+        '        # keep comment\n'
+    )
+    assert is_textbutton_block_header('    textbutton "MOVE ME":\n')
+    parsed = analyze_textbutton_block_statement(
+        source,
+        source_line=2,
+        expected_widget_id="ml_target",
+    )
+    assert isinstance(parsed, TextbuttonStatement)
+    assert parsed.form == "block"
+    assert parsed.source_line == 2
+    assert (parsed.xpos, parsed.ypos) == (180, 210)
+    patched = apply_textbutton_patch(source.encode("utf-8"), parsed, x=240, y=196).decode("utf-8")
+    assert patched == (
+        "screen test_screen:\n"
+        '    textbutton "MOVE ME":\n'
+        '        id "ml_target"\n'
+        "        xpos 240\n"
+        "        ypos 196\n"
+        "        action NullAction()\n"
+        '        # keep comment\n'
+    )
+
+
+def test_analyze_textbutton_block_rejects_header_positions_and_expressions() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_block_statement(
+            "screen s:\n"
+            '    textbutton "X" id "ml" xpos 1 ypos 2:\n'
+            "        action NullAction()\n",
+            source_line=2,
+            expected_widget_id="ml",
+        )
+    assert excinfo.value.code == "POSITION_ON_HEADER_UNSUPPORTED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_block_statement(
+            "screen s:\n"
+            '    textbutton "X":\n'
+            '        id "ml"\n'
+            "        xpos base_x\n"
+            "        ypos 10\n"
+            "        action NullAction()\n",
+            source_line=2,
+            expected_widget_id="ml",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_block_statement(
+            "screen s:\n"
+            '    textbutton "X":\n'
+            '        id "ml"\n'
+            "        xpos 10+4\n"
+            "        ypos 10\n"
+            "        action NullAction()\n",
+            source_line=2,
+            expected_widget_id="ml",
+        )
+    assert excinfo.value.code == "XPOS_LITERAL_REQUIRED"
+
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "MOVE ME":\n',
+            expected_widget_id="ml",
+        )
+    assert excinfo.value.code == "MULTILINE_STATEMENT_REJECTED"
 
 
 def test_analyze_button_statement_rejects_compound_numeric_position_expressions() -> None:

@@ -33,7 +33,7 @@ requires it — none is arbitrary.
 |---|---|---|
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
-| 3 | A proven adapter statement (`textbutton`, `imagebutton`, single-line `bar`/`vbar`, slider-styled `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; the button adapter preserves child block bytes |
+| 3 | A proven adapter statement (`textbutton` single-line or multi-line block, `imagebutton`, single-line `bar`/`vbar`, slider-styled `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; block forms preserve every non-position byte |
 | 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
@@ -55,7 +55,7 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 
 | Adapter | Selection | Write chain | Status |
 |---|---|---|---|
-| `textbutton` | Spike C `pass` | Spike D `pass` | **Shipped in V1** |
+| `textbutton` | Spike C `pass` | Spike D + multi-line block form (issue #37) | **Shipped in V1**; multi-line block live via `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1` |
 | `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path + seven-step live proof | **Implemented** (live proof green via `RENFORGE_IMAGEBUTTON_LIVE=1`) |
 | `button` | focusable by construction | Seven-step live proof (explicit block) | **Shipped in V1** |
 | `bar` | focusable when adjustable (measured on Ren'Py 8.5.3) | dedicated single-line analyzer + seven-step live proof | **Implemented** (live proof green via `RENFORGE_BAR_LIVE=1`) |
@@ -66,6 +66,29 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 `imagebutton` has a dedicated single-line adapter (issue #32) rather than a textbutton allowlist widen.
 Host unit/coordinator coverage lands in default CI; the seven-step live proof is opt-in in CI but was
 executed green locally against Ren'Py 8.5.3 (`RENFORGE_IMAGEBUTTON_LIVE=1 pytest tests/test_editor_imagebutton_live.py`).
+
+### Multi-line textbutton blocks (issue #37)
+
+In addition to the single-line form, V1 supports one multi-line shape for the already-proven
+`textbutton` adapter — position tokens live in the child block, not on the header:
+
+```renpy
+textbutton "MOVE ME":
+    id "ml_tb_target"
+    xpos 200
+    ypos 180
+    action NullAction()
+```
+
+Requirements: header ends with `:`; header carries no `id`/`xpos`/`ypos`; exactly one literal string
+`id` and one literal integer `xpos`/`ypos` each among direct children at the block indent; patch
+replaces only those two integer tokens (absolute spans in the full file); every other block byte is
+preserved. Computed coordinates, container ancestry, ambiguous `use` instances, and unproven ancestry
+remain locked with the measured codes (`XPOS_LITERAL_REQUIRED`, `CONTAINER_POSITION_UNSUPPORTED`,
+`SYNTHETIC_WIDGET_ID`, `UNKNOWN_ANCESTRY_TYPE`, …).
+
+Live proof: `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_multiline_textbutton_live.py`
+against Ren'Py **8.5.3**.
 
 The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:` headers. Computed
 coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime

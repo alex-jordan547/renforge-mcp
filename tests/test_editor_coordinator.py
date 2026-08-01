@@ -1582,3 +1582,95 @@ def test_analyze_bar_locks_computed_style_container_without_runtime_type_inferen
                     assert source_key is None
         finally:
             coordinator.close()
+
+def _make_textbutton_block_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
+    root = tmp_path / "project_tb_block"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play":\n'
+        '        id "start_btn"\n'
+        "        xpos 12\n"
+        "        ypos 10\n"
+        "        action NullAction()\n",
+        encoding="utf-8",
+    )
+    return RenpyProject(root), source
+
+
+def test_analyze_and_commit_textbutton_block_preserves_action_bytes(tmp_path: Path) -> None:
+    project, source = _make_textbutton_block_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    # Runtime source_location points at the block header (line 2).
+    observation["runtime_key"]["source_location"] = ["script.rpy", 2]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-tb-block",
+            "object_id": "obj-independent-tb-block",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-tb-block")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True}
+            assert result["source_key"]["statement_kind"] == "textbutton"
+            assert result["original_position"] == [12, 10]
+
+            committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-tb-block")
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            assert source.read_text(encoding="utf-8") == (
+                "screen test_screen:\n"
+                '    textbutton "Play":\n'
+                '        id "start_btn"\n'
+                "        xpos 40\n"
+                "        ypos 50\n"
+                "        action NullAction()\n"
+            )
+    finally:
+        coordinator.close()
+
+
+def test_analyze_textbutton_block_computed_position_stays_locked(tmp_path: Path) -> None:
+    project, source = _make_textbutton_block_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play":\n'
+        '        id "start_btn"\n'
+        "        xpos base_x\n"
+        "        ypos 10\n"
+        "        action NullAction()\n",
+        encoding="utf-8",
+    )
+    observation = _base_observation(script_generation=13)
+    observation["runtime_key"]["source_location"] = ["script.rpy", 2]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-tb-block-computed",
+            "object_id": "obj-independent-tb-block-computed",
+        },
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-tb-block-computed")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["lock_reason"]["code"] == "XPOS_LITERAL_REQUIRED"
+    finally:
+        coordinator.close()
