@@ -291,6 +291,18 @@ def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path)
 
             cases = [
                 (
+                    "layout-container",
+                    lambda o: o["runtime_key"]["ancestry"].insert(
+                        1,
+                        {
+                            **o["runtime_key"]["ancestry"][1],
+                            "type": "MultiBox",
+                            "layout": "vertical",
+                        },
+                    ),
+                    "CONTAINER_POSITION_UNSUPPORTED",
+                ),
+                (
                     "unknown-ancestor-type",
                     lambda o: o["runtime_key"]["ancestry"].__setitem__(
                         1,
@@ -391,6 +403,49 @@ def test_analyze_target_normalizes_game_prefixed_source_location(tmp_path: Path)
             assert reply["result"]["original_position"] == [12, 10]
             for ancestor in source_key["ancestry"]:
                 assert ancestor["source_location"][0] == "script.rpy"
+    finally:
+        coordinator.close()
+
+
+def test_button_statement_dispatches_through_analyze_and_commit(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    button id "button_target" xpos 12 ypos 10:\n'
+        '        text "Child content" xpos 7\n'
+        "        action NullAction()\n",
+        encoding="utf-8",
+    )
+    observation = _base_observation()
+    observation["runtime_key"]["widget_id"] = "button_target"
+    observation["rect"] = [12, 10, 120, 40]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-button-frame",
+            "object_id": "obj-independent-button",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-button")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"] is None
+            assert analysis["result"]["original_position"] == [12, 10]
+            assert analysis["result"]["source_key"]["statement_kind"] == "button"
+
+            commit = _commit(sock, auth, analysis, x=333, y=444, request_id="co-button")
+            assert commit["ok"] is True
+            assert source.read_text(encoding="utf-8") == (
+                "screen test_screen:\n"
+                '    button id "button_target" xpos 333 ypos 444:\n'
+                '        text "Child content" xpos 7\n'
+                "        action NullAction()\n"
+            )
     finally:
         coordinator.close()
 

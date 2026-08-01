@@ -52,11 +52,14 @@ label stay_home:
 label crossroads:
     scene bg forest with dissolve
     w "Two ways up: through the deep woods, or along the ridge."
+    show screen renforge_crossroads_controls
     menu:
         "Cut through the deep woods.":
+            hide screen renforge_crossroads_controls
             $ renforge_choice = "forest"
             jump forest_path
         "Climb along the ridge.":
+            hide screen renforge_crossroads_controls
             $ renforge_choice = "ridge"
             jump ridge_path
 
@@ -73,19 +76,24 @@ label forest_path:
 
 label hidden_shrine:
     scene bg shrine with dissolve
+    show screen renforge_hidden_shrine_controls
     narrator "A forgotten shrine, warm as a heartbeat. The flame in your lantern turns silver."
     $ lantern = True
     w "The old fire remembers you."
+    hide screen renforge_hidden_shrine_controls
     jump summit
 
 label cave_mouth:
     scene bg cave with dissolve
+    show screen renforge_cave_mouth_controls
     narrator "The trail ends at a yawning cave. Cold air breathes out of the dark."
     menu:
         "Enter the cave.":
+            hide screen renforge_cave_mouth_controls
             $ courage += 1
             jump cave_depths
         "Turn back to the crossroads.":
+            hide screen renforge_cave_mouth_controls
             jump crossroads
 
 label cave_depths:
@@ -113,10 +121,13 @@ label wisp_advice:
 
 label summit:
     scene bg summit with dissolve
+    show screen renforge_summit_controls
     narrator "The beacon tower stands empty, its great bowl cold."
     if lantern:
+        hide screen renforge_summit_controls
         jump ending_light
     else:
+        hide screen renforge_summit_controls
         jump ending_ash
 
 label ending_light:

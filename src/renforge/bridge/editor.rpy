@@ -133,6 +133,7 @@ screen _renforge_editor_overlay():
                     textbutton "Exit":
                         id "rf_exit"
                         action Function(_renforge_editor_consume, _renforge_editor_exit)
+                        sensitive not _renforge_editor_state().save_in_progress
                         text_color "#f4f4f5"
                     textbutton "Undo":
                         id "rf_undo"
@@ -377,11 +378,6 @@ init 1100 python:
             return {"ok": False, "error": "editor session unavailable"}
         state.active = True
         state.selected_lock_reason = None
-        if (
-            state.editor_session_screen is not None
-            and renpy.get_screen(state.editor_session_screen) is None
-        ):
-            renpy.show_screen(state.editor_session_screen, _layer="screens")
         renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
         renpy.restart_interaction()
         return {"ok": True}
@@ -430,7 +426,7 @@ init 1100 python:
 
 
     def _renforge_editor_lock_code(lock_reason):
-        if isinstance(lock_reason, dict):
+        if isinstance(lock_reason, builtins.dict):
             return str(lock_reason.get("code") or "")
         if lock_reason is None:
             return None
@@ -820,6 +816,11 @@ init 1100 python:
                 or getattr(node, "_renforge_editor_owner", None) == _EDITOR_OWNER
                 or getattr(named_widget, "_renforge_editor_owner", None) == _EDITOR_OWNER
             )
+            style = getattr(node, "style", None)
+            layout = getattr(style, "box_layout", None) if style is not None else None
+            if layout is None:
+                layout = getattr(node, "default_layout", None)
+            layout_name = layout if isinstance(layout, builtins.str) else None
             ancestry.append(
                 {
                     "index": int(index),
@@ -828,6 +829,7 @@ init 1100 python:
                     "screen_owner": _EDITOR_OWNER if editor_owned else "game",
                     "crop_state": crop_state,
                     "editor_owned": editor_owned,
+                    "layout": layout_name,
                 }
             )
         key = {
@@ -1785,7 +1787,45 @@ init 1100 python:
 
     def _renforge_editor_exit():
         state = _renforge_editor_state()
+        if state.save_in_progress:
+            return {"ok": False, "error": "SAVE_IN_PROGRESS", "active": True}
+        dirty_screens = []
+        for target in state.targets.values():
+            if not isinstance(target, builtins.dict) or not target.get("dirty"):
+                continue
+            target["dirty"] = False
+            screen = target.get("screen")
+            if (
+                isinstance(screen, str)
+                and screen not in dirty_screens
+                and renpy.get_screen(screen) is not None
+            ):
+                dirty_screens.append(screen)
+        for screen in dirty_screens:
+            renpy.show_screen(screen, _layer="screens")
         state.active = False
+        state.screen = None
+        state.editor_session_screen = None
+        state.selected_runtime_key = None
+        state.selected_widget_id = None
+        state.selected_screen = None
+        state.selected_target_key = None
+        state.selected_lock_reason = None
+        state.selected_original_position = None
+        state.selected_source_position = None
+        state.selected_rect = None
+        state.selected_analysis_pending = False
+        state.preview_position = None
+        state.current_analysis_id = None
+        state.current_source_key = None
+        state.pending_analysis_key = None
+        state.history = []
+        state.history_entries = []
+        state.history_index = -1
+        state.targets = {}
+        state.save_enabled = False
+        state.save_button_state = "idle"
+        state.label_text = "No selection"
         state.drag_active = False
         state.snap_anchor_x = None
         state.snap_anchor_y = None
@@ -2359,6 +2399,12 @@ init 1100 python:
             "up": (0, -1),
             "down": (0, 1),
         }
+        if key_name == "escape":
+            exit_reply = _renforge_editor_exit()
+            state.last_event_trace = [{"key": key_name, "shift": shift}]
+            if not exit_reply.get("ok", False):
+                return exit_reply
+            return {"ok": True, "repeat": repeat, "shift": shift, "active": state.active}
         traces = []
         for _index in range(repeat):
             if key_name in nudge_map:

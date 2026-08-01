@@ -33,7 +33,7 @@ requires it — none is arbitrary.
 |---|---|---|
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
-| 3 | Single-line statement from the proven adapter allowlist (`textbutton`, `imagebutton`) with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only those two integer spans |
+| 3 | A proven adapter statement (`textbutton`, `imagebutton`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; the button adapter preserves child block bytes |
 | 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
@@ -57,12 +57,16 @@ V1 ships an explicit allowlist, extended one adapter at a time, each backed by a
 |---|---|---|---|
 | `textbutton` | Spike C `pass` | Spike D `pass` | **Shipped in V1** |
 | `imagebutton` | Spike C `pass` (focusable) | dedicated analyzer + coordinator path + seven-step live proof | **Implemented** (live proof green via `RENFORGE_IMAGEBUTTON_LIVE=1`) |
-| `button` | focusable by construction | not exercised | Blocked until proven |
+| `button` | focusable by construction | Seven-step live proof (explicit block) | **Shipped in V1** |
 | `text`, `add`, `frame` | **not selectable** | Spike B proved write on a literal `text`, but by key, not by click | Out of V1 |
 
 `imagebutton` has a dedicated single-line adapter (issue #32) rather than a textbutton allowlist widen.
 Host unit/coordinator coverage lands in default CI; the seven-step live proof is opt-in in CI but was
 executed green locally against Ren'Py 8.5.3 (`RENFORGE_IMAGEBUTTON_LIVE=1 pytest tests/test_editor_imagebutton_live.py`).
+
+The `button` adapter is intentionally limited to `button id "..." xpos N ypos N:` headers. Computed
+coordinates, direct child `xpos`/`ypos`, layout-container ancestry, and ambiguous or unproven runtime
+instances remain selectable but locked with an exact reason.
 
 ## Proven mechanisms (do not redesign)
 
