@@ -18,9 +18,12 @@ host coordinator may validate and atomically publish `.rpy` changes.
 It is **not** VizBug for Ren'Py. The original idea was "move any element". The spikes proved that is
 not reachable today, and V1 does not pretend otherwise:
 
-- Non-focusable elements (plain `text`, `add`, decorative `frame`) cannot be **selected** — they are
-  absent from Ren'Py's `focus_list`. The workaround (`quad ∩ sentinel mask`) is `untested`.
-- There is no general visual coverage oracle. Selection is AABB-level (Spike A: `coverage_oracle: blocked`).
+- Non-focusable elements (plain `text`, `add`, decorative `frame`) cannot be **selected in V1** — they
+  are absent from Ren'Py's `focus_list`. Issue **#43** measured `quad ∩ observed paint mask` as a
+  viable Stage-3 selection mechanism (`hit_test_workaround: pass`); it is **not** part of V1 editable
+  scope until a product selection UX is proven.
+- There is no general visual coverage oracle. V1 selection remains focus_list + AABB-level geometry
+  (Spike A: `coverage_oracle: blocked`).
 - Per-pixel alpha hit-testing is out of scope.
 - No resize, no rotation, no style editing. V1 moves things.
 

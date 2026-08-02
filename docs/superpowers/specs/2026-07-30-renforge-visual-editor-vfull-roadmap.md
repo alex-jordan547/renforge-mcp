@@ -119,24 +119,28 @@ where they are on screen. Spike A recorded the state precisely:
 
 ```text
 coverage_oracle:      blocked     (no general visual coverage; AABB-level only)
-hit_test_workaround:  untested    (quad ∩ sentinel mask — viable in principle, never exercised)
+hit_test_workaround:  pass        (issue #43 — quad ∩ observed colour-mask; see spike result)
 ```
 
-**The candidate mechanism** — render the displayable to an offscreen surface with a sentinel colour,
-intersect the transformed quad with that mask, and use the intersection as the hit region. Never
-exercised. Unknowns worth naming before anyone starts:
+**Issue #43 (2026-08-02, Codex-hardened)** exercised
+`point ∈ runtime_transformed_quad ∧ point ∈ candidate_isolated_paint_mask` on Ren'Py **8.5.3**.
+Criteria locked before measurement
+(`docs/superpowers/spikes/2026-08-02-non-focusable-hit-sentinel-criteria.md`). Result:
+`docs/superpowers/spikes/2026-08-02-non-focusable-hit-sentinel-result.md`.
 
-- Cost per frame with many candidates, and whether it can be restricted to the hovered region
-- Whether the transform chain (rotation, zoom, nested `Transform`) can be reproduced faithfully
-- Interaction with `viewport` scroll offsets
-- Whether a sentinel render is even reachable for every displayable type
+Measured:
 
-**This deserves its own spike with falsifiability rules written before any code**, and an explicit
-"blocked" outcome is a perfectly good result. Do not start it by building a UI.
+- **Isolation masks** are candidate-only (siblings parked off-screen), not full-scene colour GT.
+- **Rotated quads** come from Ren'Py `Transform.forward` (fixture uses `add Transform(Solid(...), rotate=25)`), not authored degrees.
+- AABB alone **false-positives** on a rotated corner; COMP rejects that corner via the isolation mask.
+- COMP agreement **1.0**; capability evaluation is strict (no soft `pass_with_*` reasons).
+
+Still not V1: no production selection UI, no write adapters for non-focusables, per-pixel alpha still
+out of scope.
 
 **Note on Spike B:** it proved the write chain on a literal `text` — but that target was designated by
-key, not selected by clicking. Spike B and Spike C do not compose into "text elements work". The write
-side for `text` is proven; the selection side is not.
+key, not selected by clicking. With #43 the selection *mechanism* for non-focusables is no longer
+untested; product selection UX remains Stage 3 work.
 
 ---
 
