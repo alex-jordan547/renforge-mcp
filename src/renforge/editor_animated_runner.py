@@ -10,7 +10,6 @@ from typing import Any
 
 from renforge.editor.paths import atomic_write_file
 from renforge.editor_live_common import wait_bounds
-from renforge.editor_task0_runner import _require_ok
 
 FIXTURE_SCREEN = "renforge_editor_animated_fixture"
 FIXTURE_RESOURCE = (
@@ -69,7 +68,7 @@ def run_editor_animated_live_scenario(client: Any, *, fixture_path: Path) -> dic
     pos_target_during_preview = wait_bounds(client, "anim_pos_target", fixture_screen=FIXTURE_SCREEN)
 
     # Check if ATL position animation overwrote the preview xpos or if it held
-    atl_position_conflict = pos_target_during_preview["x"] != 250
+    atl_position_conflict = pos_target_during_preview.get("x") != 250
 
     report["variants"]["anim_pos_target"] = {
         "initial_bounds": pos_target_initial,
@@ -117,23 +116,25 @@ def run_editor_animated_live_scenario(client: Any, *, fixture_path: Path) -> dic
 
     # Test patch and reload on static transform target
     patched_source = source.replace("xpos 100 ypos 300", "xpos 120 ypos 300")
-    atomic_write_file(fixture_path, patched_source)
+    if patched_source == source:
+        raise AssertionError("source patch did not modify target string")
 
-    save_reply = client.request("editor_task0_save", {"screen": FIXTURE_SCREEN})
-    time.sleep(0.3)
+    try:
+        atomic_write_file(fixture_path, patched_source)
+        save_reply = client.request("editor_task0_save", {"screen": FIXTURE_SCREEN})
+        time.sleep(0.3)
 
-    static_target_post_reload = wait_bounds(client, "anim_static_transform", fixture_screen=FIXTURE_SCREEN)
-    select_reply = client.request("editor_task0_select", {"x": 130, "y": 320})
+        static_target_post_reload = wait_bounds(client, "anim_static_transform", fixture_screen=FIXTURE_SCREEN)
+        select_reply = client.request("editor_task0_select", {"x": 130, "y": 320})
 
-    report["variants"]["anim_static_transform"] = {
-        "initial_bounds": static_target_initial,
-        "post_reload_bounds": static_target_post_reload,
-        "save_reply": save_reply,
-        "select_reply": select_reply,
-    }
-
-    # Clean up fixture source back to baseline
-    atomic_write_file(fixture_path, source)
+        report["variants"]["anim_static_transform"] = {
+            "initial_bounds": static_target_initial,
+            "post_reload_bounds": static_target_post_reload,
+            "save_reply": save_reply,
+            "select_reply": select_reply,
+        }
+    finally:
+        atomic_write_file(fixture_path, source)
 
     # Determine verdict based on evidence
     # ATL position animation conflict or ATL time reset on displayable recreation means BLOCKED

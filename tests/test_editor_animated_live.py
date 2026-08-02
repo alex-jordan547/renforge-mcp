@@ -72,5 +72,6 @@ def test_animated_element_editing_spike(demo_copy: Path) -> None:
             fixture_path=fixture_path,
         )
 
-    assert report["verdict"] in {"blocked", "pass"}
+    assert report["verdict"] == "blocked"
+    assert report["reason_code"] in {"atl_position_override_conflict", "atl_time_reset"}
     assert "variants" in report
