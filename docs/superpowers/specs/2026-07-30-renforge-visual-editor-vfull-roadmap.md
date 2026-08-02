@@ -149,8 +149,7 @@ untested; product selection UX remains Stage 3 work.
 Only `fixed` + `clipping True` was exercised. Remaining, and common:
 
 - `viewport` — **unlocked for one measured shape (issue #44)**, see below
-- `Crop`
-- `Transform(crop=)`
+- `Crop` / `Transform(crop=)` — **same runtime object; pure crop unlocked (issue #45)**, see below
 
 ### `viewport` (issue #44) — unlocked at resting scroll
 
@@ -172,7 +171,7 @@ green for a target inside a viewport — no viewport term was needed anywhere.
 | Nested viewports | `NESTED_VIEWPORT_UNSUPPORTED` — two scroll offsets compose, never measured |
 | `scrollbars "..."` | `UNKNOWN_ANCESTRY_TYPE` — it wraps the viewport in a `Side` |
 | Layout container inside a viewport | `CONTAINER_POSITION_UNSUPPORTED`, unchanged |
-| `Crop`, `Transform(crop=)`, `clipping True` | unchanged |
+| `clipping True` | unchanged (still unproven) |
 
 **Known limitation — committing while scrolled.** Ren'Py rebuilds the screen on `reload_script` and
 the viewport adjustment does not survive it (measured: 120 before, 0 after). The host then attests a
@@ -191,6 +190,55 @@ ancestor offset the child. Anything reading one as the other is wrong under a vi
 
 `draggable True` is deliberately outside the proven shape: it turns the editor's own click into a
 scroll, so the two drag behaviours fight.
+
+### `Crop` / pure `Transform(crop=)` (issue #45) — unlocked for pure crop only
+
+**Identity (measured, not assumed):** on Ren'Py **8.5.3**,
+`Crop(rect, child)` is defined as `return Transform(child, crop=rect, **properties)`
+(`renpy/display/layout.py`). There is no runtime class named `Crop`. Live ancestry for both
+`Crop(...)` sugar and `fixed at Transform(crop=...)` reports:
+
+- `type == "Transform"`
+- `crop_state == "transform_crop"` when crop is set and rotate/zoom stay at defaults
+- `crop_state == "transform_crop_composite"` when rotate or non-default zoom is also set
+
+Branches that key on `class_name` containing `"Crop"`, host `ancestor_type == "Crop"`, or
+`crop_state == "crop"` do not fire on this SDK for authored `Crop()` / pure crop; pure-crop locks
+that previously refused observation were `CLIPPED_ANCESTRY_UNSUPPORTED` (bridge) then
+`TRANSFORM_CROP_UNSUPPORTED` (host). Those pure-crop gates are opened; composite keeps a **distinct**
+host reason.
+
+**Visible geometry (the issue's central risk):** measured via focus AABB ∩ crop window and sibling
+height comparison under `RENFORGE_CROP_LIVE=1`:
+
+| Target | Focus vs crop | Notes (8.5.3) |
+|---|---|---|
+| Fully inside (`crop_target`) | fully inside crop window | seven-step write target |
+| Partially clipped (`crop_partial` at child y=185) | focus height **shorter than natural sibling** (e.g. 15 vs ~35) and still fully inside crop AABB | engine **already clips** focus to the crop — not an unclipped layout box |
+| Fully clipped (`crop_fullclip`) | **absent** from `list_ui_elements` | cannot be selected as if painted |
+
+So pure crop behaves like the viewport case for editor math: focus tracks visible geometry, and
+`runtime_rect + Δ` needs no extra crop term. Screen-space `preview_position` still differs from
+child-space authored `xpos`/`ypos` by the crop window origin — compare **deltas** only.
+
+**Unlocked:** exactly one pure `transform_crop` ancestor (`Transform` with crop only) whose focused
+child is **fully visible** (focus size matches unclipped render), plain `fixed` child, literal
+`textbutton`.
+
+**Still locked:**
+
+| Shape | Reason |
+|---|---|
+| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` — any 1px focus size reduction vs unclipped render |
+| Visibility unmeasurable | `TRANSFORM_CROP_UNPROVEN` — fail closed when render/size proof fails |
+| Nested crop transforms | `NESTED_TRANSFORM_CROP_UNSUPPORTED` — only one crop Transform was measured |
+| Crop + rotate / crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
+| Layout container inside crop | `CONTAINER_POSITION_UNSUPPORTED` |
+| Expression position inside crop | `YPOS_LITERAL_REQUIRED` |
+| `fixed` + `clipping True` | still unproven at bridge |
+
+Live proof: `RENFORGE_CROP_LIVE=1 pytest tests/test_editor_crop_live.py`
+Criteria: `docs/superpowers/spikes/2026-08-02-transform-crop-criteria.md`.
 
 ---
 

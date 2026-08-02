@@ -1016,6 +1016,26 @@ class EditorCoordinator:
                 "NESTED_VIEWPORT_UNSUPPORTED",
                 "nested viewport ancestry is not editable in V1",
             )
+        # Issue #45: only a single pure-crop Transform was measured. Nested crops
+        # (any transform crop state) compose two clip windows and stay locked.
+        _transform_crop_states = {
+            "transform_crop",
+            "transform_crop_partial",
+            "transform_crop_composite",
+            "transform_crop_unproven",
+        }
+        if (
+            sum(
+                1
+                for a in ancestry
+                if isinstance(a, dict) and a.get("crop_state") in _transform_crop_states
+            )
+            > 1
+        ):
+            return self._lock_reason(
+                "NESTED_TRANSFORM_CROP_UNSUPPORTED",
+                "nested transform crop ancestry is not editable in V1",
+            )
 
         for ancestor in ancestry:
             if not isinstance(ancestor, dict):
@@ -1033,6 +1053,9 @@ class EditorCoordinator:
                     "CONTAINER_POSITION_UNSUPPORTED",
                     "direct movement inside layout containers is not editable",
                 )
+            # Issue #45: Ren'Py has no runtime Crop class (Crop() returns
+            # Transform). Keep a defensive lock if a future build ever surfaces
+            # one; pure transform_crop is handled below.
             if ancestor_type == "Crop":
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "Crop ancestry is not editable in V1")
             if bool(ancestor.get("editor_owned")):
@@ -1041,11 +1064,30 @@ class EditorCoordinator:
             if isinstance(screen_owner, str) and screen_owner == "renforge.editor.v1":
                 return self._lock_reason("EDITOR_OWNED_TARGET", "editor-owned displayables are never editable")
             crop_state = ancestor.get("crop_state")
-            if crop_state == "crop":
+            # crop+rotate / crop+zoom (issue #46) — distinct from pure crop.
+            if crop_state == "transform_crop_composite":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                    "transform crop combined with rotate/zoom is not editable in V1",
+                )
+            # Partially crop-clamped focus: source xpos/ypos are unclipped layout
+            # while focus x/y can sit on the crop edge (Codex P1 / issue #45).
+            if crop_state == "transform_crop_partial":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
+                    "partially crop-clipped targets are not editable in V1",
+                )
+            # Visibility proof failed (render/size unavailable) — fail closed.
+            if crop_state == "transform_crop_unproven":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_UNPROVEN",
+                    "transform crop full-visibility could not be proven",
+                )
+            # Legacy / defensive labels that live pure-crop never emits.
+            if crop_state in {"crop", "crop_displayable"}:
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "crop ancestry is not editable in V1")
-            if crop_state == "transform_crop":
-                return self._lock_reason("TRANSFORM_CROP_UNSUPPORTED", "transform crop ancestry is not editable in V1")
-            if crop_state not in {"none", "viewport"}:
+            # Issue #45: pure fully-visible transform_crop is editable.
+            if crop_state not in {"none", "viewport", "transform_crop"}:
                 return self._lock_reason("ANCESTRY_CROP_UNPROVEN", f"unproven crop state: {crop_state}")
         return None
 

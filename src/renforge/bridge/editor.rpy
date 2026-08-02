@@ -896,10 +896,64 @@ init 1100 python:
         return found
 
 
-    def _renforge_editor_crop_state(node):
+    def _renforge_editor_transform_crop_is_composite(node):
+        """True when crop is combined with non-default rotate/zoom (issue #46)."""
+        rotate = getattr(node, "rotate", None)
+        zoom = getattr(node, "zoom", None)
+        xzoom = getattr(node, "xzoom", None)
+        yzoom = getattr(node, "yzoom", None)
+        if rotate not in (None, 0, 0.0):
+            return True
+        if zoom not in (None, 1, 1.0):
+            return True
+        if xzoom not in (None, 1, 1.0):
+            return True
+        if yzoom not in (None, 1, 1.0):
+            return True
+        return False
+
+
+    def _renforge_editor_focus_crop_visibility(focus, target):
+        """Compare focus_list size to the widget's unclipped render.
+
+        Returns one of:
+          - "full": focus size >= unclipped render on both axes
+          - "partial": focus is smaller on either axis (any 1px reduction)
+          - "unknown": sizes could not be measured (fail closed)
+
+        Measured on 8.5.3 under pure Transform(crop=): a partially clipped
+        textbutton reports e.g. focus height 15 while rendering alone is ~35.
+        """
+        if focus is None or target is None:
+            return "unknown"
+        try:
+            fw = getattr(focus, "w", None)
+            fh = getattr(focus, "h", None)
+            if fw is None or fh is None:
+                rect = getattr(focus, "rect", None)
+                if isinstance(rect, (builtins.list, builtins.tuple)) and len(rect) >= 4:
+                    fw, fh = rect[2], rect[3]
+            if fw is None or fh is None:
+                return "unknown"
+            rendered = renpy.display.render.render(target, 4096, 4096, 0, 0)
+            rw, rh = rendered.get_size()
+            # No slack: a 1–2px top/left clamp still pins focus origin while
+            # source xpos/ypos move (Codex re-review P1 on #65).
+            if int(fw) < int(rw) or int(fh) < int(rh):
+                return "partial"
+            return "full"
+        except Exception:
+            return "unknown"
+
+
+    def _renforge_editor_crop_state(node, focus=None, target=None):
         class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
         if "Viewport" in class_name:
             return "viewport"
+        # Ren'Py 8.5.3: Crop(rect, child) is a constructor that returns
+        # Transform(child, crop=rect) — there is no runtime Crop class. The
+        # class-name branch is retained only as a defensive unknown; live
+        # ancestry for Crop()/Transform(crop=) is type Transform (issue #45).
         if "Crop" in class_name:
             return "crop_displayable"
         clipping = getattr(node, "clipping", None)
@@ -907,6 +961,19 @@ init 1100 python:
             return "clipping_true"
         crop = getattr(node, "crop", None)
         if crop not in (None, False):
+            # Issue #45 unlocks pure crop only. rotate / non-default zoom is #46.
+            if _renforge_editor_transform_crop_is_composite(node):
+                return "transform_crop_composite"
+            # Issue #45: only fully-visible pure-crop children are unlocked.
+            # Top/left clamps make focus x/y crop-bound while source xpos/ypos
+            # still describe the unclipped layout, so preview deltas attest
+            # against the wrong origin (Codex P1 on #65).
+            visibility = _renforge_editor_focus_crop_visibility(focus, target)
+            if visibility == "partial":
+                return "transform_crop_partial"
+            if visibility == "unknown":
+                # Fail closed: never grant move without a full-visibility proof.
+                return "transform_crop_unproven"
             return "transform_crop"
         return "none"
 
@@ -956,12 +1023,21 @@ init 1100 python:
             class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
             if class_name not in _ALLOWED_ANCESTRY_TYPES:
                 return None, "UNKNOWN_ANCESTRY_TYPE", None, None
-            crop_state = _renforge_editor_crop_state(node)
+            # Size-compare against the focused widget (usually the Button), not
+            # the named map entry which can resolve to a child Text.
+            crop_state = _renforge_editor_crop_state(
+                node,
+                focus=focus,
+                target=widget,
+            )
             if crop_state not in (
                 "none",
                 "viewport",
                 "crop_displayable",
                 "transform_crop",
+                "transform_crop_composite",
+                "transform_crop_partial",
+                "transform_crop_unproven",
                 "clipping_true",
             ):
                 return None, "UNKNOWN_CROP_STATE", None, None
@@ -1024,6 +1100,9 @@ init 1100 python:
                 "viewport",
                 "crop_displayable",
                 "transform_crop",
+                "transform_crop_composite",
+                "transform_crop_partial",
+                "transform_crop_unproven",
                 "clipping_true",
             ):
                 return "UNKNOWN_CROP_STATE"
@@ -1031,7 +1110,14 @@ init 1100 python:
             # rects already offset by the scroll, measured across scroll
             # positions in issue #44. Whether *this* viewport shape is editable
             # is the host's decision, so the bridge stops rejecting it here.
-            if crop_state in ("crop_displayable", "transform_crop", "clipping_true"):
+            #
+            # Issue #45: pure Transform(crop=) / Crop() sugar is the same runtime
+            # object (type Transform, crop set, rotate/zoom at defaults). Focus
+            # rects are measured in screen space; the host decides editability,
+            # including rejecting transform_crop_composite (#46),
+            # transform_crop_partial, and transform_crop_unproven with distinct
+            # reasons. crop_displayable / clipping_true remain unproven here.
+            if crop_state in ("crop_displayable", "clipping_true"):
                 return "CLIPPED_ANCESTRY_UNSUPPORTED"
         return None
 

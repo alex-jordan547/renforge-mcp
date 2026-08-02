@@ -357,15 +357,16 @@ def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path)
                     "CROP_ANCESTRY_UNSUPPORTED",
                 ),
                 (
-                    "transform-crop-state",
+                    # Issue #45 unlocks pure transform_crop; composite stays locked.
+                    "transform-crop-composite-state",
                     lambda o: o["runtime_key"]["ancestry"].__setitem__(
                         1,
                         {
                             **o["runtime_key"]["ancestry"][1],
-                            "crop_state": "transform_crop",
+                            "crop_state": "transform_crop_composite",
                         },
                     ),
-                    "TRANSFORM_CROP_UNSUPPORTED",
+                    "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
                 ),
             ]
 
@@ -851,6 +852,178 @@ def test_single_viewport_ancestor_no_longer_locks(tmp_path: Path) -> None:
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"] is None
             assert analysis["result"]["capabilities"] == {"move": True}
+    finally:
+        coordinator.close()
+
+
+def test_pure_transform_crop_ancestor_no_longer_locks(tmp_path: Path) -> None:
+    """Issue #45: pure Transform(crop=) is editable; Crop() is the same runtime object."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Transform",
+            "crop_state": "transform_crop",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45",
+            "object_id": "obj-independent-45",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"] is None
+            assert analysis["result"]["capabilities"] == {"move": True}
+    finally:
+        coordinator.close()
+
+
+def test_transform_crop_composite_stays_locked(tmp_path: Path) -> None:
+    """Issue #45: crop+rotate/zoom stays locked under a distinct code (#46 scope)."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Transform",
+            "crop_state": "transform_crop_composite",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45b",
+            "object_id": "obj-independent-45b",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop-composite")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
+    finally:
+        coordinator.close()
+
+
+def test_transform_crop_partial_stays_locked(tmp_path: Path) -> None:
+    """Issue #45: partially crop-clipped targets stay locked (Codex P1)."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Transform",
+            "crop_state": "transform_crop_partial",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45c",
+            "object_id": "obj-independent-45c",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop-partial")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
+    finally:
+        coordinator.close()
+
+
+def test_transform_crop_unproven_stays_locked(tmp_path: Path) -> None:
+    """Issue #45: fail closed when full-visibility cannot be measured (Codex P2)."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Transform",
+            "crop_state": "transform_crop_unproven",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45d",
+            "object_id": "obj-independent-45d",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop-unproven")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_UNPROVEN"
+    finally:
+        coordinator.close()
+
+
+def test_nested_transform_crop_stays_locked(tmp_path: Path) -> None:
+    """Issue #45: two crop transforms in ancestry stay locked (Codex P2)."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    crop_node = {
+        **observation["runtime_key"]["ancestry"][0],
+        "type": "Transform",
+        "crop_state": "transform_crop",
+    }
+    observation["runtime_key"]["ancestry"] = [
+        observation["runtime_key"]["ancestry"][0],
+        {**crop_node, "index": 1},
+        {**crop_node, "index": 2},
+        observation["runtime_key"]["ancestry"][1],
+    ]
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45e",
+            "object_id": "obj-independent-45e",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop-nested")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["lock_reason"]["code"] == "NESTED_TRANSFORM_CROP_UNSUPPORTED"
     finally:
         coordinator.close()
 

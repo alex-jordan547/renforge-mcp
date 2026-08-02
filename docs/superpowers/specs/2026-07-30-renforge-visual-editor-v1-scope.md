@@ -37,7 +37,7 @@ requires it — none is arbitrary.
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
 | 3 | A proven adapter statement (`textbutton` single-line or multi-line block, `imagebutton`, single-line `bar`/`vbar`, slider-styled `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; block forms preserve every non-position byte |
-| 4 | Exactly one runtime instance with a fully classified, static ancestry — at most one **`viewport`** (issue #44), and outside **`Crop` / `Transform(crop=)`**, loop and repeated `use` cases | A repeated statement stores its position once for all N instances, so no write can move one of them alone (issue #42) |
+| 4 | Exactly one runtime instance with a fully classified, static ancestry — at most one **`viewport`** (issue #44), at most pure **`Transform(crop=)` / `Crop()` sugar** (issue #45), and outside crop+rotate/zoom, `clipping True`, loop and repeated `use` cases | A repeated statement stores its position once for all N instances, so no write can move one of them alone (issue #42) |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
 failed and why, e.g. *"`text` is not focusable — cannot be selected in V1"* or
@@ -239,6 +239,37 @@ child space. They coincide only when no ancestor offsets the child, which is why
 could compare them directly.
 
 Live proof: `RENFORGE_VIEWPORT_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_viewport_live.py`
+against Ren'Py **8.5.3**.
+
+### Targets under pure `Transform(crop=)` / `Crop()` (issue #45)
+
+**Identity:** on Ren'Py 8.5.3, `Crop(rect, child)` is a constructor that returns
+`Transform(child, crop=rect)` (`renpy/display/layout.py`). Live ancestry reports `type == "Transform"`
+and `crop_state == "transform_crop"` — never a class named `Crop`.
+
+**Unlocked:** exactly one pure-crop `Transform` in the ancestry (crop set; rotate/zoom at defaults),
+with a plain `fixed` child and a fully-visible single-line `textbutton` (literal id + xpos/ypos).
+
+Measured on Ren'Py **8.5.3** via `RENFORGE_CROP_LIVE=1`: pure crop already **clips focus rects** to the
+crop window. A partially clipped sibling reports a shorter focus height than a natural outside control
+(e.g. focus height 15 vs natural ~35) while remaining fully inside the crop AABB; a fully clipped
+control is **absent** from `list_ui_elements`. Focus therefore tracks visible geometry under pure crop
+— the same kind of engine-truth finding as viewport scroll (#44). The seven-step write chain is green
+with delta-only source comparison (screen-space `preview_position` ≠ child-space authored values).
+
+**Still locked, each with its own reason:**
+
+| Shape | Reason |
+|---|---|
+| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` (any 1px size reduction) |
+| Visibility unmeasurable | `TRANSFORM_CROP_UNPROVEN` |
+| Nested crop transforms | `NESTED_TRANSFORM_CROP_UNSUPPORTED` |
+| Crop + rotate or crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
+| Layout container inside the crop | `CONTAINER_POSITION_UNSUPPORTED`, unchanged |
+| Expression ypos inside the crop | `YPOS_LITERAL_REQUIRED`, unchanged |
+| `fixed` + `clipping True` | bridge `CLIPPED_ANCESTRY_UNSUPPORTED` / unproven |
+
+Live proof: `RENFORGE_CROP_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_crop_live.py`
 against Ren'Py **8.5.3**.
 
 ## Proven mechanisms (do not redesign)
