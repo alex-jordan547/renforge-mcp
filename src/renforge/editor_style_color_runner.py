@@ -218,23 +218,38 @@ def _wait_paint(
     expected_dominant: str,
     timeout: float = 8.0,
 ) -> tuple[dict[str, int], dict[str, Any]]:
-    """Wait until independent screenshot paint reports the expected colour class."""
+    """Wait for expected paint observed inside live scene-tree bounds."""
     deadline = time.monotonic() + timeout
     last_bounds = dict(_TARGET_AUTHORED)
-    last_paint: dict[str, Any] = {"dominant": "unknown", "paint_count": 0}
+    bounds_from_scene_tree = False
+    last_paint: dict[str, Any] = {
+        "dominant": "unknown",
+        "paint_count": 0,
+        "bounds_from_scene_tree": False,
+    }
     while time.monotonic() < deadline:
-        bounds = _scene_text_bounds(client, label=TARGET_LABEL) or dict(_TARGET_AUTHORED)
-        last_bounds = bounds
-        last_paint = _sample_region_paint(client, bounds)
+        observed_bounds = _scene_text_bounds(client, label=TARGET_LABEL)
+        if observed_bounds is not None:
+            last_bounds = observed_bounds
+            bounds_from_scene_tree = True
+        last_paint = {
+            **_sample_region_paint(client, last_bounds),
+            "bounds_from_scene_tree": bounds_from_scene_tree,
+        }
         # Prefer the high-chroma centre sample when mean is muddy.
         dominant = last_paint.get("sample_dominant") or last_paint.get("dominant")
-        if dominant == expected_dominant and int(last_paint.get("paint_count") or 0) > 20:
+        if (
+            bounds_from_scene_tree
+            and dominant == expected_dominant
+            and int(last_paint.get("paint_count") or 0) > 20
+        ):
             last_paint = {**last_paint, "dominant": dominant}
-            return bounds, last_paint
+            return last_bounds, last_paint
         time.sleep(0.1)
     last_paint = {
         **last_paint,
         "dominant": last_paint.get("sample_dominant") or last_paint.get("dominant"),
+        "bounds_from_scene_tree": bounds_from_scene_tree,
     }
     return last_bounds, last_paint
 
@@ -266,6 +281,11 @@ def _attempt_product_select(client: Any, bounds: dict[str, int]) -> dict[str, An
         "capabilities": capabilities if isinstance(capabilities, dict) else {},
         "source_key": source_key if isinstance(source_key, dict) else {},
         "status_active": bool(isinstance(status, dict) and status.get("active")),
+        "save_enabled": bool(isinstance(status, dict) and status.get("save_enabled")),
+        "history_length": int((status or {}).get("history_length") or 0) if isinstance(status, dict) else 0,
+        "pending_transaction_id": (
+            (status or {}).get("pending_transaction_id") if isinstance(status, dict) else None
+        ),
     }
 
 
@@ -419,6 +439,8 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     report["runtime_color_change_proven"] = (
         pixel_before.get("dominant") == "red"
         and pixel_after.get("dominant") == "blue"
+        and pixel_before.get("bounds_from_scene_tree") is True
+        and pixel_after.get("bounds_from_scene_tree") is True
         and int(pixel_before.get("paint_count") or 0) > 20
         and int(pixel_after.get("paint_count") or 0) > 20
     )
@@ -429,11 +451,31 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         == TEXT_STYLE_COLOR_MODE_LITERAL
         and (report["product_select"].get("capabilities") or {}).get("style_color") is True
     )
-    # Explicit product seams — not implemented for style colour.
-    report["product_preview_available"] = False
-    report["product_commit_available"] = False
-    report["product_undo_available"] = False
-    report["refused_attestation_rollback_available"] = False
+    # Measure advertised product seams from the status returned by the real
+    # production selection attempt. No style-specific command is inferred when
+    # the capability map does not advertise one.
+    capabilities = report["product_select"].get("capabilities") or {}
+    style_selected = report["product_select_unlocked_style"]
+    report["product_seam_probe"] = {
+        "measurement_source": "editor_task0_status.current_capabilities",
+        "selected_widget_id": report["product_select"].get("selected_widget_id"),
+        "capabilities": capabilities,
+        "save_enabled": report["product_select"].get("save_enabled"),
+        "history_length": report["product_select"].get("history_length"),
+        "pending_transaction_id": report["product_select"].get("pending_transaction_id"),
+    }
+    report["product_preview_available"] = bool(
+        style_selected and capabilities.get("style_color_preview") is True
+    )
+    report["product_commit_available"] = bool(
+        style_selected and capabilities.get("style_color_commit") is True
+    )
+    report["product_undo_available"] = bool(
+        style_selected and capabilities.get("style_color_undo") is True
+    )
+    report["refused_attestation_rollback_available"] = bool(
+        style_selected and capabilities.get("style_color_attestation_rollback") is True
+    )
 
     if not report["runtime_color_change_proven"]:
         report["verdict"] = "inconclusive"

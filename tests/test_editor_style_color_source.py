@@ -118,6 +118,16 @@ def test_analyze_text_color_style_rejects_block_form() -> None:
     assert exc.value.code == "MULTILINE_STATEMENT_REJECTED"
 
 
+def test_analyze_text_color_style_rejects_multiple_physical_lines() -> None:
+    with pytest.raises(EditorSourceError) as exc:
+        analyze_text_color_style(
+            '    text "STYLE" color "#e22b2b" id "style_color_target"\n'
+            '    text "OTHER" color "#2457d6" id "other"\n',
+            expected_widget_id="style_color_target",
+        )
+    assert exc.value.code == "MULTILINE_STATEMENT_REJECTED"
+
+
 def test_analyze_text_color_style_rejects_id_mismatch() -> None:
     with pytest.raises(EditorSourceError) as exc:
         analyze_text_color_style(
@@ -161,6 +171,23 @@ def test_apply_text_color_patch_preserves_hex_family_and_unicode_prefix() -> Non
     with pytest.raises(EditorSourceError) as exc:
         apply_text_color_patch(line.encode("utf-8"), parsed, color="#ddeeff")
     assert exc.value.code == "STYLE_COLOR_HEX_FAMILY_MISMATCH"
+
+
+def test_apply_text_color_patch_supports_eight_digit_alpha_hex() -> None:
+    line = '    text "ALPHA" color "#11223344" id "style_color_target"\n'
+    parsed = analyze_text_color_style(line, expected_widget_id="style_color_target")
+    patched = apply_text_color_patch(line.encode("utf-8"), parsed, color="#44556677")
+    assert patched.decode("utf-8") == '    text "ALPHA" color "#44556677" id "style_color_target"\n'
+
+
+def test_literal_color_accepts_valid_text_property_follower() -> None:
+    line = (
+        '    text "STYLE" color "#e22b2b" outlines [(2, "#000")] '
+        'id "style_color_target"\n'
+    )
+    parsed = analyze_text_color_style(line, expected_widget_id="style_color_target")
+    assert parsed.style_mode == TEXT_STYLE_COLOR_MODE_LITERAL
+    assert parsed.style_lock_code is None
 
 
 def test_text_color_contract_does_not_route_through_coordinate_spans() -> None:

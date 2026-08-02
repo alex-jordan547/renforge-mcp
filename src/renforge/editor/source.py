@@ -2125,52 +2125,10 @@ def apply_button_sibling_swap(
 # Issue #50 — dedicated style-colour source contract (text + color only)
 # ---------------------------------------------------------------------------
 
-# Property keywords that may follow a pure colour string on a ``text`` line.
-# Expression operators (if/or/else/and) are intentionally absent so compound
-# colour values fail closed rather than looking like pure literals.
-_TEXT_COLOR_FOLLOWER_WORDS = frozenset(
-    {
-        "id",
-        "xpos",
-        "ypos",
-        "pos",
-        "align",
-        "offset",
-        "anchor",
-        "xalign",
-        "yalign",
-        "xanchor",
-        "yanchor",
-        "xoffset",
-        "yoffset",
-        "xcenter",
-        "ycenter",
-        "xsize",
-        "ysize",
-        "xmaximum",
-        "ymaximum",
-        "xminimum",
-        "yminimum",
-        "xfill",
-        "yfill",
-        "size",
-        "font",
-        "bold",
-        "italic",
-        "underline",
-        "strikethrough",
-        "kerning",
-        "line_spacing",
-        "justify",
-        "textalign",
-        "layout",
-        "style",
-        "tooltip",
-        "substitute",
-        "slow_cps",
-        "slow_abortable",
-    }
-)
+# Python expression words that can continue after a string literal. Any other
+# top-level word begins the next screen-language property; enumerating every
+# valid text property here would create a fragile partial grammar.
+_TEXT_COLOR_EXPRESSION_WORDS = frozenset({"and", "else", "for", "if", "in", "is", "not", "or"})
 
 
 def _is_hex_color_literal(value: str) -> bool:
@@ -2203,6 +2161,11 @@ def analyze_text_color_style(line: str, *, expected_widget_id: str) -> TextColor
     This is a dedicated style contract — not a position/size analyser. Coordinate
     tokens are ignored except as follower words that prove a pure colour literal.
     """
+    if len(line.splitlines()) != 1:
+        raise EditorSourceError(
+            "MULTILINE_STATEMENT_REJECTED",
+            "text style colour requires exactly one physical statement line",
+        )
     statement_text = _statement_text(line)
     tokens = _lex_single_line(statement_text)
     top_level = [token for token in tokens if token.depth == 0]
@@ -2251,7 +2214,7 @@ def analyze_text_color_style(line: str, *, expected_widget_id: str) -> TextColor
         following_index = _next_top_level_index(tokens, value_index)
         if following_index is not None:
             following = tokens[following_index]
-            if following.kind != "WORD" or following.text not in _TEXT_COLOR_FOLLOWER_WORDS:
+            if following.kind != "WORD" or following.text in _TEXT_COLOR_EXPRESSION_WORDS:
                 lock_code, lock_message = _text_style_lock(
                     "STYLE_COLOR_EXPRESSION_UNSUPPORTED",
                     "color expressions and compound values are not writable",

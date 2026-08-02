@@ -96,6 +96,8 @@ def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy:
 
     assert report["pixel_before"]["dominant"] == "red", report["pixel_before"]
     assert report["pixel_after"]["dominant"] == "blue", report["pixel_after"]
+    assert report["pixel_before"]["bounds_from_scene_tree"] is True
+    assert report["pixel_after"]["bounds_from_scene_tree"] is True
     assert report["runtime_color_change_proven"] is True
     assert report["published_source_after_reload"]["ok"] is True
 
@@ -104,6 +106,9 @@ def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy:
     assert report["product_preview_available"] is False
     assert report["product_commit_available"] is False
     assert report["product_undo_available"] is False
+    assert report["product_seam_probe"]["measurement_source"] == (
+        "editor_task0_status.current_capabilities"
+    )
 
     # Cleanup restore is not product undo.
     assert report["restore"]["byte_identical"] is True
