@@ -1273,6 +1273,17 @@ init 1100 python:
     def _renforge_editor_validate_runtime_key(runtime_key):
         if not isinstance(runtime_key, builtins.dict):
             return "INVALID_RUNTIME_KEY"
+        instance_discriminator = runtime_key.get("instance_discriminator")
+        if isinstance(instance_discriminator, builtins.dict):
+            if instance_discriminator.get("kind") == "loop" or bool(instance_discriminator.get("loop")):
+                return "LOOP_INSTANCE_UNSUPPORTED"
+            if instance_discriminator.get("kind") == "use" and bool(instance_discriminator.get("repeated")):
+                return "REPEATED_USE_UNSUPPORTED"
+            if bool(instance_discriminator.get("repeated_use")):
+                return "REPEATED_USE_UNSUPPORTED"
+            instance_count = instance_discriminator.get("instance_count")
+            if isinstance(instance_count, int) and instance_count != 1:
+                return "MULTI_INSTANCE_UNSUPPORTED"
         ancestry = runtime_key.get("ancestry")
         if not builtins.isinstance(ancestry, (builtins.list, tuple)) or not ancestry:
             return "UNKNOWN_ANCESTRY_TYPE"
@@ -1305,6 +1316,12 @@ init 1100 python:
             # including rejecting transform_crop_composite (#46),
             # transform_crop_partial, and transform_crop_unproven with distinct
             # reasons. crop_displayable / clipping_true remain unproven here.
+            if crop_state == "transform_crop_composite":
+                return "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
+            if crop_state == "transform_crop_partial":
+                return "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
+            if crop_state == "transform_crop_unproven":
+                return "TRANSFORM_CROP_UNPROVEN"
             if crop_state in ("crop_displayable", "clipping_true"):
                 return "CLIPPED_ANCESTRY_UNSUPPORTED"
         return None
@@ -4025,7 +4042,7 @@ init 1100 python:
 
     def _renforge_editor_label_snapshot():
         state = _renforge_editor_state()
-        if state.selected_widget_id is None or state.selected_rect is None:
+        if (state.selected_widget_id is None and state.selected_lock_reason is None) or state.selected_rect is None:
             return None
         rect = list(state.label_rect or [20, 20, 220, 32])
         if len(rect) != 4:
