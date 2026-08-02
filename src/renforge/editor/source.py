@@ -2029,8 +2029,11 @@ def _source_id_ownership_count(lines: list[str], widget_id: str) -> int:
             continue
         try:
             count += int(_literal_button_id(line) == widget_id)
-        except EditorSourceError:
-            continue
+        except EditorSourceError as exc:
+            raise EditorSourceError(
+                "AMBIGUOUS_OWNERSHIP",
+                "every button owner must have one statically resolved literal id",
+            ) from exc
     return count
 
 

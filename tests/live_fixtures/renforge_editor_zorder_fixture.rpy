@@ -13,7 +13,7 @@ screen renforge_editor_zorder_fixture():
         add Solid("#d83a3a", xysize=(180, 100))
 
     # This separator must remain byte-identical while the blocks move.
-    button id "zorder_sibling" xpos 220 ypos 220 xsize 180 ysize 100:
+    button id "zorder_sibling" xpos 260 ypos 220 xsize 180 ysize 100:
         action NullAction()
         background None
         hover_background None

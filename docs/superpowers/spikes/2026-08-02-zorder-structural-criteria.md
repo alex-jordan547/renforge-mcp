@@ -54,7 +54,7 @@ The live proof must record:
 - baseline topmost hit and screenshot center color belong to the sibling;
 - forward swap source bytes match the independent construction;
 - shadow validation and atomic publication succeed;
-- generation increments by one;
+- the editor runtime script-generation counter used by reload attestation increments by one;
 - both IDs rebind uniquely at their new source lines;
 - runtime hit order reports the target above the sibling;
 - an independent screenshot center pixel changes to the target color;

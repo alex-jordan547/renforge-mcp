@@ -52,7 +52,7 @@ After fixture restoration + second real reload:
 - restored SHA equals the original SHA;
 - restored bytes are exactly equal to the baseline.
 
-Live test: `1 passed in 8.21s`.
+Live test: `1 passed in 9.74s`.
 
 ## Why blocked
 

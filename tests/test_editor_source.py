@@ -1606,3 +1606,24 @@ def test_analyze_raise_adjacent_sibling_rejects_explicit_zorder() -> None:
             sibling_widget_id="sibling",
         )
     assert error.value.code == "EXPLICIT_ZORDER_UNSUPPORTED"
+
+
+def test_analyze_raise_adjacent_sibling_rejects_unresolved_button_ids() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target":\n'
+        '        text "A"\n'
+        '    button id "sibling":\n'
+        '        text "B"\n'
+        "    button id dynamic_id:\n"
+        '        text "unknown owner"\n'
+    )
+    with pytest.raises(EditorSourceError) as error:
+        analyze_raise_adjacent_sibling(
+            source,
+            target_source_line=2,
+            sibling_source_line=4,
+            target_widget_id="target",
+            sibling_widget_id="sibling",
+        )
+    assert error.value.code == "AMBIGUOUS_OWNERSHIP"

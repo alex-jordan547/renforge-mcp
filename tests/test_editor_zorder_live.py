@@ -67,6 +67,12 @@ def test_zorder_source_swap_is_live_but_product_remains_blocked(demo_copy: Path)
     assert report["after_reload"]["selected_widget_id"] == TARGET_ID
     assert report["runtime_result_proven"] is True
     assert report["stable_rebind"] is True
+    assert report["after_reload"]["runtime_source_locations"][TARGET_ID][1] == report[
+        "source_patch"
+    ]["locations"][TARGET_ID]
+    assert report["after_reload"]["runtime_source_locations"][SIBLING_ID][1] == report[
+        "source_patch"
+    ]["locations"][SIBLING_ID]
     assert report["source_patch"]["changed"] is True
     assert report["source_patch"]["size_delta"] == 0
     assert report["restore"]["byte_identical"] is True

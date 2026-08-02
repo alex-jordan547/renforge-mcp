@@ -84,11 +84,41 @@ def _probe(client: Any) -> dict[str, Any]:
         client.request("editor_task0_select", {"x": intersection[0], "y": intersection[1]}),
         "z-order overlap selection",
     )
+    target_selection = _require_ok(
+        client.request(
+            "editor_task0_select",
+            {"x": target["x"] + 20, "y": target["y"] + 20},
+        ),
+        "z-order target-only selection",
+    )
+    sibling_selection = _require_ok(
+        client.request(
+            "editor_task0_select",
+            {
+                "x": sibling["x"] + sibling["width"] - 20,
+                "y": sibling["y"] + 20,
+            },
+        ),
+        "z-order sibling-only selection",
+    )
+
+    def source_location(reply: dict[str, Any]) -> list[Any]:
+        observation = reply.get("observation")
+        runtime_key = observation.get("runtime_key") if isinstance(observation, dict) else None
+        location = runtime_key.get("source_location") if isinstance(runtime_key, dict) else None
+        if not isinstance(location, list) or len(location) != 2:
+            raise AssertionError(f"selection carries no runtime source location: {reply!r}")
+        return [str(location[0]), int(location[1])]
+
     return {
         "point": list(intersection),
         "pixel": list(pixel),
         "dominant": _dominant(pixel),
         "selected_widget_id": (selection.get("selected") or {}).get("widget_id"),
+        "runtime_source_locations": {
+            TARGET_ID: source_location(target_selection),
+            SIBLING_ID: source_location(sibling_selection),
+        },
         "target_bounds": target,
         "sibling_bounds": sibling,
     }
@@ -140,11 +170,11 @@ def run_editor_zorder_live_scenario(client: Any, *, fixture_path: Path) -> dict[
         and report["after_reload"]["dominant"] == "red"
         and report["after_reload"]["selected_widget_id"] == TARGET_ID
     )
-    report["stable_rebind"] = bool(
-        report["after_reload"].get("target_bounds")
-        and report["after_reload"].get("sibling_bounds")
-        and report["source_patch"]["locations"].get(TARGET_ID)
-        and report["source_patch"]["locations"].get(SIBLING_ID)
+    observed_locations = report["after_reload"]["runtime_source_locations"]
+    expected_locations = report["source_patch"]["locations"]
+    report["stable_rebind"] = all(
+        observed_locations[widget_id][1] == expected_locations[widget_id]
+        for widget_id in (TARGET_ID, SIBLING_ID)
     )
     report["verdict"] = "blocked"
     report["verdict_reason"] = "structural_transaction_undo_missing"
