@@ -1432,3 +1432,56 @@ def test_analyze_textbutton_anchor_rejects_non_literal() -> None:
             expected_widget_id="start",
         )
     assert excinfo.value.code == "ANCHOR_LITERAL_REQUIRED"
+
+
+
+def test_analyze_bar_statement_size_model_and_patch() -> None:
+    line = (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos 200 ypos 180 xsize 240 ysize 24\n"
+    )
+    parsed = analyze_bar_statement(line, expected_widget_id="bar_target")
+    assert parsed.size_mode == "xsize_ysize"
+    assert parsed.xsize == 240
+    assert parsed.ysize == 24
+    assert parsed.resize_lock_code is None
+    patched = apply_bar_patch(line.encode("utf-8"), parsed, x=200, y=180, width=300, height=32).decode("utf-8")
+    assert patched == (
+        '    bar value StaticValue(50) range 100 id "bar_target" '
+        "xpos 200 ypos 180 xsize 300 ysize 32\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "code"),
+    [
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2\n',
+            "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 xsize 10\n',
+            "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 xysize (10, 20)\n',
+            "BAR_XYSIZE_UNSUPPORTED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 xsize 10 ysize 20 xmaximum 100\n',
+            "BAR_SIZE_CONSTRAINT_UNSUPPORTED",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 xsize 0 ysize 20\n',
+            "BAR_SIZE_NON_POSITIVE",
+        ),
+        (
+            '    bar value StaticValue(1) range 10 id "b" xpos 1 ypos 2 xsize 10 if flag else 20 ysize 20\n',
+            "XSIZE_LITERAL_REQUIRED",
+        ),
+    ],
+)
+def test_analyze_bar_statement_resize_lock_matrix(line: str, code: str) -> None:
+    parsed = analyze_bar_statement(line, expected_widget_id="b")
+    assert parsed.size_mode is None
+    assert parsed.resize_lock_code == code

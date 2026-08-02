@@ -5,6 +5,8 @@ default renforge_editor_bar_style_val = 40
 default renforge_editor_bar_container_val = 40
 default renforge_editor_bar_dupe_val = 40
 default renforge_editor_bar_side_val = 40
+default renforge_editor_bar_xysize_val = 40
+default renforge_editor_bar_constraint_val = 40
 
 
 style renforge_bar_style_pos is bar:
@@ -28,6 +30,11 @@ screen renforge_editor_bar_fixture():
         yfill True
 
         bar value VariableValue("renforge_editor_bar_value", range=100) id "bar_target" xpos 200 ypos 180 xsize 240 ysize 24
+
+        # Issue #47: move-unlocked, resize-locked forms (pure fixed parent).
+        bar value VariableValue("renforge_editor_bar_xysize_val", range=100) id "bar_xysize" xpos 200 ypos 260 xysize (180, 24)
+
+        bar value VariableValue("renforge_editor_bar_constraint_val", range=100) id "bar_size_constraint" xpos 420 ypos 260 xsize 160 ysize 24 yfill True
 
         bar value VariableValue("renforge_editor_bar_computed_val", range=100) id "bar_computed" xpos renforge_editor_bar_computed_x ypos 300 xsize 200 ysize 24
 

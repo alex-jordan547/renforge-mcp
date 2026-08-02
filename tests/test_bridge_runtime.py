@@ -1015,7 +1015,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         state.targets[target_key] = {
             "analysis_id": "analysis-drag-target",
             "source_key": {"relative_path": "screens.rpy", "line": 12},
-            "capabilities": {"move": True},
+            "capabilities": {"move": True, "resize": False},
             "screen": screen_name,
             "widget_id": "drag_target",
             "runtime_baseline": list(baseline),
@@ -1028,7 +1028,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         )
         assert analyzed["ok"] is True
         assert state.preview_position == baseline
-        assert state.current_capabilities == {"move": True}
+        assert state.current_capabilities == {"move": True, "resize": False}
 
         down = pygame.event.Event(
             pygame.MOUSEBUTTONDOWN,
@@ -2451,10 +2451,10 @@ def test_editor_status_exposes_current_host_capabilities(
     try:
         state = globs["_renforge_editor_state"]()
         state.current_analysis_id = "analysis-vbar"
-        state.current_capabilities = {"move": True}
+        state.current_capabilities = {"move": True, "resize": False}
 
         status = globs["_renforge_editor_h_status"]({})
-        assert status["current_capabilities"] == {"move": True}
+        assert status["current_capabilities"] == {"move": True, "resize": False}
 
         state.current_analysis_id = None
         assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
@@ -2483,7 +2483,7 @@ def test_editor_locked_selection_clears_current_host_capabilities(
         state = globs["_renforge_editor_state"]()
         state.current_analysis_id = "analysis-editable"
         state.current_source_key = {"relative_path": "screens.rpy", "line": 12}
-        state.current_capabilities = {"move": True}
+        state.current_capabilities = {"move": True, "resize": False}
         globs["_renforge_editor_focus_candidates"] = lambda: [
             {
                 "rect": [0, 0, 20, 20],

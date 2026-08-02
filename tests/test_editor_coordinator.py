@@ -225,6 +225,8 @@ def _commit(
     *,
     x: int,
     y: int,
+    w: int | None = None,
+    h: int | None = None,
     request_id: str = "co-1",
 ) -> dict[str, Any]:
     # Temporarily raise the socket timeout so slow Windows CI hosts can finish
@@ -248,6 +250,7 @@ def _commit(
                             "source_key": analysis["result"]["source_key"],
                             "x": x,
                             "y": y,
+                            **({"w": w, "h": h} if w is not None and h is not None else {}),
                         }
                     ],
                 },
@@ -375,7 +378,7 @@ def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path)
                 mutate(sample)
                 reply = _analyze(sock, auth, sample, request_id=f"an-{index}")
                 assert reply["ok"] is True
-                assert reply["result"]["capabilities"] == {"move": False}
+                assert reply["result"]["capabilities"] == {"move": False, "resize": False}
                 assert reply["result"]["lock_reason"]["code"] == expected_code
     finally:
         coordinator.close()
@@ -776,7 +779,7 @@ def test_analyze_target_denies_unproven_crop_states(tmp_path: Path, crop_state: 
             reply = _analyze(sock, auth, observation, request_id="an-crop")
             assert reply["ok"] is True
             assert reply["result"]["lock_reason"]["code"] == expected_code
-            assert reply["result"]["capabilities"] == {"move": False}
+            assert reply["result"]["capabilities"] == {"move": False, "resize": False}
     finally:
         coordinator.close()
 
@@ -817,7 +820,7 @@ def test_repetition_lock_outranks_a_source_form_lock(tmp_path: Path) -> None:
             analysis = _analyze(sock, auth, observation, request_id="an-repeat-precedence")
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"]["code"] == "REPEATED_USE_UNSUPPORTED"
-            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["capabilities"] == {"move": False, "resize": False}
     finally:
         coordinator.close()
 
@@ -851,7 +854,7 @@ def test_single_viewport_ancestor_no_longer_locks(tmp_path: Path) -> None:
             analysis = _analyze(sock, auth, observation, request_id="an-viewport")
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"] is None
-            assert analysis["result"]["capabilities"] == {"move": True}
+            assert analysis["result"]["capabilities"] == {"move": True, "resize": False}
     finally:
         coordinator.close()
 
@@ -885,7 +888,7 @@ def test_pure_transform_crop_ancestor_no_longer_locks(tmp_path: Path) -> None:
             analysis = _analyze(sock, auth, observation, request_id="an-crop")
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"] is None
-            assert analysis["result"]["capabilities"] == {"move": True}
+            assert analysis["result"]["capabilities"] == {"move": True, "resize": False}
     finally:
         coordinator.close()
 
@@ -918,7 +921,7 @@ def test_transform_crop_composite_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analysis = _analyze(sock, auth, observation, request_id="an-crop-composite")
             assert analysis["ok"] is True
-            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["capabilities"] == {"move": False, "resize": False}
             assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
     finally:
         coordinator.close()
@@ -952,7 +955,7 @@ def test_transform_crop_partial_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analysis = _analyze(sock, auth, observation, request_id="an-crop-partial")
             assert analysis["ok"] is True
-            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["capabilities"] == {"move": False, "resize": False}
             assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
     finally:
         coordinator.close()
@@ -986,7 +989,7 @@ def test_transform_crop_unproven_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analysis = _analyze(sock, auth, observation, request_id="an-crop-unproven")
             assert analysis["ok"] is True
-            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["capabilities"] == {"move": False, "resize": False}
             assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_UNPROVEN"
     finally:
         coordinator.close()
@@ -1022,7 +1025,7 @@ def test_nested_transform_crop_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analysis = _analyze(sock, auth, observation, request_id="an-crop-nested")
             assert analysis["ok"] is True
-            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["capabilities"] == {"move": False, "resize": False}
             assert analysis["result"]["lock_reason"]["code"] == "NESTED_TRANSFORM_CROP_UNSUPPORTED"
     finally:
         coordinator.close()
@@ -1055,7 +1058,7 @@ def test_runtime_key_ordinal_drift_is_ignored_for_single_static_instance(tmp_pat
             analysis = _analyze(sock, auth, observation, request_id="an-ordinal-drift")
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"] is None
-            assert analysis["result"]["capabilities"] == {"move": True}
+            assert analysis["result"]["capabilities"] == {"move": True, "resize": False}
 
             probe.observe_reply["runtime_key"]["widget_id"] = "changed_btn"
             commit = _commit(sock, auth, analysis, x=30, y=40, request_id="co-stable-mismatch")
@@ -1348,7 +1351,7 @@ def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             assert result["source_key"]["statement_kind"] == "imagebutton"
             assert result["original_position"] == [12, 10]
 
@@ -1441,7 +1444,7 @@ def test_analyze_rejects_unsupported_statement_kind(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             reply = _analyze(sock, auth, observation, request_id="an-frame")
             assert reply["ok"] is True
-            assert reply["result"]["capabilities"] == {"move": False}
+            assert reply["result"]["capabilities"] == {"move": False, "resize": False}
             assert reply["result"]["lock_reason"]["code"] == "STATEMENT_KIND_MISMATCH"
     finally:
         coordinator.close()
@@ -1483,9 +1486,11 @@ def test_analyze_and_commit_bar_statement(tmp_path: Path) -> None:
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": True}
             assert result["source_key"]["statement_kind"] == "bar"
+            assert result["source_key"]["size_mode"] == "xsize_ysize"
             assert result["original_position"] == [12, 10]
+            assert result["original_size"] == [40, 10]
 
             committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-bar")
             assert committed["ok"] is True
@@ -1496,6 +1501,145 @@ def test_analyze_and_commit_bar_statement(tmp_path: Path) -> None:
             assert "xsize 40 ysize 10" in text
     finally:
         coordinator.close()
+
+
+
+
+def test_analyze_and_commit_bar_resize(tmp_path: Path) -> None:
+    project, source = _make_bar_project(tmp_path)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    # Independent focus rect must carry positive width/height for resize unlock.
+    observation["rect"] = [12, 10, 40, 10]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-bar-resize",
+            "object_id": "obj-independent-bar-resize",
+            "rect": [12, 10, 40, 10],
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-bar-resize")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["capabilities"] == {"move": True, "resize": True}
+            assert result["original_size"] == [40, 10]
+
+            committed = _commit(
+                sock,
+                auth,
+                analyzed,
+                x=12,
+                y=10,
+                w=80,
+                h=18,
+                request_id="co-bar-resize",
+            )
+            assert committed["ok"] is True
+            assert committed["result"]["state"] == "published"
+            text = source.read_text(encoding="utf-8")
+            assert "xpos 12 ypos 10" in text
+            assert "xsize 80 ysize 18" in text
+    finally:
+        coordinator.close()
+
+
+def test_bar_resize_locked_without_authored_size(tmp_path: Path) -> None:
+    root = tmp_path / "project_bar_no_size"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    bar value StaticValue(50) range 100 id "start_btn" '
+        "xpos 12 ypos 10\n",
+        encoding="utf-8",
+    )
+    project = RenpyProject(root)
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["rect"] = [12, 10, 40, 10]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-bar-nosize",
+            "object_id": "obj-independent-bar-nosize",
+            "rect": [12, 10, 40, 10],
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-bar-nosize")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["capabilities"] == {"move": True, "resize": False}
+            assert result["source_key"].get("resize_lock_reason", {}).get("code") == "BAR_SIZE_NOT_DIRECTLY_AUTHORED"
+    finally:
+        coordinator.close()
+
+
+
+
+def test_bar_resize_locked_xysize_and_constraint_forms(tmp_path: Path) -> None:
+    cases = [
+        (
+            '    bar value StaticValue(50) range 100 id "start_btn" '
+            "xpos 12 ypos 10 xysize (40, 10)\n",
+            "BAR_XYSIZE_UNSUPPORTED",
+        ),
+        (
+            '    bar value StaticValue(50) range 100 id "start_btn" '
+            "xpos 12 ypos 10 xsize 40 ysize 10 xmaximum 100\n",
+            "BAR_SIZE_CONSTRAINT_UNSUPPORTED",
+        ),
+    ]
+    for index, (line, code) in enumerate(cases):
+        root = tmp_path / f"project_bar_resize_lock_{index}"
+        game_dir = root / "game"
+        game_dir.mkdir(parents=True)
+        source = game_dir / "script.rpy"
+        source.write_text("screen test_screen:\n" + line, encoding="utf-8")
+        project = RenpyProject(root)
+        observation = _base_observation(script_generation=12)
+        observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+        observation["rect"] = [12, 10, 40, 10]
+        probe = _Probe(
+            observe_reply={
+                **json.loads(json.dumps(observation)),
+                "frame_id": f"independent-frame-bar-lock-{index}",
+                "object_id": f"obj-independent-bar-lock-{index}",
+                "rect": [12, 10, 40, 10],
+            }
+        )
+        case_tmp = tmp_path / f"sdk_case_{index}"
+        case_tmp.mkdir()
+        coordinator = EditorCoordinator(project, _make_sdk(case_tmp), attestation_timeout=2.0)
+        coordinator.attach_runtime_probe(probe)
+        endpoint = coordinator.start()
+        try:
+            with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+                auth = _auth(sock, endpoint)
+                analyzed = _analyze(sock, auth, observation, request_id=f"an-bar-lock-{index}")
+                assert analyzed["ok"] is True
+                result = analyzed["result"]
+                assert result["lock_reason"] is None
+                assert result["capabilities"] == {"move": True, "resize": False}
+                assert result["source_key"].get("size_mode") is None
+                assert result["source_key"].get("resize_lock_reason", {}).get("code") == code
+        finally:
+            coordinator.close()
 
 
 def _make_vbar_project(tmp_path: Path) -> tuple[RenpyProject, Path]:
@@ -1535,7 +1679,7 @@ def test_analyze_and_commit_vbar_statement_uses_source_kind(tmp_path: Path) -> N
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             assert result["source_key"]["statement_kind"] == "vbar"
             assert result["original_position"] == [12, 10]
 
@@ -1579,7 +1723,7 @@ def test_analyze_vbar_block_header_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analyzed = _analyze(sock, auth, observation, request_id="an-vbar-block")
             assert analyzed["ok"] is True
-            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["capabilities"] == {"move": False, "resize": False}
             assert analyzed["result"]["lock_reason"]["code"] == "MULTILINE_STATEMENT_REJECTED"
     finally:
         coordinator.close()
@@ -1622,7 +1766,7 @@ def test_analyze_and_commit_slider_statement_uses_source_kind(tmp_path: Path) ->
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             # Adapter identity is style-based; source keyword remains "bar".
             assert result["source_key"]["statement_kind"] == "slider"
             assert result["original_position"] == [12, 10]
@@ -1667,7 +1811,7 @@ def test_analyze_slider_block_header_stays_locked(tmp_path: Path) -> None:
             auth = _auth(sock, endpoint)
             analyzed = _analyze(sock, auth, observation, request_id="an-slider-block")
             assert analyzed["ok"] is True
-            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["capabilities"] == {"move": False, "resize": False}
             assert analyzed["result"]["lock_reason"]["code"] == "MULTILINE_STATEMENT_REJECTED"
     finally:
         coordinator.close()
@@ -1787,7 +1931,7 @@ def test_analyze_slider_locks_computed_style_container_without_runtime_type_infe
                 auth = _auth(sock, endpoint)
                 reply = _analyze(sock, auth, observation, request_id=f"an-slider-lock-{index}")
                 assert reply["ok"] is True
-                assert reply["result"]["capabilities"] == {"move": False}
+                assert reply["result"]["capabilities"] == {"move": False, "resize": False}
                 assert reply["result"]["lock_reason"]["code"] == expected_code
                 source_key = reply["result"].get("source_key")
                 if source_key_present:
@@ -1881,7 +2025,7 @@ def test_analyze_bar_locks_computed_style_container_without_runtime_type_inferen
                 auth = _auth(sock, endpoint)
                 reply = _analyze(sock, auth, observation, request_id=f"an-bar-lock-{index}")
                 assert reply["ok"] is True
-                assert reply["result"]["capabilities"] == {"move": False}
+                assert reply["result"]["capabilities"] == {"move": False, "resize": False}
                 assert reply["result"]["lock_reason"]["code"] == expected_code
                 source_key = reply["result"].get("source_key")
                 if source_key_present:
@@ -1934,7 +2078,7 @@ def test_analyze_and_commit_textbutton_block_preserves_action_bytes(tmp_path: Pa
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             assert result["source_key"]["statement_kind"] == "textbutton"
             assert result["original_position"] == [12, 10]
 
@@ -1981,7 +2125,7 @@ def test_analyze_textbutton_block_computed_position_stays_locked(tmp_path: Path)
             auth = _auth(sock, endpoint)
             analyzed = _analyze(sock, auth, observation, request_id="an-tb-block-computed")
             assert analyzed["ok"] is True
-            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["capabilities"] == {"move": False, "resize": False}
             assert analyzed["result"]["lock_reason"]["code"] == "XPOS_LITERAL_REQUIRED"
     finally:
         coordinator.close()
@@ -2017,7 +2161,7 @@ def test_analyze_and_commit_textbutton_pos_preserves_form(tmp_path: Path) -> Non
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             assert result["source_key"]["statement_kind"] == "textbutton"
             assert result["original_position"] == [12, 10]
 
@@ -2061,7 +2205,7 @@ def test_analyze_textbutton_pos_non_literal_stays_locked(tmp_path: Path) -> None
             auth = _auth(sock, endpoint)
             analyzed = _analyze(sock, auth, observation, request_id="an-pos-lock")
             assert analyzed["ok"] is True
-            assert analyzed["result"]["capabilities"] == {"move": False}
+            assert analyzed["result"]["capabilities"] == {"move": False, "resize": False}
             assert analyzed["result"]["lock_reason"]["code"] == "POS_LITERAL_REQUIRED"
     finally:
         coordinator.close()
@@ -2100,7 +2244,7 @@ def test_analyze_and_commit_textbutton_align_preserves_form(tmp_path: Path) -> N
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             # original_position is runtime pixels for align delta formula
             assert result["original_position"] == [600, 340]
             assert result["source_key"]["position_mode"] == "align"
@@ -2147,7 +2291,7 @@ def test_analyze_textbutton_align_locks_unproven_parent_geometry(tmp_path: Path)
             analyzed = _analyze(sock, auth, observation, request_id="an-align-parent")
             assert analyzed["ok"] is True
             result = analyzed["result"]
-            assert result["capabilities"] == {"move": False}
+            assert result["capabilities"] == {"move": False, "resize": False}
             assert result["lock_reason"]["code"] == "ALIGN_PARENT_UNPROVEN"
     finally:
         coordinator.close()
@@ -2186,7 +2330,7 @@ def test_analyze_and_commit_textbutton_offset_preserves_form(tmp_path: Path) -> 
             assert analyzed["ok"] is True
             result = analyzed["result"]
             assert result["lock_reason"] is None
-            assert result["capabilities"] == {"move": True}
+            assert result["capabilities"] == {"move": True, "resize": False}
             assert result["original_position"] == [12, 10]
             assert result["source_key"]["position_mode"] == "offset"
             assert result["source_key"]["offset_authored"] == [12, 10]
