@@ -37,7 +37,7 @@ requires it — none is arbitrary.
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
 | 3 | A proven adapter statement (`textbutton` single-line or multi-line block, `imagebutton`, single-line `bar`/`vbar`, slider-styled `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; block forms preserve every non-position byte |
-| 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | A repeated statement stores its position once for all N instances, so no write can move one of them alone (issue #42) |
+| 4 | Exactly one runtime instance with a fully classified, static ancestry — at most one **`viewport`** (issue #44), and outside **`Crop` / `Transform(crop=)`**, loop and repeated `use` cases | A repeated statement stores its position once for all N instances, so no write can move one of them alone (issue #42) |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
 failed and why, e.g. *"`text` is not focusable — cannot be selected in V1"* or
@@ -216,6 +216,29 @@ lock, so the reason does not depend on gate ordering.
 script generation and is omitted for unique statements, so it never enters their rebinding equality.
 
 Live proof: `RENFORGE_LOOP_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_loop_live.py`
+against Ren'Py **8.5.3**.
+
+### Targets inside a `viewport` (issue #44)
+
+A single `viewport` ancestor is editable. The engine reports `focus_list` rects in screen space with
+the scroll already applied — sampled at scroll 0/40/90/0, the target's `y` falls by exactly the
+distance scrolled — so the host's `runtime_rect + Δ` attestation carries the same scroll term on both
+sides and needs no viewport-specific arithmetic.
+
+Locked, each with its own reason: nested viewports (`NESTED_VIEWPORT_UNSUPPORTED`), `scrollbars`
+(which wraps the viewport in a `Side`, so `UNKNOWN_ANCESTRY_TYPE`), and layout containers inside a
+viewport (`CONTAINER_POSITION_UNSUPPORTED`, unchanged).
+
+Committing while the viewport is scrolled fails attestation: Ren'Py drops the scroll on reload, so
+the post-reload geometry cannot match a position derived at the old scroll. The editor reports
+`TARGET_POSITION_MISMATCH` rather than accepting what it cannot reproduce, and restores the file
+before reporting the failure.
+
+Note for anyone touching this path: `preview_position` is screen space and the authored value is
+child space. They coincide only when no ancestor offsets the child, which is why earlier adapters
+could compare them directly.
+
+Live proof: `RENFORGE_VIEWPORT_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_viewport_live.py`
 against Ren'Py **8.5.3**.
 
 ## Proven mechanisms (do not redesign)

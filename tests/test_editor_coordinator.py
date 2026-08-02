@@ -331,15 +331,19 @@ def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path)
                     "REPEATED_USE_UNSUPPORTED",
                 ),
                 (
-                    "viewport-ancestor",
-                    lambda o: o["runtime_key"]["ancestry"].__setitem__(
-                        1,
-                        {
-                            **o["runtime_key"]["ancestry"][1],
-                            "type": "Viewport",
-                        },
+                    # Issue #44 unlocked a single viewport; two compose two
+                    # scroll offsets and were never measured.
+                    "nested-viewport-ancestor",
+                    lambda o: o["runtime_key"].__setitem__(
+                        "ancestry",
+                        [
+                            o["runtime_key"]["ancestry"][0],
+                            {**o["runtime_key"]["ancestry"][0], "index": 1, "type": "Viewport"},
+                            {**o["runtime_key"]["ancestry"][0], "index": 2, "type": "Viewport"},
+                            o["runtime_key"]["ancestry"][1],
+                        ],
                     ),
-                    "VIEWPORT_ANCESTRY_UNSUPPORTED",
+                    "NESTED_VIEWPORT_UNSUPPORTED",
                 ),
                 (
                     "crop-state",
@@ -593,6 +597,65 @@ def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -
         coordinator.close()
 
 
+class _RaisingAttestProbe(_Probe):
+    """Mirrors BridgeRuntimeProbe: a bridge refusal arrives as a raised error."""
+
+    def attest(self, **kwargs: Any) -> dict[str, Any]:
+        super().attest(**kwargs)
+        raise EditorError("RUNTIME_PROBE_FAILED", "TARGET_POSITION_MISMATCH")
+
+
+def test_reload_handshake_rolls_back_when_attestation_raises(tmp_path: Path) -> None:
+    """A refused attestation must restore the file before the failure is reported.
+
+    The bridge signals a refusal by raising, not by returning a falsy reply, so
+    the rollback has to sit on the exception path too. Otherwise the published
+    bytes stay in the author's file until the attestation timer fires.
+    """
+    project, source = _make_project(tmp_path)
+    original_text = source.read_text(encoding="utf-8")
+    observation = _base_observation(script_generation=30)
+    probe = _RaisingAttestProbe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-30",
+            "object_id": "obj-independent-30",
+        }
+    )
+    # Long timeout: the rollback must not depend on the timer firing.
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=120.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=5.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-attest-raise")
+            commit = _commit(sock, auth, analysis, x=333, y=444, request_id="co-attest-raise")
+            assert commit["ok"] is True
+            assert "xpos 333 ypos 444" in source.read_text(encoding="utf-8")
+
+            _send_json(
+                sock,
+                {
+                    "protocol": "renforge-editor",
+                    "version": 1,
+                    "connection_id": auth["connection_id"],
+                    "request_id": "hs-attest-raise",
+                    "command": "reload_handshake",
+                    "payload": {
+                        "transaction_id": commit["result"]["transaction_id"],
+                        "script_generation": 31,
+                    },
+                },
+            )
+            handshake = _recv_json(sock)
+            assert handshake["ok"] is False
+            assert probe.attest_calls
+            assert source.read_text(encoding="utf-8") == original_text
+    finally:
+        coordinator.close()
+
+
 def test_reload_handshake_marks_committed_after_independent_attestation(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation(script_generation=12)
@@ -754,6 +817,40 @@ def test_repetition_lock_outranks_a_source_form_lock(tmp_path: Path) -> None:
             assert analysis["ok"] is True
             assert analysis["result"]["lock_reason"]["code"] == "REPEATED_USE_UNSUPPORTED"
             assert analysis["result"]["capabilities"] == {"move": False}
+    finally:
+        coordinator.close()
+
+
+def test_single_viewport_ancestor_no_longer_locks(tmp_path: Path) -> None:
+    """Issue #44: one viewport is editable; the engine offsets its focus rects."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Viewport",
+            "crop_state": "viewport",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-44",
+            "object_id": "obj-independent-44",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-viewport")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"] is None
+            assert analysis["result"]["capabilities"] == {"move": True}
     finally:
         coordinator.close()
 
