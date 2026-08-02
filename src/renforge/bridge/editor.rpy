@@ -1027,7 +1027,11 @@ init 1100 python:
                 "clipping_true",
             ):
                 return "UNKNOWN_CROP_STATE"
-            if crop_state in ("viewport", "crop_displayable", "transform_crop", "clipping_true"):
+            # A viewport clips but does not distort: the engine reports focus
+            # rects already offset by the scroll, measured across scroll
+            # positions in issue #44. Whether *this* viewport shape is editable
+            # is the host's decision, so the bridge stops rejecting it here.
+            if crop_state in ("crop_displayable", "transform_crop", "clipping_true"):
                 return "CLIPPED_ANCESTRY_UNSUPPORTED"
         return None
 

@@ -142,15 +142,48 @@ side for `text` is proven; the selection side is not.
 
 ## Stage 4 — Clipping containers beyond `fixed` (medium risk)
 
-Only `fixed` + `clipping True` was exercised. Untested and common:
+Only `fixed` + `clipping True` was exercised. Remaining, and common:
 
-- `viewport` — the most common in real UIs, and it adds scroll offsets
+- `viewport` — **unlocked for one measured shape (issue #44)**, see below
 - `Crop`
 - `Transform(crop=)`
 
-Until proven, elements inside these are locked by gate 4. Note that focus rects may already be
-correct inside a viewport, since the engine computes them — this may be cheap to unlock. It needs
-measuring, not assuming.
+### `viewport` (issue #44) — unlocked at resting scroll
+
+Measured on Ren'Py **8.5.3** via `RENFORGE_VIEWPORT_LIVE=1`. The roadmap's guess was right: focus
+rects *are* correct inside a viewport, because the engine computes them in screen space with the
+scroll already applied. Sampled at scroll 0 / 40 / 90 / 0, the target's reported `y` falls by exactly
+the distance scrolled and returns to its original value.
+
+That makes the existing arithmetic viewport-agnostic: the host attests `runtime_rect + Δ` against a
+later `focus_list` rect, and both sides carry the same scroll term. The full seven-step proof is
+green for a target inside a viewport — no viewport term was needed anywhere.
+
+**Unlocked:** exactly one `viewport` in the ancestry, with a plain `fixed` child.
+
+**Still locked, each for its own measured reason:**
+
+| Shape | Reason |
+|---|---|
+| Nested viewports | `NESTED_VIEWPORT_UNSUPPORTED` — two scroll offsets compose, never measured |
+| `scrollbars "..."` | `UNKNOWN_ANCESTRY_TYPE` — it wraps the viewport in a `Side` |
+| Layout container inside a viewport | `CONTAINER_POSITION_UNSUPPORTED`, unchanged |
+| `Crop`, `Transform(crop=)`, `clipping True` | unchanged |
+
+**Known limitation — committing while scrolled.** Ren'Py rebuilds the screen on `reload_script` and
+the viewport adjustment does not survive it (measured: 120 before, 0 after). The host then attests a
+fresh geometry against a position derived at the old scroll and reports `TARGET_POSITION_MISMATCH` /
+"Reload failed". The **source write itself is correct**: the bridge derives the authored value from a
+screen-space delta, and that delta is scroll-independent — a 12 px drag writes exactly `+12`. So the
+file is published with the right value and the failure is a false alarm, not corruption. Restoring
+the scroll before attestation is the fix, and it is not attempted here.
+
+**Coordinate spaces do not coincide inside a viewport.** `preview_position` is screen space, the
+authored value is child space. Every earlier adapter could compare them directly only because no
+ancestor offset the child. Anything reading one as the other is wrong under a viewport.
+
+`draggable True` is deliberately outside the proven shape: it turns the editor's own click into a
+scroll, so the two drag behaviours fight.
 
 ---
 

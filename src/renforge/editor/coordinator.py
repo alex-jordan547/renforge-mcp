@@ -1000,6 +1000,15 @@ class EditorCoordinator:
             "Viewport",
             "Crop",
         }
+        # Issue #44: one viewport is editable because the engine already offsets
+        # focus rects by its scroll, measured across scroll positions. Nested
+        # viewports compose two scroll offsets and were never measured.
+        if sum(1 for a in ancestry if isinstance(a, dict) and a.get("type") == "Viewport") > 1:
+            return self._lock_reason(
+                "NESTED_VIEWPORT_UNSUPPORTED",
+                "nested viewport ancestry is not editable in V1",
+            )
+
         for ancestor in ancestry:
             if not isinstance(ancestor, dict):
                 return self._lock_reason("ANCESTRY_TYPE_UNPROVEN", "ancestry entries must be typed objects")
@@ -1016,8 +1025,6 @@ class EditorCoordinator:
                     "CONTAINER_POSITION_UNSUPPORTED",
                     "direct movement inside layout containers is not editable",
                 )
-            if ancestor_type == "Viewport":
-                return self._lock_reason("VIEWPORT_ANCESTRY_UNSUPPORTED", "viewport ancestry is not editable in V1")
             if ancestor_type == "Crop":
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "Crop ancestry is not editable in V1")
             if bool(ancestor.get("editor_owned")):
@@ -1030,7 +1037,7 @@ class EditorCoordinator:
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "crop ancestry is not editable in V1")
             if crop_state == "transform_crop":
                 return self._lock_reason("TRANSFORM_CROP_UNSUPPORTED", "transform crop ancestry is not editable in V1")
-            if crop_state not in {"none"}:
+            if crop_state not in {"none", "viewport"}:
                 return self._lock_reason("ANCESTRY_CROP_UNPROVEN", f"unproven crop state: {crop_state}")
         return None
 
