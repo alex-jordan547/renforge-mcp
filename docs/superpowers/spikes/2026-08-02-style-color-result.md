@@ -2,15 +2,11 @@
 
 ## Verdict
 
-**`BLOCKED` — `style_color_product_path_missing`**
+**`PASS`**
 
-The dedicated `text` + `color` source-write contract is implemented and proven
-(unit + live Ren'Py 8.5.3 pixel evidence). Production style editing remains
-**disabled**: plain `text` is outside the focus_list selection path, and no
-style-colour preview, coordinator intent, refused-attestation rollback, or
-**product** undo surface is enabled.
+RenForge now proves the frozen `text` + `color` pair through the production in-game bridge on Ren'Py 8.5.3. The product path covers selection of a non-focusable plain text displayable, source-safe analysis, preview without a source write, transactional commit, reload, independent painted-pixel attestation, stable-id rebinding, refused-attestation rollback, and product undo.
 
-Manual fixture restore after the live run is **cleanup only**, not product undo.
+This result remains deliberately narrow. It does not enable a generic style panel, additional style properties, or additional adapters.
 
 ## Frozen pair
 
@@ -20,57 +16,91 @@ Manual fixture restore after the live run is **cleanup only**, not product undo.
 | Property | `color` |
 | Unlocked form | single-line pure hex string literal (`#rgb` / `#rrggbb` / `#rrggbbaa`) |
 | Style mode | `literal_hex` |
+| Runtime measurement | `scene_tree_text` |
 
 ## Source contract
 
 - `analyze_text_color_style` / `apply_text_color_patch` in `renforge.editor.source`
-- Dedicated colour-token spans — **not** coordinate token semantics
-- Fail-closed locks: inherited, expression, unsupported form, duplicate, non-text, block form, id mismatch
-- Unrelated bytes, quote form, and hex family preserved; stale source rejected
+- Dedicated colour-token spans — never coordinate-token semantics
+- Exactly one literal `id` matching the runtime widget id
+- Only the colour token is rewritten; unrelated bytes, quote form, and hex family are preserved
+- Stale source is rejected before publication
+- Inherited, expression-based, duplicated, multiline, malformed, non-text, ambiguous, or multi-instance targets remain locked
 
-Unit suite: `tests/test_editor_style_color_source.py` — **21 passed**
+Source/coordinator suite:
 
-## Live Ren'Py 8.5.3 evidence (observed)
+```text
+PYTHONPATH=src python -m pytest -q tests/test_editor_style_color_source.py tests/test_editor_coordinator.py
+77 passed in 16.19s
+```
 
-Opt-in: `RENFORGE_STYLE_COLOR_LIVE=1`
+## Production bridge path
+
+The in-game bridge now provides the following bounded path:
+
+1. Discover an identified plain `Text` displayable independently of `focus_list`.
+2. Resolve its source location and reject unproven ownership, ancestry, or instance identity.
+3. Preview the requested colour through `_widget_properties` without touching source bytes.
+4. Submit a dedicated colour intent to the coordinator.
+5. Shadow-lint and atomically publish the one-file transaction.
+6. Reload Ren'Py and rebind the same source target by stable id.
+7. Attest the runtime colour and independently sample the painted pixels.
+8. Roll source bytes back when attestation is deliberately refused.
+9. Undo a committed colour edit through a second product transaction and re-attest the restored colour.
+
+## Live Ren'Py 8.5.3 evidence
+
+Opt-in command:
 
 ```text
 RENFORGE_STYLE_COLOR_LIVE=1 PYTHONPATH=src python -m pytest -q tests/test_editor_style_color_live.py
-# 1 passed in 9.39s
+1 passed in 26.36s
 ```
 
-Fixture: large red `text "STYLE" color "#e22b2b"` → dedicated patch to `#2457d6`,
-plus inherited and expression lock controls.
+Fixture: large red `text "STYLE" color "#e22b2b"` changed to blue `#2457d6` under an offset parent, with inherited/expression locks, a non-opaque `#rrggbbaa` runtime probe, and a repeated-loop instance lock.
 
-| Plane | Observed |
+| Plane | Observed evidence |
 | --- | --- |
-| Source unlock | target unlocks (`literal_hex`); inherited → `STYLE_COLOR_NOT_DIRECTLY_AUTHORED`; expression → `STYLE_COLOR_LITERAL_REQUIRED` |
-| Source patch | only colour token rewritten; outside-span identity true; independent expected match true |
-| Pixel before | independent PNG region sample dominant **red**, sampled inside target bounds located from the live scene tree |
-| Pixel after reload | independent PNG region sample dominant **blue** after `reload_script` + re-show, again inside live scene-tree bounds; published source reads the requested literal |
-| Product select on glyph | does **not** unlock style colour (`product_select_unlocked_style=false`) |
-| Product preview/commit/undo | all absent in the capability map observed from `editor_task0_status` |
-| Refused-attestation rollback | absent in the same observed capability map |
-| Fixture restore | byte-identical baseline restore; note = cleanup, not product undo |
-| Verdict | `blocked` / `style_color_product_path_missing` |
+| Product selection | Clicking the painted glyph selects the non-focusable plain text target and unlocks only `style_color` capabilities. |
+| Ownership locks | Direct literal unlocks; inherited and expression values return their frozen lock codes. |
+| Preview | Painted pixels become blue while fixture source remains byte-identical. |
+| Preview reset | The bridge Reset control restores red painted pixels while source remains byte-identical, then the requested preview can be applied again. |
+| Source write | Independent expected-byte construction matches; bytes outside the colour token remain identical. |
+| Refused attestation | A deliberately refused runtime attestation rolls the published bytes back to the baseline. |
+| Commit/reload | Shadow validation, atomic publication, script-generation advance, reload, and committed handshake succeed. |
+| Pixel attestation | Screenshot sampling inside independently resolved text bounds changes from dominant red to dominant blue. |
+| Rebinding | The post-reload target resolves again using the stable literal id and source location. |
+| Product undo | The bridge invokes `undo_commit`; a second validated transaction restores the original bytes and red painted result. |
+| Cleanup | Final fixture restore is byte-identical but is recorded only as cleanup, never as undo evidence. |
 
-Live test: `tests/test_editor_style_color_live.py` — **1 passed**
+The live report returns `verdict="pass"` only when every mandatory evidence field above is true. Missing product seams return `blocked`; ambiguous pixel evidence returns `inconclusive`.
 
-Full suite: **659 passed, 45 skipped**. `compileall` and `git diff --check` passed.
+## Repository gates
 
-## Why blocked (one stable reason)
+```text
+PYTHONPATH=src python -m pytest -q
+663 passed, 45 skipped in 34.51s
 
-`style_color_product_path_missing`
+python -m compileall -q src tests
+# exit 0
 
-Mandatory product seams for PASS are absent after source + pixel proof:
+git diff --check
+# exit 0
 
-1. production selection uses `focus_list` — plain `text` is non-focusable;
-2. no style-colour preview / intent / coordinator commit path;
-3. no refused-attestation rollback or **product** undo for style colour
-   (fixture restore is cleanup only).
+cd ui && npm run build
+# i18n status=GREEN, TypeScript clean, Vite build successful
+```
 
-Widening into Stage 3 non-focusable selection or a second adapter/property is
-out of frozen scope. Production style UI/control stays disabled.
+The full suite requires the locked UI dependencies (`npm ci --no-audit --no-fund` in `ui/`) because the i18n contract tests invoke the TypeScript scanner.
+
+## Deliberate limits
+
+- one adapter: `text`
+- one property: `color`
+- one physical source line
+- directly authored pure hex literal only
+- one proven static instance
+- no fonts, padding, hover/idle/selected colour families, inheritance editing, expressions, or generic property registry
 
 ## Criteria
 

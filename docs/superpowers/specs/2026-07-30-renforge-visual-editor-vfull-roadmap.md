@@ -284,7 +284,7 @@ Only once the above is settled:
 - **Resize** — needs a size model per adapter (`xsize`/`ysize`/`xysize`/implicit)
 - **Rotation** — `Transform(rotate=)`; interacts badly with AABB selection
 - **Z-order / reparenting** — changes the source tree structure, not just a literal
-- **Style editing** — colours, padding, fonts; a different write contract entirely
+- **Style editing** — **Implemented for the first evidence-gated pair only** (issue #50): a single-line `text` statement with one directly authored literal hex `color`. The dedicated source contract, non-focusable text selection, preview, atomic commit/reload, independent pixel attestation, refused-attestation rollback, stable-id rebinding, and product undo pass on Ren'Py 8.5.3. Inherited/expression/ambiguous forms and every other style property or adapter remain locked.
 
 **Animated elements** (`at Transform(...)`) are untested with the `_widget_properties` seam. Spike A
 found the older override approach non-deterministic on animated variants (3 of 4 runs blocked). The

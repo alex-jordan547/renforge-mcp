@@ -34,12 +34,15 @@ from .source import (
     DEFAULT_ALIGN_PARENT_SIZE,
     BarStatement,
     EditorSourceError,
+    TextColorStyleStatement,
     align_geometry_matches_parent,
     analyze_button_statement,
     analyze_editable_statement,
+    analyze_text_color_style,
     analyze_textbutton_block_statement,
     apply_button_patch,
     apply_editable_statement_patch,
+    apply_text_color_patch,
     apply_textbutton_patch,
     is_slider_style_bar_line,
     is_textbutton_block_header,
@@ -76,6 +79,17 @@ class _AnalysisRecord:
     independent_frame_id: str
     original_size: list[int] | None = None
     runtime_size: list[int] | None = None
+
+
+@dataclass(frozen=True)
+class _SelectedIntent:
+    record: _AnalysisRecord
+    source_key: dict[str, Any]
+    x: int | None = None
+    y: int | None = None
+    width: int | None = None
+    height: int | None = None
+    color: str | None = None
 
 
 @dataclass
@@ -484,6 +498,8 @@ class EditorCoordinator:
             return self._command_analyze_target(payload)
         if command == "commit":
             return self._command_commit(payload)
+        if command == "undo_commit":
+            return self._command_undo_commit(payload)
         if command == "commit_status":
             return self._command_commit_status(payload)
         if command == "reload_handshake":
@@ -549,7 +565,21 @@ class EditorCoordinator:
             widget_id = self._require_runtime_widget_id(runtime_key)
             header_line = lines[source_line - 1]
             header_kind = peek_statement_kind(header_line)
-            if header_kind == "button":
+            position_mode: str | None = None
+            if header_kind == "text":
+                statement = analyze_text_color_style(
+                    header_line,
+                    expected_widget_id=widget_id,
+                )
+                statement_kind = "text"
+                position_mode = None
+                original_position = list(runtime_position)
+                if lock_reason is None and statement.style_lock_code is not None:
+                    lock_reason = self._lock_reason(
+                        statement.style_lock_code,
+                        statement.style_lock_message or statement.style_lock_code,
+                    )
+            elif header_kind == "button":
                 statement = analyze_button_statement(
                     source_text,
                     source_line=source_line,
@@ -568,12 +598,13 @@ class EditorCoordinator:
                     header_line,
                     expected_widget_id=widget_id,
                 )
-            # Runtime-delta modes (align/offset): original_position is focus TL.
-            position_mode = getattr(statement, "position_mode", "xy")
-            if uses_runtime_delta_position(position_mode):
-                original_position = list(runtime_position)
-            else:
-                original_position = [int(statement.xpos), int(statement.ypos)]
+            if not isinstance(statement, TextColorStyleStatement):
+                # Runtime-delta modes (align/offset): original_position is focus TL.
+                position_mode = getattr(statement, "position_mode", "xy")
+                if uses_runtime_delta_position(position_mode):
+                    original_position = list(runtime_position)
+                else:
+                    original_position = [int(statement.xpos), int(statement.ypos)]
             ancestry = runtime_key.get("ancestry")
             normalized_ancestry = (
                 [
@@ -607,6 +638,9 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
+            if isinstance(statement, TextColorStyleStatement):
+                source_key["style_mode"] = statement.style_mode
+                source_key["style_color"] = statement.color
             # Issue #47: bar-only resize capability from pure xsize/ysize.
             if statement_kind == "bar" and isinstance(statement, BarStatement):
                 if (
@@ -624,7 +658,11 @@ class EditorCoordinator:
                             statement.resize_lock_code,
                             statement.resize_lock_message or statement.resize_lock_code,
                         )
-            if uses_runtime_delta_position(position_mode):
+            if (
+                not isinstance(statement, TextColorStyleStatement)
+                and isinstance(position_mode, str)
+                and uses_runtime_delta_position(position_mode)
+            ):
                 # Shared authored + measured baseline fields for delta write-back.
                 authored = (
                     [float(statement.xpos), float(statement.ypos)]
@@ -636,7 +674,7 @@ class EditorCoordinator:
                     int(runtime_position[0]),
                     int(runtime_position[1]),
                 ]
-            if position_mode == "align":
+            if position_mode == "align" and not isinstance(statement, TextColorStyleStatement):
                 # Align-only geometry gate: parent must prove full-screen 1280×720.
                 parent_size = tuple(
                     getattr(statement, "align_parent_size", DEFAULT_ALIGN_PARENT_SIZE)
@@ -682,15 +720,16 @@ class EditorCoordinator:
                             "independent observation must provide positive widget width and height",
                         )
             if lock_reason is None:
-                if observation.get("measurement_method") != "focus_list":
+                expected_measurement = "scene_tree_text" if statement_kind == "text" else "focus_list"
+                if observation.get("measurement_method") != expected_measurement:
                     lock_reason = self._lock_reason(
                         "MEASUREMENT_METHOD_INVALID",
-                        "input observation measurement_method must be focus_list",
+                        f"input observation measurement_method must be {expected_measurement}",
                     )
-                elif independent.get("measurement_method") != "focus_list":
+                elif independent.get("measurement_method") != expected_measurement:
                     lock_reason = self._lock_reason(
                         "INDEPENDENT_MEASUREMENT_INVALID",
-                        "independent measurement_method must be focus_list",
+                        f"independent measurement_method must be {expected_measurement}",
                     )
                 elif not self._runtime_keys_equivalent_for_reobservation(runtime_key, independent.get("runtime_key")):
                     lock_reason = self._lock_reason(
@@ -701,6 +740,15 @@ class EditorCoordinator:
                     lock_reason = self._lock_reason(
                         "INDEPENDENT_FRAME_NOT_FRESH",
                         "independent observation did not provide a fresh frame",
+                    )
+                elif (
+                    isinstance(statement, TextColorStyleStatement)
+                    and self._normalize_style_color(independent.get("style_color"))
+                    != self._normalize_style_color(statement.color)
+                ):
+                    lock_reason = self._lock_reason(
+                        "RUNTIME_STYLE_COLOR_MISMATCH",
+                        "independent runtime colour does not match the authored literal",
                     )
                 elif statement.widget_id != widget_id:
                     lock_reason = self._lock_reason("ID_MISMATCH", "source literal id does not match runtime widget id")
@@ -719,7 +767,8 @@ class EditorCoordinator:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
 
         analysis_id = uuid.uuid4().hex
-        can_move = lock_reason is None
+        can_style_color = lock_reason is None and source_key is not None and source_key.get("statement_kind") == "text"
+        can_move = lock_reason is None and not can_style_color
         can_resize = (
             can_move
             and original_size is not None
@@ -748,7 +797,21 @@ class EditorCoordinator:
             "source_key": source_key,
             "original_position": original_position,
             "original_size": list(original_size) if original_size is not None else None,
-            "capabilities": {"move": can_move, "resize": can_resize},
+            "capabilities": {
+                "move": can_move,
+                "resize": can_resize,
+                **(
+                    {
+                        "style_color": True,
+                        "style_color_preview": True,
+                        "style_color_commit": True,
+                        "style_color_undo": True,
+                        "style_color_attestation_rollback": True,
+                    }
+                    if can_style_color
+                    else {}
+                ),
+            },
             "lock_reason": lock_reason,
         }
 
@@ -767,7 +830,7 @@ class EditorCoordinator:
             raise EditorError("RUNTIME_PROBE_UNAVAILABLE", "runtime probe is not attached")
 
         seen_analysis_ids: set[str] = set()
-        selected_records: list[tuple[_AnalysisRecord, int, int, int | None, int | None, dict[str, Any]]] = []
+        selected_records: list[_SelectedIntent] = []
         source_paths: set[str] = set()
         with self._lock:
             generation = self._script_generation
@@ -784,17 +847,6 @@ class EditorCoordinator:
             source_key = intent.get("source_key")
             if not isinstance(source_key, dict):
                 raise EditorError("SOURCE_KEY_INVALID", "intent source_key must be an object")
-            x = intent.get("x")
-            y = intent.get("y")
-            if not isinstance(x, int) or not isinstance(y, int):
-                raise EditorError("INTENT_POSITION_INVALID", "intent x and y must be integers")
-            width = intent.get("w", intent.get("width"))
-            height = intent.get("h", intent.get("height"))
-            if width is not None or height is not None:
-                if type(width) is not int or type(height) is not int:
-                    raise EditorError("INTENT_SIZE_INVALID", "intent w and h must both be integers when resizing")
-                if int(width) <= 0 or int(height) <= 0:
-                    raise EditorError("BAR_SIZE_NON_POSITIVE", "intent size must be positive")
             with self._lock:
                 record = self._analyses.get(analysis_id)
             if record is None:
@@ -809,28 +861,65 @@ class EditorCoordinator:
                 raise EditorError("ANALYSIS_SOURCE_KEY_MISSING", "analysis does not include a writable source key")
             if record.source_key != source_key:
                 raise EditorError("SOURCE_KEY_MISMATCH", "intent source_key does not match analyzed source key")
-            if width is not None or height is not None:
-                if (
-                    record.original_size is None
-                    or record.runtime_size is None
-                    or source_key.get("size_mode") != BAR_SIZE_MODE_XSIZE_YSIZE
-                ):
+            color = intent.get("color")
+            is_style_color = source_key.get("statement_kind") == "text"
+            if is_style_color:
+                if not isinstance(color, str):
+                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a string")
+                literal_color = self._literal_style_color(color)
+                literal_baseline = self._literal_style_color(source_key.get("style_color"))
+                if literal_color is None:
+                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a supported hex literal")
+                if literal_baseline is None:
+                    raise EditorError("SOURCE_KEY_INVALID", "style source key is missing its literal baseline colour")
+                if len(literal_color) != len(literal_baseline):
                     raise EditorError(
-                        "ANALYSIS_RESIZE_UNSUPPORTED",
-                        "analysis does not unlock resize for this target",
+                        "STYLE_COLOR_HEX_FAMILY_MISMATCH",
+                        "text style intent must preserve the authored hex literal length",
                     )
+                if any(key in intent for key in ("x", "y", "w", "h", "width", "height")):
+                    raise EditorError("INTENT_STYLE_MIXED", "style color intent cannot include position or size fields")
+                if source_key.get("style_mode") != "literal_hex":
+                    raise EditorError("ANALYSIS_STYLE_COLOR_UNSUPPORTED", "analysis does not unlock literal style color")
+                selected = _SelectedIntent(
+                    record=record,
+                    source_key=source_key,
+                    color=literal_color,
+                )
+            else:
+                if color is not None:
+                    raise EditorError("ANALYSIS_STYLE_COLOR_UNSUPPORTED", "style color is only supported for text")
+                x = intent.get("x")
+                y = intent.get("y")
+                if not isinstance(x, int) or not isinstance(y, int):
+                    raise EditorError("INTENT_POSITION_INVALID", "intent x and y must be integers")
+                width = intent.get("w", intent.get("width"))
+                height = intent.get("h", intent.get("height"))
+                if width is not None or height is not None:
+                    if type(width) is not int or type(height) is not int:
+                        raise EditorError("INTENT_SIZE_INVALID", "intent w and h must both be integers when resizing")
+                    if int(width) <= 0 or int(height) <= 0:
+                        raise EditorError("BAR_SIZE_NON_POSITIVE", "intent size must be positive")
+                    if (
+                        record.original_size is None
+                        or record.runtime_size is None
+                        or source_key.get("size_mode") != BAR_SIZE_MODE_XSIZE_YSIZE
+                    ):
+                        raise EditorError(
+                            "ANALYSIS_RESIZE_UNSUPPORTED",
+                            "analysis does not unlock resize for this target",
+                        )
+                selected = _SelectedIntent(
+                    record=record,
+                    source_key=source_key,
+                    x=x,
+                    y=y,
+                    width=int(width) if width is not None else None,
+                    height=int(height) if height is not None else None,
+                )
             relative_path = self._require_source_relative_path(source_key)
             source_paths.add(relative_path)
-            selected_records.append(
-                (
-                    record,
-                    x,
-                    y,
-                    int(width) if width is not None else None,
-                    int(height) if height is not None else None,
-                    source_key,
-                )
-            )
+            selected_records.append(selected)
 
         if len(source_paths) != 1:
             raise EditorError("MULTI_FILE_UNSUPPORTED", "all intents must resolve to exactly one source file")
@@ -840,7 +929,9 @@ class EditorCoordinator:
         current_bytes = source_path.read_bytes()
         current_sha = sha256_bytes(current_bytes)
 
-        for record, _x, _y, _w, _h, source_key in selected_records:
+        for selected in selected_records:
+            record = selected.record
+            source_key = selected.source_key
             baseline = source_key.get("baseline_sha256")
             if not isinstance(baseline, str):
                 raise EditorError("SOURCE_BASELINE_INVALID", "source_key baseline_sha256 is missing")
@@ -851,14 +942,30 @@ class EditorCoordinator:
                 raise EditorError("INDEPENDENT_OBSERVATION_INVALID", "runtime probe returned invalid observation")
             if not self._runtime_keys_equivalent_for_reobservation(record.runtime_key, independent.get("runtime_key")):
                 raise EditorError("RUNTIME_KEY_MISMATCH", "runtime reanalysis key mismatch")
-            if independent.get("measurement_method") != "focus_list":
-                raise EditorError("MEASUREMENT_METHOD_INVALID", "independent reanalysis must use focus_list")
+            expected_measurement = "scene_tree_text" if selected.color is not None else "focus_list"
+            if independent.get("measurement_method") != expected_measurement:
+                raise EditorError(
+                    "MEASUREMENT_METHOD_INVALID",
+                    f"independent reanalysis must use {expected_measurement}",
+                )
             if self._coerce_generation(independent.get("script_generation")) != generation:
                 raise EditorError("SCRIPT_GENERATION_MISMATCH", "runtime reanalysis returned stale generation")
             if independent.get("frame_id") == record.independent_frame_id:
                 raise EditorError("INDEPENDENT_FRAME_NOT_FRESH", "runtime reanalysis did not produce a fresh frame")
+            if (
+                selected.color is not None
+                and self._normalize_style_color(independent.get("style_color"))
+                != self._normalize_style_color(selected.color)
+            ):
+                raise EditorError(
+                    "RUNTIME_STYLE_COLOR_MISMATCH",
+                    "runtime preview colour does not match the requested style intent",
+                )
 
-        staged_bytes = self._apply_same_file_intents(current_bytes, selected_records)
+        try:
+            staged_bytes = self._apply_same_file_intents(current_bytes, selected_records)
+        except EditorSourceError as exc:
+            raise EditorError(exc.code, str(exc)) from exc
         transaction_id = uuid.uuid4().hex
         transaction = _TransactionRecord(
             transaction_id=transaction_id,
@@ -869,33 +976,7 @@ class EditorCoordinator:
             original_sha256=current_sha,
             staged_sha256=sha256_bytes(staged_bytes),
             generation=generation,
-            expected_targets=[
-                {
-                    "analysis_id": record.analysis_id,
-                    "source_key": source_key,
-                    "runtime_key": deepcopy(record.runtime_key),
-                    "position": [
-                        int(record.runtime_position[0]) + int(x) - int(record.original_position[0]),
-                        int(record.runtime_position[1]) + int(y) - int(record.original_position[1]),
-                    ],
-                    **(
-                        {
-                            "size": [
-                                int(record.runtime_size[0]) + int(width) - int(record.original_size[0]),
-                                int(record.runtime_size[1]) + int(height) - int(record.original_size[1]),
-                            ]
-                        }
-                        if (
-                            width is not None
-                            and height is not None
-                            and record.original_size is not None
-                            and record.runtime_size is not None
-                        )
-                        else {}
-                    ),
-                }
-                for record, x, y, width, height, source_key in selected_records
-            ],
+            expected_targets=[self._expected_target_for_intent(selected) for selected in selected_records],
             state="staged",
         )
         with self._lock:
@@ -925,6 +1006,121 @@ class EditorCoordinator:
         self._schedule_attestation_timeout(transaction)
 
         return {"transaction_id": transaction_id, "state": "published", "reload_required": True}
+
+    def _expected_target_for_intent(self, selected: _SelectedIntent) -> dict[str, Any]:
+        record = selected.record
+        expected: dict[str, Any] = {
+            "analysis_id": record.analysis_id,
+            "source_key": selected.source_key,
+            "runtime_key": deepcopy(record.runtime_key),
+        }
+        if selected.color is not None:
+            previous = self._literal_style_color(selected.source_key.get("style_color"))
+            if previous is None:
+                raise EditorError("SOURCE_KEY_INVALID", "style source key is missing its baseline colour")
+            expected["style_color"] = selected.color
+            expected["previous_style_color"] = previous
+            return expected
+
+        if selected.x is None or selected.y is None:
+            raise EditorError("INTENT_POSITION_INVALID", "position intent is missing x or y")
+        expected["position"] = [
+            int(record.runtime_position[0]) + selected.x - int(record.original_position[0]),
+            int(record.runtime_position[1]) + selected.y - int(record.original_position[1]),
+        ]
+        if (
+            selected.width is not None
+            and selected.height is not None
+            and record.original_size is not None
+            and record.runtime_size is not None
+        ):
+            expected["size"] = [
+                int(record.runtime_size[0]) + selected.width - int(record.original_size[0]),
+                int(record.runtime_size[1]) + selected.height - int(record.original_size[1]),
+            ]
+        return expected
+
+    def _command_undo_commit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_string(payload, "session_id")
+        if session_id != self._session_id:
+            raise EditorError("SESSION_ID_MISMATCH", "undo session_id does not match current editor session")
+        prior_id = self._require_string(payload, "transaction_id")
+        with self._lock:
+            prior = self._transactions.get(prior_id)
+            generation = self._script_generation
+        if prior is None:
+            raise EditorError("TRANSACTION_NOT_FOUND", f"transaction not found: {prior_id}")
+        if prior.state != "committed":
+            raise EditorError("UNDO_TRANSACTION_INVALID", "only a committed transaction can be undone")
+        if not prior.expected_targets or any(
+            self._literal_style_color(target.get("style_color")) is None
+            or self._literal_style_color(target.get("previous_style_color")) is None
+            for target in prior.expected_targets
+        ):
+            raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color")
+
+        current_bytes = prior.source_absolute_path.read_bytes()
+        current_sha = sha256_bytes(current_bytes)
+        if current_sha != prior.staged_sha256:
+            raise EditorError("STALE_SOURCE", "source file changed after the committed transaction")
+
+        expected_targets: list[dict[str, Any]] = []
+        for target in prior.expected_targets:
+            reversed_target = deepcopy(target)
+            current_color = self._literal_style_color(target.get("style_color"))
+            previous_color = self._literal_style_color(target.get("previous_style_color"))
+            if current_color is None or previous_color is None:
+                raise EditorError("UNDO_STYLE_COLOR_ONLY", "style undo target is missing colour evidence")
+            reversed_target["style_color"] = previous_color
+            reversed_target["previous_style_color"] = current_color
+            expected_targets.append(reversed_target)
+
+        transaction_id = uuid.uuid4().hex
+        transaction = _TransactionRecord(
+            transaction_id=transaction_id,
+            source_relative_path=prior.source_relative_path,
+            source_absolute_path=prior.source_absolute_path,
+            original_bytes=current_bytes,
+            staged_bytes=prior.original_bytes,
+            original_sha256=current_sha,
+            staged_sha256=sha256_bytes(prior.original_bytes),
+            generation=generation,
+            expected_targets=expected_targets,
+            state="staged",
+        )
+        with self._lock:
+            self._transactions[transaction_id] = transaction
+        self._persist_transaction(transaction)
+
+        lint_result = self._validate_shadow(transaction)
+        if not lint_result.ok:
+            transaction.state = "failed"
+            transaction.diagnostics = self._lint_diagnostics(lint_result)
+            self._persist_transaction(transaction)
+            raise EditorError(
+                "VALIDATION_FAILED",
+                "Ren'Py lint failed while validating product undo",
+                details={"transaction_id": transaction_id},
+            )
+        transaction.diagnostics = {
+            **self._lint_diagnostics(lint_result),
+            "undo_of_transaction_id": prior_id,
+        }
+        if sha256_bytes(prior.source_absolute_path.read_bytes()) != transaction.original_sha256:
+            transaction.state = "failed"
+            self._persist_transaction(transaction)
+            raise EditorError("STALE_SOURCE", "source file changed before undo publication")
+
+        atomic_write_file(prior.source_absolute_path, transaction.staged_bytes)
+        transaction.state = "published"
+        self._persist_transaction(transaction)
+        self._schedule_attestation_timeout(transaction)
+        return {
+            "transaction_id": transaction_id,
+            "undo_of_transaction_id": prior_id,
+            "state": "published",
+            "reload_required": True,
+        }
 
     def _command_commit_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         transaction_id = self._require_string(payload, "transaction_id")
@@ -970,12 +1166,21 @@ class EditorCoordinator:
             # alone, the published bytes stayed in the author's file until the
             # attestation timer fired seconds later.
             self._conditional_rollback(record)
+            # Game already reloaded; forget the pre-reload generation so later
+            # analyses can re-lock to the live script_generation (including any
+            # follow-up reload that re-syncs rolled-back source into memory).
+            with self._lock:
+                self._script_generation = -1
             raise
         if not isinstance(result, dict):
             self._conditional_rollback(record)
+            with self._lock:
+                self._script_generation = -1
             raise EditorError("ATTESTATION_FAILED", "runtime probe returned invalid attestation payload")
         if result.get("ok") is not True or result.get("state") != "all_targets_attested":
             self._conditional_rollback(record)
+            with self._lock:
+                self._script_generation = -1
             raise EditorError("ATTESTATION_FAILED", "runtime attestation did not reach all_targets_attested")
 
         with self._lock:
@@ -1174,6 +1379,43 @@ class EditorCoordinator:
             return value
         return None
 
+    def _normalize_style_color(self, value: Any) -> str | None:
+        """Return a comparable hex colour, collapsing opaque alpha and short form."""
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if not normalized.startswith("#"):
+            return None
+        body = normalized[1:]
+        if any(char not in "0123456789abcdef" for char in body):
+            return None
+        if len(body) == 3:
+            body = "".join(ch * 2 for ch in body)
+        elif len(body) == 8 and body.endswith("ff"):
+            body = body[:6]
+        elif len(body) == 6:
+            pass
+        elif len(body) == 8:
+            # Keep non-opaque alpha colours as 8-digit so they never match 6-digit authored forms accidentally.
+            return "#" + body
+        else:
+            return None
+        return "#" + body
+
+    def _literal_style_color(self, value: Any) -> str | None:
+        """Validate a writable hex literal while preserving its authored family."""
+        if not isinstance(value, str):
+            return None
+        literal = value.strip().lower()
+        if not literal.startswith("#"):
+            return None
+        body = literal[1:]
+        if len(body) not in (3, 6, 8):
+            return None
+        if any(char not in "0123456789abcdef" for char in body):
+            return None
+        return literal
+
     def _extract_position(self, observation: dict[str, Any]) -> list[int]:
         rect = observation.get("rect")
         if not isinstance(rect, list) or len(rect) < 2:
@@ -1197,12 +1439,18 @@ class EditorCoordinator:
     def _apply_same_file_intents(
         self,
         source_bytes: bytes,
-        selected_records: list[tuple[_AnalysisRecord, int, int, int | None, int | None, dict[str, Any]]],
+        selected_records: list[_SelectedIntent],
     ) -> bytes:
         lines = source_bytes.decode("utf-8").splitlines(keepends=True)
         seen_targets: set[tuple[str, int, str]] = set()
 
-        for _record, x, y, width, height, source_key in selected_records:
+        for selected in selected_records:
+            x = selected.x
+            y = selected.y
+            width = selected.width
+            height = selected.height
+            color = selected.color
+            source_key = selected.source_key
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
             if not isinstance(line_no, int) or not isinstance(widget_id, str):
@@ -1231,6 +1479,22 @@ class EditorCoordinator:
                         "STATEMENT_KIND_MISMATCH",
                         "source_key statement_kind does not match source line",
                     )
+            if actual_kind == "text":
+                if color is None or any(value is not None for value in (x, y, width, height)):
+                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent shape is invalid")
+                statement = analyze_text_color_style(
+                    lines[line_no - 1],
+                    expected_widget_id=widget_id,
+                )
+                lines[line_no - 1] = apply_text_color_patch(
+                    lines[line_no - 1].encode("utf-8"),
+                    statement,
+                    color=color,
+                ).decode("utf-8")
+                continue
+
+            if x is None or y is None:
+                raise EditorError("INTENT_POSITION_INVALID", "position intent is missing x or y")
             if actual_kind == "button":
                 if width is not None or height is not None:
                     raise EditorError(

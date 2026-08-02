@@ -1,4 +1,4 @@
-"""Live evidence runner for issue #50 text colour style source-write contract."""
+"""Live evidence runner for issue #50 text colour product path."""
 
 from __future__ import annotations
 
@@ -12,18 +12,19 @@ from typing import Any
 
 from PIL import Image
 
-from renforge.editor.paths import atomic_write_file
 from renforge.editor.source import (
     TEXT_STYLE_COLOR_MODE_LITERAL,
     analyze_text_color_style,
     apply_text_color_patch,
 )
-from renforge.editor_task0_runner import _require_ok
+from renforge.editor_task0_runner import _require_ok, _wait_for_status
 
 FIXTURE_SCREEN = "renforge_editor_style_fixture"
 TARGET_ID = "style_color_target"
 INHERITED_ID = "style_color_inherited"
 EXPR_ID = "style_color_expr"
+ALPHA_ID = "style_color_alpha"
+LOOP_ID = "style_color_loop"
 FOCUS_ID = "style_focus_control"
 BASELINE_COLOR = "#e22b2b"
 REQUESTED_COLOR = "#2457d6"
@@ -61,7 +62,7 @@ def _parse_color_from_target_line(source_text: str, widget_id: str) -> str | Non
     match = re.search(r'\bcolor\s+([\'"])(#[0-9A-Fa-f]{3,8})\1', line)
     if not match:
         return None
-    return match.group(2)
+    return match.group(2).lower()
 
 
 def _independent_expected_after_color_patch(before_text: str, *, color: str) -> str:
@@ -141,11 +142,7 @@ def _sample_region_paint(
     *,
     image: Image.Image | None = None,
 ) -> dict[str, Any]:
-    """Independent screenshot paint stats for saturated non-dark pixels.
-
-    Colour class is derived only from PNG samples — never from scene-tree style
-    metadata or editor claims.
-    """
+    """Independent screenshot paint stats for saturated non-dark pixels."""
     if image is None:
         image = Image.open(io.BytesIO(client.screenshot())).convert("RGB")
     x0 = max(0, int(bounds["x"]))
@@ -160,8 +157,6 @@ def _sample_region_paint(
                 rgb = (pixel, pixel, pixel)
             else:
                 rgb = (int(pixel[0]), int(pixel[1]), int(pixel[2]))
-            # Dark fixture background is ~#0a0a12. Drop near-black and near-grey
-            # anti-alias fringes so glyph chroma dominates.
             if max(rgb) < 50:
                 continue
             if max(rgb) - min(rgb) < 25:
@@ -182,7 +177,6 @@ def _sample_region_paint(
         round(sum(p[1] for p in painted) / len(painted)),
         round(sum(p[2] for p in painted) / len(painted)),
     )
-    # Also record one high-chroma sample near the geometric centre.
     cx = (x0 + x1) // 2
     cy = (y0 + y1) // 2
     sample_point = None
@@ -236,7 +230,6 @@ def _wait_paint(
             **_sample_region_paint(client, last_bounds),
             "bounds_from_scene_tree": bounds_from_scene_tree,
         }
-        # Prefer the high-chroma centre sample when mean is muddy.
         dominant = last_paint.get("sample_dominant") or last_paint.get("dominant")
         if (
             bounds_from_scene_tree
@@ -254,8 +247,15 @@ def _wait_paint(
     return last_bounds, last_paint
 
 
+def _source_generation(status: dict[str, Any]) -> int:
+    try:
+        return int(status.get("script_generation"))
+    except Exception:
+        return 0
+
+
 def _attempt_product_select(client: Any, bounds: dict[str, int]) -> dict[str, Any]:
-    """Click via the production select path (focus_list only)."""
+    """Click via the production select path (focus + non-focusable text)."""
     x = int(bounds["x"]) + max(1, int(bounds["width"]) // 2)
     y = int(bounds["y"]) + max(1, int(bounds["height"]) // 2)
     selection = client.request("editor_task0_select", {"x": x, "y": y})
@@ -286,6 +286,68 @@ def _attempt_product_select(client: Any, bounds: dict[str, int]) -> dict[str, An
         "pending_transaction_id": (
             (status or {}).get("pending_transaction_id") if isinstance(status, dict) else None
         ),
+        "observation": (selection or {}).get("observation") if isinstance(selection, dict) else None,
+    }
+
+
+def _wait_style_analysis(client: Any, *, timeout: float = 20.0) -> dict[str, Any]:
+    return _wait_for_status(
+        client,
+        lambda status: (
+            status.get("selected_widget_id") == TARGET_ID
+            and status.get("selected_lock_reason") in (None, "")
+            and bool(status.get("current_analysis_id"))
+            and (status.get("current_source_key") or {}).get("statement_kind") == "text"
+            and (status.get("current_capabilities") or {}).get("style_color") is True
+        ),
+        timeout=timeout,
+        poll_name="style color analysis unlock",
+    )
+
+
+def _runtime_target_probe(client: Any, *, label: str, widget_id: str) -> dict[str, Any]:
+    bounds = _scene_text_bounds(client, label=label)
+    if bounds is None:
+        return {"ok": False, "reason": "scene_bounds_missing", "widget_id": widget_id}
+    selection = _attempt_product_select(client, bounds)
+    try:
+        status = _wait_for_status(
+            client,
+            lambda item: (
+                item.get("selected_widget_id") == widget_id
+                and item.get("selected_lock_reason") != "ANALYZING"
+                and (
+                    bool(item.get("current_analysis_id"))
+                    or item.get("selected_lock_reason") not in (None, "")
+                )
+            ),
+            timeout=20.0,
+            poll_name=f"style runtime probe {widget_id}",
+        )
+    except AssertionError as exc:
+        final_status = client.request("editor_task0_status", {})
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "widget_id": widget_id,
+            "selection": selection,
+            "final_status": {
+                "selected_widget_id": final_status.get("selected_widget_id"),
+                "selected_analysis_pending": final_status.get("selected_analysis_pending"),
+                "selected_lock_reason": final_status.get("selected_lock_reason"),
+                "current_analysis_id": final_status.get("current_analysis_id"),
+                "save_error": final_status.get("save_error"),
+                "status_text": final_status.get("status_text"),
+            },
+        }
+    return {
+        "ok": True,
+        "widget_id": widget_id,
+        "selection": selection,
+        "lock_reason": status.get("selected_lock_reason"),
+        "capabilities": status.get("current_capabilities") or {},
+        "source_key": status.get("current_source_key") or {},
+        "observation": selection.get("observation") or {},
     }
 
 
@@ -300,10 +362,14 @@ def _lock_probe(source_text: str, widget_id: str, expected_code: str) -> dict[st
     }
 
 
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
-    """Evidence-gated live scenario for text colour style (issue #50)."""
+    """Evidence-gated live scenario for text colour product path (issue #50)."""
     baseline = fixture_path.read_bytes()
-    baseline_sha = hashlib.sha256(baseline).hexdigest()
+    baseline_sha = _sha256_bytes(baseline)
     baseline_text = baseline.decode("utf-8")
     report: dict[str, Any] = {
         "baseline_sha256": baseline_sha,
@@ -317,6 +383,35 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     report["locks"] = {
         "inherited": _lock_probe(baseline_text, INHERITED_ID, "STYLE_COLOR_NOT_DIRECTLY_AUTHORED"),
         "expression": _lock_probe(baseline_text, EXPR_ID, "STYLE_COLOR_LITERAL_REQUIRED"),
+    }
+
+    alpha_probe = _runtime_target_probe(client, label="ALPHA", widget_id=ALPHA_ID)
+    alpha_observation = alpha_probe.get("observation") or {}
+    alpha_caps = alpha_probe.get("capabilities") or {}
+    report["runtime_alpha"] = {
+        **alpha_probe,
+        "ok": bool(
+            alpha_probe.get("ok")
+            and alpha_probe.get("lock_reason") in (None, "")
+            and alpha_caps.get("style_color") is True
+            and alpha_observation.get("style_color") == "#33669980"
+        ),
+    }
+
+    loop_probe = _runtime_target_probe(client, label="LOOP 1", widget_id=LOOP_ID)
+    loop_observation = loop_probe.get("observation") or {}
+    loop_runtime_key = loop_observation.get("runtime_key") or {}
+    loop_discriminator = loop_runtime_key.get("instance_discriminator") or {}
+    report["runtime_repeated_lock"] = {
+        **loop_probe,
+        "instance_discriminator": loop_discriminator,
+        "ok": bool(
+            loop_probe.get("ok")
+            and loop_probe.get("lock_reason")
+            in ("LOOP_INSTANCE_UNSUPPORTED", "MULTI_INSTANCE_UNSUPPORTED")
+            and (loop_probe.get("capabilities") or {}).get("style_color") is not True
+            and int(loop_discriminator.get("instance_count") or 0) >= 2
+        ),
     }
 
     target_line, _ = _target_line_with_offset(baseline_text, TARGET_ID)
@@ -335,20 +430,11 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     if not report["resolve_source"]["unlocked"]:
         report["verdict"] = "blocked"
         report["verdict_reason"] = "style_color_source_unlock_failed"
-        report["restore"] = {
-            "byte_identical": True,
-            "sha256": baseline_sha,
-            "note": "manual_fixture_restore_cleanup_not_product_undo",
-        }
         return report
 
-    # Pixel before: wait for independent red paint (not scene-tree style fields).
     bounds_before, pixel_before = _wait_paint(client, expected_dominant="red", timeout=8.0)
     report["target_bounds"] = bounds_before
     report["pixel_before"] = pixel_before
-
-    # Product select attempt on the text glyph (expected: no style unlock).
-    report["product_select"] = _attempt_product_select(client, bounds_before)
 
     # Focusable control still resolves via focus_list (control-path sanity).
     focus_bounds = None
@@ -371,71 +457,340 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     if focus_bounds is not None:
         report["focus_control_select"] = _attempt_product_select(client, focus_bounds)
 
-    # Source patch via dedicated style contract (not coordinate spans).
-    staged_line = apply_text_color_patch(
-        target_line.encode("utf-8"),
-        target_analysis,
-        color=REQUESTED_COLOR,
-    ).decode("utf-8")
-    staged_text = baseline_text.replace(target_line, staged_line, 1)
-    if staged_text == baseline_text:
-        raise AssertionError("style colour patch produced no source change")
-    expected_text = _independent_expected_after_color_patch(baseline_text, color=REQUESTED_COLOR)
-    outside_ok = _outside_color_span_identical(baseline_text, staged_text)
-    report["source_patch"] = {
-        "changed": True,
-        "matches_independent_expected": staged_text == expected_text,
-        "outside_color_span_identical": outside_ok,
-        "source_color_after": _parse_color_from_target_line(staged_text, TARGET_ID),
-        "staged_sha256": hashlib.sha256(staged_text.encode("utf-8")).hexdigest(),
-    }
-    if not report["source_patch"]["matches_independent_expected"] or not outside_ok:
-        report["verdict"] = "inconclusive"
-        report["verdict_reason"] = "source_patch_form_or_span_mismatch"
+    # --- Product select on non-focusable text ---
+    report["product_select"] = _attempt_product_select(client, bounds_before)
+    try:
+        analysis_status = _wait_style_analysis(client, timeout=20.0)
+    except AssertionError as exc:
+        report["product_select_analysis_error"] = str(exc)
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_product_select_unlock_failed"
         return report
 
-    try:
-        atomic_write_file(fixture_path, staged_text.encode("utf-8"))
-        if fixture_path.read_text(encoding="utf-8") != staged_text:
-            raise AssertionError("atomic write did not publish staged style fixture bytes")
-        _require_ok(client.control("reload_script"), "style color reload")
-        # Give the reloaded script a moment, then re-show the fixture.
-        for _ in range(30):
-            if client.eval_expr(f'renpy.has_screen("{FIXTURE_SCREEN}")') is True:
-                break
-            time.sleep(0.1)
-        _show_fixture(client)
-        bounds_after, pixel_after = _wait_paint(client, expected_dominant="blue", timeout=10.0)
-        report["pixel_after"] = pixel_after
-        report["target_bounds_after"] = bounds_after
-        disk_color = _parse_color_from_target_line(
-            fixture_path.read_text(encoding="utf-8"),
-            TARGET_ID,
-        )
-        report["published_source_after_reload"] = {
-            "widget_id": TARGET_ID,
-            "bounds_after": bounds_after,
-            "source_color": disk_color,
-            "ok": disk_color == REQUESTED_COLOR,
-        }
-    finally:
-        # Cleanup only — not product undo evidence.
-        atomic_write_file(fixture_path, baseline)
-        try:
-            _require_ok(client.control("reload_script"), "style color restore reload")
-            _show_fixture(client)
-        except Exception as exc:  # noqa: BLE001
-            report["restore_reload_error"] = str(exc)
+    caps = analysis_status.get("current_capabilities") or {}
+    source_key = analysis_status.get("current_source_key") or {}
+    report["product_select_unlocked_style"] = bool(
+        analysis_status.get("selected_widget_id") == TARGET_ID
+        and source_key.get("statement_kind") == "text"
+        and source_key.get("style_mode") == TEXT_STYLE_COLOR_MODE_LITERAL
+        and caps.get("style_color") is True
+        and caps.get("style_color_preview") is True
+        and caps.get("style_color_commit") is True
+        and caps.get("style_color_undo") is True
+        and caps.get("style_color_attestation_rollback") is True
+    )
+    report["product_seam_probe"] = {
+        "measurement_source": "editor_task0_status.current_capabilities",
+        "selected_widget_id": analysis_status.get("selected_widget_id"),
+        "capabilities": caps,
+        "source_key": source_key,
+        "save_enabled": analysis_status.get("save_enabled"),
+        "history_length": analysis_status.get("history_length"),
+        "analysis_id": analysis_status.get("current_analysis_id"),
+        "measurement_method": ((report["product_select"].get("observation") or {}) or {}).get(
+            "measurement_method"
+        ),
+    }
+    report["product_preview_available"] = bool(caps.get("style_color_preview") is True)
+    report["product_commit_available"] = bool(caps.get("style_color_commit") is True)
+    report["product_undo_available"] = bool(caps.get("style_color_undo") is True)
+    report["refused_attestation_rollback_available"] = bool(
+        caps.get("style_color_attestation_rollback") is True
+    )
+    if not report["product_select_unlocked_style"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_product_path_missing"
+        return report
 
-    restored = fixture_path.read_bytes()
-    report["restore"] = {
-        "sha256": hashlib.sha256(restored).hexdigest(),
-        "byte_identical": restored == baseline,
-        "note": "manual_fixture_restore_cleanup_not_product_undo",
+    generation0 = _source_generation(analysis_status)
+
+    # --- Preview without source write ---
+    pre_preview_bytes = fixture_path.read_bytes()
+    preview = _require_ok(
+        client.request("editor_task0_style_color", {"color": REQUESTED_COLOR}),
+        "style color preview",
+    )
+    preview_status = _wait_for_status(
+        client,
+        lambda status: bool(status.get("save_enabled"))
+        and str(status.get("style_color_input") or "").lower() == REQUESTED_COLOR,
+        timeout=8.0,
+        poll_name="style color preview dirty",
+    )
+    bounds_preview, pixel_preview = _wait_paint(client, expected_dominant="blue", timeout=10.0)
+    post_preview_bytes = fixture_path.read_bytes()
+    report["product_preview"] = {
+        "ok": preview.get("ok") is True,
+        "method": preview.get("method"),
+        "color": preview.get("color"),
+        "source_byte_identical": post_preview_bytes == pre_preview_bytes,
+        "source_sha256": _sha256_bytes(post_preview_bytes),
+        "pixel": pixel_preview,
+        "bounds": bounds_preview,
+        "save_enabled": preview_status.get("save_enabled"),
+    }
+    if not report["product_preview"]["source_byte_identical"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_preview_wrote_source"
+        return report
+    if pixel_preview.get("dominant") != "blue":
+        report["verdict"] = "inconclusive"
+        report["verdict_reason"] = "style_color_preview_paint_unproven"
+        return report
+
+    # Reset is local preview history, distinct from transactional product undo.
+    reset = _require_ok(client.request("editor_task0_reset", {}), "style color preview reset")
+    reset_status = _wait_for_status(
+        client,
+        lambda status: not bool(status.get("save_enabled"))
+        and str(status.get("style_color_input") or "").lower() == BASELINE_COLOR,
+        timeout=8.0,
+        poll_name="style color preview reset clean",
+    )
+    reset_bounds, reset_pixel = _wait_paint(client, expected_dominant="red", timeout=10.0)
+    reset_bytes = fixture_path.read_bytes()
+    report["product_preview_reset"] = {
+        "ok": reset.get("ok") is True
+        and reset_bytes == baseline
+        and reset_pixel.get("dominant") == "red",
+        "source_byte_identical": reset_bytes == baseline,
+        "pixel": reset_pixel,
+        "bounds": reset_bounds,
+        "save_enabled": reset_status.get("save_enabled"),
+    }
+    if not report["product_preview_reset"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_preview_reset_failed"
+        return report
+
+    # Re-apply the requested preview before exercising commit rollback.
+    _require_ok(
+        client.request("editor_task0_style_color", {"color": REQUESTED_COLOR}),
+        "style color preview after reset",
+    )
+    _wait_for_status(
+        client,
+        lambda status: bool(status.get("save_enabled"))
+        and str(status.get("style_color_input") or "").lower() == REQUESTED_COLOR,
+        timeout=8.0,
+        poll_name="style color preview after reset dirty",
+    )
+    _wait_paint(client, expected_dominant="blue", timeout=10.0)
+
+    # --- Deliberate refused attestation rollback ---
+    _require_ok(
+        client.request("editor_task0_force_style_attestation_refusal", {}),
+        "force style attestation refusal",
+    )
+    refused_save = _require_ok(
+        client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
+        "style color refused save",
+    )
+    refused_status = _wait_for_status(
+        client,
+        lambda status: (
+            not bool(status.get("save_in_progress"))
+            and status.get("status_text") in ("Reload failed", "Commit failed", "Reload handshake failed")
+        ),
+        timeout=60.0,
+        poll_name="style color refused attestation",
+    )
+    refused_bytes = fixture_path.read_bytes()
+    report["refused_attestation_rollback"] = {
+        "ok": refused_bytes == baseline,
+        "byte_identical": refused_bytes == baseline,
+        "sha256": _sha256_bytes(refused_bytes),
+        "save_request": refused_save,
+        "status_text": refused_status.get("status_text"),
+        "save_error": refused_status.get("save_error") or refused_status.get("save_last_error"),
+    }
+    if not report["refused_attestation_rollback"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_refused_attestation_did_not_rollback"
+        return report
+
+    # Resync runtime to rolled-back source for the successful product pass.
+    _require_ok(client.control("reload_script"), "post-refusal reload")
+    for _ in range(40):
+        if client.eval_expr(f'renpy.has_screen("{FIXTURE_SCREEN}")') is True:
+            break
+        time.sleep(0.1)
+    _show_fixture(client)
+    bounds_red, pixel_red = _wait_paint(client, expected_dominant="red", timeout=10.0)
+    report["post_refusal_paint"] = pixel_red
+    report["post_refusal_bounds"] = bounds_red
+
+    # Re-select and unlock again for the successful commit path.
+    report["product_select_retry"] = _attempt_product_select(client, bounds_red)
+    analysis_status = _wait_style_analysis(client, timeout=20.0)
+    generation1 = _source_generation(analysis_status)
+    _require_ok(
+        client.request("editor_task0_style_color", {"color": REQUESTED_COLOR}),
+        "style color preview before successful save",
+    )
+    _wait_for_status(
+        client,
+        lambda status: bool(status.get("save_enabled")),
+        timeout=8.0,
+        poll_name="style color ready to save",
+    )
+    bounds_preview2, pixel_preview2 = _wait_paint(client, expected_dominant="blue", timeout=10.0)
+    report["product_preview_before_commit"] = {
+        "pixel": pixel_preview2,
+        "bounds": bounds_preview2,
+        "source_byte_identical": fixture_path.read_bytes() == baseline,
     }
 
-    pixel_before = report.get("pixel_before") or {}
-    pixel_after = report.get("pixel_after") or {}
+    pre_save_text = fixture_path.read_text(encoding="utf-8")
+    save_request = _require_ok(
+        client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
+        "style color product save",
+    )
+    save_status = _wait_for_status(
+        client,
+        lambda status: (
+            not bool(status.get("save_in_progress"))
+            and status.get("status_text") == "Reload committed"
+            and _source_generation(status) >= generation1 + 1
+        ),
+        timeout=60.0,
+        poll_name="style color save complete",
+    )
+    post_save_bytes = fixture_path.read_bytes()
+    post_save_text = post_save_bytes.decode("utf-8")
+    expected_text = _independent_expected_after_color_patch(pre_save_text, color=REQUESTED_COLOR)
+    outside_ok = _outside_color_span_identical(pre_save_text, post_save_text)
+    report["source_patch"] = {
+        "changed": post_save_text != pre_save_text,
+        "matches_independent_expected": post_save_text == expected_text,
+        "outside_color_span_identical": outside_ok,
+        "source_color_after": _parse_color_from_target_line(post_save_text, TARGET_ID),
+        "staged_sha256": _sha256_bytes(post_save_bytes),
+        "save_request": save_request,
+    }
+    report["product_commit"] = {
+        "ok": (
+            report["source_patch"]["matches_independent_expected"]
+            and report["source_patch"]["outside_color_span_identical"]
+            and report["source_patch"]["source_color_after"] == REQUESTED_COLOR
+            and save_status.get("status_text") == "Reload committed"
+        ),
+        "status_text": save_status.get("status_text"),
+        "script_generation": _source_generation(save_status),
+        "last_committed_transaction_id": save_status.get("last_committed_transaction_id"),
+    }
+
+    successor = _wait_for_status(
+        client,
+        lambda status: (
+            bool(status.get("current_analysis_id"))
+            and status.get("selected_widget_id") == TARGET_ID
+            and status.get("selected_lock_reason") in (None, "")
+            and (status.get("current_source_key") or {}).get("style_mode")
+            == TEXT_STYLE_COLOR_MODE_LITERAL
+            and (status.get("current_capabilities") or {}).get("style_color") is True
+        ),
+        timeout=15.0,
+        poll_name="style color post-save rebind",
+    )
+    bounds_after, pixel_after = _wait_paint(client, expected_dominant="blue", timeout=10.0)
+    report["pixel_after"] = pixel_after
+    report["target_bounds_after"] = bounds_after
+    report["published_source_after_reload"] = {
+        "widget_id": TARGET_ID,
+        "bounds_after": bounds_after,
+        "source_color": _parse_color_from_target_line(post_save_text, TARGET_ID),
+        "ok": _parse_color_from_target_line(post_save_text, TARGET_ID) == REQUESTED_COLOR,
+    }
+    report["rebinding"] = {
+        "ok": (
+            successor.get("selected_widget_id") == TARGET_ID
+            and successor.get("current_analysis_id")
+            not in (None, analysis_status.get("current_analysis_id"))
+            and (successor.get("current_source_key") or {}).get("statement_kind") == "text"
+            and (successor.get("current_source_key") or {}).get("style_mode")
+            == TEXT_STYLE_COLOR_MODE_LITERAL
+            and (successor.get("current_capabilities") or {}).get("style_color") is True
+        ),
+        "widget_id": successor.get("selected_widget_id"),
+        "analysis_id": successor.get("current_analysis_id"),
+        "previous_analysis_id": analysis_status.get("current_analysis_id"),
+        "source_key": successor.get("current_source_key"),
+        "capabilities": successor.get("current_capabilities"),
+    }
+
+    # --- Product undo ---
+    generation2 = _source_generation(successor)
+    undo_click = _require_ok(
+        client.click_element(id="rf_undo", screen="_renforge_editor_overlay"),
+        "style color product undo",
+    )
+    undo_status = _wait_for_status(
+        client,
+        lambda status: (
+            not bool(status.get("save_in_progress"))
+            and status.get("status_text") == "Reload committed"
+            and _source_generation(status) >= generation2 + 1
+        ),
+        timeout=60.0,
+        poll_name="style color product undo complete",
+    )
+    undo_bytes = fixture_path.read_bytes()
+    undo_text = undo_bytes.decode("utf-8")
+    bounds_undo, pixel_undo = _wait_paint(client, expected_dominant="red", timeout=10.0)
+    undo_rebind = _wait_for_status(
+        client,
+        lambda status: (
+            bool(status.get("current_analysis_id"))
+            and status.get("selected_widget_id") == TARGET_ID
+            and status.get("selected_lock_reason") in (None, "")
+            and (status.get("current_source_key") or {}).get("style_mode")
+            == TEXT_STYLE_COLOR_MODE_LITERAL
+            and (status.get("current_capabilities") or {}).get("style_color") is True
+        ),
+        timeout=15.0,
+        poll_name="style color post-undo rebind",
+    )
+    report["product_undo"] = {
+        "ok": (
+            undo_bytes == baseline
+            and _parse_color_from_target_line(undo_text, TARGET_ID) == BASELINE_COLOR
+            and pixel_undo.get("dominant") == "red"
+            and undo_rebind.get("selected_widget_id") == TARGET_ID
+            and undo_status.get("status_text") == "Reload committed"
+        ),
+        "byte_identical": undo_bytes == baseline,
+        "sha256": _sha256_bytes(undo_bytes),
+        "source_color": _parse_color_from_target_line(undo_text, TARGET_ID),
+        "pixel": pixel_undo,
+        "bounds": bounds_undo,
+        "click": undo_click,
+        "status_text": undo_status.get("status_text"),
+        "rebinding": {
+            "widget_id": undo_rebind.get("selected_widget_id"),
+            "analysis_id": undo_rebind.get("current_analysis_id"),
+            "capabilities": undo_rebind.get("current_capabilities"),
+        },
+        "note": "product_undo_transaction",
+    }
+
+    # Manual fixture restore is cleanup only if product undo already restored bytes.
+    restored = fixture_path.read_bytes()
+    if restored != baseline:
+        fixture_path.write_bytes(baseline)
+        restored = fixture_path.read_bytes()
+        report["restore"] = {
+            "sha256": _sha256_bytes(restored),
+            "byte_identical": restored == baseline,
+            "note": "manual_fixture_restore_cleanup_not_product_undo",
+        }
+    else:
+        report["restore"] = {
+            "sha256": _sha256_bytes(restored),
+            "byte_identical": True,
+            "note": "product_undo_restored_baseline",
+        }
+
     report["runtime_color_change_proven"] = (
         pixel_before.get("dominant") == "red"
         and pixel_after.get("dominant") == "blue"
@@ -444,54 +799,51 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         and int(pixel_before.get("paint_count") or 0) > 20
         and int(pixel_after.get("paint_count") or 0) > 20
     )
-    report["product_select_unlocked_style"] = bool(
-        report["product_select"].get("selected_widget_id") == TARGET_ID
-        and (report["product_select"].get("source_key") or {}).get("statement_kind") == "text"
-        and (report["product_select"].get("source_key") or {}).get("style_mode")
-        == TEXT_STYLE_COLOR_MODE_LITERAL
-        and (report["product_select"].get("capabilities") or {}).get("style_color") is True
-    )
-    # Measure advertised product seams from the status returned by the real
-    # production selection attempt. No style-specific command is inferred when
-    # the capability map does not advertise one.
-    capabilities = report["product_select"].get("capabilities") or {}
-    style_selected = report["product_select_unlocked_style"]
-    report["product_seam_probe"] = {
-        "measurement_source": "editor_task0_status.current_capabilities",
-        "selected_widget_id": report["product_select"].get("selected_widget_id"),
-        "capabilities": capabilities,
-        "save_enabled": report["product_select"].get("save_enabled"),
-        "history_length": report["product_select"].get("history_length"),
-        "pending_transaction_id": report["product_select"].get("pending_transaction_id"),
-    }
-    report["product_preview_available"] = bool(
-        style_selected and capabilities.get("style_color_preview") is True
-    )
-    report["product_commit_available"] = bool(
-        style_selected and capabilities.get("style_color_commit") is True
-    )
-    report["product_undo_available"] = bool(
-        style_selected and capabilities.get("style_color_undo") is True
-    )
-    report["refused_attestation_rollback_available"] = bool(
-        style_selected and capabilities.get("style_color_attestation_rollback") is True
-    )
 
-    if not report["runtime_color_change_proven"]:
-        report["verdict"] = "inconclusive"
-        report["verdict_reason"] = "pixel_color_change_unproven"
-    elif not (
-        report["source_patch"]["matches_independent_expected"]
-        and report["source_patch"]["outside_color_span_identical"]
-        and report["restore"]["byte_identical"]
-        and report["locks"]["inherited"]["matches_expected"]
-        and report["locks"]["expression"]["matches_expected"]
-    ):
-        report["verdict"] = "inconclusive"
-        report["verdict_reason"] = "source_or_lock_evidence_incomplete"
-    else:
-        # Source + independent pixel proven; product style path absent.
+    required = [
+        report["product_select_unlocked_style"],
+        report["product_preview"]["ok"] and report["product_preview"]["source_byte_identical"],
+        report["product_preview"]["pixel"].get("dominant") == "blue",
+        report["product_preview_reset"]["ok"],
+        report["refused_attestation_rollback"]["ok"],
+        report["product_commit"]["ok"],
+        report["runtime_color_change_proven"],
+        report["rebinding"]["ok"],
+        report["product_undo"]["ok"],
+        report["locks"]["inherited"]["matches_expected"],
+        report["locks"]["expression"]["matches_expected"],
+        report["runtime_alpha"]["ok"],
+        report["runtime_repeated_lock"]["ok"],
+        report["restore"]["byte_identical"],
+    ]
+    if all(required):
+        report["verdict"] = "pass"
+        report["verdict_reason"] = None
+    elif not report["product_select_unlocked_style"]:
         report["verdict"] = "blocked"
         report["verdict_reason"] = "style_color_product_path_missing"
+    elif not report["refused_attestation_rollback"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_refused_attestation_did_not_rollback"
+    elif not report["product_commit"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_product_commit_failed"
+    elif not report["product_undo"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_product_undo_failed"
+    elif not report["runtime_color_change_proven"]:
+        report["verdict"] = "inconclusive"
+        report["verdict_reason"] = "pixel_color_change_unproven"
+    else:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_product_evidence_incomplete"
 
+    # Keep generation0 referenced for diagnostics.
+    report["generations"] = {
+        "initial_analysis": generation0,
+        "pre_commit": generation1,
+        "post_commit": _source_generation(save_status),
+        "pre_undo": generation2,
+        "post_undo": _source_generation(undo_status),
+    }
     return report
