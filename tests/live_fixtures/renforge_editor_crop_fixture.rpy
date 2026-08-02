@@ -55,6 +55,13 @@ screen renforge_editor_crop_fixture():
             # list_ui_elements (not painted / not focus-listed for selection).
             textbutton "FULLCLIP" id "crop_fullclip" xpos 20 ypos 250 action NullAction()
 
+        # Issue #46 references: identical labels outside any transform, so the
+        # composite rects below can be compared against an untransformed one.
+        # Same text means the same natural width, which is what makes the zoom
+        # factor and the rotation's AABB growth measurable from focus rects.
+        textbutton "CROP+ROT" id "crop_rotate_reference" xpos 40 ypos 560 action NullAction()
+        textbutton "CROP+ZOOM" id "crop_zoom_reference" xpos 40 ypos 610 action NullAction()
+
         # Still locked (issue #46): crop combined with rotate.
         fixed:
             id "crop_rotate_window"

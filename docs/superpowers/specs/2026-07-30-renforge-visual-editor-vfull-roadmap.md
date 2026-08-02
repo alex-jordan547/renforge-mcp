@@ -232,13 +232,46 @@ child is **fully visible** (focus size matches unclipped render), plain `fixed` 
 | Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` — any 1px focus size reduction vs unclipped render |
 | Visibility unmeasurable | `TRANSFORM_CROP_UNPROVEN` — fail closed when render/size proof fails |
 | Nested crop transforms | `NESTED_TRANSFORM_CROP_UNSUPPORTED` — only one crop Transform was measured |
-| Crop + rotate / crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
+| Crop + rotate / crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` — **measured blocked, issue #46**, see below |
 | Layout container inside crop | `CONTAINER_POSITION_UNSUPPORTED` |
 | Expression position inside crop | `YPOS_LITERAL_REQUIRED` |
 | `fixed` + `clipping True` | still unproven at bridge |
 
 Live proof: `RENFORGE_CROP_LIVE=1 pytest tests/test_editor_crop_live.py`
 Criteria: `docs/superpowers/spikes/2026-08-02-transform-crop-criteria.md`.
+
+### Crop + `rotate` / `zoom` (issue #46) — measured blocked
+
+Every adapter shipped so far relies on one assumption: a displacement applied in authored (child)
+space produces an **equal** displacement in the screen space `focus_list` reports. A crop only
+translates and clips, which is why #45 could unlock pure crop. Driving the editor's own preview with
+the composite gate temporarily open, requesting **+20 px in x** each time:
+
+| Target | Requested Δ | Observed screen Δ | Departure |
+|---|---|---|---|
+| pure crop (control) | `[20, 0]` | `[20, 0]` | none |
+| `zoom=1.25` | `[20, 0]` | `[25, 0]` | `20 × 1.25` — **+25 %**, growing with the drag |
+| `rotate=15` | `[20, 0]` | `[20, 5]` | `20·sin 15°` — **drags horizontally, moves diagonally** |
+
+Focus rect shape, against reference controls with identical labels outside any transform: the zoomed
+child reports `192×43` where the reference is `154×35` (scaled ≈1.25 on both axes), and the rotated
+child reports `118×67` where the reference is `118×35` — the **axis-aligned bounding box of a rotated
+quad**, which no longer describes the shape actually painted.
+
+Two written pass conditions fail: focus rects no longer describe visible geometry (rotate), and a
+child-space edit cannot land within 1 px (both). The existing pixel-agreement gate would reject these
+edits anyway; keeping the lock refuses up front with an exact reason instead of failing at
+attestation.
+
+**This is not a small fix, and the two properties are not the same problem.** A zoom factor is
+observable from the rect, so a delta could in principle be divided by it. A rotation is not: an
+axis-aligned box does not determine the angle, and the editor would need the transformed quad — the
+machinery issue #43 spiked for non-focusable selection, which the write chain does not have. Unlocking
+either means giving the editor a transform-aware coordinate layer. **That work belongs to issue #48
+(rotation), not to a crop ticket.**
+
+Result: `docs/superpowers/spikes/2026-08-02-transform-crop-composite-result.md`.
+Criteria (written first): `docs/superpowers/spikes/2026-08-02-transform-crop-composite-criteria.md`.
 
 ---
 

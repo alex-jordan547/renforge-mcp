@@ -229,6 +229,81 @@ def _sample_paint_near_partial(client: Any, partial: dict[str, int]) -> dict[str
     }
 
 
+# Issue #46 — composite transform geometry.
+#
+# The editor's write chain assumes a displacement applied in authored (child)
+# space produces an *equal* displacement in the screen space `focus_list`
+# reports. A crop only translates and clips, so pure crop keeps that assumption
+# (issue #45). `zoom` scales the mapping and `rotate` turns it, so neither does.
+COMPOSITE_ZOOM = 1.25
+COMPOSITE_ROTATE_DEGREES = 15
+
+
+def measure_composite_divergence(client: Any) -> dict[str, Any]:
+    """Measure how far crop+zoom and crop+rotate depart from a 1:1 mapping.
+
+    Deliberately reads only focus rects, never the Transform's properties, so
+    the evidence is the same kind the editor would have to act on. Reference
+    controls carry identical labels outside any transform, which is what makes
+    the natural size comparable.
+    """
+    _require_ok(
+        client.request("editor_task0_start", {"screen": FIXTURE_SCREEN}),
+        "editor_task0_start",
+    )
+
+    def rect(widget_id: str) -> dict[str, int]:
+        return wait_bounds(client, widget_id, fixture_screen=FIXTURE_SCREEN)
+
+    zoom_reference = rect("crop_zoom_reference")
+    zoomed = rect("crop_with_zoom")
+    rotate_reference = rect("crop_rotate_reference")
+    rotated = rect("crop_with_rotate")
+
+    # A zoomed child reports a rect scaled by the zoom factor on both axes, so a
+    # child-space delta reaches the screen multiplied by it.
+    zoom_scale = {
+        "width": zoomed["width"] / max(1, zoom_reference["width"]),
+        "height": zoomed["height"] / max(1, zoom_reference["height"]),
+    }
+
+    # A rotated child reports the axis-aligned bounding box of a rotated quad,
+    # so its height grows even though the widget itself did not.
+    rotate_growth = {
+        "width": rotated["width"] / max(1, rotate_reference["width"]),
+        "height": rotated["height"] / max(1, rotate_reference["height"]),
+    }
+
+    return {
+        "zoom": {
+            "reference_rect": zoom_reference,
+            "composite_rect": zoomed,
+            "observed_scale": zoom_scale,
+            "authored_zoom": COMPOSITE_ZOOM,
+        },
+        "rotate": {
+            "reference_rect": rotate_reference,
+            "composite_rect": rotated,
+            "observed_growth": rotate_growth,
+            "authored_rotate_degrees": COMPOSITE_ROTATE_DEGREES,
+        },
+        "locks": {
+            "crop_with_zoom": select_lock(
+                client,
+                "crop_with_zoom",
+                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                fixture_screen=FIXTURE_SCREEN,
+            ),
+            "crop_with_rotate": select_lock(
+                client,
+                "crop_with_rotate",
+                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                fixture_screen=FIXTURE_SCREEN,
+            ),
+        },
+    }
+
+
 def run_editor_crop_live_scenario(
     client: Any,
     *,

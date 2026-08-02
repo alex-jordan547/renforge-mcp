@@ -264,7 +264,7 @@ with delta-only source comparison (screen-space `preview_position` ≠ child-spa
 | Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` (any 1px size reduction) |
 | Visibility unmeasurable | `TRANSFORM_CROP_UNPROVEN` |
 | Nested crop transforms | `NESTED_TRANSFORM_CROP_UNSUPPORTED` |
-| Crop + rotate or crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
+| Crop + rotate or crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` — measured blocked (issue #46): zoom scales a child-space delta by the zoom factor, rotation adds unrequested cross-axis motion and reports an AABB instead of the painted quad |
 | Layout container inside the crop | `CONTAINER_POSITION_UNSUPPORTED`, unchanged |
 | Expression ypos inside the crop | `YPOS_LITERAL_REQUIRED`, unchanged |
 | `fixed` + `clipping True` | bridge `CLIPPED_ANCESTRY_UNSUPPORTED` / unproven |
