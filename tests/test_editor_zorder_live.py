@@ -17,7 +17,7 @@ from renforge.editor_zorder_runner import (
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("RENFORGE_ZORDER_LIVE"),
-    reason="set RENFORGE_ZORDER_LIVE=1 to run issue #49 z-order spike",
+    reason="set RENFORGE_ZORDER_LIVE=1 to run issue #49 z-order product path live test",
 )
 
 _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
@@ -49,7 +49,7 @@ def _open_editor(session) -> None:
     pytest.fail("editor overlay never became active")
 
 
-def test_zorder_source_swap_is_live_but_product_remains_blocked(demo_copy: Path) -> None:
+def test_zorder_live_product_path_pass(demo_copy: Path) -> None:
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
     from renforge.sdk import get_or_install_sdk
@@ -60,6 +60,10 @@ def test_zorder_source_swap_is_live_but_product_remains_blocked(demo_copy: Path)
     with launch_with_bridge(sdk, RenpyProject(demo_copy), startup_timeout=120, editor=True) as session:
         _open_editor(session)
         report = run_editor_zorder_live_scenario(session.client, fixture_path=fixture_path)
+
+    assert report["product_zorder_capability_published"] is True
+    assert report["product_commit_available"] is True
+    assert report["product_undo_available"] is True
 
     assert report["before"]["dominant"] == "blue", report
     assert report["before"]["selected_widget_id"] == SIBLING_ID
@@ -75,8 +79,15 @@ def test_zorder_source_swap_is_live_but_product_remains_blocked(demo_copy: Path)
     ]["locations"][SIBLING_ID]
     assert report["source_patch"]["changed"] is True
     assert report["source_patch"]["size_delta"] == 0
+
+    undo = report["product_undo"]
+    assert undo["ok"] is True
+    assert undo["byte_identical"] is True
+    assert undo["dominant"] == "blue"
+    assert undo["selected_widget_id"] == SIBLING_ID
+
     assert report["restore"]["byte_identical"] is True
     assert report["restore"]["sha256"] == report["baseline_sha256"]
-    assert report["verdict"] == "blocked"
-    assert report["verdict_reason"] == "structural_transaction_undo_missing"
+    assert report["verdict"] == "pass"
+    assert report["verdict_reason"] is None
     assert FIXTURE_SCREEN == "renforge_editor_zorder_fixture"

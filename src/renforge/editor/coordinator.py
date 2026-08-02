@@ -36,11 +36,14 @@ from .source import (
     EditorSourceError,
     TextColorStyleStatement,
     align_geometry_matches_parent,
+    _literal_button_id,
     analyze_button_statement,
     analyze_editable_statement,
+    analyze_raise_adjacent_sibling,
     analyze_text_color_style,
     analyze_textbutton_block_statement,
     apply_button_patch,
+    apply_button_sibling_swap,
     apply_editable_statement_patch,
     apply_text_color_patch,
     apply_textbutton_patch,
@@ -90,6 +93,7 @@ class _SelectedIntent:
     width: int | None = None
     height: int | None = None
     color: str | None = None
+    swap_sibling: tuple[str, int] | None = None
 
 
 @dataclass
@@ -776,6 +780,14 @@ class EditorCoordinator:
             and isinstance(source_key, dict)
             and source_key.get("size_mode") == BAR_SIZE_MODE_XSIZE_YSIZE
         )
+        zorder_sibling = (
+            self._find_zorder_adjacent_sibling(source_text, source_line, widget_id)
+            if lock_reason is None
+            and isinstance(source_key, dict)
+            and source_key.get("statement_kind") == "button"
+            else None
+        )
+        can_zorder = zorder_sibling is not None
         record = _AnalysisRecord(
             analysis_id=analysis_id,
             session_id=self._session_id,
@@ -802,6 +814,15 @@ class EditorCoordinator:
                 "resize": can_resize,
                 **(
                     {
+                        "zorder_raise_adjacent_sibling": True,
+                        "zorder_sibling_widget_id": zorder_sibling[0],
+                        "zorder_sibling_line": zorder_sibling[1],
+                    }
+                    if can_zorder and zorder_sibling is not None
+                    else {}
+                ),
+                **(
+                    {
                         "style_color": True,
                         "style_color_preview": True,
                         "style_color_commit": True,
@@ -814,6 +835,50 @@ class EditorCoordinator:
             },
             "lock_reason": lock_reason,
         }
+
+    def _find_zorder_adjacent_sibling(
+        self,
+        source_text: str,
+        target_line: int,
+        target_widget_id: str,
+    ) -> tuple[str, int] | None:
+        lines = source_text.splitlines(keepends=True)
+        if target_line < 1 or target_line > len(lines):
+            return None
+        header = lines[target_line - 1]
+        if peek_statement_kind(header) != "button":
+            return None
+        indent = len(header) - len(header.lstrip())
+        next_idx = target_line
+        while next_idx < len(lines):
+            line = lines[next_idx]
+            if not line.strip() or line.strip().startswith("#"):
+                next_idx += 1
+                continue
+            cur_indent = len(line) - len(line.lstrip())
+            if cur_indent <= indent:
+                break
+            next_idx += 1
+        while next_idx < len(lines) and (not lines[next_idx].strip() or lines[next_idx].strip().startswith("#")):
+            next_idx += 1
+        if next_idx >= len(lines):
+            return None
+        sibling_header = lines[next_idx]
+        if peek_statement_kind(sibling_header) != "button":
+            return None
+        try:
+            sibling_id = _literal_button_id(sibling_header)
+            sibling_line = next_idx + 1
+            analyze_raise_adjacent_sibling(
+                source_text,
+                target_source_line=target_line,
+                sibling_source_line=sibling_line,
+                target_widget_id=target_widget_id,
+                sibling_widget_id=sibling_id,
+            )
+            return (sibling_id, sibling_line)
+        except EditorSourceError:
+            return None
 
     def _command_commit(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_string(payload, "session_id")
@@ -862,8 +927,29 @@ class EditorCoordinator:
             if record.source_key != source_key:
                 raise EditorError("SOURCE_KEY_MISMATCH", "intent source_key does not match analyzed source key")
             color = intent.get("color")
+            is_structural_swap = (
+                intent.get("operation") == "raise_adjacent_sibling"
+                or "sibling_widget_id" in intent
+                or "swap_sibling" in intent
+            )
             is_style_color = source_key.get("statement_kind") == "text"
-            if is_style_color:
+            if is_structural_swap:
+                if any(key in intent for key in ("x", "y", "w", "h", "width", "height", "color")):
+                    raise EditorError("STRUCTURAL_INTENT_COMBINATION_REJECTED", "structural swap intent cannot include position, size, or color fields")
+                sibling_id = intent.get("sibling_widget_id") or (
+                    intent.get("swap_sibling")[0] if isinstance(intent.get("swap_sibling"), (list, tuple)) else None
+                )
+                sibling_line = intent.get("sibling_line", intent.get("sibling_source_line")) or (
+                    intent.get("swap_sibling")[1] if isinstance(intent.get("swap_sibling"), (list, tuple)) else None
+                )
+                if not isinstance(sibling_id, str) or not isinstance(sibling_line, int):
+                    raise EditorError("INTENT_STRUCTURAL_INVALID", "structural intent missing valid sibling_widget_id or sibling_line")
+                selected = _SelectedIntent(
+                    record=record,
+                    source_key=source_key,
+                    swap_sibling=(sibling_id, sibling_line),
+                )
+            elif is_style_color:
                 if not isinstance(color, str):
                     raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a string")
                 literal_color = self._literal_style_color(color)
@@ -924,6 +1010,16 @@ class EditorCoordinator:
         if len(source_paths) != 1:
             raise EditorError("MULTI_FILE_UNSUPPORTED", "all intents must resolve to exactly one source file")
 
+        if any(selected.swap_sibling is not None for selected in selected_records):
+            if len(selected_records) > 1 or any(
+                selected.x is not None or selected.y is not None or selected.color is not None
+                for selected in selected_records
+            ):
+                raise EditorError(
+                    "STRUCTURAL_INTENT_COMBINATION_REJECTED",
+                    "structural swap cannot be combined with position or color intents",
+                )
+
         relative_path = next(iter(source_paths))
         source_path = resolve_game_path(self._project.root, relative_path)
         current_bytes = source_path.read_bytes()
@@ -963,7 +1059,7 @@ class EditorCoordinator:
                 )
 
         try:
-            staged_bytes = self._apply_same_file_intents(current_bytes, selected_records)
+            staged_bytes, swap_locations = self._apply_same_file_intents(current_bytes, selected_records)
         except EditorSourceError as exc:
             raise EditorError(exc.code, str(exc)) from exc
         transaction_id = uuid.uuid4().hex
@@ -976,7 +1072,7 @@ class EditorCoordinator:
             original_sha256=current_sha,
             staged_sha256=sha256_bytes(staged_bytes),
             generation=generation,
-            expected_targets=[self._expected_target_for_intent(selected) for selected in selected_records],
+            expected_targets=[self._expected_target_for_intent(selected, swap_locations) for selected in selected_records],
             state="staged",
         )
         with self._lock:
@@ -1007,13 +1103,41 @@ class EditorCoordinator:
 
         return {"transaction_id": transaction_id, "state": "published", "reload_required": True}
 
-    def _expected_target_for_intent(self, selected: _SelectedIntent) -> dict[str, Any]:
+    def _expected_target_for_intent(
+        self,
+        selected: _SelectedIntent,
+        swap_locations: tuple[tuple[str, int], tuple[str, int]] | None = None,
+    ) -> dict[str, Any]:
         record = selected.record
         expected: dict[str, Any] = {
             "analysis_id": record.analysis_id,
             "source_key": selected.source_key,
             "runtime_key": deepcopy(record.runtime_key),
         }
+        if selected.swap_sibling is not None:
+            target_id = selected.source_key.get("widget_id")
+            old_target_line = selected.source_key.get("line")
+            sibling_id, old_sibling_line = selected.swap_sibling
+            new_target_line = old_target_line
+            new_sibling_line = old_sibling_line
+            if swap_locations:
+                for loc_id, loc_line in swap_locations:
+                    if loc_id == target_id:
+                        new_target_line = loc_line
+                    elif loc_id == sibling_id:
+                        new_sibling_line = loc_line
+            if isinstance(expected["runtime_key"].get("source_location"), list) and len(expected["runtime_key"]["source_location"]) == 2:
+                expected["runtime_key"]["source_location"][1] = new_target_line
+            expected["structural_swap"] = {
+                "target_widget_id": target_id,
+                "sibling_widget_id": sibling_id,
+                "target_line": new_target_line,
+                "sibling_line": new_sibling_line,
+                "previous_target_line": old_target_line,
+                "previous_sibling_line": old_sibling_line,
+            }
+            return expected
+
         if selected.color is not None:
             previous = self._literal_style_color(selected.source_key.get("style_color"))
             if previous is None:
@@ -1052,12 +1176,18 @@ class EditorCoordinator:
             raise EditorError("TRANSACTION_NOT_FOUND", f"transaction not found: {prior_id}")
         if prior.state != "committed":
             raise EditorError("UNDO_TRANSACTION_INVALID", "only a committed transaction can be undone")
-        if not prior.expected_targets or any(
-            self._literal_style_color(target.get("style_color")) is None
-            or self._literal_style_color(target.get("previous_style_color")) is None
+
+        is_style_color_tx = bool(prior.expected_targets) and all(
+            self._literal_style_color(target.get("style_color")) is not None
+            and self._literal_style_color(target.get("previous_style_color")) is not None
             for target in prior.expected_targets
-        ):
-            raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color")
+        )
+        is_structural_tx = bool(prior.expected_targets) and all(
+            isinstance(target.get("structural_swap"), dict)
+            for target in prior.expected_targets
+        )
+        if not (is_style_color_tx or is_structural_tx):
+            raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color and zorder structural swap")
 
         current_bytes = prior.source_absolute_path.read_bytes()
         current_sha = sha256_bytes(current_bytes)
@@ -1067,12 +1197,28 @@ class EditorCoordinator:
         expected_targets: list[dict[str, Any]] = []
         for target in prior.expected_targets:
             reversed_target = deepcopy(target)
-            current_color = self._literal_style_color(target.get("style_color"))
-            previous_color = self._literal_style_color(target.get("previous_style_color"))
-            if current_color is None or previous_color is None:
-                raise EditorError("UNDO_STYLE_COLOR_ONLY", "style undo target is missing colour evidence")
-            reversed_target["style_color"] = previous_color
-            reversed_target["previous_style_color"] = current_color
+            if is_style_color_tx:
+                current_color = self._literal_style_color(target.get("style_color"))
+                previous_color = self._literal_style_color(target.get("previous_style_color"))
+                if current_color is None or previous_color is None:
+                    raise EditorError("UNDO_STYLE_COLOR_ONLY", "style undo target is missing colour evidence")
+                reversed_target["style_color"] = previous_color
+                reversed_target["previous_style_color"] = current_color
+            elif is_structural_tx:
+                swap_info = target.get("structural_swap")
+                if not isinstance(swap_info, dict):
+                    raise EditorError("UNDO_STYLE_COLOR_ONLY", "structural undo target is missing swap evidence")
+                reversed_swap = deepcopy(swap_info)
+                reversed_swap["target_line"] = swap_info["previous_target_line"]
+                reversed_swap["sibling_line"] = swap_info["previous_sibling_line"]
+                reversed_swap["previous_target_line"] = swap_info["target_line"]
+                reversed_swap["previous_sibling_line"] = swap_info["sibling_line"]
+                reversed_target["structural_swap"] = reversed_swap
+                if (
+                    isinstance(reversed_target.get("runtime_key", {}).get("source_location"), list)
+                    and len(reversed_target["runtime_key"]["source_location"]) == 2
+                ):
+                    reversed_target["runtime_key"]["source_location"][1] = reversed_swap["target_line"]
             expected_targets.append(reversed_target)
 
         transaction_id = uuid.uuid4().hex
@@ -1440,9 +1586,10 @@ class EditorCoordinator:
         self,
         source_bytes: bytes,
         selected_records: list[_SelectedIntent],
-    ) -> bytes:
+    ) -> tuple[bytes, tuple[tuple[str, int], tuple[str, int]] | None]:
         lines = source_bytes.decode("utf-8").splitlines(keepends=True)
         seen_targets: set[tuple[str, int, str]] = set()
+        swap_locations: tuple[tuple[str, int], tuple[str, int]] | None = None
 
         for selected in selected_records:
             x = selected.x
@@ -1450,6 +1597,7 @@ class EditorCoordinator:
             width = selected.width
             height = selected.height
             color = selected.color
+            swap_sibling = selected.swap_sibling
             source_key = selected.source_key
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
@@ -1479,6 +1627,29 @@ class EditorCoordinator:
                         "STATEMENT_KIND_MISMATCH",
                         "source_key statement_kind does not match source line",
                     )
+
+            if swap_sibling is not None:
+                if len(selected_records) > 1 or any(
+                    val is not None for val in (x, y, width, height, color)
+                ):
+                    raise EditorError(
+                        "STRUCTURAL_INTENT_COMBINATION_REJECTED",
+                        "structural swap cannot be combined with position or color intents",
+                    )
+                target_line = line_no
+                target_id = widget_id
+                sibling_id, sibling_line = swap_sibling
+                plan = analyze_raise_adjacent_sibling(
+                    source_text,
+                    target_source_line=target_line,
+                    sibling_source_line=sibling_line,
+                    target_widget_id=target_id,
+                    sibling_widget_id=sibling_id,
+                )
+                staged_bytes, swap_locations = apply_button_sibling_swap(source_bytes, plan)
+                lines = staged_bytes.decode("utf-8").splitlines(keepends=True)
+                continue
+
             if actual_kind == "text":
                 if color is None or any(value is not None for value in (x, y, width, height)):
                     raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent shape is invalid")
@@ -1560,7 +1731,7 @@ class EditorCoordinator:
                         height=height,
                     ).decode("utf-8")
 
-        return "".join(lines).encode("utf-8")
+        return "".join(lines).encode("utf-8"), swap_locations
 
     def _validate_shadow(self, transaction: _TransactionRecord) -> ShadowLintResult:
         tx_dir = self._transaction_root / transaction.transaction_id

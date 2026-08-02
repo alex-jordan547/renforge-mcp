@@ -323,6 +323,7 @@ init 1100 python:
             state.pending_operation = None
             state.last_committed_transaction_id = None
             state.pending_commit_is_style_color = False
+            state.pending_commit_is_zorder = False
             state.refuse_next_style_attestation = False
             state.pending_commit_request_id = None
             state.pending_status_request_id = None
@@ -388,6 +389,8 @@ init 1100 python:
             state.last_committed_transaction_id = None
         if not hasattr(state, "pending_commit_is_style_color"):
             state.pending_commit_is_style_color = False
+        if not hasattr(state, "pending_commit_is_zorder"):
+            state.pending_commit_is_zorder = False
         if not hasattr(state, "refuse_next_style_attestation"):
             state.refuse_next_style_attestation = False
         return state
@@ -1985,6 +1988,17 @@ init 1100 python:
             capabilities = target.get("capabilities") or {}
             style_color = _renforge_editor_literal_style_color(target.get("style_color"))
             baseline_literal = _renforge_editor_literal_style_color(target.get("style_color_baseline"))
+            if capabilities.get("zorder_raise_adjacent_sibling") is True and target.get("zorder_dirty") is True:
+                intents.append(
+                    {
+                        "analysis_id": analysis_id,
+                        "source_key": source_key,
+                        "operation": "raise_adjacent_sibling",
+                        "sibling_widget_id": capabilities.get("zorder_sibling_widget_id"),
+                        "sibling_line": capabilities.get("zorder_sibling_line"),
+                    }
+                )
+                continue
             if capabilities.get("style_color") is True:
                 if (
                     style_color is None
@@ -2159,8 +2173,41 @@ init 1100 python:
             proof_color = "#2457d6" + baseline[-2:]
         else:
             proof_color = "#2457d6"
-        next_color = proof_color if current != proof_color else baseline
-        return _renforge_editor_set_style_color(next_color, record=True)
+    def _renforge_editor_zorder_capable():
+        state = _renforge_editor_state()
+        if state.selected_target_key is None:
+            return False
+        target = state.targets.get(state.selected_target_key)
+        if not isinstance(target, builtins.dict):
+            return False
+        caps = target.get("capabilities") or state.current_capabilities or {}
+        return caps.get("zorder_raise_adjacent_sibling") is True
+
+
+    def _renforge_editor_raise_adjacent_sibling(*, record=True):
+        state = _renforge_editor_state()
+        if not _renforge_editor_zorder_capable():
+            return {"ok": False, "error": "ZORDER_UNAVAILABLE"}
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key)
+        if not isinstance(target, builtins.dict):
+            return {"ok": False, "error": "TARGET_NOT_FOUND"}
+        caps = target.get("capabilities") or state.current_capabilities or {}
+        sibling_id = caps.get("zorder_sibling_widget_id")
+        sibling_line = caps.get("zorder_sibling_line")
+        if not sibling_id or not sibling_line:
+            return {"ok": False, "error": "SIBLING_NOT_FOUND"}
+
+        target["zorder_dirty"] = True
+        target["dirty"] = True
+        state.save_button_state = "idle"
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return {
+            "ok": True,
+            "sibling_widget_id": sibling_id,
+            "sibling_line": sibling_line,
+        }
 
 
     def _renforge_editor_undo():
@@ -3083,15 +3130,18 @@ init 1100 python:
                         original_position = result.get("original_position")
                         runtime_baseline = context.get("runtime_baseline") or state.selected_original_position
                         target_key = _renforge_editor_target_key(analyze_runtime_key)
-                        if (
-                            target_key is not None
-                            and isinstance(original_position, (builtins.list, tuple))
-                            and len(original_position) >= 2
-                            and isinstance(runtime_baseline, (builtins.list, tuple))
-                            and len(runtime_baseline) == 2
-                        ):
-                            state.selected_source_position = [int(original_position[0]), int(original_position[1])]
-                            state.selected_original_position = [int(runtime_baseline[0]), int(runtime_baseline[1])]
+                        if target_key is not None:
+                            if (
+                                isinstance(original_position, (builtins.list, tuple))
+                                and len(original_position) >= 2
+                                and isinstance(runtime_baseline, (builtins.list, tuple))
+                                and len(runtime_baseline) == 2
+                            ):
+                                state.selected_source_position = [int(original_position[0]), int(original_position[1])]
+                                state.selected_original_position = [int(runtime_baseline[0]), int(runtime_baseline[1])]
+                            else:
+                                state.selected_source_position = None
+                                state.selected_original_position = None
                             original_size = result.get("original_size")
                             runtime_size = None
                             if (
@@ -3126,9 +3176,9 @@ init 1100 python:
                                 "runtime_key": analyze_runtime_key,
                                 "screen": analyze_runtime_key.get("screen"),
                                 "widget_id": analyze_runtime_key.get("widget_id"),
-                                "runtime_baseline": list(state.selected_original_position),
-                                "source_position": list(state.selected_source_position),
-                                "position": list(state.selected_original_position),
+                                "runtime_baseline": list(state.selected_original_position) if state.selected_original_position is not None else None,
+                                "source_position": list(state.selected_source_position) if state.selected_source_position is not None else None,
+                                "position": list(state.selected_original_position) if state.selected_original_position is not None else None,
                                 "runtime_size": list(state.selected_original_size) if state.selected_original_size is not None else None,
                                 "source_size": list(state.selected_source_size) if state.selected_source_size is not None else None,
                                 "size": list(state.selected_original_size) if state.selected_original_size is not None else None,
@@ -3194,11 +3244,12 @@ init 1100 python:
                         state.save_requested = False
                         if operation == "undo_commit":
                             state.last_committed_transaction_id = None
-                        elif bool(state.pending_commit_is_style_color):
+                        elif bool(state.pending_commit_is_style_color) or bool(state.pending_commit_is_zorder):
                             state.last_committed_transaction_id = committed_tx
                         else:
                             state.last_committed_transaction_id = None
                         state.pending_commit_is_style_color = False
+                        state.pending_commit_is_zorder = False
                         state.pending_operation = None
                         selected_rect = list(state.selected_rect or [])
                         state.targets = {}
@@ -3418,6 +3469,14 @@ init 1100 python:
             and all(
                 isinstance(intent, builtins.dict)
                 and _renforge_editor_literal_style_color(intent.get("color")) is not None
+                for intent in intents
+            )
+        )
+        state.pending_commit_is_zorder = bool(
+            intents
+            and all(
+                isinstance(intent, builtins.dict)
+                and intent.get("operation") == "raise_adjacent_sibling"
                 for intent in intents
             )
         )
@@ -4066,6 +4125,10 @@ init 1100 python:
         return _renforge_editor_set_style_color(color, record=True)
 
 
+    def _renforge_editor_h_zorder(payload):
+        return _renforge_editor_raise_adjacent_sibling(record=True)
+
+
     def _renforge_editor_h_force_style_attestation_refusal(payload):
         if os.environ.get("RENFORGE_STYLE_COLOR_LIVE") != "1":
             return {"ok": False, "error": "LIVE_TEST_HOOK_UNAVAILABLE"}
@@ -4096,6 +4159,7 @@ init 1100 python:
         handlers["editor_task0_reset"] = _renforge_editor_h_reset
         handlers["editor_task0_save"] = _renforge_editor_h_save
         handlers["editor_task0_style_color"] = _renforge_editor_h_style_color
+        handlers["editor_task0_zorder"] = _renforge_editor_h_zorder
         if os.environ.get("RENFORGE_STYLE_COLOR_LIVE") == "1":
             handlers["editor_task0_force_style_attestation_refusal"] = _renforge_editor_h_force_style_attestation_refusal
         handlers["editor_task0_observe_selected"] = _renforge_editor_h_observe_selected
