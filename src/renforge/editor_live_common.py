@@ -134,6 +134,44 @@ def select_lock(
     return str(lock_reason)
 
 
+def repeated_use_lock(
+    client: Any,
+    *,
+    label: str,
+    bounds: dict[str, Any] | None = None,
+    point: tuple[int, int] | None = None,
+) -> str:
+    """Select one instance of a repeated `use` and return its settled lock.
+
+    The repetition lock is decided by the host rather than the bridge, so it is
+    normally absent from the immediate select reply and has to be polled
+    (issue #42). Pass `point` when a fixture needs a specific hit location;
+    otherwise the click lands left of centre, which keeps it inside the first
+    instance when two share a row.
+    """
+    if point is None:
+        if bounds is None:
+            raise AssertionError(f"{label} dupe lock needs bounds or an explicit point")
+        point = (
+            int(bounds["x"]) + max(2, int(bounds["width"]) // 4),
+            int(bounds["y"]) + int(bounds["height"]) // 2,
+        )
+    reply = client.request("editor_task0_select", {"x": point[0], "y": point[1]})
+    lock_reason = reply.get("lock_reason") if isinstance(reply, dict) else None
+    if lock_reason in (None, "", "ANALYZING"):
+        lock_reason = _wait_for_status(
+            client,
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
+            timeout=10.0,
+            poll_name=f"{label} dupe lock",
+        ).get("selected_lock_reason")
+    if lock_reason != "REPEATED_USE_UNSUPPORTED":
+        raise AssertionError(
+            f"duplicate {label} lock was not REPEATED_USE_UNSUPPORTED: {lock_reason!r}"
+        )
+    return str(lock_reason)
+
+
 def observe_selected(client: Any) -> dict[str, Any]:
     reply = client.request("editor_task0_observe_selected", {})
     if not isinstance(reply, dict) or reply.get("ok") is not True:
