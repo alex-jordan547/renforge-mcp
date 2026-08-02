@@ -1167,8 +1167,7 @@ init 1100 python:
         crop = getattr(node, "crop", None)
         if crop not in (None, False):
             if _renforge_editor_transform_crop_is_composite(node):
-                transform_d = _renforge_editor_find_transform(node)
-                if transform_d is None or transform_d == "MULTIPLE_TRANSFORMS" or getattr(transform_d, "reverse", None) is None:
+                if _renforge_editor_find_reverse_fn(node) is None:
                     return "transform_crop_composite"
             visibility = _renforge_editor_focus_crop_visibility(focus, target)
             if visibility == "partial":
@@ -1872,11 +1871,7 @@ init 1100 python:
         if widget is None:
             return default_x, default_y
 
-        transform_d = _renforge_editor_find_transform(widget)
-        if transform_d is None or transform_d == "MULTIPLE_TRANSFORMS":
-            return default_x, default_y
-
-        reverse_fn = getattr(transform_d, "reverse", None)
+        reverse_fn = _renforge_editor_find_reverse_fn(widget)
         if reverse_fn is None:
             return default_x, default_y
 
@@ -2758,6 +2753,13 @@ init 1100 python:
         if len(transforms) > 1:
             return "MULTIPLE_TRANSFORMS"
         return None
+
+
+    def _renforge_editor_find_reverse_fn(displayable):
+        transform_d = _renforge_editor_find_transform(displayable)
+        if transform_d is None or transform_d == "MULTIPLE_TRANSFORMS":
+            return None
+        return getattr(transform_d, "reverse", None)
 
 
     def _renforge_editor_screen_quad_from_local(local_quad, transform_displayable, focus_rect):

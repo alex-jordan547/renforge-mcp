@@ -168,6 +168,14 @@ def test_composite_transform_unblocked_via_inverse_matrix_conversion(demo_copy: 
         _open_editor(session)
         report = measure_composite_divergence(session.client)
 
+    # Raw 20px source displacement divergence: pure crop stays [20, 0], zoom=1.25 produces [25, 0], rotate=15deg produces ~[19, 5].
+    # Inverse matrix delta conversion in editor.rpy bridges this divergence to achieve 1:1 screen movement.
+    mapping = report["mapping"]
+    assert mapping["crop_target"]["observed_screen_delta"] == [20, 0]
+    assert mapping["crop_with_zoom"]["observed_screen_delta"] == [25, 0]
+    assert mapping["crop_with_rotate"]["observed_screen_delta"][0] == pytest.approx(19, abs=1)
+    assert mapping["crop_with_rotate"]["observed_screen_delta"][1] == pytest.approx(5, abs=1)
+
     # crop_with_zoom is unblocked; crop_with_rotate remains locked due to partial crop boundary.
     assert report["locks"]["crop_with_zoom"] in (None, "")
     assert report["locks"]["crop_with_rotate"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
