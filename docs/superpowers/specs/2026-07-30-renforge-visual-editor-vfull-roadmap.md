@@ -221,13 +221,15 @@ So pure crop behaves like the viewport case for editor math: focus tracks visibl
 `runtime_rect + Δ` needs no extra crop term. Screen-space `preview_position` still differs from
 child-space authored `xpos`/`ypos` by the crop window origin — compare **deltas** only.
 
-**Unlocked:** exactly one pure `transform_crop` ancestor (`Transform` with crop only), plain `fixed`
-child, fully-visible literal `textbutton`.
+**Unlocked:** exactly one pure `transform_crop` ancestor (`Transform` with crop only) whose focused
+child is **fully visible** (focus size matches unclipped render), plain `fixed` child, literal
+`textbutton`.
 
 **Still locked:**
 
 | Shape | Reason |
 |---|---|
+| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` — focus shorter than unclipped render; top/left clamps would break delta attestation |
 | Crop + rotate / crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
 | Layout container inside crop | `CONTAINER_POSITION_UNSUPPORTED` |
 | Expression position inside crop | `YPOS_LITERAL_REQUIRED` |

@@ -284,6 +284,12 @@ def run_editor_crop_live_scenario(
             "CONTAINER_POSITION_UNSUPPORTED",
             fixture_screen=FIXTURE_SCREEN,
         ),
+        "partial": select_lock(
+            client,
+            "crop_partial",
+            "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
+            fixture_screen=FIXTURE_SCREEN,
+        ),
         "crop_with_rotate": select_lock(
             client,
             "crop_with_rotate",

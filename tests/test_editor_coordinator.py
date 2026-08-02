@@ -924,6 +924,40 @@ def test_transform_crop_composite_stays_locked(tmp_path: Path) -> None:
         coordinator.close()
 
 
+def test_transform_crop_partial_stays_locked(tmp_path: Path) -> None:
+    """Issue #45: partially crop-clipped targets stay locked (Codex P1)."""
+    project, _ = _make_project(tmp_path)
+    observation = _base_observation()
+    observation["runtime_key"]["ancestry"].insert(
+        1,
+        {
+            **observation["runtime_key"]["ancestry"][0],
+            "index": 1,
+            "type": "Transform",
+            "crop_state": "transform_crop_partial",
+        },
+    )
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-45c",
+            "object_id": "obj-independent-45c",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-crop-partial")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"] == {"move": False}
+            assert analysis["result"]["lock_reason"]["code"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
+    finally:
+        coordinator.close()
+
+
 def test_runtime_key_ordinal_drift_is_ignored_for_single_static_instance(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation()

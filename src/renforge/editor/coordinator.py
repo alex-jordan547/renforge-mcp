@@ -1050,10 +1050,17 @@ class EditorCoordinator:
                     "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
                     "transform crop combined with rotate/zoom is not editable in V1",
                 )
+            # Partially crop-clamped focus: source xpos/ypos are unclipped layout
+            # while focus x/y can sit on the crop edge (Codex P1 / issue #45).
+            if crop_state == "transform_crop_partial":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
+                    "partially crop-clipped targets are not editable in V1",
+                )
             # Legacy / defensive labels that live pure-crop never emits.
             if crop_state in {"crop", "crop_displayable"}:
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "crop ancestry is not editable in V1")
-            # Issue #45: pure transform_crop is editable (Crop is sugar for it).
+            # Issue #45: pure fully-visible transform_crop is editable.
             if crop_state not in {"none", "viewport", "transform_crop"}:
                 return self._lock_reason("ANCESTRY_CROP_UNPROVEN", f"unproven crop state: {crop_state}")
         return None

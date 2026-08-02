@@ -261,6 +261,7 @@ with delta-only source comparison (screen-space `preview_position` ≠ child-spa
 
 | Shape | Reason |
 |---|---|
+| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` |
 | Crop + rotate or crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
 | Layout container inside the crop | `CONTAINER_POSITION_UNSUPPORTED`, unchanged |
 | Expression ypos inside the crop | `YPOS_LITERAL_REQUIRED`, unchanged |

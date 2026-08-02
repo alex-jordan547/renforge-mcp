@@ -110,6 +110,7 @@ def test_crop_seven_step_live_proof(demo_copy: Path) -> None:
     locks = report["locks"]
     assert locks["computed"] == "YPOS_LITERAL_REQUIRED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
+    assert locks["partial"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
     assert locks["crop_with_rotate"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
     assert locks["crop_with_zoom"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
     assert report["outside"]["move"] is True
