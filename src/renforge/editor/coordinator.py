@@ -42,6 +42,8 @@ from .source import (
     is_slider_style_bar_line,
     is_textbutton_block_header,
     peek_statement_kind,
+    textbutton_patch_kwargs,
+    uses_runtime_delta_position,
 )
 
 
@@ -559,10 +561,9 @@ class EditorCoordinator:
                     header_line,
                     expected_widget_id=widget_id,
                 )
-            # Align is fractional and offset is additive; both write via measured
-            # runtime deltas, so original_position is the focus_list top-left.
+            # Runtime-delta modes (align/offset): original_position is focus TL.
             position_mode = getattr(statement, "position_mode", "xy")
-            if position_mode in {"align", "offset"}:
+            if uses_runtime_delta_position(position_mode):
                 original_position = list(runtime_position)
             else:
                 original_position = [int(statement.xpos), int(statement.ypos)]
@@ -599,19 +600,20 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
-            if position_mode == "align":
-                # Authored fractions + independent geometry: Ren'Py align also
-                # sets anchor, so TL moves over (parent − widget) extent.
-                # Parent size is only unlocked when independent focus proves the
-                # full-screen 1280×720 placement model (issue #39).
-                source_key["align_authored"] = [
-                    float(statement.xpos),
-                    float(statement.ypos),
-                ]
-                source_key["align_runtime_baseline"] = [
+            if uses_runtime_delta_position(position_mode):
+                # Shared authored + measured baseline fields for delta write-back.
+                authored = (
+                    [float(statement.xpos), float(statement.ypos)]
+                    if position_mode == "align"
+                    else [int(statement.xpos), int(statement.ypos)]
+                )
+                source_key[f"{position_mode}_authored"] = authored
+                source_key[f"{position_mode}_runtime_baseline"] = [
                     int(runtime_position[0]),
                     int(runtime_position[1]),
                 ]
+            if position_mode == "align":
+                # Align-only geometry gate: parent must prove full-screen 1280×720.
                 parent_size = tuple(
                     getattr(statement, "align_parent_size", DEFAULT_ALIGN_PARENT_SIZE)
                 )
@@ -655,16 +657,6 @@ class EditorCoordinator:
                             "ALIGN_WIDGET_SIZE_UNPROVEN",
                             "independent observation must provide positive widget width and height",
                         )
-            if position_mode == "offset":
-                # Authored offset integers + independent runtime baseline for ΔTL.
-                source_key["offset_authored"] = [
-                    int(statement.xpos),
-                    int(statement.ypos),
-                ]
-                source_key["offset_runtime_baseline"] = [
-                    int(runtime_position[0]),
-                    int(runtime_position[1]),
-                ]
             if lock_reason is None:
                 if observation.get("measurement_method") != "focus_list":
                     lock_reason = self._lock_reason(
@@ -1119,38 +1111,15 @@ class EditorCoordinator:
                     lines[line_no - 1],
                     expected_widget_id=widget_id,
                 )
-                mode = getattr(statement, "position_mode", "xy") if kind == "textbutton" else "xy"
-                if kind == "textbutton" and mode == "align":
-                    align_baseline = source_key.get("align_runtime_baseline")
-                    align_size = source_key.get("align_widget_size")
+                if kind == "textbutton" and uses_runtime_delta_position(
+                    getattr(statement, "position_mode", "xy")
+                ):
                     lines[line_no - 1] = apply_textbutton_patch(
                         lines[line_no - 1].encode("utf-8"),
                         statement,
                         x=x,
                         y=y,
-                        align_runtime_baseline=(
-                            tuple(align_baseline)
-                            if isinstance(align_baseline, (list, tuple)) and len(align_baseline) == 2
-                            else None
-                        ),
-                        align_widget_size=(
-                            tuple(align_size)
-                            if isinstance(align_size, (list, tuple)) and len(align_size) == 2
-                            else None
-                        ),
-                    ).decode("utf-8")
-                elif kind == "textbutton" and mode == "offset":
-                    offset_baseline = source_key.get("offset_runtime_baseline")
-                    lines[line_no - 1] = apply_textbutton_patch(
-                        lines[line_no - 1].encode("utf-8"),
-                        statement,
-                        x=x,
-                        y=y,
-                        offset_runtime_baseline=(
-                            tuple(offset_baseline)
-                            if isinstance(offset_baseline, (list, tuple)) and len(offset_baseline) == 2
-                            else None
-                        ),
+                        **textbutton_patch_kwargs(statement, source_key),
                     ).decode("utf-8")
                 else:
                     lines[line_no - 1] = apply_editable_statement_patch(

@@ -16,6 +16,47 @@ class EditorSourceError(ValueError):
 # under Ren'Py's align-sets-anchor placement: TL = fraction × (parent − widget).
 DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
 
+# Modes whose editor original_position is the measured focus_list top-left and whose
+# write-back is authored + (runtime − baseline). Preview uses absolute xpos/ypos.
+RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
+
+
+def uses_runtime_delta_position(mode: str | None) -> bool:
+    """True for align/offset — baseline/delta position modes (not absolute xy/pos)."""
+    return mode in RUNTIME_DELTA_POSITION_MODES
+
+
+def _pair2(value: object) -> tuple[int | float, int | float] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return value[0], value[1]  # type: ignore[return-value]
+    return None
+
+
+def textbutton_patch_kwargs(
+    statement: TextbuttonStatement,
+    source_key: dict | None,
+) -> dict[str, object]:
+    """Keyword args for ``apply_textbutton_patch`` from an analyzed source_key.
+
+    Shared by coordinator commit paths so align/offset stay one branch each only
+    where their geometry contracts differ.
+    """
+    mode = getattr(statement, "position_mode", "xy")
+    key = source_key if isinstance(source_key, dict) else {}
+    if mode == "align":
+        baseline = _pair2(key.get("align_runtime_baseline"))
+        size = _pair2(key.get("align_widget_size"))
+        return {
+            "align_runtime_baseline": tuple(baseline) if baseline is not None else None,
+            "align_widget_size": tuple(int(v) for v in size) if size is not None else None,
+        }
+    if mode == "offset":
+        baseline = _pair2(key.get("offset_runtime_baseline"))
+        return {
+            "offset_runtime_baseline": tuple(int(v) for v in baseline) if baseline is not None else None,
+        }
+    return {}
+
 # Concurrent axis/placement properties that must not ride along with pure align (fx, fy).
 _ALIGN_CONCURRENT_PROPERTY_WORDS = frozenset(
     {

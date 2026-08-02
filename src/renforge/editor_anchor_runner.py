@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import re
-import shutil
-import time
 from pathlib import Path
 from typing import Any
 
@@ -14,89 +11,25 @@ from renforge.editor_task0_runner import (
     _wait_for_status,
 )
 
-FIXTURE_SCREEN = "renforge_editor_anchor_fixture"
-TARGET_ID = "anchor_target"
-EDITOR_RESOURCE = Path(__file__).resolve().parent / "bridge" / "editor.rpy"
-FIXTURE_RESOURCE = (
-    Path(__file__).resolve().parents[2]
-    / "tests"
-    / "live_fixtures"
-    / "renforge_editor_anchor_fixture.rpy"
+from renforge.editor_live_common import (
+    center as _center,
+    inject_editor_live_resources,
+    list_ui_info,
+    observe_selected as _observe_selected,
+    select_lock,
+    sha256_file as _sha256_file,
+    wait_bounds,
 )
 
+FIXTURE_SCREEN = "renforge_editor_anchor_fixture"
+TARGET_ID = "anchor_target"
 
 def inject_editor_anchor_resources(project_root: Path) -> dict[str, str]:
-    game_dir = project_root / "game"
-    game_dir.mkdir(parents=True, exist_ok=True)
-    editor_target = game_dir / "zz_renforge_editor_anchor.rpy"
-    fixture_target = game_dir / "zz_renforge_editor_anchor_fixture.rpy"
-    shutil.copyfile(EDITOR_RESOURCE, editor_target)
-    shutil.copyfile(FIXTURE_RESOURCE, fixture_target)
-    return {
-        "editor": str(editor_target),
-        "fixture": str(fixture_target),
-    }
-
-
-def _find_element(
-    elements: list[dict[str, Any]],
-    wanted_id: str,
-    *,
-    wanted_text: str | None = None,
-) -> dict[str, Any]:
-    for element in elements:
-        element_id = str(element.get("id") or "")
-        if wanted_text is not None:
-            if element_id == wanted_id and str(element.get("text") or "") == wanted_text:
-                return element
-            continue
-        if element_id == wanted_id:
-            return element
-    raise AssertionError(
-        f"missing expected element id {wanted_id!r} text {wanted_text!r}: {elements!r}"
+    return inject_editor_live_resources(
+        project_root,
+        editor_basename="editor_anchor",
+        fixture_filename="renforge_editor_anchor_fixture.rpy",
     )
-
-
-def _center(bounds: dict[str, Any]) -> tuple[int, int]:
-    return (
-        int(bounds["x"]) + int(bounds["width"]) // 2,
-        int(bounds["y"]) + int(bounds["height"]) // 2,
-    )
-
-
-def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _list_info(client: Any) -> dict[str, Any]:
-    info = client.list_ui_elements_info(screen=FIXTURE_SCREEN)
-    if not isinstance(info, dict):
-        raise AssertionError(f"list_ui_elements_info returned non-dict: {info!r}")
-    return info
-
-
-def _wait_bounds(client: Any, widget_id: str, *, timeout: float = 6.0) -> dict[str, int]:
-    deadline = time.monotonic() + timeout
-    last: list[dict[str, Any]] = []
-    while time.monotonic() < deadline:
-        info = _list_info(client)
-        last = info.get("elements") if isinstance(info.get("elements"), list) else []
-        try:
-            element = _find_element(last, widget_id)
-        except AssertionError:
-            time.sleep(0.05)
-            continue
-        bounds = element.get("bounds")
-        if isinstance(bounds, dict):
-            return {
-                "x": int(bounds["x"]),
-                "y": int(bounds["y"]),
-                "width": int(bounds["width"]),
-                "height": int(bounds["height"]),
-            }
-        time.sleep(0.05)
-    raise AssertionError(f"bounds for {widget_id!r} unavailable: {last!r}")
-
 
 def _target_line_with_offset(source_text: str) -> tuple[str, int]:
     offset = 0
@@ -111,7 +44,6 @@ def _target_line_with_offset(source_text: str) -> tuple[str, int]:
         offset += len(line)
     raise AssertionError(f"source missing anchor textbutton line for {TARGET_ID!r}")
 
-
 def _independent_expected_after_patch(before_text: str, *, x: int, y: int) -> str:
     """Build expected fixture text without calling apply_textbutton_patch."""
     line, offset = _target_line_with_offset(before_text)
@@ -125,7 +57,6 @@ def _independent_expected_after_patch(before_text: str, *, x: int, y: int) -> st
         raise AssertionError("independent constructor must preserve anchor bytes")
     return f"{before_text[:offset]}{patched_line}{before_text[offset + len(line) :]}"
 
-
 def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bool:
     before_line, _ = _target_line_with_offset(before_text)
     after_line, _ = _target_line_with_offset(after_text)
@@ -137,7 +68,6 @@ def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bo
         return False
     return before_text.replace(before_line, "", 1) == after_text.replace(after_line, "", 1)
 
-
 def _parse_xy_from_target_line(source_text: str) -> dict[str, int]:
     line, _ = _target_line_with_offset(source_text)
     xpos = re.search(r"\bxpos\s+(-?\d+)\b", line)
@@ -147,39 +77,6 @@ def _parse_xy_from_target_line(source_text: str) -> dict[str, int]:
     if "anchor (" not in line:
         raise AssertionError(f"target line missing anchor form: {line!r}")
     return {"x": int(xpos.group(1)), "y": int(ypos.group(1))}
-
-
-def _select_lock(client: Any, widget_id: str, expected_code: str) -> str:
-    bounds = _wait_bounds(client, widget_id)
-    selection = client.request(
-        "editor_task0_select",
-        {"x": _center(bounds)[0], "y": _center(bounds)[1]},
-    )
-    immediate = selection.get("lock_reason") if isinstance(selection, dict) else None
-    if immediate == expected_code:
-        return expected_code
-    status = _wait_for_status(
-        client,
-        lambda current: current.get("selected_widget_id") == widget_id
-        and current.get("selected_lock_reason") == expected_code,
-        timeout=10.0,
-        poll_name=f"{widget_id} lock",
-    )
-    lock_reason = status.get("selected_lock_reason")
-    if lock_reason != expected_code:
-        raise AssertionError(f"unexpected lock for {widget_id!r}: {status!r}")
-    return str(lock_reason)
-
-
-def _observe_selected(client: Any) -> dict[str, Any]:
-    reply = client.request("editor_task0_observe_selected", {})
-    if not isinstance(reply, dict) or reply.get("ok") is not True:
-        raise AssertionError(f"observe_selected failed: {reply!r}")
-    observation = reply.get("observation")
-    if not isinstance(observation, dict):
-        raise AssertionError(f"observe_selected missing observation: {reply!r}")
-    return observation
-
 
 def run_editor_anchor_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
     """Seven-step live proof for xpos/ypos + anchor textbutton form (issue #40)."""
@@ -208,14 +105,14 @@ def run_editor_anchor_live_scenario(client: Any, *, fixture_path: Path) -> dict[
 
     # Lock matrix first on real focusable widgets (measured codes).
     report["locks"] = {
-        "computed": _select_lock(client, "anchor_computed", "XPOS_LITERAL_REQUIRED"),
-        "container": _select_lock(client, "anchor_container", "CONTAINER_POSITION_UNSUPPORTED"),
+        "computed": select_lock(client, "anchor_computed", "XPOS_LITERAL_REQUIRED", fixture_screen=FIXTURE_SCREEN),
+        "container": select_lock(client, "anchor_container", "CONTAINER_POSITION_UNSUPPORTED", fixture_screen=FIXTURE_SCREEN),
     }
 
     # Measured live: two use-statements share id "anchor_dupe_target". The first
     # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
     # (list_ui may only name the second instance).
-    dupe_info = _list_info(client)
+    dupe_info = list_ui_info(client, FIXTURE_SCREEN)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     # Prefer the unnamed first instance (NullAction-ish id) then fall back to
     # the named target bounds at the left dupe coordinate.
@@ -255,7 +152,7 @@ def run_editor_anchor_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     report["locks"]["ambiguous"] = ambiguous
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.
-    side_bounds = _wait_bounds(client, "anchor_side", timeout=3.0)
+    side_bounds = wait_bounds(client, "anchor_side", timeout=3.0, fixture_screen=FIXTURE_SCREEN)
     side_select = client.request(
         "editor_task0_select",
         {"x": _center(side_bounds)[0], "y": _center(side_bounds)[1]},
@@ -276,7 +173,7 @@ def run_editor_anchor_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     report["locks"]["unproven"] = unproven
 
     # Step 1: resolve the editable anchor textbutton from a fresh focus rect.
-    target_bounds = _wait_bounds(client, TARGET_ID)
+    target_bounds = wait_bounds(client, TARGET_ID, fixture_screen=FIXTURE_SCREEN)
     target_center = _center(target_bounds)
     select = _require_ok(
         client.request(
