@@ -30,6 +30,7 @@ from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
 from .source import (
+    BAR_SIZE_MODE_XSIZE_YSIZE,
     DEFAULT_ALIGN_PARENT_SIZE,
     BarStatement,
     EditorSourceError,
@@ -609,12 +610,12 @@ class EditorCoordinator:
             # Issue #47: bar-only resize capability from pure xsize/ysize.
             if statement_kind == "bar" and isinstance(statement, BarStatement):
                 if (
-                    statement.size_mode == "xsize_ysize"
+                    statement.size_mode == BAR_SIZE_MODE_XSIZE_YSIZE
                     and statement.xsize is not None
                     and statement.ysize is not None
                 ):
                     original_size = [int(statement.xsize), int(statement.ysize)]
-                    source_key["size_mode"] = "xsize_ysize"
+                    source_key["size_mode"] = BAR_SIZE_MODE_XSIZE_YSIZE
                     source_key["authored_size"] = list(original_size)
                 else:
                     source_key["size_mode"] = None
@@ -724,7 +725,7 @@ class EditorCoordinator:
             and original_size is not None
             and runtime_size is not None
             and isinstance(source_key, dict)
-            and source_key.get("size_mode") == "xsize_ysize"
+            and source_key.get("size_mode") == BAR_SIZE_MODE_XSIZE_YSIZE
         )
         record = _AnalysisRecord(
             analysis_id=analysis_id,
@@ -809,7 +810,11 @@ class EditorCoordinator:
             if record.source_key != source_key:
                 raise EditorError("SOURCE_KEY_MISMATCH", "intent source_key does not match analyzed source key")
             if width is not None or height is not None:
-                if record.original_size is None or source_key.get("size_mode") != "xsize_ysize":
+                if (
+                    record.original_size is None
+                    or record.runtime_size is None
+                    or source_key.get("size_mode") != BAR_SIZE_MODE_XSIZE_YSIZE
+                ):
                     raise EditorError(
                         "ANALYSIS_RESIZE_UNSUPPORTED",
                         "analysis does not unlock resize for this target",

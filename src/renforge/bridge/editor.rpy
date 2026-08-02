@@ -226,6 +226,8 @@ init 1100 python:
     _EDITOR_VIOLET = "#a78bfa"
     _EDITOR_AMBER = "#f59e0b"
     _EDITOR_LOCKED_TEXT = "LOCKED"
+    # Protocol value mirrored by renforge.editor.source.BAR_SIZE_MODE_XSIZE_YSIZE.
+    _BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
     _SNAP_ACQUIRE = 6
     _SNAP_RELEASE = 10
     _CACHE_WALK_MAX_DEPTH = 32
@@ -1589,7 +1591,7 @@ init 1100 python:
                 and len(runtime_size) == 2
                 and isinstance(source_size, (builtins.list, tuple))
                 and len(source_size) == 2
-                and source_key.get("size_mode") == "xsize_ysize"
+                and source_key.get("size_mode") == _BAR_SIZE_MODE_XSIZE_YSIZE
             ):
                 intent["w"] = int(source_size[0]) + int(size[0]) - int(runtime_size[0])
                 intent["h"] = int(source_size[1]) + int(size[1]) - int(runtime_size[1])
@@ -1613,6 +1615,17 @@ init 1100 python:
         value = command.get("before") if use_before else command.get("after")
         if command.get("kind") == "size":
             result = _renforge_editor_set_target_size(command.get("target_key"), value)
+        elif command.get("kind") == "reset":
+            result = _renforge_editor_set_target_position(command.get("target_key"), value)
+            size_key = "before_size" if use_before else "after_size"
+            size_value = command.get(size_key)
+            if isinstance(size_value, (builtins.list, tuple)) and len(size_value) == 2:
+                size_result = _renforge_editor_set_target_size(
+                    command.get("target_key"),
+                    size_value,
+                )
+                if not size_result.get("ok", False):
+                    result = size_result
         else:
             result = _renforge_editor_set_target_position(command.get("target_key"), value)
         _renforge_editor_refresh_save_enabled()
@@ -1649,15 +1662,34 @@ init 1100 python:
             return {"ok": False, "error": "RESET_UNAVAILABLE"}
         before = list(target.get("position") or [])
         baseline = list(target.get("runtime_baseline") or [])
-        if len(before) != 2 or len(baseline) != 2 or before == baseline:
+        before_size = list(target.get("size") or [])
+        baseline_size = list(target.get("runtime_size") or [])
+        position_dirty = len(before) == 2 and len(baseline) == 2 and before != baseline
+        size_dirty = (
+            len(before_size) == 2
+            and len(baseline_size) == 2
+            and before_size != baseline_size
+        )
+        if not position_dirty and not size_dirty:
             return {"ok": False, "error": "RESET_UNAVAILABLE"}
-        _renforge_editor_push_history(baseline)
+        if len(before) != 2 or len(baseline) != 2:
+            return {"ok": False, "error": "RESET_UNAVAILABLE"}
+        if state.history_index + 1 < len(state.history_entries):
+            state.history_entries = state.history_entries[: state.history_index + 1]
+        command = {
+            "target_key": state.selected_target_key,
+            "kind": "reset",
+            "before": before,
+            "after": baseline,
+            "before_size": before_size if len(before_size) == 2 else None,
+            "after_size": baseline_size if len(baseline_size) == 2 else None,
+        }
+        state.history_entries.append(command)
+        state.history = [list(entry.get("after") or []) for entry in state.history_entries]
+        state.history_index = len(state.history_entries) - 1
         state.status_text = "Reset"
         state.last_restore_method = "history_reset"
-        result = _renforge_editor_set_target_position(state.selected_target_key, baseline)
-        _renforge_editor_refresh_save_enabled()
-        renpy.restart_interaction()
-        return result
+        return _renforge_editor_apply_history_command(command, use_before=False)
 
 
     def _renforge_editor_adjust_opacity(delta):
@@ -2019,10 +2051,21 @@ init 1100 python:
             target = state.targets.get(target_key)
             if isinstance(target, builtins.dict):
                 position = list(target.get("position") or target.get("runtime_baseline") or rect[:2])
+                runtime_size = list(target.get("runtime_size") or rect[2:4])
+                size = list(target.get("size") or runtime_size)
                 state.selected_original_position = list(target.get("runtime_baseline") or rect[:2])
                 state.selected_source_position = list(target.get("source_position") or [])
+                state.selected_original_size = runtime_size if len(runtime_size) == 2 else None
+                state.selected_source_size = list(target.get("source_size") or []) or None
                 state.preview_position = position
-                state.selected_rect = [int(position[0]), int(position[1]), int(rect[2]), int(rect[3])]
+                state.preview_size = size if len(size) == 2 else None
+                selected_size = size if len(size) == 2 else rect[2:4]
+                state.selected_rect = [
+                    int(position[0]),
+                    int(position[1]),
+                    int(selected_size[0]),
+                    int(selected_size[1]),
+                ]
                 _renforge_editor_set_current_analysis(
                     state,
                     target.get("analysis_id"),
@@ -2099,23 +2142,35 @@ init 1100 python:
         return {"ok": True, "w": next_size[0], "h": next_size[1]}
 
 
-    def _renforge_editor_resize(dw, dh):
+    def _renforge_editor_resize_context():
         state = _renforge_editor_state()
         if state.selected_target_key is None:
-            return {"ok": False, "error": "NO_SELECTION"}
+            return None, None, {"ok": False, "error": "NO_SELECTION"}
         target = state.targets.get(state.selected_target_key)
         if not isinstance(target, builtins.dict):
-            return {"ok": False, "error": "TARGET_NOT_FOUND"}
+            return None, None, {"ok": False, "error": "TARGET_NOT_FOUND"}
         caps = target.get("capabilities") or state.current_capabilities or {}
         if caps.get("resize") is not True:
-            return {"ok": False, "error": "RESIZE_UNSUPPORTED"}
-        base = state.preview_size or state.selected_original_size or target.get("size") or target.get("runtime_size")
+            return target, None, {"ok": False, "error": "RESIZE_UNSUPPORTED"}
+        base = (
+            target.get("size")
+            or target.get("runtime_size")
+            or state.selected_original_size
+            or state.preview_size
+        )
         if not (isinstance(base, (builtins.list, tuple)) and len(base) == 2):
             if state.selected_rect is not None and len(state.selected_rect) >= 4:
                 base = [int(state.selected_rect[2]), int(state.selected_rect[3])]
             else:
-                return {"ok": False, "error": "NO_SIZE"}
-        before = [int(base[0]), int(base[1])]
+                return target, None, {"ok": False, "error": "NO_SIZE"}
+        return target, [int(base[0]), int(base[1])], None
+
+
+    def _renforge_editor_resize(dw, dh):
+        state = _renforge_editor_state()
+        _target, before, error = _renforge_editor_resize_context()
+        if error is not None:
+            return error
         after = [max(1, before[0] + int(dw)), max(1, before[1] + int(dh))]
         if after == before:
             return {"ok": True, "w": after[0], "h": after[1]}
@@ -2851,12 +2906,9 @@ init 1100 python:
         if not state.active:
             return {"ok": False, "error": "editor is not active"}
         if "w" in payload or "h" in payload or "width" in payload or "height" in payload:
-            base = state.preview_size or state.selected_original_size
-            if not (isinstance(base, (builtins.list, tuple)) and len(base) == 2):
-                if state.selected_rect is not None and len(state.selected_rect) >= 4:
-                    base = [int(state.selected_rect[2]), int(state.selected_rect[3])]
-                else:
-                    return {"ok": False, "error": "NO_SIZE"}
+            _target, base, error = _renforge_editor_resize_context()
+            if error is not None:
+                return error
             width = payload.get("w", payload.get("width", base[0]))
             height = payload.get("h", payload.get("height", base[1]))
             try:

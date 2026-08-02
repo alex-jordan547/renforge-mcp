@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, TypedDict
 
 
 class EditorSourceError(ValueError):
@@ -19,6 +19,17 @@ DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
 # Modes whose editor original_position is the measured focus_list top-left and whose
 # write-back is authored + (runtime − baseline). Preview uses absolute xpos/ypos.
 RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
+BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
+
+
+class _BarSizeModel(TypedDict):
+    xsize: int | None
+    ysize: int | None
+    xsize_span: tuple[int, int] | None
+    ysize_span: tuple[int, int] | None
+    size_mode: str | None
+    resize_lock_code: str | None
+    resize_lock_message: str | None
 
 
 def uses_runtime_delta_position(mode: str | None) -> bool:
@@ -1273,7 +1284,7 @@ _BAR_SIZE_CONSTRAINT_WORDS = frozenset(
 )
 
 
-def _analyze_bar_size_model(line: str) -> dict[str, object]:
+def _analyze_bar_size_model(line: str) -> _BarSizeModel:
     """Return bar size fields for issue #47 without affecting move unlock.
 
     Unlocked form: pure integer ``xsize`` + pure integer ``ysize``, both > 0,
@@ -1320,7 +1331,7 @@ def _analyze_bar_size_model(line: str) -> dict[str, object]:
         values[keyword] = int(value_token.text)
         spans[keyword] = (value_token.start, value_token.end)
 
-    empty: dict[str, object] = {
+    empty: _BarSizeModel = {
         "xsize": None,
         "ysize": None,
         "xsize_span": None,
@@ -1391,7 +1402,7 @@ def _analyze_bar_size_model(line: str) -> dict[str, object]:
         "ysize": values["ysize"],
         "xsize_span": spans["xsize"],
         "ysize_span": spans["ysize"],
-        "size_mode": "xsize_ysize",
+        "size_mode": BAR_SIZE_MODE_XSIZE_YSIZE,
         "resize_lock_code": None,
         "resize_lock_message": None,
     }
@@ -1412,17 +1423,13 @@ def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement
         ypos=base.ypos,
         xpos_span=base.xpos_span,
         ypos_span=base.ypos_span,
-        xsize=size["xsize"] if isinstance(size["xsize"], int) else None,
-        ysize=size["ysize"] if isinstance(size["ysize"], int) else None,
-        xsize_span=size["xsize_span"] if isinstance(size["xsize_span"], tuple) else None,
-        ysize_span=size["ysize_span"] if isinstance(size["ysize_span"], tuple) else None,
-        size_mode=size["size_mode"] if isinstance(size["size_mode"], str) else None,
-        resize_lock_code=(
-            size["resize_lock_code"] if isinstance(size["resize_lock_code"], str) else None
-        ),
-        resize_lock_message=(
-            size["resize_lock_message"] if isinstance(size["resize_lock_message"], str) else None
-        ),
+        xsize=size["xsize"],
+        ysize=size["ysize"],
+        xsize_span=size["xsize_span"],
+        ysize_span=size["ysize_span"],
+        size_mode=size["size_mode"],
+        resize_lock_code=size["resize_lock_code"],
+        resize_lock_message=size["resize_lock_message"],
     )
 
 
@@ -1639,7 +1646,7 @@ def apply_bar_patch(
     ]
     if width is not None or height is not None:
         if (
-            statement.size_mode != "xsize_ysize"
+            statement.size_mode != BAR_SIZE_MODE_XSIZE_YSIZE
             or statement.xsize_span is None
             or statement.ysize_span is None
             or statement.xsize is None

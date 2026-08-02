@@ -1551,6 +1551,47 @@ def test_analyze_and_commit_bar_resize(tmp_path: Path) -> None:
         coordinator.close()
 
 
+def test_bar_resize_commit_rejects_unmeasured_runtime_size(tmp_path: Path) -> None:
+    project, source = _make_bar_project(tmp_path)
+    baseline = source.read_bytes()
+    observation = _base_observation(script_generation=12)
+    observation["runtime_key"]["ancestry"][1]["type"] = "Bar"
+    observation["rect"] = [12, 10, 0, 0]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-bar-unmeasured-size",
+            "object_id": "obj-independent-bar-unmeasured-size",
+            "rect": [12, 10, 0, 0],
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-bar-unmeasured")
+            assert analyzed["ok"] is True
+            assert analyzed["result"]["capabilities"] == {"move": True, "resize": False}
+
+            committed = _commit(
+                sock,
+                auth,
+                analyzed,
+                x=12,
+                y=10,
+                w=80,
+                h=18,
+                request_id="co-bar-unmeasured",
+            )
+            assert committed["ok"] is False
+            assert committed["error"]["code"] == "ANALYSIS_RESIZE_UNSUPPORTED"
+            assert source.read_bytes() == baseline
+    finally:
+        coordinator.close()
+
+
 def test_bar_resize_locked_without_authored_size(tmp_path: Path) -> None:
     root = tmp_path / "project_bar_no_size"
     game_dir = root / "game"
