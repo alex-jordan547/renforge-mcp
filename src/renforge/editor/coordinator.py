@@ -510,7 +510,8 @@ class EditorCoordinator:
             if self._script_generation != generation:
                 raise EditorError("SCRIPT_GENERATION_MISMATCH", "observation generation does not match coordinator")
 
-        lock_reason = self._runtime_lock_reason(runtime_key)
+        runtime_lock_reason = self._runtime_lock_reason(runtime_key)
+        lock_reason = runtime_lock_reason
         source_key: dict[str, Any] | None = None
         runtime_position = self._extract_position(independent)
         original_position = list(runtime_position)
@@ -683,7 +684,12 @@ class EditorCoordinator:
         except EditorPathError as exc:
             lock_reason = self._lock_reason(exc.code, str(exc))
         except EditorSourceError as exc:
-            lock_reason = self._lock_reason(exc.code, str(exc))
+            # Identity outranks source form: a repeated statement stays locked
+            # for being repeated, whatever its position keywords read like, so
+            # the reason does not depend on which gate ran last. Read, path and
+            # generation failures below are not form questions and keep their
+            # own reason.
+            lock_reason = runtime_lock_reason or self._lock_reason(exc.code, str(exc))
         except EditorError as exc:
             lock_reason = self._lock_reason(exc.code, exc.message)
         except (OSError, UnicodeDecodeError) as exc:

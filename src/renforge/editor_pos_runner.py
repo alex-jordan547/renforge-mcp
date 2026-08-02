@@ -16,6 +16,7 @@ from renforge.editor_live_common import (
     inject_editor_live_resources,
     list_ui_info,
     observe_selected as _observe_selected,
+    repeated_use_lock,
     select_lock,
     sha256_file as _sha256_file,
     wait_bounds,
@@ -115,9 +116,9 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "container": select_lock(client, "pos_container", "CONTAINER_POSITION_UNSUPPORTED", fixture_screen=FIXTURE_SCREEN),
     }
 
-    # Measured live: two use-statements share id "pos_dupe_target". The first
-    # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
-    # (list_ui may only name the second instance).
+    # Measured live: two use-statements share id "pos_dupe_target". Both
+    # instances now resolve through the SL2 cache path and lock with the
+    # precise REPEATED_USE_UNSUPPORTED reason (issue #42).
     dupe_info = list_ui_info(client, FIXTURE_SCREEN)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     # Prefer the unnamed first instance (NullAction-ish id) then fall back to
@@ -135,27 +136,7 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
             break
     if dupe_pick is None:
         raise AssertionError(f"could not locate first dupe bounds: {dupe_elements!r}")
-    dupe_select = client.request(
-        "editor_task0_select",
-        {
-            "x": int(dupe_pick["x"]) + max(2, int(dupe_pick["width"]) // 4),
-            "y": int(dupe_pick["y"]) + int(dupe_pick["height"]) // 2,
-        },
-    )
-    ambiguous = dupe_select.get("lock_reason") if isinstance(dupe_select, dict) else None
-    if ambiguous in (None, ""):
-        status = _wait_for_status(
-            client,
-            lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
-            timeout=10.0,
-            poll_name="pos dupe lock",
-        )
-        ambiguous = status.get("selected_lock_reason")
-    if ambiguous != "SYNTHETIC_WIDGET_ID":
-        raise AssertionError(
-            f"duplicate pos textbutton lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}"
-        )
-    report["locks"]["ambiguous"] = ambiguous
+    report["locks"]["ambiguous"] = repeated_use_lock(client, label="pos textbutton", bounds=dupe_pick)
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.
     side_bounds = wait_bounds(client, "pos_side", timeout=3.0, fixture_screen=FIXTURE_SCREEN)

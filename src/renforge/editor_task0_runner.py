@@ -299,8 +299,15 @@ def run_editor_task0_live_scenario(
     clipped_select = client.request("editor_task0_select", {"x": clipped_center[0], "y": clipped_center[1]})
     report["clipped_lock"] = clipped_select.get("lock_reason")
 
-    dupe_select = client.request("editor_task0_select", {"x": dupe_pick[0], "y": dupe_pick[1]})
-    report["dupe_lock"] = dupe_select.get("lock_reason")
+    # Deferred: editor_live_common imports this module's polling helpers, so a
+    # module-level import here would be circular.
+    from renforge.editor_live_common import repeated_use_lock
+
+    report["dupe_lock"] = repeated_use_lock(
+        client,
+        label="task0",
+        point=(dupe_pick[0], dupe_pick[1]),
+    )
 
     validate_unknown = client.request(
         "editor_task0_validate_runtime_key",

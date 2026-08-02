@@ -133,7 +133,7 @@ def test_vbar_seven_step_live_proof(demo_copy: Path) -> None:
     assert locks["style"] == "BAR_STYLE_POSITION_UNSUPPORTED"
     assert locks["missing_position"] == "BAR_POSITION_NOT_DIRECTLY_AUTHORED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
-    assert locks["ambiguous"] == "SYNTHETIC_WIDGET_ID"
+    assert locks["ambiguous"] == "REPEATED_USE_UNSUPPORTED"
     assert locks["unproven"] == "UNKNOWN_ANCESTRY_TYPE"
 
     undo = report["byte_identical_undo"]

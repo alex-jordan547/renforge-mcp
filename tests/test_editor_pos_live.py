@@ -117,7 +117,7 @@ def test_pos_seven_step_live_proof(demo_copy: Path) -> None:
     locks = report["locks"]
     assert locks["computed"] == "POS_LITERAL_REQUIRED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
-    assert locks["ambiguous"] == "SYNTHETIC_WIDGET_ID"
+    assert locks["ambiguous"] == "REPEATED_USE_UNSUPPORTED"
     assert locks["unproven"] == "UNKNOWN_ANCESTRY_TYPE"
 
     undo = report["byte_identical_undo"]

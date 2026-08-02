@@ -12,6 +12,7 @@ from renforge.editor_task0_runner import (
     _source_generation,
     _wait_for_status,
 )
+from renforge.editor_live_common import repeated_use_lock
 
 FIXTURE_SCREEN = "renforge_editor_bar_fixture"
 TARGET_ID = "bar_target"
@@ -197,7 +198,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     }
 
     # Measured live: two use-statements with the same id surface as
-    # bar_dupe_target / bar_dupe_target#2 and resolve with SYNTHETIC_WIDGET_ID.
+    # bar_dupe_target / bar_dupe_target#2 and resolve with REPEATED_USE_UNSUPPORTED.
     dupe_info = _list_info(client)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     dupe_candidates = [
@@ -214,25 +215,7 @@ def run_editor_bar_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     dupe_bounds = dupe.get("bounds")
     if not isinstance(dupe_bounds, dict):
         raise AssertionError(f"duplicate bar has no focus bounds: {dupe!r}")
-    dupe_select = client.request(
-        "editor_task0_select",
-        {
-            "x": int(dupe_bounds["x"]) + max(2, int(dupe_bounds["width"]) // 4),
-            "y": int(dupe_bounds["y"]) + int(dupe_bounds["height"]) // 2,
-        },
-    )
-    ambiguous = dupe_select.get("lock_reason") if isinstance(dupe_select, dict) else None
-    if ambiguous in (None, ""):
-        status = _wait_for_status(
-            client,
-            lambda current: current.get("selected_lock_reason") not in (None, ""),
-            timeout=10.0,
-            poll_name="bar dupe lock",
-        )
-        ambiguous = status.get("selected_lock_reason")
-    if ambiguous != "SYNTHETIC_WIDGET_ID":
-        raise AssertionError(f"duplicate bar lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}")
-    report["locks"]["ambiguous"] = ambiguous
+    report["locks"]["ambiguous"] = repeated_use_lock(client, label="bar", bounds=dupe_bounds)
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.
     side_bounds = _wait_bounds(client, "bar_side", timeout=3.0)

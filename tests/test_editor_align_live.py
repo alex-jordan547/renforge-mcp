@@ -82,6 +82,6 @@ def test_align_seven_step_live_proof(demo_copy: Path) -> None:
     locks = report["locks"]
     assert locks["computed"] == "ALIGN_LITERAL_REQUIRED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
-    assert locks["ambiguous"] == "SYNTHETIC_WIDGET_ID"
+    assert locks["ambiguous"] == "REPEATED_USE_UNSUPPORTED"
     assert locks["unproven"] == "UNKNOWN_ANCESTRY_TYPE"
     assert report["byte_identical_undo"]["matches_baseline"] is True

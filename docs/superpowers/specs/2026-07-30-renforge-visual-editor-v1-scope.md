@@ -34,7 +34,7 @@ requires it — none is arbitrary.
 | 1 | Displayable is **focusable** | Selection and every save-bearing measurement read `renpy.display.focus.focus_list` |
 | 2 | Source statement carries one **literal `id`** matching the runtime widget id | Runtime preview uses `_widget_properties`, keyed by the authored widget id; synthetic observation IDs do not qualify |
 | 3 | A proven adapter statement (`textbutton` single-line or multi-line block, `imagebutton`, single-line `bar`/`vbar`, slider-styled `bar`) or an explicit-block `button`, with one literal integer **`xpos` and `ypos`** | The token-aware patcher replaces only the coordinate spans; block forms preserve every non-position byte |
-| 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | Only a unique static instance under proven clipping can be rebound unambiguously |
+| 4 | Exactly one runtime instance with a fully classified, static ancestry outside **`viewport` / `Crop` / `Transform(crop=)`**, loop and repeated `use` cases | A repeated statement stores its position once for all N instances, so no write can move one of them alone (issue #42) |
 
 **A failing gate is a first-class UI state, never a silent no-op.** The overlay must name which gate
 failed and why, e.g. *"`text` is not focusable — cannot be selected in V1"* or
@@ -83,9 +83,9 @@ textbutton "MOVE ME":
 Requirements: header ends with `:`; header carries no `id`/`xpos`/`ypos`; exactly one literal string
 `id` and one literal integer `xpos`/`ypos` each among direct children at the block indent; patch
 replaces only those two integer tokens (absolute spans in the full file); every other block byte is
-preserved. Computed coordinates, container ancestry, ambiguous `use` instances, and unproven ancestry
+preserved. Computed coordinates, container ancestry, repeated `use` instances, and unproven ancestry
 remain locked with the measured codes (`XPOS_LITERAL_REQUIRED`, `CONTAINER_POSITION_UNSUPPORTED`,
-`SYNTHETIC_WIDGET_ID`, `UNKNOWN_ANCESTRY_TYPE`, …).
+`REPEATED_USE_UNSUPPORTED`, `UNKNOWN_ANCESTRY_TYPE`, …).
 
 Live proof: `RENFORGE_MULTILINE_TEXTBUTTON_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_multiline_textbutton_live.py`
 against Ren'Py **8.5.3**.
@@ -170,7 +170,7 @@ Live proof: `RENFORGE_VBAR_LIVE=1 uv run --extra test python -m pytest -q tests/
 against Ren'Py **8.5.3**. Vbar inherits the exact #34 lock boundaries: computed/non-literal `xpos`
 and `ypos` (`XPOS_LITERAL_REQUIRED` / `YPOS_LITERAL_REQUIRED`), style-driven position
 (`BAR_STYLE_POSITION_UNSUPPORTED`), missing direct position (`BAR_POSITION_NOT_DIRECTLY_AUTHORED`),
-container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), duplicate instances (`SYNTHETIC_WIDGET_ID`),
+container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), repeated instances (`REPEATED_USE_UNSUPPORTED`),
 unknown ancestry (`UNKNOWN_ANCESTRY_TYPE`), and multi-line statements
 (`MULTILINE_STATEMENT_REJECTED`). These targets remain selectable but locked with their measured reason.
 
@@ -193,6 +193,27 @@ present without xpos/ypos), container ancestry, duplicate instances, and unprove
 `vslider`, style-driven position without inline literals, container-driven position, computed
 coordinates, multi-line blocks, and unproven ancestry remain pending or locked; no other forms are
 claimed.
+
+### Repeated loop and `use` instances (issue #42)
+
+Instance identity comes from the SL2 cache path, not from `screen.widgets`. Ren'Py keys each `SLFor`
+iteration by the author's own loop index and gives every `use` call site its own cache dict, so
+walking the cache maps each focus entry to exactly one instance without inventing an id. The widgets
+map cannot: it keeps a single displayable per widget id, so siblings of a repeated statement used to
+fail id resolution and lock as `SYNTHETIC_WIDGET_ID` by accident.
+
+Selection is therefore proven, and the write stays locked — **not** pending implementation. A repeated
+statement holds its authored position in one place shared by all N instances, so a write moves all of
+them; moving one alone would require synthesising a per-instance expression, which the editor is not
+entitled to do. The runtime key now carries `kind`, `instance_count` and `instance_key`, and the lock
+is `LOOP_INSTANCE_UNSUPPORTED` or `REPEATED_USE_UNSUPPORTED`. A repetition lock outranks a source-form
+lock, so the reason does not depend on gate ordering.
+
+`instance_key` holds SL2 AST serials, which are reassigned on script reload; it is stable within one
+script generation and is omitted for unique statements, so it never enters their rebinding equality.
+
+Live proof: `RENFORGE_LOOP_LIVE=1 uv run --extra test python -m pytest -q tests/test_editor_loop_live.py`
+against Ren'Py **8.5.3**.
 
 ## Proven mechanisms (do not redesign)
 

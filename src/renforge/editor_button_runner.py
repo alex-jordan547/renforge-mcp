@@ -12,6 +12,7 @@ from renforge.editor_task0_runner import (
     _source_generation,
     _wait_for_status,
 )
+from renforge.editor_live_common import repeated_use_lock
 
 FIXTURE_SCREEN = "renforge_editor_button_fixture"
 TARGET_ID = "button_target"
@@ -259,17 +260,12 @@ def run_editor_button_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     dupe_bounds = dupe.get("bounds")
     if not isinstance(dupe_bounds, dict):
         raise AssertionError(f"duplicate button has no focus bounds: {dupe!r}")
-    dupe_select = client.request(
-        "editor_task0_select",
-        {
-            "x": int(dupe_bounds["x"]) + 3,
-            "y": int(dupe_bounds["y"]) + int(dupe_bounds["height"]) - 2,
-        },
+    # The button block needs a hit point near its bottom-left corner.
+    report["locks"]["ambiguous"] = repeated_use_lock(
+        client,
+        label="button",
+        point=(int(dupe_bounds["x"]) + 3, int(dupe_bounds["y"]) + int(dupe_bounds["height"]) - 2),
     )
-    ambiguous = dupe_select.get("lock_reason") if isinstance(dupe_select, dict) else None
-    if ambiguous not in {"SYNTHETIC_WIDGET_ID", "MULTI_INSTANCE_UNSUPPORTED"}:
-        raise AssertionError(f"duplicate button was not locked ambiguously: {dupe_select!r}")
-    report["locks"]["ambiguous"] = ambiguous
 
     unknown = client.request(
         "editor_task0_validate_runtime_key",
