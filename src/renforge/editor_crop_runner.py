@@ -229,6 +229,147 @@ def _sample_paint_near_partial(client: Any, partial: dict[str, int]) -> dict[str
     }
 
 
+# Issue #46 — composite transform geometry.
+#
+# The editor's write chain assumes a displacement applied in authored (child)
+# space produces an *equal* displacement in the screen space `focus_list`
+# reports. A crop only translates and clips, so pure crop keeps that assumption
+# (issue #45). `zoom` scales the mapping and `rotate` turns it, so neither does.
+COMPOSITE_ZOOM = 1.25
+COMPOSITE_ROTATE_DEGREES = 15
+
+
+# Authored child-space position shared by the composite targets and the pure-crop
+# control, so one displacement can be applied to all three and compared.
+COMPOSITE_AUTHORED = {"xpos": 20, "ypos": 40}
+COMPOSITE_PROBE_DX = 20
+
+
+def _apply_child_offset(client: Any, widget_id: str, dx: int) -> None:
+    """Displace one child by `dx` in AUTHORED space via the preview seam.
+
+    Uses the same `_widget_properties` channel the editor previews through, so
+    the mapping measured here is the one the editor would rely on. It does not
+    go through analyze/commit, which is what lets a locked target be measured.
+    `dict(...)` rather than a literal: Ren'Py's Python rewriting rejects dict and
+    list literals inside `eval`.
+    """
+    props = f"dict({widget_id}=dict(xpos={COMPOSITE_AUTHORED['xpos'] + dx}, ypos={COMPOSITE_AUTHORED['ypos']}))"
+    client.eval_expr(
+        f'renpy.show_screen("{FIXTURE_SCREEN}", _layer="screens", _widget_properties={props})'
+    )
+    client.eval_expr("renpy.restart_interaction()")
+
+
+def _clear_child_offset(client: Any) -> None:
+    client.eval_expr(f'renpy.show_screen("{FIXTURE_SCREEN}", _layer="screens")')
+    client.eval_expr("renpy.restart_interaction()")
+
+
+def _screen_delta_for_child_offset(client: Any, widget_id: str, dx: int) -> dict[str, Any]:
+    """Observed screen displacement for a known authored displacement."""
+    before = wait_bounds(client, widget_id, fixture_screen=FIXTURE_SCREEN)
+    _apply_child_offset(client, widget_id, dx)
+    try:
+        after = wait_bounds(client, widget_id, fixture_screen=FIXTURE_SCREEN)
+    finally:
+        _clear_child_offset(client)
+    return {
+        "authored_delta": [dx, 0],
+        "observed_screen_delta": [
+            int(after["x"]) - int(before["x"]),
+            int(after["y"]) - int(before["y"]),
+        ],
+        "before_rect": before,
+        "after_rect": after,
+    }
+
+
+def measure_composite_divergence(client: Any) -> dict[str, Any]:
+    """Measure how far crop+zoom and crop+rotate depart from a 1:1 mapping.
+
+    Two independent measurements, both from focus rects only, never from the
+    Transform's own properties — the editor would have to act on the same kind
+    of evidence.
+
+    1. A known authored displacement, applied through the preview seam, against
+       the observed screen displacement. This is the mapping the write chain
+       depends on, and the reason the composite case is locked.
+    2. Static rect shape against reference controls carrying identical labels
+       outside any transform, which explains *why* the mapping departs.
+    """
+    _require_ok(
+        client.request("editor_task0_start", {"screen": FIXTURE_SCREEN}),
+        "editor_task0_start",
+    )
+
+    def rect(widget_id: str) -> dict[str, int]:
+        return wait_bounds(client, widget_id, fixture_screen=FIXTURE_SCREEN)
+
+    zoom_reference = rect("crop_zoom_reference")
+    zoomed = rect("crop_with_zoom")
+    rotate_reference = rect("crop_rotate_reference")
+    rotated = rect("crop_with_rotate")
+
+    # A zoomed child reports a rect scaled by the zoom factor on both axes, so a
+    # child-space delta reaches the screen multiplied by it.
+    def ratio(value: int, reference: int, label: str) -> float:
+        # A zero-sized reference means the control never rendered; normalising it
+        # away would silently skew every ratio below.
+        if reference <= 0:
+            raise AssertionError(f"reference dimension {label} is {reference}, cannot compare")
+        return value / reference
+
+    zoom_scale = {
+        "width": ratio(zoomed["width"], zoom_reference["width"], "zoom width"),
+        "height": ratio(zoomed["height"], zoom_reference["height"], "zoom height"),
+    }
+
+    # A rotated child reports the axis-aligned bounding box of a rotated quad,
+    # so its height grows even though the widget itself did not.
+    rotate_growth = {
+        "width": ratio(rotated["width"], rotate_reference["width"], "rotate width"),
+        "height": ratio(rotated["height"], rotate_reference["height"], "rotate height"),
+    }
+
+    # The mapping itself: one authored displacement, three targets, including the
+    # pure-crop control that must stay 1:1.
+    mapping = {
+        widget_id: _screen_delta_for_child_offset(client, widget_id, COMPOSITE_PROBE_DX)
+        for widget_id in ("crop_target", "crop_with_zoom", "crop_with_rotate")
+    }
+
+    return {
+        "mapping": mapping,
+        "zoom": {
+            "reference_rect": zoom_reference,
+            "composite_rect": zoomed,
+            "observed_scale": zoom_scale,
+            "authored_zoom": COMPOSITE_ZOOM,
+        },
+        "rotate": {
+            "reference_rect": rotate_reference,
+            "composite_rect": rotated,
+            "observed_growth": rotate_growth,
+            "authored_rotate_degrees": COMPOSITE_ROTATE_DEGREES,
+        },
+        "locks": {
+            "crop_with_zoom": select_lock(
+                client,
+                "crop_with_zoom",
+                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                fixture_screen=FIXTURE_SCREEN,
+            ),
+            "crop_with_rotate": select_lock(
+                client,
+                "crop_with_rotate",
+                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                fixture_screen=FIXTURE_SCREEN,
+            ),
+        },
+    }
+
+
 def run_editor_crop_live_scenario(
     client: Any,
     *,
