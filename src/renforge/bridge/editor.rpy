@@ -176,6 +176,14 @@ screen _renforge_editor_overlay():
                         hover_background Solid("#8b5cf6")
                         insensitive_background Solid("#3f3f46")
                         text_color "#ffffff"
+                    if _renforge_editor_style_color_capable():
+                        textbutton _renforge_editor_style_color_label():
+                            id "rf_style_color"
+                            action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
+                            sensitive not _renforge_editor_state().save_in_progress
+                            background Solid("#2457d6")
+                            hover_background Solid("#3b6fe0")
+                            text_color "#ffffff"
 
         if _renforge_editor_opacity() < 0.25:
             $ _rf_exit_rect = _renforge_editor_control_rect("rf_exit")
@@ -274,6 +282,7 @@ init 1100 python:
             state.selected_rect = None
             state.preview_position = None
             state.preview_size = None
+            state.style_color_input = ""
             state.pointer = [0, 0]
             state.drag_active = False
             state.drag_offset = [0, 0]
@@ -311,6 +320,10 @@ init 1100 python:
             state.pending_analysis_key = None
             state.pending_transaction_id = None
             state.pending_transaction_state = None
+            state.pending_operation = None
+            state.last_committed_transaction_id = None
+            state.pending_commit_is_style_color = False
+            state.refuse_next_style_attestation = False
             state.pending_commit_request_id = None
             state.pending_status_request_id = None
             state.pending_attest_request_id = None
@@ -367,6 +380,16 @@ init 1100 python:
             state.selected_source_size = None
         if not hasattr(state, "preview_size"):
             state.preview_size = None
+        if not hasattr(state, "style_color_input"):
+            state.style_color_input = ""
+        if not hasattr(state, "pending_operation"):
+            state.pending_operation = None
+        if not hasattr(state, "last_committed_transaction_id"):
+            state.last_committed_transaction_id = None
+        if not hasattr(state, "pending_commit_is_style_color"):
+            state.pending_commit_is_style_color = False
+        if not hasattr(state, "refuse_next_style_attestation"):
+            state.refuse_next_style_attestation = False
         return state
 
 
@@ -449,12 +472,125 @@ init 1100 python:
 
     def _renforge_editor_can_undo():
         state = _renforge_editor_state()
-        return state.history_index >= 0
+        return (
+            state.history_index >= 0
+            or (
+                bool(state.last_committed_transaction_id)
+                and not bool(state.save_in_progress)
+            )
+        )
 
 
     def _renforge_editor_can_redo():
         state = _renforge_editor_state()
         return state.history_index + 1 < len(state.history_entries)
+
+
+    def _renforge_editor_normalize_style_color(value):
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        if not normalized.startswith("#"):
+            return None
+        body = normalized[1:]
+        if any(char not in "0123456789abcdef" for char in body):
+            return None
+        if len(body) == 3:
+            body = "".join(ch * 2 for ch in body)
+        elif len(body) == 8 and body.endswith("ff"):
+            body = body[:6]
+        elif len(body) == 6:
+            pass
+        elif len(body) == 8:
+            return "#" + body
+        else:
+            return None
+        return "#" + body
+
+
+    def _renforge_editor_literal_style_color(value):
+        """Validate a writable colour without collapsing its source hex family."""
+        if not isinstance(value, str):
+            return None
+        literal = value.strip().lower()
+        if not literal.startswith("#"):
+            return None
+        body = literal[1:]
+        if len(body) not in (3, 6, 8):
+            return None
+        if any(char not in "0123456789abcdef" for char in body):
+            return None
+        return literal
+
+
+    def _renforge_editor_style_color_from_widget(widget):
+        if widget is None:
+            return None
+        style = getattr(widget, "style", None)
+        color = getattr(style, "color", None) if style is not None else None
+        if color is None:
+            color = getattr(widget, "color", None)
+        if isinstance(color, str):
+            return _renforge_editor_normalize_style_color(color)
+        if isinstance(color, (builtins.list, builtins.tuple)) and len(color) >= 3:
+            try:
+                return _renforge_editor_normalize_style_color(
+                    "#%02x%02x%02x" % (int(color[0]), int(color[1]), int(color[2]))
+                )
+            except Exception:
+                return None
+        # Ren'Py Color objects expose rgba channels.
+        try:
+            channels = list(color)
+            if len(channels) >= 3:
+                return _renforge_editor_normalize_style_color(
+                    "#%02x%02x%02x" % (int(channels[0]), int(channels[1]), int(channels[2]))
+                )
+        except Exception:
+            pass
+        return None
+
+
+    def _renforge_editor_measure_text_rect(widget):
+        if widget is None:
+            return None
+        width = int(getattr(renpy.config, "screen_width", 1280) or 1280)
+        height = int(getattr(renpy.config, "screen_height", 720) or 720)
+        render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
+        place = getattr(getattr(renpy.display, "displayable", None), "place", None)
+        get_placement = getattr(widget, "get_placement", None)
+        if not callable(render_for_size) or not callable(place) or not callable(get_placement):
+            return None
+        try:
+            surf = render_for_size(widget, width, height, 0, 0)
+            sw = getattr(surf, "width", None)
+            sh = getattr(surf, "height", None)
+            if sw is None or sh is None:
+                sw, sh = surf.get_size()
+            x, y = place(width, height, float(sw), float(sh), get_placement())
+            rect = [int(round(x)), int(round(y)), int(round(sw)), int(round(sh))]
+        except Exception:
+            return None
+        if rect[2] <= 0 or rect[3] <= 0:
+            return None
+        return rect
+
+
+    def _renforge_editor_style_color_capable():
+        state = _renforge_editor_state()
+        caps = state.current_capabilities or {}
+        return bool(caps.get("style_color") is True and state.selected_lock_reason in (None, ""))
+
+
+    def _renforge_editor_style_color_label():
+        state = _renforge_editor_state()
+        target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
+        color = None
+        if isinstance(target, builtins.dict):
+            color = target.get("style_color") or target.get("style_color_baseline")
+        if not color:
+            color = state.style_color_input or "#------"
+        return "Color %s" % color
 
 
     def _renforge_editor_has_selection():
@@ -570,7 +706,7 @@ init 1100 python:
                         if auth.get("ok") is not True:
                             return auth
                         command_payload = builtins.dict(request.get("payload") or {})
-                        if request.get("command") == "commit":
+                        if request.get("command") in ("commit", "undo_commit"):
                             command_payload["session_id"] = auth.get("session_id")
                         command_frame = {
                             "protocol": "renforge-editor",
@@ -1252,6 +1388,200 @@ init 1100 python:
         return candidates
 
 
+    def _renforge_editor_active_game_screens():
+        names = []
+        seen = set()
+        state = _renforge_editor_state()
+        for name in (state.editor_session_screen, state.screen, state.selected_screen):
+            if isinstance(name, str) and name and name not in _EDITOR_SCREENS and name not in seen:
+                seen.add(name)
+                names.append(name)
+        try:
+            sl = renpy.game.context().scene_lists
+            layer_map = getattr(sl, "layers", {}) or {}
+            for sle in layer_map.get("screens", []) or []:
+                d = getattr(sle, "displayable", None)
+                sn = getattr(d, "screen_name", None)
+                if isinstance(sn, (builtins.list, builtins.tuple)) and sn:
+                    name = sn[0]
+                elif sn:
+                    name = sn
+                else:
+                    tag = getattr(sle, "tag", None)
+                    name = tag
+                if isinstance(name, str) and name and name not in _EDITOR_SCREENS and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        except Exception:
+            pass
+        return names
+
+
+    def _renforge_editor_runtime_key_from_text_widget(screen_name, widget, widget_id, ordinal, instances=None):
+        if not isinstance(screen_name, str) or not screen_name:
+            return None, "MISSING_INVOCATION_PATH", None
+        if not isinstance(widget_id, str) or not widget_id:
+            return None, "SYNTHETIC_WIDGET_ID", None
+        try:
+            if not isinstance(widget, renpy.text.text.Text):
+                return None, "STATEMENT_KIND_MISMATCH", None
+        except Exception:
+            return None, "STATEMENT_KIND_MISMATCH", None
+        screen, widgets = _renforge_editor_widget_map(screen_name)
+        if screen is None:
+            return None, "MISSING_SCREEN", None
+        named_widget = None
+        if isinstance(widgets, builtins.dict):
+            named_widget = widgets.get(widget_id)
+        if named_widget is None:
+            named_widget = widget
+        source_location = _renforge_editor_location(named_widget)
+        if source_location is None:
+            source_location = _renforge_editor_location(widget)
+        if source_location is None:
+            return None, "MISSING_SOURCE_LOCATION", None
+        ancestry_nodes = _renforge_editor_find_ancestry(screen, widget)
+        if not ancestry_nodes:
+            ancestry_nodes = _renforge_editor_find_ancestry(screen, named_widget)
+        if not ancestry_nodes:
+            return None, "UNKNOWN_ANCESTRY_TYPE", None
+        ancestry = []
+        for index, node in enumerate(ancestry_nodes):
+            class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
+            if class_name not in _ALLOWED_ANCESTRY_TYPES:
+                return None, "UNKNOWN_ANCESTRY_TYPE", None
+            crop_state = _renforge_editor_crop_state(node, focus=None, target=widget)
+            if crop_state not in (
+                "none",
+                "viewport",
+                "crop_displayable",
+                "transform_crop",
+                "transform_crop_composite",
+                "transform_crop_partial",
+                "transform_crop_unproven",
+                "clipping_true",
+            ):
+                return None, "UNKNOWN_CROP_STATE", None
+            editor_owned = bool(
+                screen_name in _EDITOR_SCREENS
+                or getattr(node, "_renforge_editor_owner", None) == _EDITOR_OWNER
+                or getattr(named_widget, "_renforge_editor_owner", None) == _EDITOR_OWNER
+            )
+            style = getattr(node, "style", None)
+            layout = getattr(style, "box_layout", None) if style is not None else None
+            if layout is None:
+                layout = getattr(node, "default_layout", None)
+            layout_name = layout if isinstance(layout, builtins.str) else None
+            ancestry.append(
+                {
+                    "index": int(index),
+                    "type": class_name,
+                    "source_location": _renforge_editor_location(node),
+                    "screen_owner": _EDITOR_OWNER if editor_owned else "game",
+                    "crop_state": crop_state,
+                    "editor_owned": editor_owned,
+                    "layout": layout_name,
+                }
+            )
+        discriminator = {"kind": "static", "instance_count": 1, "ordinal": int(ordinal)}
+        key = {
+            "screen": screen_name,
+            "invocation_path": screen_name,
+            "widget_id": widget_id,
+            "source_location": source_location,
+            "instance_discriminator": discriminator,
+            "ancestry": ancestry,
+        }
+        return key, None, named_widget
+
+
+    def _renforge_editor_text_candidates():
+        """Discover non-focusable Text targets with literal ids (scene_tree_text)."""
+        candidates = []
+        instances = {}
+        ordinal = 100000
+        for screen_name in _renforge_editor_active_game_screens():
+            screen, widgets = _renforge_editor_widget_map(screen_name)
+            if screen is None or not isinstance(widgets, builtins.dict):
+                continue
+            _renforge_editor_screen_instances(screen_name, instances)
+            for widget_id, widget in list(widgets.items()):
+                if not isinstance(widget_id, str) or not widget_id:
+                    continue
+                try:
+                    is_text = isinstance(widget, renpy.text.text.Text)
+                except Exception:
+                    is_text = False
+                if not is_text:
+                    continue
+                rect = _renforge_editor_measure_text_rect(widget)
+                if rect is None:
+                    continue
+                runtime_key, resolve_error, named_widget = _renforge_editor_runtime_key_from_text_widget(
+                    screen_name,
+                    widget,
+                    widget_id,
+                    ordinal,
+                    instances,
+                )
+                ordinal += 1
+                owner_hit = bool(screen_name in _EDITOR_SCREENS)
+                if runtime_key is not None:
+                    for node in runtime_key.get("ancestry", []):
+                        if bool(node.get("editor_owned")):
+                            owner_hit = True
+                            break
+                # Read painted/runtime style from the displayable only. Target
+                # preview maps must not override attestation after reload: a
+                # stale dirty colour would refuse a correct product undo.
+                style_color = _renforge_editor_style_color_from_widget(widget)
+                candidates.append(
+                    {
+                        "focus": None,
+                        "rect": rect,
+                        "ordinal": int(ordinal - 1),
+                        "runtime_key": runtime_key,
+                        "resolve_error": resolve_error,
+                        "named_widget": named_widget,
+                        "focused_widget": widget,
+                        "editor_owned": owner_hit,
+                        "measurement_method": "scene_tree_text",
+                        "style_color": style_color,
+                    }
+                )
+        counts = {}
+        for candidate in candidates:
+            key = candidate.get("runtime_key")
+            if not isinstance(key, builtins.dict):
+                continue
+            signature = (
+                key.get("screen"),
+                key.get("widget_id"),
+                tuple(key.get("source_location") or []),
+            )
+            counts[signature] = counts.get(signature, 0) + 1
+        for candidate in candidates:
+            key = candidate.get("runtime_key")
+            if not isinstance(key, builtins.dict):
+                continue
+            signature = (
+                key.get("screen"),
+                key.get("widget_id"),
+                tuple(key.get("source_location") or []),
+            )
+            if counts.get(signature, 0) <= 1:
+                continue
+            discriminator = key.get("instance_discriminator") or {}
+            if discriminator.get("kind") in ("loop", "use"):
+                continue
+            candidate["resolve_error"] = "MULTI_INSTANCE_UNSUPPORTED"
+        return candidates
+
+
+    def _renforge_editor_all_candidates():
+        return list(_renforge_editor_focus_candidates()) + list(_renforge_editor_text_candidates())
+
+
     def _renforge_editor_barrier():
         renpy.restart_interaction()
         data = renpy.screenshot_to_bytes(None)
@@ -1275,14 +1605,20 @@ init 1100 python:
             return None, "UNMEASURED"
         script_generation = int(_renforge_editor_state().script_generation)
         focused_widget = candidate.get("focused_widget")
+        measurement_method = candidate.get("measurement_method") or "focus_list"
         observation = {
             "runtime_key": runtime_key,
             "rect": [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])],
-            "measurement_method": "focus_list",
+            "measurement_method": measurement_method,
             "frame_id": frame_id,
             "script_generation": script_generation,
             "object_id": id(focused_widget) if focused_widget is not None else None,
         }
+        style_color = candidate.get("style_color")
+        if style_color is None and focused_widget is not None:
+            style_color = _renforge_editor_style_color_from_widget(focused_widget)
+        if style_color is not None:
+            observation["style_color"] = style_color
         return observation, None
 
 
@@ -1400,41 +1736,56 @@ init 1100 python:
         state = _renforge_editor_state()
         properties = {}
         for target in state.targets.values():
-            if target.get("screen") != screen or not target.get("dirty"):
+            if target.get("screen") != screen:
                 continue
+            widget_id = target.get("widget_id")
+            if not widget_id:
+                continue
+            props = {}
+            style_color = _renforge_editor_literal_style_color(target.get("style_color"))
+            comparable_style = _renforge_editor_normalize_style_color(style_color)
+            baseline_style = _renforge_editor_normalize_style_color(target.get("style_color_baseline"))
+            style_dirty = bool(
+                style_color is not None
+                and comparable_style != baseline_style
+                and (target.get("capabilities") or {}).get("style_color") is True
+            )
             position = target.get("position")
             runtime_baseline = target.get("runtime_baseline")
             source_position = target.get("source_position")
-            widget_id = target.get("widget_id")
-            if not (
-                isinstance(position, (builtins.list, tuple))
+            position_dirty = bool(
+                target.get("dirty")
+                and isinstance(position, (builtins.list, tuple))
                 and len(position) == 2
                 and isinstance(runtime_baseline, (builtins.list, tuple))
                 and len(runtime_baseline) == 2
                 and isinstance(source_position, (builtins.list, tuple))
                 and len(source_position) == 2
-                and widget_id
-            ):
-                continue
-            next_x = int(source_position[0]) + int(position[0]) - int(runtime_baseline[0])
-            next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
-            source_key = target.get("source_key") or {}
-            position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
-            props = _renforge_editor_preview_properties(next_x, next_y, position_mode)
-            size = target.get("size")
-            runtime_size = target.get("runtime_size")
-            source_size = target.get("source_size")
-            if (
-                isinstance(size, (builtins.list, tuple))
-                and len(size) == 2
-                and isinstance(runtime_size, (builtins.list, tuple))
-                and len(runtime_size) == 2
-                and isinstance(source_size, (builtins.list, tuple))
-                and len(source_size) == 2
-            ):
-                props["xsize"] = int(source_size[0]) + int(size[0]) - int(runtime_size[0])
-                props["ysize"] = int(source_size[1]) + int(size[1]) - int(runtime_size[1])
-            properties[str(widget_id)] = props
+                and (target.get("capabilities") or {}).get("move") is not False
+            )
+            if position_dirty:
+                next_x = int(source_position[0]) + int(position[0]) - int(runtime_baseline[0])
+                next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
+                source_key = target.get("source_key") or {}
+                position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
+                props.update(_renforge_editor_preview_properties(next_x, next_y, position_mode))
+                size = target.get("size")
+                runtime_size = target.get("runtime_size")
+                source_size = target.get("source_size")
+                if (
+                    isinstance(size, (builtins.list, tuple))
+                    and len(size) == 2
+                    and isinstance(runtime_size, (builtins.list, tuple))
+                    and len(runtime_size) == 2
+                    and isinstance(source_size, (builtins.list, tuple))
+                    and len(source_size) == 2
+                ):
+                    props["xsize"] = int(source_size[0]) + int(size[0]) - int(runtime_size[0])
+                    props["ysize"] = int(source_size[1]) + int(size[1]) - int(runtime_size[1])
+            if style_dirty:
+                props["color"] = style_color
+            if props:
+                properties[str(widget_id)] = props
         return properties
 
 
@@ -1561,13 +1912,33 @@ init 1100 python:
         ):
             analysis_id = target.get("analysis_id")
             source_key = target.get("source_key")
+            if not (analysis_id and isinstance(source_key, builtins.dict)):
+                return []
+            capabilities = target.get("capabilities") or {}
+            style_color = _renforge_editor_literal_style_color(target.get("style_color"))
+            baseline_literal = _renforge_editor_literal_style_color(target.get("style_color_baseline"))
+            if capabilities.get("style_color") is True:
+                if (
+                    style_color is None
+                    or baseline_literal is None
+                    or len(style_color) != len(baseline_literal)
+                    or _renforge_editor_normalize_style_color(style_color)
+                    == _renforge_editor_normalize_style_color(baseline_literal)
+                ):
+                    return []
+                intents.append(
+                    {
+                        "analysis_id": analysis_id,
+                        "source_key": source_key,
+                        "color": style_color,
+                    }
+                )
+                continue
             position = target.get("position")
             runtime_baseline = target.get("runtime_baseline")
             source_position = target.get("source_position")
             if not (
-                analysis_id
-                and isinstance(source_key, builtins.dict)
-                and isinstance(position, (builtins.list, tuple))
+                isinstance(position, (builtins.list, tuple))
                 and len(position) == 2
                 and isinstance(runtime_baseline, (builtins.list, tuple))
                 and len(runtime_baseline) == 2
@@ -1613,7 +1984,13 @@ init 1100 python:
         if not isinstance(command, builtins.dict):
             return {"ok": False, "error": "NO_HISTORY"}
         value = command.get("before") if use_before else command.get("after")
-        if command.get("kind") == "size":
+        if command.get("kind") == "style_color":
+            state = _renforge_editor_state()
+            previous_key = state.selected_target_key
+            state.selected_target_key = command.get("target_key")
+            result = _renforge_editor_set_style_color(value, record=False)
+            state.selected_target_key = previous_key
+        elif command.get("kind") == "size":
             result = _renforge_editor_set_target_size(command.get("target_key"), value)
         elif command.get("kind") == "reset":
             result = _renforge_editor_set_target_position(command.get("target_key"), value)
@@ -1626,6 +2003,15 @@ init 1100 python:
                 )
                 if not size_result.get("ok", False):
                     result = size_result
+            color_key = "before_color" if use_before else "after_color"
+            color_value = command.get(color_key)
+            if color_value is not None:
+                previous_key = _renforge_editor_state().selected_target_key
+                _renforge_editor_state().selected_target_key = command.get("target_key")
+                color_result = _renforge_editor_set_style_color(color_value, record=False)
+                _renforge_editor_state().selected_target_key = previous_key
+                if not color_result.get("ok", False):
+                    result = color_result
         else:
             result = _renforge_editor_set_target_position(command.get("target_key"), value)
         _renforge_editor_refresh_save_enabled()
@@ -1633,15 +2019,111 @@ init 1100 python:
         return result
 
 
+    def _renforge_editor_set_style_color(color, *, record=True):
+        state = _renforge_editor_state()
+        if not _renforge_editor_style_color_capable():
+            return {"ok": False, "error": "STYLE_COLOR_UNAVAILABLE"}
+        literal = _renforge_editor_literal_style_color(color)
+        if literal is None:
+            return {"ok": False, "error": "STYLE_COLOR_INVALID"}
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key)
+        if not isinstance(target, builtins.dict):
+            return {"ok": False, "error": "TARGET_NOT_FOUND"}
+        baseline_literal = _renforge_editor_literal_style_color(target.get("style_color_baseline"))
+        previous_literal = _renforge_editor_literal_style_color(target.get("style_color")) or baseline_literal
+        if baseline_literal is None or len(literal) != len(baseline_literal):
+            return {"ok": False, "error": "STYLE_COLOR_HEX_FAMILY_MISMATCH"}
+        normalized = _renforge_editor_normalize_style_color(literal)
+        baseline = _renforge_editor_normalize_style_color(baseline_literal)
+        previous = _renforge_editor_normalize_style_color(previous_literal)
+        if previous == normalized:
+            state.style_color_input = previous_literal or literal
+            return {"ok": True, "color": previous_literal or literal, "changed": False}
+        if record:
+            if state.history_index + 1 < len(state.history_entries):
+                state.history_entries = state.history_entries[: state.history_index + 1]
+            state.history_entries.append(
+                {
+                    "target_key": target_key,
+                    "kind": "style_color",
+                    "before": previous_literal,
+                    "after": literal,
+                }
+            )
+            state.history = list(state.history_entries)
+            state.history_index = len(state.history_entries) - 1
+        target["style_color"] = literal
+        target["dirty"] = bool(normalized != baseline)
+        state.style_color_input = literal
+        state.save_button_state = "idle"
+        _renforge_editor_set_current_analysis(
+            state,
+            target.get("analysis_id"),
+            target.get("source_key"),
+            target.get("capabilities"),
+        )
+        _renforge_editor_show_target_overrides(target.get("screen"))
+        state.last_preview_method = "_widget_properties_color"
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return {
+            "ok": True,
+            "color": literal,
+            "changed": True,
+            "dirty": bool(target.get("dirty")),
+            "method": "_widget_properties_color",
+            "source_unchanged": True,
+        }
+
+
+    def _renforge_editor_cycle_style_color_preview():
+        """Minimal in-game control: toggle between baseline and a fixed blue proof colour."""
+        state = _renforge_editor_state()
+        target = state.targets.get(state.selected_target_key)
+        if not isinstance(target, builtins.dict):
+            return {"ok": False, "error": "TARGET_NOT_FOUND"}
+        baseline = _renforge_editor_literal_style_color(target.get("style_color_baseline")) or "#e22b2b"
+        current = _renforge_editor_literal_style_color(target.get("style_color")) or baseline
+        if len(baseline) == 4:
+            proof_color = "#25d"
+        elif len(baseline) == 9:
+            proof_color = "#2457d6" + baseline[-2:]
+        else:
+            proof_color = "#2457d6"
+        next_color = proof_color if current != proof_color else baseline
+        return _renforge_editor_set_style_color(next_color, record=True)
+
+
     def _renforge_editor_undo():
         state = _renforge_editor_state()
         if not _renforge_editor_can_undo():
             state.status_text = "Undo unavailable"
             return {"ok": False, "error": "UNDO_UNAVAILABLE"}
-        command = state.history_entries[state.history_index]
-        state.history_index -= 1
-        state.status_text = "Undo"
-        return _renforge_editor_apply_history_command(command, use_before=True)
+        if state.history_index >= 0:
+            command = state.history_entries[state.history_index]
+            state.history_index -= 1
+            state.status_text = "Undo"
+            return _renforge_editor_apply_history_command(command, use_before=True)
+        transaction_id = state.last_committed_transaction_id
+        if not transaction_id or state.save_in_progress:
+            state.status_text = "Undo unavailable"
+            return {"ok": False, "error": "UNDO_UNAVAILABLE"}
+        state.save_in_progress = True
+        state.save_button_state = "saving"
+        state.save_requested = True
+        state.save_error = None
+        state.save_last_error = None
+        state.pending_operation = "undo_commit"
+        state.status_text = "Undoing"
+        pending = _renforge_editor_ensure_coordinator().submit_host(
+            "undo_commit",
+            {"transaction_id": transaction_id},
+            {"command": "undo_commit", "transaction_id": transaction_id},
+        )
+        state.pending_commit_request_id = pending
+        renpy.restart_interaction()
+        return {"ok": True, "request_id": pending, "transaction_id": transaction_id, "kind": "product_undo"}
 
 
     def _renforge_editor_redo():
@@ -1664,13 +2146,21 @@ init 1100 python:
         baseline = list(target.get("runtime_baseline") or [])
         before_size = list(target.get("size") or [])
         baseline_size = list(target.get("runtime_size") or [])
+        before_color = _renforge_editor_literal_style_color(target.get("style_color"))
+        baseline_color = _renforge_editor_literal_style_color(target.get("style_color_baseline"))
         position_dirty = len(before) == 2 and len(baseline) == 2 and before != baseline
         size_dirty = (
             len(before_size) == 2
             and len(baseline_size) == 2
             and before_size != baseline_size
         )
-        if not position_dirty and not size_dirty:
+        style_dirty = (
+            before_color is not None
+            and baseline_color is not None
+            and _renforge_editor_normalize_style_color(before_color)
+            != _renforge_editor_normalize_style_color(baseline_color)
+        )
+        if not position_dirty and not size_dirty and not style_dirty:
             return {"ok": False, "error": "RESET_UNAVAILABLE"}
         if len(before) != 2 or len(baseline) != 2:
             return {"ok": False, "error": "RESET_UNAVAILABLE"}
@@ -1683,6 +2173,8 @@ init 1100 python:
             "after": baseline,
             "before_size": before_size if len(before_size) == 2 else None,
             "after_size": baseline_size if len(baseline_size) == 2 else None,
+            "before_color": before_color if style_dirty else None,
+            "after_color": baseline_color if style_dirty else None,
         }
         state.history_entries.append(command)
         state.history = [list(entry.get("after") or []) for entry in state.history_entries]
@@ -1954,7 +2446,7 @@ init 1100 python:
         selected_screen = selected_key.get("screen")
         selected_widget = selected_key.get("widget_id")
         selected_source = tuple(selected_key.get("source_location") or [])
-        for candidate in _renforge_editor_focus_candidates():
+        for candidate in _renforge_editor_all_candidates():
             if candidate.get("editor_owned"):
                 continue
             key = candidate.get("runtime_key")
@@ -1967,6 +2459,8 @@ init 1100 python:
                     and key.get("widget_id") == selected_widget
                     and tuple(key.get("source_location") or []) == selected_source
                 ):
+                    loose_matches.append(candidate)
+                elif _renforge_editor_rebind_signature(key) == _renforge_editor_rebind_signature(selected_key):
                     loose_matches.append(candidate)
         if len(matches) == 0:
             if len(loose_matches) == 1:
@@ -1986,9 +2480,51 @@ init 1100 python:
             state.accepted_observations[:] = state.accepted_observations[-20:]
 
 
+    def _renforge_editor_hit_candidates(x, y):
+        """Return focus hits first; only fall back to text when no focusable covers the point."""
+        focus_hits = []
+        for candidate in reversed(_renforge_editor_focus_candidates()):
+            if candidate.get("editor_owned"):
+                continue
+            rect = candidate.get("rect") or []
+            if len(rect) != 4:
+                continue
+            if rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]:
+                focus_hits.append(candidate)
+        if focus_hits:
+            return focus_hits
+        text_hits = []
+        for candidate in reversed(_renforge_editor_text_candidates()):
+            if candidate.get("editor_owned"):
+                continue
+            rect = candidate.get("rect") or []
+            if len(rect) != 4:
+                continue
+            if rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]:
+                text_hits.append(candidate)
+        return text_hits
+
+
     def _renforge_editor_select(x, y):
         state = _renforge_editor_state()
-        for candidate in reversed(_renforge_editor_focus_candidates()):
+        hits = _renforge_editor_hit_candidates(x, y)
+        if not hits:
+            return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
+        # Fail closed when multiple non-focusable text targets cover the same point.
+        if (
+            len(hits) > 1
+            and all(c.get("measurement_method") == "scene_tree_text" for c in hits)
+        ):
+            state.pointer = [int(x), int(y)]
+            state.selected_runtime_key = None
+            state.selected_widget_id = None
+            state.selected_lock_reason = "AMBIGUOUS_HIT"
+            state.selected_rect = None
+            _renforge_editor_clear_current_analysis(state)
+            state.save_enabled = False
+            _renforge_editor_set_label(x, y)
+            return {"ok": False, "lock_reason": "AMBIGUOUS_HIT", "error": "AMBIGUOUS_HIT"}
+        for candidate in hits:
             if candidate.get("editor_owned"):
                 continue
             rect = candidate.get("rect") or []
@@ -2059,6 +2595,7 @@ init 1100 python:
                 state.selected_source_size = list(target.get("source_size") or []) or None
                 state.preview_position = position
                 state.preview_size = size if len(size) == 2 else None
+                state.style_color_input = target.get("style_color") or target.get("style_color_baseline") or ""
                 selected_size = size if len(size) == 2 else rect[2:4]
                 state.selected_rect = [
                     int(position[0]),
@@ -2362,7 +2899,10 @@ init 1100 python:
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
                 _renforge_editor_select(pointer_x, pointer_y)
-                if not state.selected_lock_reason:
+                if (
+                    not state.selected_lock_reason
+                    and (state.current_capabilities or {}).get("move", True) is True
+                ):
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
@@ -2429,12 +2969,13 @@ init 1100 python:
                         state.selected_analysis_pending = False
                         _renforge_editor_clear_current_analysis(state)
                         state.status_text = "Analyze failed"
-                    elif command == "commit":
+                    elif command in ("commit", "undo_commit"):
                         state.save_in_progress = False
                         state.save_enabled = False
                         state.status_text = "Commit failed"
                         state.save_requested = False
                         state.pending_transaction_id = None
+                        state.pending_operation = None
                         state.pending_handshake_generation = None
                         state.pending_handshake_sent = False
                         state.pending_reload_requested = False
@@ -2448,6 +2989,7 @@ init 1100 python:
                         state.save_enabled = False
                         state.save_requested = False
                         state.pending_transaction_id = None
+                        state.pending_operation = None
                         state.pending_handshake_generation = None
                         state.pending_handshake_sent = False
                         state.pending_reload_requested = False
@@ -2504,6 +3046,11 @@ init 1100 python:
                                 state.selected_original_size = None
                                 state.preview_size = None
                             state.selected_target_key = target_key
+                            source_key = state.current_source_key or {}
+                            baseline_style = None
+                            if isinstance(source_key, builtins.dict):
+                                baseline_style = _renforge_editor_literal_style_color(source_key.get("style_color"))
+                            state.style_color_input = baseline_style or ""
                             state.targets[target_key] = {
                                 "analysis_id": state.current_analysis_id,
                                 "source_key": state.current_source_key,
@@ -2517,6 +3064,8 @@ init 1100 python:
                                 "runtime_size": list(state.selected_original_size) if state.selected_original_size is not None else None,
                                 "source_size": list(state.selected_source_size) if state.selected_source_size is not None else None,
                                 "size": list(state.selected_original_size) if state.selected_original_size is not None else None,
+                                "style_color_baseline": baseline_style,
+                                "style_color": baseline_style,
                                 "dirty": False,
                                 "generation": int(state.script_generation),
                             }
@@ -2526,13 +3075,14 @@ init 1100 python:
                         state.save_enabled = False
                         state.status_text = "Locked"
                         _renforge_editor_clear_current_analysis(state)
-                elif command == "commit":
+                elif command in ("commit", "undo_commit"):
                     state.pending_transaction_id = result.get("transaction_id")
                     state.pending_transaction_state = result.get("state")
+                    state.pending_operation = command
                     if state.pending_transaction_id is None:
                         state.save_in_progress = False
                         state.save_enabled = False
-                        state.save_last_error = "commit missing transaction id"
+                        state.save_last_error = "%s missing transaction id" % command
                         state.status_text = "Commit failed"
                     else:
                         state.pending_reload_draw_generation = None
@@ -2545,7 +3095,7 @@ init 1100 python:
                         state.save_in_progress = True
                         state.save_error = None
                         state.save_last_error = None
-                        state.status_text = "Commit queued"
+                        state.status_text = "Undo queued" if command == "undo_commit" else "Commit queued"
                 elif command == "commit_status":
                     state.last_commit_status = result
                     state.pending_transaction_state = result.get("state")
@@ -2561,6 +3111,8 @@ init 1100 python:
                         state.save_error = str(state.save_last_error)
                 elif command == "reload_handshake":
                     if result.get("state") == "committed":
+                        committed_tx = state.pending_transaction_id
+                        operation = state.pending_operation
                         state.pending_handshake_generation = None
                         state.save_in_progress = False
                         state.save_last_error = None
@@ -2572,6 +3124,14 @@ init 1100 python:
                         state.pending_reload_draw_generation = None
                         state.save_enabled = False
                         state.save_requested = False
+                        if operation == "undo_commit":
+                            state.last_committed_transaction_id = None
+                        elif bool(state.pending_commit_is_style_color):
+                            state.last_committed_transaction_id = committed_tx
+                        else:
+                            state.last_committed_transaction_id = None
+                        state.pending_commit_is_style_color = False
+                        state.pending_operation = None
                         selected_rect = list(state.selected_rect or [])
                         state.targets = {}
                         _renforge_editor_reset_history()
@@ -2610,13 +3170,14 @@ init 1100 python:
                     state.selected_analysis_pending = False
                     _renforge_editor_clear_current_analysis(state)
                     state.status_text = "Analyze failed"
-                elif command == "commit":
+                elif command in ("commit", "undo_commit"):
                     state.save_in_progress = False
                     state.save_enabled = False
                     state.status_text = "Commit failed"
                     state.save_button_state = "idle"
                     state.save_requested = False
                     state.pending_transaction_id = None
+                    state.pending_operation = None
                     state.pending_handshake_generation = None
                     state.pending_handshake_sent = False
                     state.pending_reload_requested = False
@@ -2631,6 +3192,7 @@ init 1100 python:
                     state.save_enabled = False
                     state.save_requested = False
                     state.pending_transaction_id = None
+                    state.pending_operation = None
                     state.pending_handshake_generation = None
                     state.pending_handshake_sent = False
                     state.pending_reload_requested = False
@@ -2783,6 +3345,14 @@ init 1100 python:
         state.save_requested = True
         state.save_error = None
         state.save_last_error = None
+        state.pending_commit_is_style_color = bool(
+            intents
+            and all(
+                isinstance(intent, builtins.dict)
+                and _renforge_editor_literal_style_color(intent.get("color")) is not None
+                for intent in intents
+            )
+        )
         state.status_text = "Saving"
         pending = _renforge_editor_ensure_coordinator().submit_host(
             "commit",
@@ -3014,14 +3584,14 @@ init 1100 python:
             return {"ok": False, "error": "runtime_key required"}
         candidates = [
             candidate
-            for candidate in _renforge_editor_focus_candidates()
+            for candidate in _renforge_editor_all_candidates()
             if candidate.get("runtime_key") == runtime_key
         ]
         if not candidates:
             # fallback by stable signature
             candidates = []
             wanted = _renforge_editor_rebind_signature(runtime_key)
-            for candidate in _renforge_editor_focus_candidates():
+            for candidate in _renforge_editor_all_candidates():
                 candidate_key = candidate.get("runtime_key")
                 if not isinstance(candidate_key, builtins.dict):
                     continue
@@ -3075,7 +3645,7 @@ init 1100 python:
                 return {"ok": False, "error": "widget_id missing"}
             targets = [
                 candidate
-                for candidate in _renforge_editor_focus_candidates()
+                for candidate in _renforge_editor_all_candidates()
                 if candidate.get("runtime_key") is not None
                 and _renforge_editor_same_target_key(candidate.get("runtime_key"), expected_runtime_key)
                 and isinstance(candidate.get("runtime_key", {}).get("source_location"), list)
@@ -3083,7 +3653,7 @@ init 1100 python:
             if not targets:
                 wanted = _renforge_editor_rebind_signature(expected_runtime_key)
                 signature_matches = []
-                for candidate in _renforge_editor_focus_candidates():
+                for candidate in _renforge_editor_all_candidates():
                     candidate_key = candidate.get("runtime_key")
                     if not isinstance(candidate_key, builtins.dict):
                         continue
@@ -3095,6 +3665,21 @@ init 1100 python:
                     targets = signature_matches
             if len(targets) != 1:
                 return {"ok": False, "error": "TARGET_NOT_FOUND", "widget_id": widget_id}
+            # Forced-refusal test path for style-colour attestation rollback.
+            expected_style = _renforge_editor_normalize_style_color(expected.get("style_color"))
+            if (
+                expected_style is not None
+                and os.environ.get("RENFORGE_STYLE_COLOR_LIVE") == "1"
+                and bool(state.refuse_next_style_attestation)
+            ):
+                state.refuse_next_style_attestation = False
+                return {
+                    "ok": False,
+                    "error": "STYLE_COLOR_ATTESTATION_REFUSED",
+                    "state": "refused",
+                    "widget_id": widget_id,
+                    "expected": expected_style,
+                }
             observation, observe_error = _renforge_editor_observation_for_candidate(targets[0])
             if observation is None:
                 return {"ok": False, "error": observe_error or "UNMEASURED", "widget_id": widget_id}
@@ -3105,6 +3690,16 @@ init 1100 python:
                     "expected": generation,
                     "known": observation.get("script_generation"),
                 }
+            if expected_style is not None:
+                observed_style = _renforge_editor_normalize_style_color(observation.get("style_color"))
+                if observed_style != expected_style:
+                    return {
+                        "ok": False,
+                        "error": "TARGET_STYLE_COLOR_MISMATCH",
+                        "widget_id": widget_id,
+                        "expected": expected_style,
+                        "observed": observed_style,
+                    }
             expected_position = expected.get("position")
             rect = observation.get("rect") or []
             if isinstance(expected_position, (builtins.list, tuple)) and len(expected_position) == 2:
@@ -3254,6 +3849,10 @@ init 1100 python:
                 else {}
             ),
             "pending_transaction_id": state.pending_transaction_id,
+            "pending_operation": state.pending_operation,
+            "last_committed_transaction_id": state.last_committed_transaction_id,
+            "style_color_input": state.style_color_input,
+            "refuse_next_style_attestation": bool(state.refuse_next_style_attestation),
             "pending_handshake_generation": state.pending_handshake_generation,
             "pending_handshake_sent": state.pending_handshake_sent,
             "pending_reload_requested": state.pending_reload_requested,
@@ -3390,6 +3989,23 @@ init 1100 python:
         }
 
 
+
+    def _renforge_editor_h_style_color(payload):
+        payload = payload or {}
+        color = payload.get("color")
+        if color is None:
+            return {"ok": False, "error": "color required"}
+        return _renforge_editor_set_style_color(color, record=True)
+
+
+    def _renforge_editor_h_force_style_attestation_refusal(payload):
+        if os.environ.get("RENFORGE_STYLE_COLOR_LIVE") != "1":
+            return {"ok": False, "error": "LIVE_TEST_HOOK_UNAVAILABLE"}
+        state = _renforge_editor_state()
+        state.refuse_next_style_attestation = True
+        return {"ok": True, "refuse_next_style_attestation": True}
+
+
     _renforge_editor_state()
     _renforge_editor_ensure_coordinator()
     if callable(getattr(renpy.config, "periodic_callbacks", None)):
@@ -3411,6 +4027,9 @@ init 1100 python:
         handlers["editor_task0_redo"] = _renforge_editor_h_redo
         handlers["editor_task0_reset"] = _renforge_editor_h_reset
         handlers["editor_task0_save"] = _renforge_editor_h_save
+        handlers["editor_task0_style_color"] = _renforge_editor_h_style_color
+        if os.environ.get("RENFORGE_STYLE_COLOR_LIVE") == "1":
+            handlers["editor_task0_force_style_attestation_refusal"] = _renforge_editor_h_force_style_attestation_refusal
         handlers["editor_task0_observe_selected"] = _renforge_editor_h_observe_selected
         handlers["editor_task0_restore_preview"] = _renforge_editor_h_restore_preview
         handlers["editor_task0_set_opacity"] = _renforge_editor_h_set_opacity

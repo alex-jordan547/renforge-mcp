@@ -53,7 +53,7 @@ def _open_editor(session) -> None:
     pytest.fail("editor overlay never became active")
 
 
-def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy: Path) -> None:
+def test_style_color_live_product_path_pass(demo_copy: Path) -> None:
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
     from renforge.sdk import get_or_install_sdk
@@ -88,11 +88,30 @@ def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy:
     assert report["locks"]["inherited"]["matches_expected"] is True
     assert report["locks"]["expression"]["matches_expected"] is True
 
+    assert report["product_select_unlocked_style"] is True
+    assert report["product_preview_available"] is True
+    assert report["product_commit_available"] is True
+    assert report["product_undo_available"] is True
+    assert report["refused_attestation_rollback_available"] is True
+    assert report["product_seam_probe"]["measurement_source"] == (
+        "editor_task0_status.current_capabilities"
+    )
+
+    preview = report["product_preview"]
+    assert preview["ok"] is True
+    assert preview["source_byte_identical"] is True
+    assert preview["pixel"]["dominant"] == "blue"
+
+    refused = report["refused_attestation_rollback"]
+    assert refused["ok"] is True
+    assert refused["byte_identical"] is True
+
     patch = report["source_patch"]
     assert patch["changed"] is True
     assert patch["matches_independent_expected"] is True
     assert patch["outside_color_span_identical"] is True
     assert patch["source_color_after"] == "#2457d6"
+    assert report["product_commit"]["ok"] is True
 
     assert report["pixel_before"]["dominant"] == "red", report["pixel_before"]
     assert report["pixel_after"]["dominant"] == "blue", report["pixel_after"]
@@ -100,20 +119,16 @@ def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy:
     assert report["pixel_after"]["bounds_from_scene_tree"] is True
     assert report["runtime_color_change_proven"] is True
     assert report["published_source_after_reload"]["ok"] is True
+    assert report["rebinding"]["ok"] is True
 
-    # Production path must remain disabled / unselected for non-focusable text.
-    assert report["product_select_unlocked_style"] is False
-    assert report["product_preview_available"] is False
-    assert report["product_commit_available"] is False
-    assert report["product_undo_available"] is False
-    assert report["product_seam_probe"]["measurement_source"] == (
-        "editor_task0_status.current_capabilities"
-    )
+    undo = report["product_undo"]
+    assert undo["ok"] is True
+    assert undo["byte_identical"] is True
+    assert undo["source_color"] == "#e22b2b"
+    assert undo["pixel"]["dominant"] == "red"
+    assert undo["note"] == "product_undo_transaction"
 
-    # Cleanup restore is not product undo.
     assert report["restore"]["byte_identical"] is True
-    assert report["restore"]["note"] == "manual_fixture_restore_cleanup_not_product_undo"
-
-    assert report["verdict"] == "blocked"
-    assert report["verdict_reason"] == "style_color_product_path_missing"
+    assert report["verdict"] == "pass"
+    assert report["verdict_reason"] is None
     assert TARGET_ID == "style_color_target"

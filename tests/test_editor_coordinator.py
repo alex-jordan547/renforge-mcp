@@ -2426,3 +2426,243 @@ def test_analyze_and_commit_textbutton_anchor_preserves_anchor_bytes(tmp_path: P
             )
     finally:
         coordinator.close()
+
+
+def _style_color_observation(*, script_generation: int = 20) -> dict[str, Any]:
+    observation = _base_observation(script_generation=script_generation)
+    runtime_key = observation["runtime_key"]
+    runtime_key["widget_id"] = "style_color_target"
+    runtime_key["ancestry"][-1]["type"] = "Text"
+    observation["measurement_method"] = "scene_tree_text"
+    observation["style_color"] = "#e22b2b"
+    observation["rect"] = [240, 220, 286, 112]
+    return observation
+
+
+def _send_editor_command(
+    sock: socket.socket,
+    auth: dict[str, Any],
+    *,
+    command: str,
+    payload: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    previous_timeout = sock.gettimeout()
+    sock.settimeout(max(float(previous_timeout or 0.0), _COMMIT_SOCKET_TIMEOUT_SECONDS))
+    try:
+        _send_json(
+            sock,
+            {
+                "protocol": "renforge-editor",
+                "version": 1,
+                "connection_id": auth["connection_id"],
+                "request_id": request_id,
+                "command": command,
+                "payload": payload,
+            },
+        )
+        return _recv_json(sock)
+    finally:
+        sock.settimeout(previous_timeout)
+
+
+@pytest.mark.parametrize(
+    ("baseline_color", "requested_color"),
+    [
+        ("#e22b2b", "#2457d6"),
+        ("#e2b", "#25d"),
+        ("#e22b2bff", "#2457d6ff"),
+    ],
+)
+def test_text_style_color_commit_and_product_undo_are_transactional(
+    tmp_path: Path,
+    baseline_color: str,
+    requested_color: str,
+) -> None:
+    root = tmp_path / "project_style_color"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    baseline = (
+        "screen test_screen:\n"
+        f'    text "STYLE" id "style_color_target" color "{baseline_color}" size 96 xpos 240 ypos 220\n'
+    )
+    source.write_text(baseline, encoding="utf-8")
+    observation = _style_color_observation()
+    observation["style_color"] = baseline_color
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-style-color",
+            "object_id": "obj-independent-style-color",
+        }
+    )
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-style-color")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["source_key"]["statement_kind"] == "text"
+            assert result["source_key"]["style_mode"] == "literal_hex"
+            assert result["source_key"]["style_color"] == baseline_color
+            assert result["capabilities"] == {
+                "move": False,
+                "resize": False,
+                "style_color": True,
+                "style_color_preview": True,
+                "style_color_commit": True,
+                "style_color_undo": True,
+                "style_color_attestation_rollback": True,
+            }
+
+            # A family mismatch must fail closed with a structured reply, never
+            # escape the coordinator boundary and leave the client hanging.
+            mismatched_color = "#25d" if len(baseline_color) != 4 else "#2457d6"
+            mismatched = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": result["analysis_id"],
+                            "source_key": result["source_key"],
+                            "color": mismatched_color,
+                        }
+                    ],
+                },
+                request_id="style-color-family-mismatch",
+            )
+            assert mismatched["ok"] is False
+            assert mismatched["error"]["code"] == "STYLE_COLOR_HEX_FAMILY_MISMATCH"
+            assert source.read_text(encoding="utf-8") == baseline
+
+            # The second independent observation sees the product preview.
+            probe.observe_reply["style_color"] = requested_color
+
+            committed = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": result["analysis_id"],
+                            "source_key": result["source_key"],
+                            "color": requested_color,
+                        }
+                    ],
+                },
+                request_id="co-style-color",
+            )
+            assert committed["ok"] is True
+            transaction_id = committed["result"]["transaction_id"]
+            assert source.read_text(encoding="utf-8") == baseline.replace(baseline_color, requested_color)
+
+            handshake = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": transaction_id, "script_generation": 21},
+                request_id="hs-style-color",
+            )
+            assert handshake["ok"] is True
+            assert handshake["result"]["state"] == "committed"
+            assert probe.attest_calls[-1]["expected_targets"][0]["style_color"] == requested_color
+
+            undo = _send_editor_command(
+                sock,
+                auth,
+                command="undo_commit",
+                payload={"session_id": auth["session_id"], "transaction_id": transaction_id},
+                request_id="undo-style-color",
+            )
+            assert undo["ok"] is True
+            undo_transaction_id = undo["result"]["transaction_id"]
+            assert undo_transaction_id != transaction_id
+            assert source.read_text(encoding="utf-8") == baseline
+
+            undo_handshake = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": undo_transaction_id, "script_generation": 22},
+                request_id="hs-undo-style-color",
+            )
+            assert undo_handshake["ok"] is True
+            assert undo_handshake["result"]["state"] == "committed"
+            assert probe.attest_calls[-1]["expected_targets"][0]["style_color"] == baseline_color
+            assert source.read_text(encoding="utf-8") == baseline
+    finally:
+        coordinator.close()
+
+
+def test_text_style_color_refused_attestation_restores_original_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "project_style_color_refused"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    baseline = (
+        "screen test_screen:\n"
+        '    text "STYLE" id "style_color_target" color "#e22b2b" size 96 xpos 240 ypos 220\n'
+    )
+    source.write_text(baseline, encoding="utf-8")
+    observation = _style_color_observation(script_generation=30)
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-style-refused",
+            "object_id": "obj-independent-style-refused",
+        },
+        attest_reply={"ok": False, "state": "refused"},
+    )
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-style-refused")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            probe.observe_reply["style_color"] = "#2457d6"
+            committed = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": result["analysis_id"],
+                            "source_key": result["source_key"],
+                            "color": "#2457d6",
+                        }
+                    ],
+                },
+                request_id="co-style-refused",
+            )
+            assert committed["ok"] is True
+            transaction_id = committed["result"]["transaction_id"]
+            refused = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": transaction_id, "script_generation": 31},
+                request_id="hs-style-refused",
+            )
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "ATTESTATION_FAILED"
+            assert source.read_text(encoding="utf-8") == baseline
+            status = _commit_status(sock, auth, transaction_id, request_id="st-style-refused")
+            assert status["result"]["state"] == "rolled_back"
+    finally:
+        coordinator.close()
