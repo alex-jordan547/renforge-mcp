@@ -46,11 +46,18 @@ def main() -> int:
 
     if args.in_place:
         project_root = args.project.resolve()
-        result = (
-            run_twice_for_determinism(project_root, display=args.display)
-            if args.twice
-            else run_hit_sentinel_spike(project_root, output=args.output, display=args.display)
-        )
+        if args.twice:
+            result = run_twice_for_determinism(
+                project_root,
+                display=args.display,
+                output=args.output,
+            )
+        else:
+            result = run_hit_sentinel_spike(
+                project_root,
+                output=args.output,
+                display=args.display,
+            )
     else:
         import tempfile
 
@@ -62,9 +69,11 @@ def main() -> int:
                 ignore=shutil.ignore_patterns("*.rpyc", "cache", "saves"),
             )
             if args.twice:
-                result = run_twice_for_determinism(dest, display=args.display)
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+                result = run_twice_for_determinism(
+                    dest,
+                    display=args.display,
+                    output=args.output,
+                )
             else:
                 result = run_hit_sentinel_spike(
                     dest,

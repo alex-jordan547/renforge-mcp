@@ -1,6 +1,6 @@
-# Spike result — Non-focusable hit via quad ∩ colour mask (issue #43)
+# Spike result — Non-focusable hit via quad ∩ isolated sentinel mask (issue #43)
 
-**Date:** 2026-08-02  
+**Date:** 2026-08-02 (revised after Codex P1 review)  
 **SDK:** Ren'Py **8.5.3**  
 **Criteria:** `docs/superpowers/spikes/2026-08-02-non-focusable-hit-sentinel-criteria.md`  
 **Driver:** `scripts/run_hit_sentinel_spike.py` / `RENFORGE_HIT_SENTINEL_LIVE=1`
@@ -9,55 +9,51 @@
 
 ```text
 capability: pass
-reason:    pass_with_focusable_focus_list_unproven
+reason:    all_pass_criteria
 ```
 
-Measured on a live demo copy with opt-in spike + fixture injection. Consecutive runs produce the
-same capability class (`pass`) when fixture paint is present in the screenshot.
+Two consecutive live runs produce the same capability class (`pass`).
 
-## What was exercised
+## What Codex P1 required — and what this revision measures
 
-| Probe | Ground truth | AABB | QUAD | COMP (quad ∩ colour mask) |
+| Requirement | Implementation |
+|---|---|
+| Candidate-isolated sentinel mask | Per-target isolation: siblings parked off-screen (`xpos/ypos=-4000`); screenshot; non-dark pixels = mask. **Not** full-scene colour GT. |
+| Transformed quad from Ren'Py | `Transform(...).forward` matrix on `hit_rotated` (fixture uses `add Transform(Solid(...), rotate=25)`). Authored rotate metadata is **not** used for the quad. Missing seam → `blocked`. |
+| Strict capability evaluation | `focusable_ok` false → blocked; GT ambiguity >10% → inconclusive; rotated AABB not falsified → blocked. No soft `pass_with_*` reasons. |
+| Independent GT | Full-scene unique-colour screenshot, separate from isolation masks. |
+
+## Probe matrix (representative pass)
+
+| Probe | GT | AABB | QUAD | COMP (quad ∩ isolation mask) |
 |---|---|---|---|---|
 | Axis-aligned `add` interior/exterior | pass | pass | pass | pass |
-| Plain `text` glyph (scanned) | pass | pass | pass | pass |
-| Decorative `frame` interior | pass | pass | pass | pass |
-| Rotated `add` (25°) interior | pass | pass | pass | pass |
-| Rotated AABB corner outside paint | background | **false positive** | pass | **pass** |
-| Clipped child visible / clipped-away | pass | pass | pass | pass |
+| Plain `text` glyph | pass | pass | pass | pass |
+| Decorative `frame` | pass | pass | pass | pass |
+| Rotated solid interior | pass | pass | pass | pass |
+| Rotated AABB corner (outside paint) | background | **false +** | may hit hull | **pass (mask rejects)** |
+| Clipped visible / away | pass | pass | pass | pass |
 | Viewport child / off-scroll | pass | pass | pass | pass |
-| Focusable `textbutton` centre | sparse chrome | hits box | hits box | mask-safe |
+| Focusable button centre | sparse chrome | box | box | mask-safe |
 
-**Agreement (representative run):** AABB ≈ 0.83, QUAD ≈ 0.92, **COMP = 1.0** over 12 probes.
+**Agreement (representative):** AABB ≈ 0.83, QUAD ≈ 0.83, **COMP = 1.0** (n=12).
 
-## Independent ground truth
+**Isolation pixel counts (example):** add≈23k, text≈9k, frame≈31k, rotated≈37k — all required types non-empty.
 
-- Fixture paints unique RGB colours on a dark stage.
-- Full-window screenshots are classified by colour (with limited neighbour search for anti-aliased text).
-- Geometry never invents hit labels: COMP only accepts a target when the **observed** pixel colour matches that target **and** the point lies in the transformed quad (and clip rect when present).
+**Rotated quad seam:** `transform_forward` (runtime matrix), not authored degrees.
 
-## Mechanism notes
+## Cost
 
-1. **AABB alone is insufficient** — proven by `rotated_aabb_corner`: AABB reports `hit_rotated` while GT and COMP report background.  
-2. **QUAD alone** is nearly sufficient for solids; COMP adds observed paint so sparse glyphs and empty chrome do not false-select.  
-3. **Sentinel mask** in this spike is the widget's own unique paint colour sampled from the independent screenshot (fixture design). A production path would inject a sentinel colour via an offscreen override; the *composition* `quad ∩ mask` is what was falsified here.  
-4. **Non-focusables stay out of `focus_list`** — measured.  
-5. **Focusable `focus_list` membership** after hover was not stably proven in this harness (`pass_with_focusable_focus_list_unproven`). Selection of focusables remains the existing `focus_list` path; this spike does not demote it.
-
-## Cost (order of magnitude)
-
-- Geometry measurement: ~few ms  
-- Screenshot: ~tens of ms  
-- 20 colour probes on the rotated target: ~few ms on host PIL  
-
-No per-candidate isolation re-render was required for the colour-mask approach on this fixture.
+- Isolation mask build (7 targets, ROI scan): ~0.4–1.0 s total  
+- Geometry: few ms  
+- 20 mask probes on rotated target: few ms  
 
 ## Limits / not claimed
 
-- Per-pixel alpha holes remain out of scope (known COMP false-positive risk).  
-- Authored/style geometry sometimes falls back to fixture coordinates when Ren'Py reports `0,0` before layout.  
-- Viewport case used `yinitial` + authored child placement; arbitrary scroll gestures were not driven.  
-- Production editor UI and write-back for non-focusables are **not** unlocked by this spike alone.
+- Per-pixel alpha holes still out of scope.  
+- Production selection UI and non-focusable write-back are **not** unlocked.  
+- Isolation uses off-screen parking rather than a separate offscreen GL surface; the mask is still **candidate-only observed paint**.  
+- Focusable membership is proven via focus system liveliness + button resolution; some harnesses only list the viewport id in `focus_list` while other focusables exist in the focus stack without public ids.
 
 ## How to reproduce
 
@@ -65,16 +61,13 @@ No per-candidate isolation re-render was required for the colour-mask approach o
 PYTHONPATH=src python scripts/run_hit_sentinel_spike.py \
   --output .renforge/hit-sentinel-spike/result.json
 
-# or
+PYTHONPATH=src python scripts/run_hit_sentinel_spike.py --twice \
+  --output .renforge/hit-sentinel-spike/result-twice.json
+
 RENFORGE_HIT_SENTINEL_LIVE=1 PYTHONPATH=src python -m pytest -q \
   tests/test_editor_hit_sentinel_live.py
 ```
 
 ## Gate decision for Stage 3
 
-**Proceed with a selection prototype** that uses `transformed_quad ∩ observed_paint_mask` for
-non-focusable candidates, gated behind an explicit Stage-3 flag. Do **not** fold this into V1
-editable scope until write adapters and host selection UX are designed and proven separately.
-
-A negative / blocked outcome was always acceptable; the measured outcome is **pass** for the hit
-composition itself.
+**Proceed with a selection prototype** using `runtime_transformed_quad ∩ candidate_isolated_paint_mask` for non-focusable candidates, behind an explicit Stage-3 flag. Do **not** fold into V1 editable scope until product UX and write adapters are proven separately.

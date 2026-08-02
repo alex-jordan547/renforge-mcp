@@ -52,11 +52,11 @@ screen renforge_hit_sentinel_fixture():
             text "Frame" color "#ffffff" size 22
 
         # 4. Rotated solid — AABB must over-report corners.
-        add Solid("#e5c82eff", xysize=(140, 80)):
+        # Use Transform(...) as the displayable so get_widget exposes matrix seams.
+        add Transform(Solid("#e5c82eff", xysize=(140, 80)), rotate=25):
             id "hit_rotated"
             xpos 320
             ypos 240
-            at Transform(rotate=25)
 
         # 5. Clipping parent + overflowing child.
         fixed:
@@ -91,7 +91,7 @@ screen renforge_hit_sentinel_fixture():
                     xpos 20
                     ypos 80
 
-        # 7. Focusable regression control.
+        # 7. Focusable regression control (must enter focus_list / focus_at_point).
         textbutton "FOCUS ME":
             id "hit_focusable"
             xpos 80
@@ -99,6 +99,8 @@ screen renforge_hit_sentinel_fixture():
             xsize 160
             ysize 48
             action NullAction()
+            default_focus True
+            keyboard_focus True
             background Solid("#888888ff")
             text_color "#ffffff"
 

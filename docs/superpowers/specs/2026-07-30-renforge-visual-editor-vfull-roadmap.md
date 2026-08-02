@@ -122,19 +122,21 @@ coverage_oracle:      blocked     (no general visual coverage; AABB-level only)
 hit_test_workaround:  pass        (issue #43 — quad ∩ observed colour-mask; see spike result)
 ```
 
-**Issue #43 (2026-08-02)** exercised `point ∈ transformed_quad ∧ point ∈ observed_paint_mask` on
-Ren'Py **8.5.3** with independent screenshot ground truth. Criteria were locked before measurement
+**Issue #43 (2026-08-02, Codex-hardened)** exercised
+`point ∈ runtime_transformed_quad ∧ point ∈ candidate_isolated_paint_mask` on Ren'Py **8.5.3**.
+Criteria locked before measurement
 (`docs/superpowers/spikes/2026-08-02-non-focusable-hit-sentinel-criteria.md`). Result:
 `docs/superpowers/spikes/2026-08-02-non-focusable-hit-sentinel-result.md`.
 
 Measured:
 
-- AABB alone **false-positives** on a 25° rotated solid corner; COMP does not.
-- COMP agreement **1.0** on the critical solid/clip/viewport probe matrix; non-focusables stay out of `focus_list`.
-- Cost is screenshot-bound (tens of ms), not a multi-second isolation loop, on the fixture.
+- **Isolation masks** are candidate-only (siblings parked off-screen), not full-scene colour GT.
+- **Rotated quads** come from Ren'Py `Transform.forward` (fixture uses `add Transform(Solid(...), rotate=25)`), not authored degrees.
+- AABB alone **false-positives** on a rotated corner; COMP rejects that corner via the isolation mask.
+- COMP agreement **1.0**; capability evaluation is strict (no soft `pass_with_*` reasons).
 
 Still not V1: no production selection UI, no write adapters for non-focusables, per-pixel alpha still
-out of scope, focusable `focus_list` hover regression not fully proven in the harness.
+out of scope.
 
 **Note on Spike B:** it proved the write chain on a literal `text` — but that target was designated by
 key, not selected by clicking. With #43 the selection *mechanism* for non-focusables is no longer
