@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from renforge.editor.source import analyze_textbutton_statement, pixels_to_align, _format_align_component
+from renforge.editor.source import analyze_textbutton_statement
 from renforge.editor_task0_runner import (
     _require_ok,
     _source_generation,
@@ -21,14 +21,14 @@ from renforge.editor_live_common import (
     wait_bounds,
 )
 
-FIXTURE_SCREEN = "renforge_editor_align_fixture"
-TARGET_ID = "align_target"
+FIXTURE_SCREEN = "renforge_editor_offset_fixture"
+TARGET_ID = "offset_target"
 
-def inject_editor_align_resources(project_root: Path) -> dict[str, str]:
+def inject_editor_offset_resources(project_root: Path) -> dict[str, str]:
     return inject_editor_live_resources(
         project_root,
-        editor_basename="editor_align",
-        fixture_filename="renforge_editor_align_fixture.rpy",
+        editor_basename="editor_offset",
+        fixture_filename="renforge_editor_offset_fixture.rpy",
     )
 
 def _target_line_with_offset(source_text: str) -> tuple[str, int]:
@@ -37,70 +37,48 @@ def _target_line_with_offset(source_text: str) -> tuple[str, int]:
         if (
             f'id "{TARGET_ID}"' in line
             and line.lstrip().startswith("textbutton ")
-            and " align " in f" {line}"
+            and " offset " in f" {line}"
         ):
             analyze_textbutton_statement(line, expected_widget_id=TARGET_ID)
             return line, offset
         offset += len(line)
-    raise AssertionError(f"source missing align textbutton line for {TARGET_ID!r}")
+    raise AssertionError(f"source missing offset textbutton line for {TARGET_ID!r}")
 
 def _independent_expected_after_patch(
     before_text: str,
     *,
     x: int,
     y: int,
-    baseline: dict[str, int] | None = None,
+    baseline: dict[str, int],
 ) -> str:
-    """Build expected align source without calling apply_textbutton_patch."""
-    line, offset = _target_line_with_offset(before_text)
+    """Build expected offset source via authored + (runtime − baseline)."""
+    line, file_offset = _target_line_with_offset(before_text)
     parsed = analyze_textbutton_statement(line, expected_widget_id=TARGET_ID)
-    from renforge.editor.source import _format_align_component
-    parent_w, parent_h = parsed.align_parent_size
-    base = baseline or {"x": 0, "y": 0, "w": 0, "h": 0}
-    widget_w = int(base.get("w") or 0)
-    widget_h = int(base.get("h") or 0)
-    # Signed extents; zero-extent axes keep authored fractions (no clamp-to-1).
-    extent_w = int(parent_w) - widget_w
-    extent_h = int(parent_h) - widget_h
-    dx = int(x) - int(base["x"])
-    dy = int(y) - int(base["y"])
-    if extent_w == 0:
-        if dx != 0:
-            raise AssertionError("independent constructor: zero X extent with non-zero delta")
-        ax = float(parsed.xpos)
-    else:
-        ax = float(parsed.xpos) + dx / float(extent_w)
-    if extent_h == 0:
-        if dy != 0:
-            raise AssertionError("independent constructor: zero Y extent with non-zero delta")
-        ay = float(parsed.ypos)
-    else:
-        ay = float(parsed.ypos) + dy / float(extent_h)
-    ax_t = _format_align_component(ax)
-    ay_t = _format_align_component(ay)
+    ox = int(parsed.xpos) + (int(x) - int(baseline["x"]))
+    oy = int(parsed.ypos) + (int(y) - int(baseline["y"]))
     patched_line = re.sub(
-        r"(\balign\s*\(\s*)[^,]+(\s*,\s*)[^)]+(\s*\))",
-        rf"\g<1>{ax_t}\g<2>{ay_t}\3",
+        r"(\boffset\s*\(\s*)-?\d+(\s*,\s*)-?\d+(\s*\))",
+        rf"\g<1>{ox}\g<2>{oy}\3",
         line,
         count=1,
     )
     if patched_line == line:
-        raise AssertionError("independent patch constructor did not change target align pair")
+        raise AssertionError("independent patch constructor did not change target offset pair")
     if "xpos" in patched_line or "ypos" in patched_line:
         raise AssertionError("independent constructor must not introduce xpos/ypos")
-    return f"{before_text[:offset]}{patched_line}{before_text[offset + len(line) :]}"
+    return f"{before_text[:file_offset]}{patched_line}{before_text[file_offset + len(line) :]}"
 
 def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bool:
     before_line, _ = _target_line_with_offset(before_text)
     after_line, _ = _target_line_with_offset(after_text)
     before_norm = re.sub(
-        r"(\balign\s*\(\s*)[^,]+(\s*,\s*)[^)]+(\s*\))",
+        r"(\boffset\s*\(\s*)-?\d+(\s*,\s*)-?\d+(\s*\))",
         r"\1__X__\2__Y__\3",
         before_line,
         count=1,
     )
     after_norm = re.sub(
-        r"(\balign\s*\(\s*)[^,]+(\s*,\s*)[^)]+(\s*\))",
+        r"(\boffset\s*\(\s*)-?\d+(\s*,\s*)-?\d+(\s*\))",
         r"\1__X__\2__Y__\3",
         after_line,
         count=1,
@@ -109,34 +87,28 @@ def _outside_coordinate_spans_identical(before_text: str, after_text: str) -> bo
         return False
     return before_text.replace(before_line, "", 1) == after_text.replace(after_line, "", 1)
 
-def _parse_xy_from_target_line(source_text: str, *, widget_size: tuple[int, int]) -> dict[str, int]:
-    """Return pixel position derived from authored align via the conversion contract."""
+def _parse_xy_from_target_line(source_text: str) -> dict[str, int]:
     line, _ = _target_line_with_offset(source_text)
-    parsed = analyze_textbutton_statement(line, expected_widget_id=TARGET_ID)
-    if parsed.position_mode != "align":
-        raise AssertionError(f"expected align mode: {parsed!r}")
-    from renforge.editor.source import align_to_pixels
-    px, py = align_to_pixels(
-        float(parsed.xpos),
-        float(parsed.ypos),
-        widget_size=widget_size,
-    )
-    return {"x": px, "y": py}
+    match = re.search(r"\boffset\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)", line)
+    if match is None:
+        raise AssertionError(f"target line missing literal offset pair: {line!r}")
+    return {"x": int(match.group(1)), "y": int(match.group(2))}
 
-def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
-    """Seven-step live proof for literal align (x, y) textbutton form (issue #39)."""
+def run_editor_offset_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
+    """Seven-step live proof for literal offset (x, y) textbutton form (issue #41)."""
     report: dict[str, Any] = {}
     baseline_bytes = fixture_path.read_bytes()
     baseline_sha = _sha256_file(fixture_path)
     baseline_text = baseline_bytes.decode("utf-8")
-    # Prove analyzer accepts the authored align form before any UI work.
+    # Prove analyzer accepts the authored offset form before any UI work.
     target_line, _ = _target_line_with_offset(baseline_text)
     parsed = analyze_textbutton_statement(target_line, expected_widget_id=TARGET_ID)
-    if parsed.position_mode != "align":
-        raise AssertionError(f"expected position_mode align, got {parsed.position_mode!r}")
+    if parsed.position_mode != "offset":
+        raise AssertionError(f"expected position_mode offset, got {parsed.position_mode!r}")
+    baseline_position = _parse_xy_from_target_line(baseline_text)
     report["fixture_before"] = {
         "sha256": baseline_sha,
-        "authored_align": [float(parsed.xpos), float(parsed.ypos)],
+        "position": baseline_position,
         "position_mode": parsed.position_mode,
     }
 
@@ -148,11 +120,11 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
 
     # Lock matrix first on real focusable widgets (measured codes).
     report["locks"] = {
-        "computed": select_lock(client, "align_computed", "ALIGN_LITERAL_REQUIRED", fixture_screen=FIXTURE_SCREEN),
-        "container": select_lock(client, "align_container", "CONTAINER_POSITION_UNSUPPORTED", fixture_screen=FIXTURE_SCREEN),
+        "computed": select_lock(client, "offset_computed", "OFFSET_LITERAL_REQUIRED", fixture_screen=FIXTURE_SCREEN),
+        "container": select_lock(client, "offset_container", "CONTAINER_POSITION_UNSUPPORTED", fixture_screen=FIXTURE_SCREEN),
     }
 
-    # Measured live: two use-statements share id "align_dupe_target". The first
+    # Measured live: two use-statements share id "offset_dupe_target". The first
     # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
     # (list_ui may only name the second instance).
     dupe_info = list_ui_info(client, FIXTURE_SCREEN)
@@ -166,7 +138,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
             continue
         text = str(element.get("text") or "")
         if text == "DUPE A" or (
-            str(element.get("text") or "") == "DUPE A"
+            int(bounds.get("x", -1)) == 520 and int(bounds.get("y", -1)) == 430
         ):
             dupe_pick = bounds
             break
@@ -185,17 +157,17 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
             client,
             lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
             timeout=10.0,
-            poll_name="pos dupe lock",
+            poll_name="offset dupe lock",
         )
         ambiguous = status.get("selected_lock_reason")
     if ambiguous != "SYNTHETIC_WIDGET_ID":
         raise AssertionError(
-            f"duplicate align textbutton lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}"
+            f"duplicate offset textbutton lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}"
         )
     report["locks"]["ambiguous"] = ambiguous
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.
-    side_bounds = wait_bounds(client, "align_side", timeout=3.0, fixture_screen=FIXTURE_SCREEN)
+    side_bounds = wait_bounds(client, "offset_side", timeout=3.0, fixture_screen=FIXTURE_SCREEN)
     side_select = client.request(
         "editor_task0_select",
         {"x": _center(side_bounds)[0], "y": _center(side_bounds)[1]},
@@ -206,16 +178,16 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
             client,
             lambda current: current.get("selected_lock_reason") == "UNKNOWN_ANCESTRY_TYPE",
             timeout=10.0,
-            poll_name="pos side lock",
+            poll_name="offset side lock",
         )
         unproven = status.get("selected_lock_reason")
     if unproven != "UNKNOWN_ANCESTRY_TYPE":
         raise AssertionError(
-            f"side-ancestor align textbutton lock was not UNKNOWN_ANCESTRY_TYPE: {unproven!r}"
+            f"side-ancestor offset textbutton lock was not UNKNOWN_ANCESTRY_TYPE: {unproven!r}"
         )
     report["locks"]["unproven"] = unproven
 
-    # Step 1: resolve the editable align textbutton from a fresh focus rect.
+    # Step 1: resolve the editable offset textbutton from a fresh focus rect.
     target_bounds = wait_bounds(client, TARGET_ID, fixture_screen=FIXTURE_SCREEN)
     target_center = _center(target_bounds)
     select = _require_ok(
@@ -235,7 +207,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         and status.get("selected_widget_id") == TARGET_ID
         and status.get("selected_lock_reason") in (None, ""),
         timeout=10.0,
-        poll_name="pos analysis",
+        poll_name="offset analysis",
     )
     source_key = analysis_status.get("current_source_key") or {}
     capabilities = analysis_status.get("current_capabilities") or {}
@@ -252,34 +224,22 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
     if source_key.get("statement_kind") != "textbutton":
         raise AssertionError(f"expected textbutton statement_kind: {source_key!r}")
     if host_move is not True:
-        raise AssertionError(f"host did not unlock move for align textbutton: {analysis_status!r}")
+        raise AssertionError(f"host did not unlock move for offset textbutton: {analysis_status!r}")
 
     original = analysis_status.get("selected_original_position") or analysis_status.get(
         "selected_source_position"
     )
     if not (isinstance(original, (list, tuple)) and len(original) == 2):
-        raise AssertionError(f"missing selected original position: {analysis_status!r}")
+        original = [int(baseline_position["x"]), int(baseline_position["y"])]
     requested_before = [int(original[0]), int(original[1])]
 
     # Fresh focus_list observation before preview movement.
-    value_baseline = client.eval_expr("renforge_editor_align_clicks")
+    value_baseline = client.eval_expr("renforge_editor_offset_clicks")
     before_obs = _observe_selected(client)
     before_rect = before_obs.get("rect") or []
-    if len(before_rect) < 4:
-        raise AssertionError(f"pre-preview observation missing full rect: {before_obs!r}")
+    if len(before_rect) < 2:
+        raise AssertionError(f"pre-preview observation missing rect: {before_obs!r}")
     bounds_before = [int(before_rect[0]), int(before_rect[1])]
-    widget_size = (int(before_rect[2]), int(before_rect[3]))
-    if widget_size[0] <= 0 or widget_size[1] <= 0:
-        raise AssertionError(f"pre-preview widget size unusable: {before_rect!r}")
-    # Contract check: authored align + measured size must match measured TL.
-    expected_tl = _parse_xy_from_target_line(baseline_text, widget_size=widget_size)
-    if abs(expected_tl["x"] - bounds_before[0]) > 1 or abs(expected_tl["y"] - bounds_before[1]) > 1:
-        raise AssertionError(
-            "authored align conversion disagrees with measured focus TL: "
-            f"expected={expected_tl!r}, measured={bounds_before!r}, widget={widget_size!r}"
-        )
-    report["fixture_before"]["position"] = expected_tl
-    report["fixture_before"]["widget_size"] = list(widget_size)
     frame_before = before_obs.get("frame_id")
 
     # Step 2: preview.
@@ -291,14 +251,14 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         and len(status.get("preview_position") or []) == 2
         and list(status.get("preview_position") or []) != requested_before,
         timeout=8.0,
-        poll_name="pos preview moved",
+        poll_name="offset preview moved",
     )
     requested_after = [
         int(preview_status["preview_position"][0]),
         int(preview_status["preview_position"][1]),
     ]
     after_obs = _observe_selected(client)
-    value_preview = client.eval_expr("renforge_editor_align_clicks")
+    value_preview = client.eval_expr("renforge_editor_offset_clicks")
     after_rect = after_obs.get("rect") or []
     if len(after_rect) < 2:
         raise AssertionError(f"post-preview observation missing rect: {after_obs!r}")
@@ -316,7 +276,6 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         )
     requested_delta = [requested_after[axis] - requested_before[axis] for axis in (0, 1)]
     observed_delta = [bounds_after[axis] - bounds_before[axis] for axis in (0, 1)]
-    # Align previews use absolute xpos overrides; allow 1px focus noise.
     if any(abs(observed_delta[axis] - requested_delta[axis]) > 1 for axis in (0, 1)):
         raise AssertionError(
             "focus_list preview bounds disagree with requested movement: "
@@ -343,7 +302,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
     generation_before = _source_generation(analysis_status)
     save_request = _require_ok(
         client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
-        "pos save",
+        "offset save",
     )
     save_status = _wait_for_status(
         client,
@@ -351,20 +310,27 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         and status.get("status_text") == "Reload committed"
         and _source_generation(status) == generation_before + 1,
         timeout=60.0,
-        poll_name="pos save complete",
+        poll_name="offset save complete",
     )
     post_save_bytes = fixture_path.read_bytes()
     post_save_sha = _sha256_file(fixture_path)
     post_save_text = post_save_bytes.decode("utf-8")
-    # Align sources store fractions; verify target line form + independent bytes.
-    post_target_line, _ = _target_line_with_offset(post_save_text)
-    if "align (" not in post_target_line or " xpos " in f" {post_target_line}" or " ypos " in f" {post_target_line}":
-        raise AssertionError(f"post-save target lost align form: {post_target_line!r}")
+    source_position_after = _parse_xy_from_target_line(post_save_text)
+    authored_before = _parse_xy_from_target_line(pre_save_text)
+    expected_source_position = {
+        "x": int(authored_before["x"]) + (requested_after[0] - bounds_before[0]),
+        "y": int(authored_before["y"]) + (requested_after[1] - bounds_before[1]),
+    }
+    if source_position_after != expected_source_position:
+        raise AssertionError(
+            "source offset disagrees with authored + runtime delta: "
+            f"expected={expected_source_position!r}, observed={source_position_after!r}"
+        )
     expected_text = _independent_expected_after_patch(
         pre_save_text,
         x=requested_after[0],
         y=requested_after[1],
-        baseline={"x": bounds_before[0], "y": bounds_before[1], "w": before_rect[2] if len(before_rect)>2 else 0, "h": before_rect[3] if len(before_rect)>3 else 0},
+        baseline={"x": bounds_before[0], "y": bounds_before[1]},
     )
     if post_save_text != expected_text:
         raise AssertionError("patched fixture bytes disagree with independent expected content")
@@ -373,11 +339,12 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         post_save_text,
     )
     if not outside_coordinate_spans_identical:
-        raise AssertionError("source patch changed bytes outside xpos/ypos spans")
+        raise AssertionError("source patch changed bytes outside offset spans")
     report["patch"] = {
         "before_sha256": pre_save_sha,
         "after_sha256": post_save_sha,
-        "source_position_after": {"x": requested_after[0], "y": requested_after[1]},
+        "source_position_after": source_position_after,
+        "expected_source_position": expected_source_position,
         "outside_coordinate_spans_identical": outside_coordinate_spans_identical,
         "matches_independent_expected": True,
         "save_request": save_request,
@@ -400,10 +367,10 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         and status.get("selected_widget_id") == TARGET_ID
         and status.get("selected_lock_reason") in (None, ""),
         timeout=10.0,
-        poll_name="pos post-save rebind analysis",
+        poll_name="offset post-save rebind analysis",
     )
     reload_obs = _observe_selected(client)
-    value_reload = client.eval_expr("renforge_editor_align_clicks")
+    value_reload = client.eval_expr("renforge_editor_offset_clicks")
     reload_rect = reload_obs.get("rect") or []
     if len(reload_rect) < 2:
         raise AssertionError(f"post-reload observation missing rect: {reload_obs!r}")
@@ -412,7 +379,7 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         reload_bounds[0] - bounds_after[0],
         reload_bounds[1] - bounds_after[1],
     ]
-    if any(abs(value) > 1 for value in pixel_delta):  # issue #39: within one logical pixel
+    if any(abs(value) > 1 for value in pixel_delta):
         raise AssertionError(
             "post-reload focus rect disagrees with post-preview focus rect: "
             f"preview={bounds_after!r}, reload={reload_bounds!r}, delta={pixel_delta!r}"
@@ -471,5 +438,5 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
         "patched_differed": post_save_sha != baseline_sha and post_save_bytes != baseline_bytes,
     }
     if restored_bytes != baseline_bytes:
-        raise AssertionError("align textbutton undo did not restore the baseline")
+        raise AssertionError("offset textbutton undo did not restore the baseline")
     return report

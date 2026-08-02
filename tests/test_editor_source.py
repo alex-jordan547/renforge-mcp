@@ -1267,6 +1267,99 @@ def test_analyze_textbutton_align_rejects_impure_and_mixed() -> None:
     assert excinfo.value.code == "POSITION_FORM_MIXED"
 
 
+def test_analyze_textbutton_offset_accepts_and_patches_form() -> None:
+    line = '    textbutton "Play" id "start" offset (12, 10) action NullAction()\n'
+    parsed = analyze_textbutton_statement(line, expected_widget_id="start")
+    assert parsed.position_mode == "offset"
+    assert (parsed.xpos, parsed.ypos) == (12, 10)
+    # Runtime baseline equals authored offset when base placement is 0,0;
+    # move runtime TL by +20,+30 → authored becomes 32, 40.
+    patched = apply_textbutton_patch(
+        line.encode("utf-8"),
+        parsed,
+        x=32,
+        y=40,
+        offset_runtime_baseline=(12, 10),
+    ).decode("utf-8")
+    assert patched == '    textbutton "Play" id "start" offset (32, 40) action NullAction()\n'
+    assert "xpos" not in patched and "ypos" not in patched
+
+    negative = '    textbutton "Play" id "start" offset (-12, -10) action NullAction()\n'
+    neg_parsed = analyze_textbutton_statement(negative, expected_widget_id="start")
+    assert (neg_parsed.xpos, neg_parsed.ypos) == (-12, -10)
+    neg_patched = apply_textbutton_patch(
+        negative.encode("utf-8"),
+        neg_parsed,
+        x=-1,
+        y=2,
+        offset_runtime_baseline=(-12, -10),
+    ).decode("utf-8")
+    assert neg_patched == '    textbutton "Play" id "start" offset (-1, 2) action NullAction()\n'
+
+
+def test_analyze_textbutton_offset_rejects_impure_and_mixed() -> None:
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (base_x, 10) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "OFFSET_LITERAL_REQUIRED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) xpos 3 ypos 4 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) xoffset 8 action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    # Concurrent placement forms must also lock pure offset (Sourcery).
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) anchor (0.5, 0.5) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) pos (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) align (0.3, 0.4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) offset (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "OFFSET_DUPLICATE"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset offset_value action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "OFFSET_LITERAL_REQUIRED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        apply_textbutton_patch(
+            b'    textbutton "Play" id "start" offset (1, 2) action NullAction()\n',
+            analyze_textbutton_statement(
+                '    textbutton "Play" id "start" offset (1, 2) action NullAction()\n',
+                expected_widget_id="start",
+            ),
+            x=10,
+            y=10,
+        )
+    assert excinfo.value.code == "OFFSET_BASELINE_REQUIRED"
+
+
 def test_apply_textbutton_align_locks_zero_extent_axis() -> None:
     line = '    textbutton "Play" id "start" align (0.5, 0.5) action NullAction()\n'
     parsed = analyze_textbutton_statement(line, expected_widget_id="start")

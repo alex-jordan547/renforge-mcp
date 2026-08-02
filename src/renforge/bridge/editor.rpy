@@ -1135,28 +1135,32 @@ init 1100 python:
             next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
             source_key = target.get("source_key") or {}
             position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
-            # Align-authored targets: preview with absolute xpos/ypos so focus_list
-            # tracks the requested pixel delta 1:1. Source write-back still uses
-            # align fractions (host apply converts using the measured baseline).
-            if position_mode == "align":
-                # Absolute placement for preview; neutralize align/anchor/offset so
-                # concurrent axis props cannot stack on top of the requested TL.
-                properties[str(widget_id)] = {
-                    "xpos": next_x,
-                    "ypos": next_y,
-                    "xalign": 0.0,
-                    "yalign": 0.0,
-                    "xanchor": 0.0,
-                    "yanchor": 0.0,
-                    "xoffset": 0,
-                    "yoffset": 0,
-                }
-            else:
-                properties[str(widget_id)] = {
-                    "xpos": next_x,
-                    "ypos": next_y,
-                }
+            properties[str(widget_id)] = _renforge_editor_preview_properties(next_x, next_y, position_mode)
         return properties
+
+
+    def _renforge_editor_preview_properties(next_x, next_y, position_mode):
+        """Build `_widget_properties` overrides for a preview placement.
+
+        Runtime-delta modes (align/offset) use absolute xpos/ypos and neutralize
+        concurrent axis props so focus_list tracks the requested TL 1:1.
+        """
+        # Keep in sync with renforge.editor.source.RUNTIME_DELTA_POSITION_MODES.
+        if position_mode in ("align", "offset"):
+            return {
+                "xpos": next_x,
+                "ypos": next_y,
+                "xalign": 0.0,
+                "yalign": 0.0,
+                "xanchor": 0.0,
+                "yanchor": 0.0,
+                "xoffset": 0,
+                "yoffset": 0,
+            }
+        return {
+            "xpos": next_x,
+            "ypos": next_y,
+        }
 
 
     def _renforge_editor_show_target_overrides(screen):
