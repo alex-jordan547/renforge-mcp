@@ -202,7 +202,7 @@ def run_editor_vbar_live_scenario(client: Any, *, fixture_path: Path) -> dict[st
     }
 
     # Measured live: two use-statements with the same id surface as
-    # vbar_dupe_target / vbar_dupe_target#2 and resolve with SYNTHETIC_WIDGET_ID.
+    # vbar_dupe_target / vbar_dupe_target#2 and resolve with REPEATED_USE_UNSUPPORTED.
     dupe_info = _list_info(client)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     dupe_candidates = [

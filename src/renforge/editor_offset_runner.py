@@ -125,7 +125,8 @@ def run_editor_offset_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     }
 
     # Measured live: two use-statements share id "offset_dupe_target". The first
-    # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
+    # instance now resolves through the SL2 cache path and locks as
+    # REPEATED_USE_UNSUPPORTED (issue #42)
     # (list_ui may only name the second instance).
     dupe_info = list_ui_info(client, FIXTURE_SCREEN)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
@@ -155,14 +156,14 @@ def run_editor_offset_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     if ambiguous in (None, ""):
         status = _wait_for_status(
             client,
-            lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
             timeout=10.0,
             poll_name="offset dupe lock",
         )
         ambiguous = status.get("selected_lock_reason")
-    if ambiguous != "SYNTHETIC_WIDGET_ID":
+    if ambiguous != "REPEATED_USE_UNSUPPORTED":
         raise AssertionError(
-            f"duplicate offset textbutton lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}"
+            f"duplicate offset textbutton lock was not REPEATED_USE_UNSUPPORTED: {ambiguous!r}"
         )
     report["locks"]["ambiguous"] = ambiguous
 

@@ -247,7 +247,8 @@ def run_editor_multiline_textbutton_live_scenario(client: Any, *, fixture_path: 
     }
 
     # Measured live: two use-statements share id "ml_tb_dupe_target". The first
-    # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
+    # instance now resolves through the SL2 cache path and locks as
+    # REPEATED_USE_UNSUPPORTED (issue #42)
     # (list_ui may only name the second instance).
     dupe_info = _list_info(client)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None

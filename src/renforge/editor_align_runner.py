@@ -153,7 +153,8 @@ def run_editor_align_live_scenario(client: Any, *, fixture_path: Path) -> dict[s
     }
 
     # Measured live: two use-statements share id "align_dupe_target". The first
-    # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
+    # instance now resolves through the SL2 cache path and locks as
+    # REPEATED_USE_UNSUPPORTED (issue #42)
     # (list_ui may only name the second instance).
     dupe_info = list_ui_info(client, FIXTURE_SCREEN)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
