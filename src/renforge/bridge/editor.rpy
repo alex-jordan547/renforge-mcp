@@ -760,20 +760,31 @@ init 1100 python:
         return statement_ids
 
 
-    def _renforge_editor_instance_discriminator(entry, cache_index):
+    def _renforge_editor_statement_siblings(cache_index):
+        """Group cache entries by the statement that produced them.
+
+        Built once per screen per frame: scanning the whole index for every
+        focus candidate instead would cost O(candidates × entries).
+        """
+        siblings = {}
+        for entry in cache_index.values():
+            path = entry["path"]
+            if path:
+                siblings.setdefault(path[-1], []).append(entry)
+        return siblings
+
+
+    def _renforge_editor_instance_discriminator(entry, statement_siblings):
         """Describe how many runtime instances share one authored statement.
 
         Instances of the same statement share the terminal cache segment (the
         statement serial) and differ earlier in the path. The divergent segment
         tells loop iterations apart from repeated `use` call sites.
         """
-        if not entry:
-            return None
         path = entry["path"]
-        terminal = path[-1] if path else None
-        siblings = [
-            other for other in cache_index.values() if other["path"] and other["path"][-1] == terminal
-        ]
+        siblings = statement_siblings.get(path[-1]) if path else None
+        if not siblings:
+            return None
         instance_count = len(siblings)
         # A unique instance keeps the bare static descriptor. Cache paths carry
         # AST serials that are reassigned on every script reload, so they must
@@ -979,7 +990,7 @@ init 1100 python:
         if cache_entry is not None:
             measured = _renforge_editor_instance_discriminator(
                 cache_entry,
-                cache_index["entries"],
+                cache_index["statement_siblings"],
             )
             if measured is not None:
                 discriminator = measured
@@ -1052,8 +1063,10 @@ init 1100 python:
         if screen_name in instances:
             return instances[screen_name]
         screen, _widgets = _renforge_editor_widget_map(screen_name)
+        entries = _renforge_editor_cache_index(screen) if screen is not None else {}
         instances[screen_name] = {
-            "entries": _renforge_editor_cache_index(screen) if screen is not None else {},
+            "entries": entries,
+            "statement_siblings": _renforge_editor_statement_siblings(entries),
             # Resolving statement ids costs a descendant walk per statement, so
             # it is deferred until a widget id actually fails to resolve.
             "statement_ids": None,

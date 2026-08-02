@@ -684,17 +684,16 @@ class EditorCoordinator:
         except EditorPathError as exc:
             lock_reason = self._lock_reason(exc.code, str(exc))
         except EditorSourceError as exc:
-            lock_reason = self._lock_reason(exc.code, str(exc))
+            # Identity outranks source form: a repeated statement stays locked
+            # for being repeated, whatever its position keywords read like, so
+            # the reason does not depend on which gate ran last. Read, path and
+            # generation failures below are not form questions and keep their
+            # own reason.
+            lock_reason = runtime_lock_reason or self._lock_reason(exc.code, str(exc))
         except EditorError as exc:
             lock_reason = self._lock_reason(exc.code, exc.message)
         except (OSError, UnicodeDecodeError) as exc:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
-
-        # Instance identity gates the source form. A repeated statement stays
-        # locked for being repeated, whatever its position keywords read like;
-        # otherwise the reported reason would depend on which gate ran last.
-        if runtime_lock_reason is not None:
-            lock_reason = runtime_lock_reason
 
         analysis_id = uuid.uuid4().hex
         record = _AnalysisRecord(
