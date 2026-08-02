@@ -210,14 +210,13 @@ def run_editor_zorder_live_scenario(client: Any, *, fixture_path: Path) -> dict[
     report["after_reload"] = _probe(client)
 
     staged_bytes = fixture_path.read_bytes()
-    expected_target_line = _source_line(baseline.decode("utf-8"), SIBLING_ID)
-    expected_sibling_line = _source_line(baseline.decode("utf-8"), TARGET_ID) + (
-        _source_line(baseline.decode("utf-8"), SIBLING_ID) - _source_line(baseline.decode("utf-8"), TARGET_ID)
-    )
-    # Target and SIBLING lines after swap: SIBLING moves to target's line, TARGET moves to sibling's line
+    # Read the post-swap lines back from the file that was actually written, so the
+    # rebind assertion compares runtime rebinding against real source positions
+    # instead of hard-coded fixture line numbers.
+    staged_text = staged_bytes.decode("utf-8")
     expected_locations = {
-        TARGET_ID: 16,
-        SIBLING_ID: 9,
+        TARGET_ID: _source_line(staged_text, TARGET_ID),
+        SIBLING_ID: _source_line(staged_text, SIBLING_ID),
     }
 
     report["source_patch"] = {
