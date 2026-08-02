@@ -7,11 +7,13 @@ import pytest
 from renforge.editor.paths import EditorPathError, resolve_game_path
 from renforge.editor.source import (
     BarStatement,
+    ButtonSiblingSwapPlan,
     ButtonStatement,
     EditorSourceError,
     SliderStatement,
     TextbuttonStatement,
     VbarStatement,
+    analyze_raise_adjacent_sibling,
     analyze_bar_statement,
     analyze_button_statement,
     analyze_editable_statement,
@@ -22,6 +24,7 @@ from renforge.editor.source import (
     analyze_vbar_statement,
     apply_bar_patch,
     apply_button_patch,
+    apply_button_sibling_swap,
     apply_editable_statement_patch,
     apply_imagebutton_patch,
     apply_slider_patch,
@@ -1485,3 +1488,142 @@ def test_analyze_bar_statement_resize_lock_matrix(line: str, code: str) -> None:
     parsed = analyze_bar_statement(line, expected_widget_id="b")
     assert parsed.size_mode is None
     assert parsed.resize_lock_code == code
+
+
+def test_raise_adjacent_sibling_swaps_exact_utf8_blocks_and_reports_new_lines() -> None:
+    source = (
+        "# prélude\n"
+        "screen test_screen:\n"
+        '    button id "target":\n'
+        '        text "café"\n'
+        "        action NullAction()\n"
+        "\n"
+        "    # separator stays in place\n"
+        '    button id "sibling":\n'
+        '        text "β"\n'
+    )
+    plan = analyze_raise_adjacent_sibling(
+        source,
+        target_source_line=3,
+        sibling_source_line=8,
+        target_widget_id="target",
+        sibling_widget_id="sibling",
+    )
+    assert isinstance(plan, ButtonSiblingSwapPlan)
+
+    staged, locations = apply_button_sibling_swap(source.encode(), plan)
+
+    assert staged.decode() == (
+        "# prélude\n"
+        "screen test_screen:\n"
+        '    button id "sibling":\n'
+        '        text "β"\n'
+        "\n"
+        "    # separator stays in place\n"
+        '    button id "target":\n'
+        '        text "café"\n'
+        "        action NullAction()\n"
+    )
+    assert locations == (("target", 7), ("sibling", 3))
+
+
+def test_apply_raise_adjacent_sibling_rejects_stale_source() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target":\n'
+        '        text "A"\n'
+        '    button id "sibling":\n'
+        '        text "B"\n'
+    )
+    plan = analyze_raise_adjacent_sibling(
+        source,
+        target_source_line=2,
+        sibling_source_line=4,
+        target_widget_id="target",
+        sibling_widget_id="sibling",
+    )
+    with pytest.raises(EditorSourceError) as error:
+        apply_button_sibling_swap(("# changed\n" + source).encode(), plan)
+    assert error.value.code == "STALE_SOURCE"
+
+
+def test_analyze_raise_adjacent_sibling_requires_adjacent_children() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target" xpos 12 ypos 10:\n'
+        '        text "A"\n'
+        "    text \"intervening statement\"\n"
+        "    # separator\n"
+        '    button id "sibling" xpos 20 ypos 18:\n'
+        '        text "B"\n'
+    )
+    with pytest.raises(EditorSourceError) as error:
+        analyze_raise_adjacent_sibling(
+            source,
+            target_source_line=2,
+            sibling_source_line=6,
+            target_widget_id="target",
+            sibling_widget_id="sibling",
+        )
+    assert error.value.code == "NOT_ADJACENT_SIBLING"
+
+
+def test_analyze_raise_adjacent_sibling_rejects_duplicate_source_ownership() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target":\n'
+        '        text "A"\n'
+        '    button id "sibling":\n'
+        '        text "B"\n'
+        '    button id "target":\n'
+        '        text "duplicate"\n'
+    )
+    with pytest.raises(EditorSourceError) as error:
+        analyze_raise_adjacent_sibling(
+            source,
+            target_source_line=2,
+            sibling_source_line=4,
+            target_widget_id="target",
+            sibling_widget_id="sibling",
+        )
+    assert error.value.code == "AMBIGUOUS_OWNERSHIP"
+
+
+def test_analyze_raise_adjacent_sibling_rejects_explicit_zorder() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target" zorder 3:\n'
+        '        text "A"\n'
+        '    button id "sibling":\n'
+        '        text "B"\n'
+    )
+    with pytest.raises(EditorSourceError) as error:
+        analyze_raise_adjacent_sibling(
+            source,
+            target_source_line=2,
+            sibling_source_line=4,
+            target_widget_id="target",
+            sibling_widget_id="sibling",
+        )
+    assert error.value.code == "EXPLICIT_ZORDER_UNSUPPORTED"
+
+
+def test_analyze_raise_adjacent_sibling_rejects_unresolved_button_ids() -> None:
+    source = (
+        "screen test_screen:\n"
+        '    button id "target":\n'
+        '        text "A"\n'
+        '    button id "sibling":\n'
+        '        text "B"\n'
+        "    button id dynamic_id:\n"
+        '        text "unknown owner"\n'
+    )
+    with pytest.raises(EditorSourceError) as error:
+        analyze_raise_adjacent_sibling(
+            source,
+            target_source_line=2,
+            sibling_source_line=4,
+            target_widget_id="target",
+            sibling_widget_id="sibling",
+        )
+    assert error.value.code == "AMBIGUOUS_OWNERSHIP"

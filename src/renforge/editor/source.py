@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from dataclasses import dataclass
 from typing import TypeVar, TypedDict
 
@@ -156,6 +157,17 @@ class ButtonStatement:
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
     source_line: int
+
+
+@dataclass(frozen=True)
+class ButtonSiblingSwapPlan:
+    target_widget_id: str
+    sibling_widget_id: str
+    target_source_line: int
+    sibling_source_line: int
+    target_block_span: tuple[int, int]
+    sibling_block_span: tuple[int, int]
+    baseline_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1940,3 +1952,148 @@ def apply_button_patch(source_bytes: bytes, statement: ButtonStatement, *, x: in
     for start, end, replacement in replacements:
         patched = f"{patched[:start]}{replacement}{patched[end:]}"
     return patched.encode("utf-8")
+
+
+def _header_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _button_block_span(lines: list[str], source_line: int) -> tuple[tuple[int, int], int]:
+    if source_line < 1 or source_line > len(lines):
+        raise EditorSourceError("SOURCE_LINE_INVALID", "button source line is outside the source file")
+    header_indent = _header_indent(lines[source_line - 1])
+    start = len("".join(lines[: source_line - 1]).encode("utf-8"))
+    last_content_line = source_line
+    for index in range(source_line, len(lines)):
+        line = lines[index]
+        if not line.strip():
+            continue
+        if _header_indent(line) <= header_indent:
+            break
+        last_content_line = index + 1
+    if last_content_line == source_line:
+        raise EditorSourceError("BUTTON_BLOCK_REQUIRED", "structural button must have a child block")
+    end = len("".join(lines[:last_content_line]).encode("utf-8"))
+    return (start, end), last_content_line + 1
+
+
+def _literal_button_id(header: str) -> str:
+    tokens = _lex_single_line(_statement_text(header))
+    values: list[str] = []
+    for index, token in enumerate(tokens[:-1]):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "id":
+            continue
+        value_token = tokens[index + 1]
+        if value_token.depth != 0 or value_token.kind != "STRING":
+            raise EditorSourceError("BUTTON_ID_LITERAL_REQUIRED", "button id must be a literal string")
+        value = ast.literal_eval(value_token.text)
+        if not isinstance(value, str) or not value:
+            raise EditorSourceError("BUTTON_ID_LITERAL_REQUIRED", "button id must be a non-empty literal string")
+        values.append(value)
+    if len(values) != 1:
+        raise EditorSourceError("BUTTON_ID_AMBIGUOUS", "button must contain exactly one literal id")
+    return values[0]
+
+
+def _analyze_structural_button(lines: list[str], source_line: int, expected_id: str) -> tuple[tuple[int, int], int]:
+    if source_line < 1 or source_line > len(lines):
+        raise EditorSourceError("SOURCE_LINE_INVALID", "button source line is outside the source file")
+    header = lines[source_line - 1]
+    if peek_statement_kind(header) != "button":
+        raise EditorSourceError("TARGET_NOT_BUTTON", "structural operation only supports button blocks")
+    if not _statement_text(header).rstrip().endswith(":"):
+        raise EditorSourceError("BUTTON_BLOCK_REQUIRED", "structural operation requires block-form buttons")
+    actual_id = _literal_button_id(header)
+    if actual_id != expected_id:
+        raise EditorSourceError("ID_MISMATCH", "source literal id does not match requested widget id")
+    if any(token.depth == 0 and token.kind == "WORD" and token.text == "zorder" for token in _lex_single_line(header)):
+        raise EditorSourceError("EXPLICIT_ZORDER_UNSUPPORTED", "explicit zorder is outside this structural operation")
+    return _button_block_span(lines, source_line)
+
+
+def _find_parent_line(lines: list[str], source_line: int) -> int:
+    target_indent = _header_indent(lines[source_line - 1])
+    for index in range(source_line - 2, -1, -1):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if _header_indent(line) < target_indent:
+            return index
+    return -1
+
+
+def _source_id_ownership_count(lines: list[str], widget_id: str) -> int:
+    count = 0
+    for line in lines:
+        if peek_statement_kind(line) != "button":
+            continue
+        try:
+            count += int(_literal_button_id(line) == widget_id)
+        except EditorSourceError as exc:
+            raise EditorSourceError(
+                "AMBIGUOUS_OWNERSHIP",
+                "every button owner must have one statically resolved literal id",
+            ) from exc
+    return count
+
+
+def analyze_raise_adjacent_sibling(
+    source_text: str,
+    *,
+    target_source_line: int,
+    sibling_source_line: int,
+    target_widget_id: str,
+    sibling_widget_id: str,
+) -> ButtonSiblingSwapPlan:
+    source_bytes = source_text.encode("utf-8")
+    lines = source_text.splitlines(keepends=True)
+    if target_source_line >= sibling_source_line:
+        raise EditorSourceError("BUTTON_SIBLING_ORDER_INVALID", "target must appear before its sibling")
+    if target_widget_id == sibling_widget_id:
+        raise EditorSourceError("AMBIGUOUS_OWNERSHIP", "target and sibling ids must be distinct")
+
+    target_span, target_next_line = _analyze_structural_button(lines, target_source_line, target_widget_id)
+    sibling_span, _ = _analyze_structural_button(lines, sibling_source_line, sibling_widget_id)
+    if _header_indent(lines[target_source_line - 1]) != _header_indent(lines[sibling_source_line - 1]):
+        raise EditorSourceError("SCREEN_SCOPE_MISMATCH", "buttons must have the same indentation")
+    target_parent = _find_parent_line(lines, target_source_line)
+    sibling_parent = _find_parent_line(lines, sibling_source_line)
+    if target_parent < 0 or target_parent != sibling_parent or peek_statement_kind(lines[target_parent]) != "screen":
+        raise EditorSourceError("PARENT_SCOPE_UNSUPPORTED", "buttons must be direct children of the same screen")
+    for line in lines[target_next_line - 1 : sibling_source_line - 1]:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            raise EditorSourceError("NOT_ADJACENT_SIBLING", "target must be followed only by blank/comment separators")
+    if _source_id_ownership_count(lines, target_widget_id) != 1 or _source_id_ownership_count(lines, sibling_widget_id) != 1:
+        raise EditorSourceError("AMBIGUOUS_OWNERSHIP", "both button ids must have unique source ownership")
+    if not (target_span[0] < target_span[1] <= sibling_span[0] < sibling_span[1] <= len(source_bytes)):
+        raise EditorSourceError("BUTTON_SIBLING_SPAN_INVALID", "button spans are invalid or overlapping")
+    return ButtonSiblingSwapPlan(
+        target_widget_id=target_widget_id,
+        sibling_widget_id=sibling_widget_id,
+        target_source_line=target_source_line,
+        sibling_source_line=sibling_source_line,
+        target_block_span=target_span,
+        sibling_block_span=sibling_span,
+        baseline_sha256=hashlib.sha256(source_bytes).hexdigest(),
+    )
+
+
+def apply_button_sibling_swap(
+    source_bytes: bytes,
+    plan: ButtonSiblingSwapPlan,
+) -> tuple[bytes, tuple[tuple[str, int], tuple[str, int]]]:
+    if hashlib.sha256(source_bytes).hexdigest() != plan.baseline_sha256:
+        raise EditorSourceError("STALE_SOURCE", "source changed since structural analysis")
+    target_start, target_end = plan.target_block_span
+    sibling_start, sibling_end = plan.sibling_block_span
+    if not (0 <= target_start < target_end <= sibling_start < sibling_end <= len(source_bytes)):
+        raise EditorSourceError("BUTTON_SIBLING_SPAN_INVALID", "invalid structural swap spans")
+    target_block = source_bytes[target_start:target_end]
+    separator = source_bytes[target_end:sibling_start]
+    sibling_block = source_bytes[sibling_start:sibling_end]
+    staged = source_bytes[:target_start] + sibling_block + separator + target_block + source_bytes[sibling_end:]
+    sibling_line = staged[:target_start].count(b"\n") + 1
+    target_new_start = target_start + len(sibling_block) + len(separator)
+    target_line = staged[:target_new_start].count(b"\n") + 1
+    return staged, ((plan.target_widget_id, target_line), (plan.sibling_widget_id, sibling_line))
