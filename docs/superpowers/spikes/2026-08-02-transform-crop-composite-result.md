@@ -17,10 +17,14 @@ scales that mapping; `rotate` turns it.
 
 ## Measured
 
-The editor's own preview path was driven with the composite gate temporarily opened, requesting the
-same **+20 px in x** on each target:
+Measured twice, two different ways, with the same result.
 
-| Target | Requested Δ | Observed screen Δ | Departure |
+First exploratory: the editor's own preview path, driven with the composite gate temporarily opened.
+Then, for the shipped regression test, the same **+20 px authored displacement** applied through the
+`_widget_properties` preview seam directly — the channel the editor previews through, but without
+analyze/commit, which is what allows a *locked* target to be measured with the gate closed.
+
+| Target | Authored Δ | Observed screen Δ | Departure |
 |---|---|---|---|
 | `crop_target` — pure crop, control | `[20, 0]` | `[20, 0]` | none, 1:1 holds |
 | `crop_with_zoom` — `zoom=1.25` | `[20, 0]` | `[25, 0]` | `20 × 1.25`; **+25 %**, and it grows with the drag |
@@ -28,10 +32,14 @@ same **+20 px in x** on each target:
 
 Focus rect shape, measured against reference controls carrying identical labels outside any transform:
 
-| Target | Reference rect | Composite rect | Reading |
-|---|---|---|---|
-| `crop_with_zoom` | `154×35` | `192×43` | scaled by ≈1.25 on both axes |
-| `crop_with_rotate` | `118×35` | `118×67` | axis-aligned bounding box of a rotated quad, ~1.9× the widget's height |
+| Target | Reference rect | Composite rect | Measured ratio | Reading |
+|---|---|---|---|---|
+| `crop_with_zoom` | `154×35` | `192×43` | w ×1.247, h ×1.229 | scaled by ≈1.25 on both axes |
+| `crop_with_rotate` | `132×35` | `118×67` | w ×0.894, h ×1.914 | height nearly doubles: an axis-aligned bounding box of a rotated quad |
+
+The rotated rect's **width shrinks** (×0.894) while its height nearly doubles. The height growth is
+the AABB signal; the width is additionally cut by the crop window, so it is reported but not used as
+evidence. Only the height ratio is asserted in the live test.
 
 ## Verdict against the written criteria
 

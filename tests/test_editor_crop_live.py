@@ -169,6 +169,18 @@ def test_composite_transform_breaks_the_one_to_one_mapping(demo_copy: Path) -> N
         _open_editor(session)
         report = measure_composite_divergence(session.client)
 
+    # The measurement that matters: a known authored displacement, observed as a
+    # screen displacement. Pure crop stays 1:1; the composites do not.
+    mapping = report["mapping"]
+    assert mapping["crop_target"]["observed_screen_delta"] == [20, 0]
+    # zoom 1.25: 20 authored px arrive as 25 screen px, a 25% overshoot that
+    # grows with the drag.
+    assert mapping["crop_with_zoom"]["observed_screen_delta"] == [25, 0]
+    # rotate 15 deg: 20 authored px arrive as (20*cos15, 20*sin15) — the widget
+    # moves diagonally for a purely horizontal edit.
+    assert mapping["crop_with_rotate"]["observed_screen_delta"][0] == pytest.approx(19, abs=1)
+    assert mapping["crop_with_rotate"]["observed_screen_delta"][1] == pytest.approx(5, abs=1)
+
     # Zoom: the reported rect is scaled on both axes, so a child-space delta
     # reaches the screen multiplied by the zoom factor rather than unchanged.
     zoom = report["zoom"]

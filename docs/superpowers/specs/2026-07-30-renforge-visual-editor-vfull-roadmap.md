@@ -254,9 +254,11 @@ the composite gate temporarily open, requesting **+20 px in x** each time:
 | `rotate=15` | `[20, 0]` | `[20, 5]` | `20·sin 15°` — **drags horizontally, moves diagonally** |
 
 Focus rect shape, against reference controls with identical labels outside any transform: the zoomed
-child reports `192×43` where the reference is `154×35` (scaled ≈1.25 on both axes), and the rotated
-child reports `118×67` where the reference is `118×35` — the **axis-aligned bounding box of a rotated
-quad**, which no longer describes the shape actually painted.
+child reports `192×43` where the reference is `154×35` (×1.247 wide, ×1.229 tall), and the rotated
+child reports `118×67` where the reference is `132×35` — its height nearly doubles (×1.914), the
+signature of an **axis-aligned bounding box of a rotated quad**, which no longer describes the shape
+actually painted. The rotated width shrinks instead (×0.894) because the crop window also cuts it, so
+only the height ratio is used as evidence.
 
 Two written pass conditions fail: focus rects no longer describe visible geometry (rotate), and a
 child-space edit cannot land within 1 px (both). The existing pixel-agreement gate would reject these
