@@ -2629,8 +2629,10 @@ init 1100 python:
                     values.append(value)
             return values
 
-        current = displayable
+        transforms = []
         seen = set()
+
+        current = displayable
         for _ in range(16):
             if current is None or id(current) in seen:
                 break
@@ -2639,12 +2641,15 @@ init 1100 python:
                 if candidate is None:
                     continue
                 if getattr(candidate, "forward", None) is not None or getattr(candidate, "reverse", None) is not None:
-                    return candidate
+                    if candidate not in transforms:
+                        transforms.append(candidate)
             if getattr(current, "forward", None) is not None or getattr(current, "reverse", None) is not None:
-                return current
+                if current not in transforms:
+                    transforms.append(current)
             name = type(current).__name__
             if name in ("Transform", "ATLTransform", "Motion", "TransformBase"):
-                return current
+                if current not in transforms:
+                    transforms.append(current)
             next_child = getattr(current, "child", None)
             if next_child is None:
                 next_child = getattr(current, "raw_child", None)
@@ -2665,12 +2670,20 @@ init 1100 python:
                 if candidate is None:
                     continue
                 if getattr(candidate, "forward", None) is not None or getattr(candidate, "reverse", None) is not None:
-                    return candidate
+                    if candidate not in transforms:
+                        transforms.append(candidate)
             if getattr(parent, "forward", None) is not None or getattr(parent, "reverse", None) is not None:
-                return parent
+                if parent not in transforms:
+                    transforms.append(parent)
             if type(parent).__name__ in ("Transform", "ATLTransform", "Motion", "TransformBase"):
-                return parent
+                if parent not in transforms:
+                    transforms.append(parent)
             current = parent
+
+        if len(transforms) == 1:
+            return transforms[0]
+        if len(transforms) > 1:
+            return "MULTIPLE_TRANSFORMS"
         return None
 
 
@@ -2752,6 +2765,10 @@ init 1100 python:
         if transform_d is None:
             return True
 
+        if transform_d == "MULTIPLE_TRANSFORMS":
+            candidate["resolve_error"] = "TRANSFORM_GEOMETRY_UNPROVEN"
+            return True
+
         child_size = getattr(transform_d, "child_size", None)
         if isinstance(child_size, (builtins.list, tuple)) and len(child_size) >= 2:
             w, h = int(child_size[0]), int(child_size[1])
@@ -2759,7 +2776,7 @@ init 1100 python:
             w, h = int(rect[2]), int(rect[3])
         if w <= 0 or h <= 0:
             candidate["resolve_error"] = "TRANSFORM_GEOMETRY_UNPROVEN"
-            return False
+            return True
 
         local_quad = ([0.0, 0.0], [float(w), 0.0], [float(w), float(h)], [0.0, float(h)])
         screen_quad, seam_name, seam_quad, seam_error = _renforge_editor_screen_quad_from_local(
@@ -2769,7 +2786,7 @@ init 1100 python:
         )
         if screen_quad is None:
             candidate["resolve_error"] = seam_error or "TRANSFORM_GEOMETRY_UNPROVEN"
-            return False
+            return True
 
         if _renforge_editor_point_in_quad(x, y, screen_quad):
             return True
