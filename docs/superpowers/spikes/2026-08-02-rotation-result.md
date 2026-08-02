@@ -12,19 +12,20 @@ This spike evaluates moving an already-rotated, focusable target. It does not ad
 
 ### Runtime Transform seam
 
-The injected opt-in resource discovered the target's runtime Transform and mapped its child quad through Ren'Py's `forward` seam. No authored-angle trigonometry was used.
+The injected opt-in resource discovered the target's runtime Transform, mapped its child quad through Ren'Py's `forward` seam, then translated that quad through the measured center of the fixture's centered focus parent. No authored-angle trigonometry was used.
 
 - seam: `forward`
-- local transformed quad: `[[0.0, 0.0], [77.27406311035156, -20.705524444580078], [86.591552734375, 14.0678071975708], [9.317485809326172, 34.77333068847656]]`
+- runtime screen quad: `[[256.7042245864868, 252.96609663963318], [333.9782876968384, 232.2605721950531], [343.2957773208618, 267.033903837204], [266.021710395813, 287.73942732810974]]`
 - forward/reverse round-trip error: `8.878860171535052e-07`
 
-This plane proves a non-degenerate runtime rotation seam. It is recorded separately from screen-space paint and selection evidence.
+This plane proves a non-degenerate runtime rotation seam in screen coordinates. It is recorded separately from screen-space paint classification and editor selection evidence.
 
 ### Candidate-isolated paint mask
 
 For the rotated target's focus AABB `[220, 220, 160, 80]`:
 
 - painted center: `[300, 260]`
+- painted edge derived from the runtime screen quad: `[304, 275]`
 - unpainted AABB corner: `[220, 220]`
 
 ### Real editor selection probe

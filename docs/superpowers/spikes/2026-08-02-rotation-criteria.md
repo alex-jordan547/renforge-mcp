@@ -24,6 +24,7 @@ Can RenForge:
 ## Required fixtures and controls
 
 - one focusable **rotated** control using `Transform(..., rotate=15)` with integer rotate literal
+- transformed child centered in its focusable parent (`xalign=0.5`, `yalign=0.5`), so runtime seam output can be translated through the measured parent center
 - one same-shape unrotated control (same declared size)
 - one additional focusable candidate for non-rotated control-path sanity
 - one dark background (no crop/layout/repetition ambiguity)
@@ -38,6 +39,7 @@ A run is PASS only if **all** are true:
 1. Transform seam extraction succeeds and returns a non-degenerate rotated quad for the rotated control.
 2. Candidate mask probes run on isolated screenshots and report:
    - rotated center painted,
+   - painted edge derived from the runtime screen quad and classified against the independent mask,
    - at least one AABB corner for rotated target outside paint.
 3. The seam-derived rotated quad and mask are stored as the live evidence plane; focus AABB is recorded separately and not used as the sole geometry gate.
 4. Rotated target is not lock- or seam-blocked, preview delta can be written, `editor_task0_save` commit/reload succeeds, rebinding succeeds, and generation delta is coherent with a committed edit.

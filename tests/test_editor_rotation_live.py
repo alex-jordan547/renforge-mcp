@@ -85,6 +85,7 @@ def test_rotation_spike_evidence_leads_to_blocked(demo_copy: Path) -> None:
     rotated = report["transform_plane"]["rotated"]
     assert rotated["quad_available"] is True
     assert rotated["quad_source"] in {"forward", "reverse"}
+    assert rotated["quad_coordinate_space"] == "screen"
     assert rotated["roundtrip_error"] is not None
     assert rotated["roundtrip_error"] <= 0.5
     quad = rotated["quad"]
@@ -105,6 +106,8 @@ def test_rotation_spike_evidence_leads_to_blocked(demo_copy: Path) -> None:
 
     paint = report["isolation"]["rotated"]["point_samples"]
     assert paint["center"]["painted"] is True
+    assert paint["edge"]["painted"] is True
+    assert paint["edge"]["source"] == "runtime_transform_quad_inset"
     assert paint["aabb_corner"]["painted"] is False
 
     corner = report["aabb_corner_probe"]

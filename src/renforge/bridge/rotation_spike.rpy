@@ -205,11 +205,10 @@ init 1600 python hide:
             current = parent
         return None
 
-    def _screen_quad_from_local(local_quad, transform_displayable):
-        # Most transforms map local child coordinates to screen coordinates through
-        # one of seams (forward/reverse). Use only seam output; never authored
-        # rotation math.
-        forward = getattr(transform_displayable, "forward", None)
+    def _screen_quad_from_local(local_quad, transform_displayable, parent_aabb):
+        # The fixture centers the transformed child in its focusable parent.
+        # Map through the runtime seam, then translate the resulting quad center
+        # to the measured parent center. Never derive geometry from rotate degrees.
         for seam in ("forward", "reverse"):
             seam_fn = getattr(transform_displayable, seam, None)
             if seam_fn is None:
@@ -220,7 +219,22 @@ init 1600 python hide:
                 if mapped is None:
                     return None, seam, None, "transform_map_failed"
                 projected.append(mapped)
-            return projected, seam, None, None
+            projected_center = [
+                sum(float(point[0]) for point in projected) / len(projected),
+                sum(float(point[1]) for point in projected) / len(projected),
+            ]
+            parent_center = [
+                float(parent_aabb[0]) + float(parent_aabb[2]) / 2.0,
+                float(parent_aabb[1]) + float(parent_aabb[3]) / 2.0,
+            ]
+            screen_quad = [
+                [
+                    float(point[0]) + parent_center[0] - projected_center[0],
+                    float(point[1]) + parent_center[1] - projected_center[1],
+                ]
+                for point in projected
+            ]
+            return screen_quad, seam, projected, None
         # Transform exists but no seam callable.
         return None, "transform", None, "transform_seam_unavailable"
 
@@ -255,6 +269,7 @@ init 1600 python hide:
             "roundtrip_error": None,
             "notes": "widget_missing",
             "quad_source": None,
+            "quad_coordinate_space": None,
             "aabb": None,
             "render_size": None,
             "style_pos": None,
@@ -330,15 +345,20 @@ init 1600 python hide:
             [float(w), float(h)],
             [0.0, float(h)],
         )
-        projected, seam_name, _, seam_error = _screen_quad_from_local(local_quad, transform_d)
-        if projected is None:
+        screen_quad, seam_name, seam_quad, seam_error = _screen_quad_from_local(
+            local_quad,
+            transform_d,
+            record["aabb"],
+        )
+        if screen_quad is None:
             record["notes"] = seam_error or "transform_matrix_unavailable"
             return record
 
-        record["quad"] = projected
+        record["quad"] = screen_quad
         record["quad_source"] = seam_name
+        record["quad_coordinate_space"] = "screen"
         record["notes"] = "transform_rotation"
-        record["roundtrip_error"] = _roundtrip_error(transform_d, local_quad, projected)
+        record["roundtrip_error"] = _roundtrip_error(transform_d, local_quad, seam_quad)
         if record["roundtrip_error"] is not None:
             try:
                 if float(record["roundtrip_error"]) > 0.5:

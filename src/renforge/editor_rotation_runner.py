@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import re
+import shutil
 from pathlib import Path
 from typing import Any
-import shutil
 
 from PIL import Image
 
@@ -170,13 +171,45 @@ def _mask_contains(mask: set[tuple[int, int]], x: int, y: int, *, radius: int = 
     return False
 
 
-def _sample_mask_points(mask: set[tuple[int, int]], aabb: list[int]) -> dict[str, Any]:
+def _edge_probe_from_quad(quad: Any) -> list[int] | None:
+    if not isinstance(quad, list) or len(quad) != 4:
+        return None
+    try:
+        points = [(float(point[0]), float(point[1])) for point in quad]
+    except (TypeError, ValueError, IndexError):
+        return None
+    center = (
+        sum(point[0] for point in points) / len(points),
+        sum(point[1] for point in points) / len(points),
+    )
+    p1, p2 = max(
+        zip(points, points[1:] + points[:1]),
+        key=lambda edge: (edge[1][0] - edge[0][0]) ** 2 + (edge[1][1] - edge[0][1]) ** 2,
+    )
+    midpoint = ((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0)
+    toward_center = (center[0] - midpoint[0], center[1] - midpoint[1])
+    distance = math.hypot(*toward_center)
+    if distance <= 0.0:
+        return None
+    inset = 2.0
+    return [
+        int(round(midpoint[0] + toward_center[0] * inset / distance)),
+        int(round(midpoint[1] + toward_center[1] * inset / distance)),
+    ]
+
+
+def _sample_mask_points(
+    mask: set[tuple[int, int]],
+    aabb: list[int],
+    *,
+    edge_probe: list[int] | None = None,
+) -> dict[str, Any]:
     if not aabb or len(aabb) != 4:
-        return {"center": {}, "aabb_corner": {}}
+        return {"center": {}, "edge": {}, "aabb_corner": {}}
 
     x, y, w, h = [int(v) for v in aabb]
     if w <= 0 or h <= 0:
-        return {"center": {}, "aabb_corner": {}}
+        return {"center": {}, "edge": {}, "aabb_corner": {}}
 
     cx = x + w // 2
     cy = y + h // 2
@@ -188,6 +221,14 @@ def _sample_mask_points(mask: set[tuple[int, int]], aabb: list[int]) -> dict[str
     corner = (x, y)
     return {
         "center": center,
+        "edge": {
+            "point": edge_probe,
+            "painted": bool(
+                edge_probe is not None
+                and _mask_contains(mask, edge_probe[0], edge_probe[1], radius=1)
+            ),
+            "source": "runtime_transform_quad_inset",
+        },
         "aabb_corner": {
             "point": [corner[0], corner[1]],
             "painted": _mask_contains(mask, corner[0], corner[1], radius=1),
@@ -205,7 +246,13 @@ def _measure_geometry(client: Any, *, target_ids: list[str] | None = None) -> di
     return geometry
 
 
-def _run_isolation(client: Any, target_id: str, *, aabb: list[int]) -> dict[str, Any]:
+def _run_isolation(
+    client: Any,
+    target_id: str,
+    *,
+    aabb: list[int],
+    edge_probe: list[int] | None = None,
+) -> dict[str, Any]:
     reply = client.request("rotation_spike_set_isolation", {"target_id": target_id})
     if not isinstance(reply, dict) or reply.get("ok") is not True:
         raise AssertionError(f"rotation_spike_set_isolation failed: {reply!r}")
@@ -216,7 +263,7 @@ def _run_isolation(client: Any, target_id: str, *, aabb: list[int]) -> dict[str,
     return {
         "target_id": target_id,
         "painted_pixels": len(mask),
-        "point_samples": _sample_mask_points(mask, aabb),
+        "point_samples": _sample_mask_points(mask, aabb, edge_probe=edge_probe),
     }
 
 
@@ -419,6 +466,7 @@ def run_editor_rotation_live_scenario(
             "notes": str(payload.get("notes", "")),
             "roundtrip_error": payload.get("roundtrip_error"),
             "quad_source": payload.get("quad_source"),
+            "quad_coordinate_space": payload.get("quad_coordinate_space"),
         }
         # Keep raw ids available for easier debugging.
         transform_plane[widget_id] = transform_plane[key]
@@ -432,6 +480,11 @@ def run_editor_rotation_live_scenario(
             client,
             wid,
             aabb=focus_aabb[wid]["aabb"],
+            edge_probe=(
+                _edge_probe_from_quad(transform_plane[wid].get("quad"))
+                if wid == TARGET_ID
+                else None
+            ),
         )
         alias_key = alias.get(wid, wid)
         report["isolation"][alias_key] = {
@@ -585,7 +638,7 @@ def run_editor_rotation_live_scenario(
     elif not rotated.get("quad_available"):
         report["verdict"] = "blocked"
         report["verdict_reason"] = "missing_transform_seam"
-    elif not paint["center"]["painted"]:
+    elif not paint["center"]["painted"] or not paint["edge"]["painted"]:
         report["verdict"] = "blocked"
         report["verdict_reason"] = "paint_mask_incomplete"
     elif report["aabb_corner_probe"]["selected_rotated"] and not report["aabb_corner_probe"]["painted"]:
