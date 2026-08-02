@@ -8,6 +8,7 @@ from PIL import Image
 
 from renforge.editor_failed_gate_runner import (
     FIXTURE_SCREEN,
+    LOCK_SYNTHETIC_WIDGET_ID,
     inject_editor_failed_gate_resources,
     probe_locked_target,
 )
@@ -23,8 +24,8 @@ def test_inject_editor_failed_gate_resources(tmp_path: Path) -> None:
 def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None:
     client = MagicMock()
     client.request.side_effect = [
-        {"ok": False, "lock_reason": "SYNTHETIC_WIDGET_ID"},  # select reply
-        {"ok": False, "error": "SYNTHETIC_WIDGET_ID"},        # drag reply
+        {"ok": False, "lock_reason": LOCK_SYNTHETIC_WIDGET_ID},  # select reply
+        {"ok": False, "error": LOCK_SYNTHETIC_WIDGET_ID},        # drag reply
     ]
     client.eval_expr.side_effect = [
         "id=none x=100 y=100 [SYNTHETIC_WIDGET_ID]",  # label_text
@@ -39,14 +40,14 @@ def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None
         client,
         click_x=140,
         click_y=115,
-        expected_lock_reason="SYNTHETIC_WIDGET_ID",
+        expected_lock_reason=LOCK_SYNTHETIC_WIDGET_ID,
         target_name="identity",
         output_dir=tmp_path,
     )
 
     assert res["target_name"] == "identity"
     assert res["ok"] is False
-    assert res["lock_reason"] == "SYNTHETIC_WIDGET_ID"
+    assert res["lock_reason"] == LOCK_SYNTHETIC_WIDGET_ID
     assert res["save_enabled"] is False
     assert res["drag_prevented"] is True
     assert res["selected_rect"] == [100, 100, 80, 40]

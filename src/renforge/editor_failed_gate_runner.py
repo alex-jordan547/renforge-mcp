@@ -21,6 +21,13 @@ FIXTURE_RESOURCE = (
     / "renforge_editor_failed_gate_fixture.rpy"
 )
 
+# Shared Gate Lock Reason Codes
+LOCK_SYNTHETIC_WIDGET_ID = "SYNTHETIC_WIDGET_ID"
+LOCK_TRANSFORM_CROP_COMPOSITE = "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
+LOCK_LOOP_INSTANCE = "LOOP_INSTANCE_UNSUPPORTED"
+LOCK_MULTI_INSTANCE = "MULTI_INSTANCE_UNSUPPORTED"
+LOCK_REPEATED_USE = "REPEATED_USE_UNSUPPORTED"
+
 
 def inject_editor_failed_gate_resources(project_root: Path) -> Path:
     target = project_root / "game" / "zz_renforge_editor_failed_gate_fixture.rpy"
@@ -154,7 +161,7 @@ def run_editor_failed_gate_live_scenario(
         client,
         click_x=click_x,
         click_y=click_y,
-        expected_lock_reason="SYNTHETIC_WIDGET_ID",
+        expected_lock_reason=LOCK_SYNTHETIC_WIDGET_ID,
         target_name="identity",
         output_dir=output_dir,
     )
@@ -168,7 +175,7 @@ def run_editor_failed_gate_live_scenario(
         client,
         click_x=click_x,
         click_y=click_y,
-        expected_lock_reason="TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+        expected_lock_reason=LOCK_TRANSFORM_CROP_COMPOSITE,
         target_name="clipping",
         output_dir=output_dir,
     )
@@ -182,7 +189,7 @@ def run_editor_failed_gate_live_scenario(
         client,
         click_x=click_x,
         click_y=click_y,
-        expected_lock_reason="LOOP_INSTANCE_UNSUPPORTED",
+        expected_lock_reason=LOCK_LOOP_INSTANCE,
         target_name="repetition",
         output_dir=output_dir,
     )

@@ -18,8 +18,8 @@ All five must hold, measured live, for issue #52 to pass:
 
 1. **Coverage across all three gate families:**
    - **Missing source identity:** e.g., `SYNTHETIC_WIDGET_ID` (widget authored without explicit `id`).
-   - **Clipping ancestry:** e.g., `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (composite crop + rotate/zoom).
-   - **Repeated runtime instance:** e.g., `MULTI_INSTANCE_UNSUPPORTED` (widget inside a `for` loop).
+   - **Clipping ancestry:** e.g., `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (composite crop + rotate/zoom) or `CLIPPED_ANCESTRY_UNSUPPORTED`.
+   - **Repeated runtime instance:** e.g., `LOOP_INSTANCE_UNSUPPORTED` (widget inside a `for` loop), `REPEATED_USE_UNSUPPORTED` (repeated `use` screen), or `MULTI_INSTANCE_UNSUPPORTED` (multiple un-indexed instances).
 
 2. **Selection remains visible and measurable:**
    - Selecting any locked target updates `selected_rect` to the target's bounding box `[x, y, w, h]` with `w > 0` and `h > 0`.
