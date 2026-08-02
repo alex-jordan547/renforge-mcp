@@ -1316,6 +1316,25 @@ def test_analyze_textbutton_offset_rejects_impure_and_mixed() -> None:
             expected_widget_id="start",
         )
     assert excinfo.value.code == "POSITION_FORM_MIXED"
+    # Concurrent placement forms must also lock pure offset (Sourcery).
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) anchor (0.5, 0.5) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) pos (3, 4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
+    with pytest.raises(EditorSourceError) as excinfo:
+        analyze_textbutton_statement(
+            '    textbutton "Play" id "start" offset (1, 2) align (0.3, 0.4) action NullAction()\n',
+            expected_widget_id="start",
+        )
+    assert excinfo.value.code == "POSITION_FORM_MIXED"
     with pytest.raises(EditorSourceError) as excinfo:
         analyze_textbutton_statement(
             '    textbutton "Play" id "start" offset (1, 2) offset (3, 4) action NullAction()\n',
