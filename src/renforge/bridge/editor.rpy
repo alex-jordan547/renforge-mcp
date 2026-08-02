@@ -913,31 +913,37 @@ init 1100 python:
         return False
 
 
-    def _renforge_editor_focus_shorter_than_unclipped(focus, target):
-        """True when focus_list size is smaller than the widget's unclipped render.
+    def _renforge_editor_focus_crop_visibility(focus, target):
+        """Compare focus_list size to the widget's unclipped render.
+
+        Returns one of:
+          - "full": focus size >= unclipped render on both axes
+          - "partial": focus is smaller on either axis (any 1px reduction)
+          - "unknown": sizes could not be measured (fail closed)
 
         Measured on 8.5.3 under pure Transform(crop=): a partially clipped
         textbutton reports e.g. focus height 15 while rendering alone is ~35.
-        That is the signal that focus is crop-clamped, not fully visible.
         """
         if focus is None or target is None:
-            return False
+            return "unknown"
         try:
             fw = getattr(focus, "w", None)
             fh = getattr(focus, "h", None)
             if fw is None or fh is None:
-                # Some focus entries expose a rect tuple instead.
                 rect = getattr(focus, "rect", None)
                 if isinstance(rect, (builtins.list, builtins.tuple)) and len(rect) >= 4:
                     fw, fh = rect[2], rect[3]
             if fw is None or fh is None:
-                return False
+                return "unknown"
             rendered = renpy.display.render.render(target, 4096, 4096, 0, 0)
             rw, rh = rendered.get_size()
-            # 2px slack for style/padding noise; partial clips are much larger.
-            return (int(fw) + 2 < int(rw)) or (int(fh) + 2 < int(rh))
+            # No slack: a 1–2px top/left clamp still pins focus origin while
+            # source xpos/ypos move (Codex re-review P1 on #65).
+            if int(fw) < int(rw) or int(fh) < int(rh):
+                return "partial"
+            return "full"
         except Exception:
-            return False
+            return "unknown"
 
 
     def _renforge_editor_crop_state(node, focus=None, target=None):
@@ -962,8 +968,12 @@ init 1100 python:
             # Top/left clamps make focus x/y crop-bound while source xpos/ypos
             # still describe the unclipped layout, so preview deltas attest
             # against the wrong origin (Codex P1 on #65).
-            if _renforge_editor_focus_shorter_than_unclipped(focus, target):
+            visibility = _renforge_editor_focus_crop_visibility(focus, target)
+            if visibility == "partial":
                 return "transform_crop_partial"
+            if visibility == "unknown":
+                # Fail closed: never grant move without a full-visibility proof.
+                return "transform_crop_unproven"
             return "transform_crop"
         return "none"
 
@@ -1027,6 +1037,7 @@ init 1100 python:
                 "transform_crop",
                 "transform_crop_composite",
                 "transform_crop_partial",
+                "transform_crop_unproven",
                 "clipping_true",
             ):
                 return None, "UNKNOWN_CROP_STATE", None, None
@@ -1091,6 +1102,7 @@ init 1100 python:
                 "transform_crop",
                 "transform_crop_composite",
                 "transform_crop_partial",
+                "transform_crop_unproven",
                 "clipping_true",
             ):
                 return "UNKNOWN_CROP_STATE"
@@ -1102,9 +1114,9 @@ init 1100 python:
             # Issue #45: pure Transform(crop=) / Crop() sugar is the same runtime
             # object (type Transform, crop set, rotate/zoom at defaults). Focus
             # rects are measured in screen space; the host decides editability,
-            # including rejecting transform_crop_composite (#46) and
-            # transform_crop_partial (not fully visible) with distinct reasons.
-            # crop_displayable / clipping_true remain unproven here.
+            # including rejecting transform_crop_composite (#46),
+            # transform_crop_partial, and transform_crop_unproven with distinct
+            # reasons. crop_displayable / clipping_true remain unproven here.
             if crop_state in ("crop_displayable", "clipping_true"):
                 return "CLIPPED_ANCESTRY_UNSUPPORTED"
         return None

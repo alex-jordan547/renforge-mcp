@@ -229,7 +229,9 @@ child is **fully visible** (focus size matches unclipped render), plain `fixed` 
 
 | Shape | Reason |
 |---|---|
-| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` — focus shorter than unclipped render; top/left clamps would break delta attestation |
+| Partially crop-clipped child | `TRANSFORM_CROP_PARTIAL_UNSUPPORTED` — any 1px focus size reduction vs unclipped render |
+| Visibility unmeasurable | `TRANSFORM_CROP_UNPROVEN` — fail closed when render/size proof fails |
+| Nested crop transforms | `NESTED_TRANSFORM_CROP_UNSUPPORTED` — only one crop Transform was measured |
 | Crop + rotate / crop + zoom | `TRANSFORM_CROP_COMPOSITE_UNSUPPORTED` (issue #46) |
 | Layout container inside crop | `CONTAINER_POSITION_UNSUPPORTED` |
 | Expression position inside crop | `YPOS_LITERAL_REQUIRED` |

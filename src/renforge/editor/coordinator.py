@@ -1016,6 +1016,26 @@ class EditorCoordinator:
                 "NESTED_VIEWPORT_UNSUPPORTED",
                 "nested viewport ancestry is not editable in V1",
             )
+        # Issue #45: only a single pure-crop Transform was measured. Nested crops
+        # (any transform crop state) compose two clip windows and stay locked.
+        _transform_crop_states = {
+            "transform_crop",
+            "transform_crop_partial",
+            "transform_crop_composite",
+            "transform_crop_unproven",
+        }
+        if (
+            sum(
+                1
+                for a in ancestry
+                if isinstance(a, dict) and a.get("crop_state") in _transform_crop_states
+            )
+            > 1
+        ):
+            return self._lock_reason(
+                "NESTED_TRANSFORM_CROP_UNSUPPORTED",
+                "nested transform crop ancestry is not editable in V1",
+            )
 
         for ancestor in ancestry:
             if not isinstance(ancestor, dict):
@@ -1056,6 +1076,12 @@ class EditorCoordinator:
                 return self._lock_reason(
                     "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
                     "partially crop-clipped targets are not editable in V1",
+                )
+            # Visibility proof failed (render/size unavailable) — fail closed.
+            if crop_state == "transform_crop_unproven":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_UNPROVEN",
+                    "transform crop full-visibility could not be proven",
                 )
             # Legacy / defensive labels that live pure-crop never emits.
             if crop_state in {"crop", "crop_displayable"}:
