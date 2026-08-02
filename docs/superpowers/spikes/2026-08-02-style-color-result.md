@@ -31,7 +31,7 @@ Source/coordinator suite:
 
 ```text
 PYTHONPATH=src python -m pytest -q tests/test_editor_style_color_source.py tests/test_editor_coordinator.py
-77 passed in 12.16s
+77 passed in 16.19s
 ```
 
 ## Production bridge path
@@ -54,10 +54,10 @@ Opt-in command:
 
 ```text
 RENFORGE_STYLE_COLOR_LIVE=1 PYTHONPATH=src python -m pytest -q tests/test_editor_style_color_live.py
-1 passed in 34.52s
+1 passed in 26.36s
 ```
 
-Fixture: large red `text "STYLE" color "#e22b2b"` changed to blue `#2457d6`, with inherited and expression-based lock controls.
+Fixture: large red `text "STYLE" color "#e22b2b"` changed to blue `#2457d6` under an offset parent, with inherited/expression locks, a non-opaque `#rrggbbaa` runtime probe, and a repeated-loop instance lock.
 
 | Plane | Observed evidence |
 | --- | --- |
@@ -79,7 +79,7 @@ The live report returns `verdict="pass"` only when every mandatory evidence fiel
 
 ```text
 PYTHONPATH=src python -m pytest -q
-663 passed, 45 skipped in 35.82s
+663 passed, 45 skipped in 34.51s
 
 python -m compileall -q src tests
 # exit 0

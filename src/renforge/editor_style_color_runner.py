@@ -23,6 +23,8 @@ FIXTURE_SCREEN = "renforge_editor_style_fixture"
 TARGET_ID = "style_color_target"
 INHERITED_ID = "style_color_inherited"
 EXPR_ID = "style_color_expr"
+ALPHA_ID = "style_color_alpha"
+LOOP_ID = "style_color_loop"
 FOCUS_ID = "style_focus_control"
 BASELINE_COLOR = "#e22b2b"
 REQUESTED_COLOR = "#2457d6"
@@ -303,6 +305,52 @@ def _wait_style_analysis(client: Any, *, timeout: float = 20.0) -> dict[str, Any
     )
 
 
+def _runtime_target_probe(client: Any, *, label: str, widget_id: str) -> dict[str, Any]:
+    bounds = _scene_text_bounds(client, label=label)
+    if bounds is None:
+        return {"ok": False, "reason": "scene_bounds_missing", "widget_id": widget_id}
+    selection = _attempt_product_select(client, bounds)
+    try:
+        status = _wait_for_status(
+            client,
+            lambda item: (
+                item.get("selected_widget_id") == widget_id
+                and item.get("selected_lock_reason") != "ANALYZING"
+                and (
+                    bool(item.get("current_analysis_id"))
+                    or item.get("selected_lock_reason") not in (None, "")
+                )
+            ),
+            timeout=20.0,
+            poll_name=f"style runtime probe {widget_id}",
+        )
+    except AssertionError as exc:
+        final_status = client.request("editor_task0_status", {})
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "widget_id": widget_id,
+            "selection": selection,
+            "final_status": {
+                "selected_widget_id": final_status.get("selected_widget_id"),
+                "selected_analysis_pending": final_status.get("selected_analysis_pending"),
+                "selected_lock_reason": final_status.get("selected_lock_reason"),
+                "current_analysis_id": final_status.get("current_analysis_id"),
+                "save_error": final_status.get("save_error"),
+                "status_text": final_status.get("status_text"),
+            },
+        }
+    return {
+        "ok": True,
+        "widget_id": widget_id,
+        "selection": selection,
+        "lock_reason": status.get("selected_lock_reason"),
+        "capabilities": status.get("current_capabilities") or {},
+        "source_key": status.get("current_source_key") or {},
+        "observation": selection.get("observation") or {},
+    }
+
+
 def _lock_probe(source_text: str, widget_id: str, expected_code: str) -> dict[str, Any]:
     line, _ = _target_line_with_offset(source_text, widget_id)
     parsed = analyze_text_color_style(line, expected_widget_id=widget_id)
@@ -335,6 +383,35 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     report["locks"] = {
         "inherited": _lock_probe(baseline_text, INHERITED_ID, "STYLE_COLOR_NOT_DIRECTLY_AUTHORED"),
         "expression": _lock_probe(baseline_text, EXPR_ID, "STYLE_COLOR_LITERAL_REQUIRED"),
+    }
+
+    alpha_probe = _runtime_target_probe(client, label="ALPHA", widget_id=ALPHA_ID)
+    alpha_observation = alpha_probe.get("observation") or {}
+    alpha_caps = alpha_probe.get("capabilities") or {}
+    report["runtime_alpha"] = {
+        **alpha_probe,
+        "ok": bool(
+            alpha_probe.get("ok")
+            and alpha_probe.get("lock_reason") in (None, "")
+            and alpha_caps.get("style_color") is True
+            and alpha_observation.get("style_color") == "#33669980"
+        ),
+    }
+
+    loop_probe = _runtime_target_probe(client, label="LOOP 1", widget_id=LOOP_ID)
+    loop_observation = loop_probe.get("observation") or {}
+    loop_runtime_key = loop_observation.get("runtime_key") or {}
+    loop_discriminator = loop_runtime_key.get("instance_discriminator") or {}
+    report["runtime_repeated_lock"] = {
+        **loop_probe,
+        "instance_discriminator": loop_discriminator,
+        "ok": bool(
+            loop_probe.get("ok")
+            and loop_probe.get("lock_reason")
+            in ("LOOP_INSTANCE_UNSUPPORTED", "MULTI_INSTANCE_UNSUPPORTED")
+            and (loop_probe.get("capabilities") or {}).get("style_color") is not True
+            and int(loop_discriminator.get("instance_count") or 0) >= 2
+        ),
     }
 
     target_line, _ = _target_line_with_offset(baseline_text, TARGET_ID)
@@ -735,6 +812,8 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         report["product_undo"]["ok"],
         report["locks"]["inherited"]["matches_expected"],
         report["locks"]["expression"]["matches_expected"],
+        report["runtime_alpha"]["ok"],
+        report["runtime_repeated_lock"]["ok"],
         report["restore"]["byte_identical"],
     ]
     if all(required):

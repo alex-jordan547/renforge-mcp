@@ -87,6 +87,10 @@ def test_style_color_live_product_path_pass(demo_copy: Path) -> None:
     assert report["resolve_source"]["color"] == "#e22b2b"
     assert report["locks"]["inherited"]["matches_expected"] is True
     assert report["locks"]["expression"]["matches_expected"] is True
+    assert report["runtime_alpha"]["ok"] is True, report["runtime_alpha"]
+    assert report["runtime_alpha"]["observation"]["style_color"] == "#33669980"
+    assert report["runtime_repeated_lock"]["ok"] is True
+    assert report["runtime_repeated_lock"]["instance_discriminator"]["instance_count"] >= 2
 
     assert report["product_select_unlocked_style"] is True
     assert report["product_preview_available"] is True

@@ -523,6 +523,20 @@ init 1100 python:
         return literal
 
 
+    def _renforge_editor_style_color_from_channels(channels):
+        try:
+            values = [int(channel) for channel in channels]
+        except Exception:
+            return None
+        if len(values) < 3 or any(channel < 0 or channel > 255 for channel in values[:4]):
+            return None
+        if len(values) >= 4 and values[3] != 255:
+            literal = "#%02x%02x%02x%02x" % tuple(values[:4])
+        else:
+            literal = "#%02x%02x%02x" % tuple(values[:3])
+        return _renforge_editor_normalize_style_color(literal)
+
+
     def _renforge_editor_style_color_from_widget(widget):
         if widget is None:
             return None
@@ -532,48 +546,75 @@ init 1100 python:
             color = getattr(widget, "color", None)
         if isinstance(color, str):
             return _renforge_editor_normalize_style_color(color)
-        if isinstance(color, (builtins.list, builtins.tuple)) and len(color) >= 3:
-            try:
-                return _renforge_editor_normalize_style_color(
-                    "#%02x%02x%02x" % (int(color[0]), int(color[1]), int(color[2]))
-                )
-            except Exception:
-                return None
-        # Ren'Py Color objects expose rgba channels.
+        if isinstance(color, (builtins.list, builtins.tuple)):
+            return _renforge_editor_style_color_from_channels(color)
+        # Ren'Py Color objects expose RGBA channels.
         try:
-            channels = list(color)
-            if len(channels) >= 3:
-                return _renforge_editor_normalize_style_color(
-                    "#%02x%02x%02x" % (int(channels[0]), int(channels[1]), int(channels[2]))
-                )
+            return _renforge_editor_style_color_from_channels(list(color))
         except Exception:
-            pass
-        return None
+            return None
 
 
-    def _renforge_editor_measure_text_rect(widget):
-        if widget is None:
+    def _renforge_editor_measure_text_rect(screen, widget):
+        """Measure a Text in logical screen coordinates from rendered child offsets."""
+        if screen is None or widget is None:
             return None
         width = int(getattr(renpy.config, "screen_width", 1280) or 1280)
         height = int(getattr(renpy.config, "screen_height", 720) or 720)
         render_for_size = getattr(getattr(renpy.display, "render", None), "render_for_size", None)
-        place = getattr(getattr(renpy.display, "displayable", None), "place", None)
-        get_placement = getattr(widget, "get_placement", None)
-        if not callable(render_for_size) or not callable(place) or not callable(get_placement):
+        if not callable(render_for_size):
             return None
         try:
-            surf = render_for_size(widget, width, height, 0, 0)
-            sw = getattr(surf, "width", None)
-            sh = getattr(surf, "height", None)
-            if sw is None or sh is None:
-                sw, sh = surf.get_size()
-            x, y = place(width, height, float(sw), float(sh), get_placement())
-            rect = [int(round(x)), int(round(y)), int(round(sw)), int(round(sh))]
+            # Ensure layout containers have current per-child offsets.
+            render_for_size(screen, width, height, 0, 0)
         except Exception:
             return None
-        if rect[2] <= 0 or rect[3] <= 0:
+
+        seen = set()
+
+        def walk(node, base_x, base_y, depth):
+            if node is None or depth > _CACHE_WALK_MAX_DEPTH or id(node) in seen:
+                return None
+            seen.add(id(node))
+            if id(node) == id(widget):
+                try:
+                    surf = render_for_size(widget, width, height, 0, 0)
+                    sw = getattr(surf, "width", None)
+                    sh = getattr(surf, "height", None)
+                    if sw is None or sh is None:
+                        sw, sh = surf.get_size()
+                    rect = [int(round(base_x)), int(round(base_y)), int(round(sw)), int(round(sh))]
+                except Exception:
+                    return None
+                return rect if rect[2] > 0 and rect[3] > 0 else None
+
+            class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
+            # Transform child coordinates require the render matrix, not additive
+            # offsets. Keep those text descendants unselectable until proven.
+            if class_name == "Transform":
+                return None
+            children = _renforge_editor_children(node)
+            if not children:
+                return None
+            offsets = getattr(node, "offsets", None)
+            for index, child in enumerate(children):
+                if offsets is not None and index < len(offsets):
+                    try:
+                        offset_x = int(offsets[index][0])
+                        offset_y = int(offsets[index][1])
+                    except Exception:
+                        continue
+                elif len(children) == 1 and class_name == "ScreenDisplayable":
+                    offset_x = offset_y = 0
+                else:
+                    # No rendered placement proof for this branch.
+                    continue
+                found = walk(child, base_x + offset_x, base_y + offset_y, depth + 1)
+                if found is not None:
+                    return found
             return None
-        return rect
+
+        return walk(screen, 0, 0, 0)
 
 
     def _renforge_editor_style_color_capable():
@@ -1430,6 +1471,8 @@ init 1100 python:
         screen, widgets = _renforge_editor_widget_map(screen_name)
         if screen is None:
             return None, "MISSING_SCREEN", None
+        cache_index = instances.get(screen_name) if instances else None
+        cache_entry = cache_index["entries"].get(id(widget)) if cache_index else None
         named_widget = None
         if isinstance(widgets, builtins.dict):
             named_widget = widgets.get(widget_id)
@@ -1483,7 +1526,15 @@ init 1100 python:
                     "layout": layout_name,
                 }
             )
-        discriminator = {"kind": "static", "instance_count": 1, "ordinal": int(ordinal)}
+        discriminator = {"kind": "static", "instance_count": 1}
+        if cache_entry is not None:
+            measured = _renforge_editor_instance_discriminator(
+                cache_entry,
+                cache_index["statement_siblings"],
+            )
+            if measured is not None:
+                discriminator = measured
+        discriminator["ordinal"] = int(ordinal)
         key = {
             "screen": screen_name,
             "invocation_path": screen_name,
@@ -1514,7 +1565,7 @@ init 1100 python:
                     is_text = False
                 if not is_text:
                     continue
-                rect = _renforge_editor_measure_text_rect(widget)
+                rect = _renforge_editor_measure_text_rect(screen, widget)
                 if rect is None:
                     continue
                 runtime_key, resolve_error, named_widget = _renforge_editor_runtime_key_from_text_widget(
