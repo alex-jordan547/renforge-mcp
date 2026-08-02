@@ -900,6 +900,10 @@ init 1100 python:
         class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
         if "Viewport" in class_name:
             return "viewport"
+        # Ren'Py 8.5.3: Crop(rect, child) is a constructor that returns
+        # Transform(child, crop=rect) — there is no runtime Crop class. The
+        # class-name branch is retained only as a defensive unknown; live
+        # ancestry for Crop()/Transform(crop=) is type Transform (issue #45).
         if "Crop" in class_name:
             return "crop_displayable"
         clipping = getattr(node, "clipping", None)
@@ -907,6 +911,22 @@ init 1100 python:
             return "clipping_true"
         crop = getattr(node, "crop", None)
         if crop not in (None, False):
+            # Issue #45 unlocks pure crop only. rotate / non-default zoom is #46.
+            rotate = getattr(node, "rotate", None)
+            zoom = getattr(node, "zoom", None)
+            xzoom = getattr(node, "xzoom", None)
+            yzoom = getattr(node, "yzoom", None)
+            composite = False
+            if rotate not in (None, 0, 0.0):
+                composite = True
+            if zoom not in (None, 1, 1.0):
+                composite = True
+            if xzoom not in (None, 1, 1.0):
+                composite = True
+            if yzoom not in (None, 1, 1.0):
+                composite = True
+            if composite:
+                return "transform_crop_composite"
             return "transform_crop"
         return "none"
 
@@ -962,6 +982,7 @@ init 1100 python:
                 "viewport",
                 "crop_displayable",
                 "transform_crop",
+                "transform_crop_composite",
                 "clipping_true",
             ):
                 return None, "UNKNOWN_CROP_STATE", None, None
@@ -1024,6 +1045,7 @@ init 1100 python:
                 "viewport",
                 "crop_displayable",
                 "transform_crop",
+                "transform_crop_composite",
                 "clipping_true",
             ):
                 return "UNKNOWN_CROP_STATE"
@@ -1031,7 +1053,13 @@ init 1100 python:
             # rects already offset by the scroll, measured across scroll
             # positions in issue #44. Whether *this* viewport shape is editable
             # is the host's decision, so the bridge stops rejecting it here.
-            if crop_state in ("crop_displayable", "transform_crop", "clipping_true"):
+            #
+            # Issue #45: pure Transform(crop=) / Crop() sugar is the same runtime
+            # object (type Transform, crop set, rotate/zoom at defaults). Focus
+            # rects are measured in screen space; the host decides editability,
+            # including rejecting transform_crop_composite (#46) with a distinct
+            # reason. crop_displayable / clipping_true remain unproven here.
+            if crop_state in ("crop_displayable", "clipping_true"):
                 return "CLIPPED_ANCESTRY_UNSUPPORTED"
         return None
 

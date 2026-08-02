@@ -1033,6 +1033,9 @@ class EditorCoordinator:
                     "CONTAINER_POSITION_UNSUPPORTED",
                     "direct movement inside layout containers is not editable",
                 )
+            # Issue #45: Ren'Py has no runtime Crop class (Crop() returns
+            # Transform). Keep a defensive lock if a future build ever surfaces
+            # one; pure transform_crop is handled below.
             if ancestor_type == "Crop":
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "Crop ancestry is not editable in V1")
             if bool(ancestor.get("editor_owned")):
@@ -1041,11 +1044,17 @@ class EditorCoordinator:
             if isinstance(screen_owner, str) and screen_owner == "renforge.editor.v1":
                 return self._lock_reason("EDITOR_OWNED_TARGET", "editor-owned displayables are never editable")
             crop_state = ancestor.get("crop_state")
-            if crop_state == "crop":
+            # crop+rotate / crop+zoom (issue #46) — distinct from pure crop.
+            if crop_state == "transform_crop_composite":
+                return self._lock_reason(
+                    "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                    "transform crop combined with rotate/zoom is not editable in V1",
+                )
+            # Legacy / defensive labels that live pure-crop never emits.
+            if crop_state in {"crop", "crop_displayable"}:
                 return self._lock_reason("CROP_ANCESTRY_UNSUPPORTED", "crop ancestry is not editable in V1")
-            if crop_state == "transform_crop":
-                return self._lock_reason("TRANSFORM_CROP_UNSUPPORTED", "transform crop ancestry is not editable in V1")
-            if crop_state not in {"none", "viewport"}:
+            # Issue #45: pure transform_crop is editable (Crop is sugar for it).
+            if crop_state not in {"none", "viewport", "transform_crop"}:
                 return self._lock_reason("ANCESTRY_CROP_UNPROVEN", f"unproven crop state: {crop_state}")
         return None
 
