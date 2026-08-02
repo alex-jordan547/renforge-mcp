@@ -54,7 +54,7 @@ Opt-in command:
 
 ```text
 RENFORGE_STYLE_COLOR_LIVE=1 PYTHONPATH=src python -m pytest -q tests/test_editor_style_color_live.py
-1 passed in 28.31s
+1 passed in 34.52s
 ```
 
 Fixture: large red `text "STYLE" color "#e22b2b"` changed to blue `#2457d6`, with inherited and expression-based lock controls.

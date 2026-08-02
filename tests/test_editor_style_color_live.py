@@ -102,6 +102,11 @@ def test_style_color_live_product_path_pass(demo_copy: Path) -> None:
     assert preview["source_byte_identical"] is True
     assert preview["pixel"]["dominant"] == "blue"
 
+    preview_reset = report["product_preview_reset"]
+    assert preview_reset["ok"] is True
+    assert preview_reset["source_byte_identical"] is True
+    assert preview_reset["pixel"]["dominant"] == "red"
+
     refused = report["refused_attestation_rollback"]
     assert refused["ok"] is True
     assert refused["byte_identical"] is True
@@ -127,6 +132,12 @@ def test_style_color_live_product_path_pass(demo_copy: Path) -> None:
     assert undo["source_color"] == "#e22b2b"
     assert undo["pixel"]["dominant"] == "red"
     assert undo["note"] == "product_undo_transaction"
+
+    generations = report["generations"]
+    assert generations["pre_commit"] >= generations["initial_analysis"]
+    assert generations["post_commit"] >= generations["pre_commit"] + 1
+    assert generations["pre_undo"] >= generations["post_commit"]
+    assert generations["post_undo"] >= generations["pre_undo"] + 1
 
     assert report["restore"]["byte_identical"] is True
     assert report["verdict"] == "pass"
