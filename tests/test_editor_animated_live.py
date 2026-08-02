@@ -9,9 +9,11 @@ import pytest
 
 from renforge.editor_animated_runner import (
     FIXTURE_SCREEN,
+    _show_fixture,
     inject_editor_animated_resources,
     run_editor_animated_live_scenario,
 )
+from renforge.editor_live_common import wait_bounds
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("RENFORGE_ANIMATED_LIVE"),
@@ -75,3 +77,45 @@ def test_animated_element_editing_spike(demo_copy: Path) -> None:
     assert report["verdict"] == "blocked"
     assert report["reason_code"] in {"atl_position_override_conflict", "atl_time_reset"}
     assert "variants" in report
+
+
+def test_atl_ancestry_reports_its_own_lock_reason(demo_copy: Path) -> None:
+    """Issue #51: an ATL ancestor is locked as animated, not as an unknown type.
+
+    Both targets sit still on screen: `anim_style_target` animates alpha only and
+    `anim_static_transform` is a stationary wrapper, so the click point is stable.
+    `anim_pos_target` is deliberately not probed here — its ATL moves it between
+    the bounds read and the click.
+    """
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.sdk import get_or_install_sdk
+
+    sdk = get_or_install_sdk("8.5.3", project_root=demo_copy)
+
+    def select_center(client, widget_id: str) -> dict:
+        bounds = wait_bounds(client, widget_id, fixture_screen=FIXTURE_SCREEN)
+        return client.request(
+            "editor_task0_select",
+            {
+                "x": bounds["x"] + bounds["width"] // 2,
+                "y": bounds["y"] + bounds["height"] // 2,
+            },
+        )
+
+    with launch_with_bridge(
+        sdk, RenpyProject(demo_copy), startup_timeout=120, editor=True
+    ) as session:
+        _open_editor(session)
+        _show_fixture(session.client)
+        animated = select_center(session.client, "anim_style_target")
+        stationary = select_center(session.client, "anim_static_transform")
+
+    # An active ATL stays locked, but says why.
+    assert animated.get("ok") is False
+    assert animated.get("lock_reason") == "ATL_ANIMATION_UNSUPPORTED"
+
+    # A stationary Transform wrapper keeps working: this lock must not widen.
+    assert stationary.get("ok") is True
+    assert stationary.get("lock_reason") is None
+    assert (stationary.get("selected") or {}).get("widget_id") == "anim_static_transform"

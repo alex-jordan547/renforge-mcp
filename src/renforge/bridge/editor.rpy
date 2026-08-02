@@ -261,6 +261,20 @@ init 1100 python:
         ]
     )
 
+    # Ancestry types that are locked for a known, specific reason rather than
+    # simply being unrecognised. `at <atl transform>` resolves to ATLTransform,
+    # which subclasses Transform but reports its own class name (issue #51):
+    # measured on 8.5.3, an active ATL resets show time on every
+    # `_widget_properties` preview and overwrites position overrides, so these
+    # targets stay locked — but the editor should say why.
+    _ATL_ANCESTRY_TYPES = set(["ATLTransform"])
+
+    def _renforge_editor_ancestry_lock_code(class_name):
+        """Lock code for an ancestry type outside the allowlist."""
+        if class_name in _ATL_ANCESTRY_TYPES:
+            return "ATL_ANIMATION_UNSUPPORTED"
+        return "UNKNOWN_ANCESTRY_TYPE"
+
     def _renforge_editor_state():
         state = _renforge_runtime_module.editor_v1
         if not hasattr(state, "initialized"):
@@ -1213,7 +1227,7 @@ init 1100 python:
         for index, node in enumerate(ancestry_nodes):
             class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
             if class_name not in _ALLOWED_ANCESTRY_TYPES:
-                return None, "UNKNOWN_ANCESTRY_TYPE", None, None
+                return None, _renforge_editor_ancestry_lock_code(class_name), None, None
             # Size-compare against the focused widget (usually the Button), not
             # the named map entry which can resolve to a child Text.
             crop_state = _renforge_editor_crop_state(
@@ -1295,7 +1309,7 @@ init 1100 python:
                 return "UNKNOWN_ANCESTRY_TYPE"
             node_type = str(node.get("type") or "")
             if node_type not in _ALLOWED_ANCESTRY_TYPES:
-                return "UNKNOWN_ANCESTRY_TYPE"
+                return _renforge_editor_ancestry_lock_code(node_type)
             crop_state = str(node.get("crop_state") or "")
             if crop_state not in (
                 "none",
@@ -1512,7 +1526,7 @@ init 1100 python:
         for index, node in enumerate(ancestry_nodes):
             class_name = getattr(getattr(node, "__class__", None), "__name__", "unknown")
             if class_name not in _ALLOWED_ANCESTRY_TYPES:
-                return None, "UNKNOWN_ANCESTRY_TYPE", None
+                return None, _renforge_editor_ancestry_lock_code(class_name), None
             crop_state = _renforge_editor_crop_state(node, focus=None, target=widget)
             if crop_state not in (
                 "none",
