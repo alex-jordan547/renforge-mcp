@@ -882,12 +882,20 @@ class EditorCoordinator:
         if probe is None:
             raise EditorError("RUNTIME_PROBE_UNAVAILABLE", "runtime probe is not attached")
 
-        result = probe.attest(
-            transaction_id=transaction_id,
-            script_generation=script_generation,
-            deadline=_now_deadline(self._attestation_timeout),
-            expected_targets=list(record.expected_targets),
-        )
+        try:
+            result = probe.attest(
+                transaction_id=transaction_id,
+                script_generation=script_generation,
+                deadline=_now_deadline(self._attestation_timeout),
+                expected_targets=list(record.expected_targets),
+            )
+        except EditorError:
+            # A refusal from the bridge arrives as a raised EditorError, not a
+            # falsy reply, so the rollbacks below were unreachable for it. Left
+            # alone, the published bytes stayed in the author's file until the
+            # attestation timer fired seconds later.
+            self._conditional_rollback(record)
+            raise
         if not isinstance(result, dict):
             self._conditional_rollback(record)
             raise EditorError("ATTESTATION_FAILED", "runtime probe returned invalid attestation payload")

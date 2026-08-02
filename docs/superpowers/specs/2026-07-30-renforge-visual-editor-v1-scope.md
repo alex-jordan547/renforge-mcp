@@ -226,10 +226,10 @@ Locked, each with its own reason: nested viewports (`NESTED_VIEWPORT_UNSUPPORTED
 (which wraps the viewport in a `Side`, so `UNKNOWN_ANCESTRY_TYPE`), and layout containers inside a
 viewport (`CONTAINER_POSITION_UNSUPPORTED`, unchanged).
 
-Committing while the viewport is scrolled writes the correct authored value but fails attestation:
-Ren'Py drops the scroll on reload, so the post-reload geometry cannot match a position derived at the
-old scroll. The editor reports `TARGET_POSITION_MISMATCH` rather than accepting what it cannot
-reproduce.
+Committing while the viewport is scrolled fails attestation: Ren'Py drops the scroll on reload, so
+the post-reload geometry cannot match a position derived at the old scroll. The editor reports
+`TARGET_POSITION_MISMATCH` rather than accepting what it cannot reproduce, and restores the file
+before reporting the failure.
 
 Note for anyone touching this path: `preview_position` is screen space and the authored value is
 child space. They coincide only when no ancestor offsets the child, which is why earlier adapters

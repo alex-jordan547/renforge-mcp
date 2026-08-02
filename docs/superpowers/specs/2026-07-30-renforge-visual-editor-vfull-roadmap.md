@@ -172,11 +172,14 @@ green for a target inside a viewport — no viewport term was needed anywhere.
 
 **Known limitation — committing while scrolled.** Ren'Py rebuilds the screen on `reload_script` and
 the viewport adjustment does not survive it (measured: 120 before, 0 after). The host then attests a
-fresh geometry against a position derived at the old scroll and reports `TARGET_POSITION_MISMATCH` /
-"Reload failed". The **source write itself is correct**: the bridge derives the authored value from a
-screen-space delta, and that delta is scroll-independent — a 12 px drag writes exactly `+12`. So the
-file is published with the right value and the failure is a false alarm, not corruption. Restoring
-the scroll before attestation is the fix, and it is not attempted here.
+fresh geometry against a position derived at the old scroll, refuses with `TARGET_POSITION_MISMATCH`,
+and **rolls the file back before reporting "Reload failed"**. Restoring the scroll before attestation
+would turn this refusal into a successful commit; that is not attempted here.
+
+Reaching this path exposed a rollback gap that affected every adapter, not just viewports: the bridge
+signals a refusal by *raising*, so the rollbacks guarding a falsy attestation reply were unreachable
+and the published bytes stayed in the author's file until the attestation timer fired seconds later.
+The rollback now also sits on the exception path.
 
 **Coordinate spaces do not coincide inside a viewport.** `preview_position` is screen space, the
 authored value is child space. Every earlier adapter could compare them directly only because no

@@ -163,8 +163,7 @@ def test_commit_while_scrolled_is_refused_without_touching_source(demo_copy: Pat
     assert report["status_text"] == "Reload failed"
     assert report["save_error"] == "TARGET_POSITION_MISMATCH"
 
-    # But the value it wrote is the correct one: the bridge derives the authored
-    # position from a screen-space delta, and the delta is scroll-independent.
-    # The published source is therefore right even though attestation refused.
-    assert report["source_unchanged"] is False
-    assert report["written_delta"] == {"x": 12, "y": 0}
+    # The author's file is restored before the failure is reported, rather than
+    # left holding published bytes until the attestation timer fires.
+    assert report["source_unchanged"] is True
+    assert report["written_delta"] == {"x": 0, "y": 0}
