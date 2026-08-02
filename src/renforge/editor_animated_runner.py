@@ -10,6 +10,7 @@ from typing import Any
 
 from renforge.editor.paths import atomic_write_file
 from renforge.editor_live_common import wait_bounds
+from renforge.editor_task0_runner import _require_ok
 
 FIXTURE_SCREEN = "renforge_editor_animated_fixture"
 FIXTURE_RESOURCE = (
@@ -53,14 +54,17 @@ def run_editor_animated_live_scenario(client: Any, *, fixture_path: Path) -> dic
     pos_target_initial = wait_bounds(client, "anim_pos_target", fixture_screen=FIXTURE_SCREEN)
     
     # Try previewing position override via _widget_properties seam
-    preview_pos = client.request(
-        "editor_task0_preview",
-        {
-            "screen": FIXTURE_SCREEN,
-            "widget_id": "anim_pos_target",
-            "xpos": 250,
-            "ypos": 100,
-        },
+    preview_pos = _require_ok(
+        client.request(
+            "editor_task0_preview",
+            {
+                "screen": FIXTURE_SCREEN,
+                "widget_id": "anim_pos_target",
+                "xpos": 250,
+                "ypos": 100,
+            },
+        ),
+        "anim_pos_target preview",
     )
 
     # Give a short frame interval to see if ATL animation overwrites xpos override
@@ -81,51 +85,78 @@ def run_editor_animated_live_scenario(client: Any, *, fixture_path: Path) -> dic
     # Variant 2: Non-positional ATL pulse animation target
     style_target_initial = wait_bounds(client, "anim_style_target", fixture_screen=FIXTURE_SCREEN)
     
-    # Send repeated preview requests to observe ATL time/state resets
-    preview_style1 = client.request(
-        "editor_task0_preview",
-        {
-            "screen": FIXTURE_SCREEN,
-            "widget_id": "anim_style_target",
-            "xpos": 420,
-            "ypos": 100,
-        },
+    st_before = client.eval_expr('getattr(renpy.get_widget("renforge_editor_animated_fixture", "anim_style_target"), "st", None)')
+    time.sleep(0.3)
+    st_mid = client.eval_expr('getattr(renpy.get_widget("renforge_editor_animated_fixture", "anim_style_target"), "st", None)')
+
+    # Send preview request to observe ATL time/state resets
+    preview_style1 = _require_ok(
+        client.request(
+            "editor_task0_preview",
+            {
+                "screen": FIXTURE_SCREEN,
+                "widget_id": "anim_style_target",
+                "xpos": 420,
+                "ypos": 100,
+            },
+        ),
+        "anim_style_target preview 1",
     )
+    st_after = client.eval_expr('getattr(renpy.get_widget("renforge_editor_animated_fixture", "anim_style_target"), "st", None)')
+
     time.sleep(0.1)
-    preview_style2 = client.request(
-        "editor_task0_preview",
-        {
-            "screen": FIXTURE_SCREEN,
-            "widget_id": "anim_style_target",
-            "xpos": 440,
-            "ypos": 100,
-        },
+    preview_style2 = _require_ok(
+        client.request(
+            "editor_task0_preview",
+            {
+                "screen": FIXTURE_SCREEN,
+                "widget_id": "anim_style_target",
+                "xpos": 440,
+                "ypos": 100,
+            },
+        ),
+        "anim_style_target preview 2",
     )
 
     style_target_during_preview = wait_bounds(client, "anim_style_target", fixture_screen=FIXTURE_SCREEN)
+
+    # Derive atl_time_reset dynamically from sampled show time (st) reset or displayable re-instantiation
+    atl_time_reset = (
+        (isinstance(st_mid, (int, float)) and isinstance(st_after, (int, float)) and st_after < st_mid)
+        or st_before is None
+        or st_after is None
+    )
 
     report["variants"]["anim_style_target"] = {
         "initial_bounds": style_target_initial,
         "requested_previews": [{"xpos": 420, "ypos": 100}, {"xpos": 440, "ypos": 100}],
         "observed_preview_bounds": style_target_during_preview,
-        "atl_time_reset": True,  # Rebuilding displayable via _widget_properties resets ATL transform state
+        "sampled_st": {"before": st_before, "mid": st_mid, "after": st_after},
+        "atl_time_reset": atl_time_reset,
     }
 
     # Variant 3: Stationary Transform wrapper target
     static_target_initial = wait_bounds(client, "anim_static_transform", fixture_screen=FIXTURE_SCREEN)
 
     # Test patch and reload on static transform target
+    assert "xpos 100 ypos 300" in source, "Fixture format changed; expected static transform coordinates not found"
     patched_source = source.replace("xpos 100 ypos 300", "xpos 120 ypos 300")
     if patched_source == source:
         raise AssertionError("source patch did not modify target string")
 
     try:
         atomic_write_file(fixture_path, patched_source)
-        save_reply = client.request("editor_task0_save", {"screen": FIXTURE_SCREEN})
+        save_reply = _require_ok(
+            client.request("editor_task0_save", {"screen": FIXTURE_SCREEN}),
+            "anim_static_transform save",
+        )
         time.sleep(0.3)
 
         static_target_post_reload = wait_bounds(client, "anim_static_transform", fixture_screen=FIXTURE_SCREEN)
-        select_reply = client.request("editor_task0_select", {"x": 130, "y": 320})
+        select_reply = _require_ok(
+            client.request("editor_task0_select", {"x": 130, "y": 320}),
+            "anim_static_transform select",
+        )
 
         report["variants"]["anim_static_transform"] = {
             "initial_bounds": static_target_initial,
