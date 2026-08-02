@@ -341,7 +341,11 @@ def _run_manual_rotate_roundtrip(fixture_path: Path) -> dict[str, Any]:
 
     patched_text, patch_start, patch_end = _patch_rotate_literal(before_text, patched_value)
     patched_bytes = patched_text.encode("utf-8")
-    outside_equal = before[:patch_start] == patched_bytes[:patch_start] and before[patch_end:] == patched_bytes[patch_end:]
+    patched_end = patch_start + len(str(patched_value).encode("utf-8"))
+    outside_equal = (
+        before[:patch_start] == patched_bytes[:patch_start]
+        and before[patch_end:] == patched_bytes[patched_end:]
+    )
     patch_sha = hashlib.sha256(patched_bytes).hexdigest()
 
     fixture_path.write_bytes(patched_bytes)
@@ -356,7 +360,8 @@ def _run_manual_rotate_roundtrip(fixture_path: Path) -> dict[str, Any]:
         "outside_bytes_equal": outside_equal,
         "patch": {
             "start": patch_start,
-            "end": patch_end,
+            "original_end": patch_end,
+            "patched_end": patched_end,
         },
         "patched_sha256": patch_sha,
         "restored_sha256": hashlib.sha256(restored).hexdigest(),

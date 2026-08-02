@@ -75,7 +75,7 @@ Full suite:
 PYTHONPATH=src python -m pytest -q
 ```
 
-Result: `631 passed, 43 skipped`.
+Result: `632 passed, 43 skipped`.
 
 ## Decision
 
