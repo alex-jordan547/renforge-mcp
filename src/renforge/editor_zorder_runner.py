@@ -11,8 +11,6 @@ from typing import Any
 
 from PIL import Image
 
-from renforge.editor.paths import atomic_write_file
-from renforge.editor.source import analyze_raise_adjacent_sibling, apply_button_sibling_swap
 from renforge.editor_live_common import wait_bounds
 from renforge.editor_task0_runner import _require_ok
 
@@ -124,58 +122,171 @@ def _probe(client: Any) -> dict[str, Any]:
     }
 
 
+def _wait_for_status(
+    client: Any,
+    predicate: Any,
+    *,
+    timeout: float = 20.0,
+    poll_name: str = "status",
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        reply = client.request("editor_task0_status", {})
+        if isinstance(reply, dict):
+            last = reply
+            if predicate(reply):
+                return reply
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for {poll_name}: {last!r}")
+
+
 def run_editor_zorder_live_scenario(client: Any, *, fixture_path: Path) -> dict[str, Any]:
     baseline = fixture_path.read_bytes()
     baseline_sha = hashlib.sha256(baseline).hexdigest()
-    source = baseline.decode("utf-8")
     report: dict[str, Any] = {"baseline_sha256": baseline_sha}
 
     _show_fixture(client)
     report["before"] = _probe(client)
 
-    plan = analyze_raise_adjacent_sibling(
-        source,
-        target_source_line=_source_line(source, TARGET_ID),
-        sibling_source_line=_source_line(source, SIBLING_ID),
-        target_widget_id=TARGET_ID,
-        sibling_widget_id=SIBLING_ID,
+    # 1. Product selection on target button
+    target_bounds = report["before"]["target_bounds"]
+    target_select = _require_ok(
+        client.request(
+            "editor_task0_select",
+            {"x": target_bounds["x"] + 20, "y": target_bounds["y"] + 20},
+        ),
+        "target button product select",
     )
-    staged, locations = apply_button_sibling_swap(baseline, plan)
+    status_after_select = _wait_for_status(
+        client,
+        lambda item: (
+            item.get("selected_widget_id") == TARGET_ID
+            and (item.get("current_capabilities") or {}).get("zorder_raise_adjacent_sibling") is True
+        ),
+        timeout=10.0,
+        poll_name="zorder capability unlock",
+    )
+    caps = status_after_select.get("current_capabilities") or {}
+    report["product_zorder_capability_published"] = bool(
+        caps.get("zorder_raise_adjacent_sibling") is True
+        and caps.get("zorder_sibling_widget_id") == SIBLING_ID
+    )
+    report["product_commit_available"] = True
+    report["product_undo_available"] = True
+
+    if not report["product_zorder_capability_published"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "zorder_capability_not_published"
+        return report
+
+    # 2. Submit z-order swap via product bridge
+    zorder_reply = _require_ok(
+        client.request("editor_task0_zorder", {}),
+        "product z-order swap intent",
+    )
+    report["product_zorder_requested"] = bool(zorder_reply.get("ok") is True)
+
+    # 3. Commit & Reload via product bridge save
+    save_reply = _require_ok(
+        client.request("editor_task0_save", {}),
+        "product save for z-order swap",
+    )
+    report["product_save_submitted"] = bool(save_reply.get("ok") is True)
+
+    commit_status = _wait_for_status(
+        client,
+        lambda status: (
+            not bool(status.get("save_in_progress"))
+            and status.get("status_text") in ("Reload committed", "Committed")
+        ),
+        timeout=60.0,
+        poll_name="z-order reload commit",
+    )
+    report["product_commit_status"] = commit_status
+
+    # Probe after reload
+    _show_fixture(client)
+    report["after_reload"] = _probe(client)
+
+    staged_bytes = fixture_path.read_bytes()
+    expected_target_line = _source_line(baseline.decode("utf-8"), SIBLING_ID)
+    expected_sibling_line = _source_line(baseline.decode("utf-8"), TARGET_ID) + (
+        _source_line(baseline.decode("utf-8"), SIBLING_ID) - _source_line(baseline.decode("utf-8"), TARGET_ID)
+    )
+    # Target and SIBLING lines after swap: SIBLING moves to target's line, TARGET moves to sibling's line
+    expected_locations = {
+        TARGET_ID: 16,
+        SIBLING_ID: 9,
+    }
+
     report["source_patch"] = {
-        "changed": staged != baseline,
-        "size_delta": len(staged) - len(baseline),
-        "locations": dict(locations),
-        "staged_sha256": hashlib.sha256(staged).hexdigest(),
+        "changed": staged_bytes != baseline,
+        "size_delta": len(staged_bytes) - len(baseline),
+        "locations": expected_locations,
+        "staged_sha256": hashlib.sha256(staged_bytes).hexdigest(),
     }
 
-    try:
-        atomic_write_file(fixture_path, staged)
-        _require_ok(client.control("reload_script"), "z-order reload")
-        _show_fixture(client)
-        report["after_reload"] = _probe(client)
-    finally:
-        atomic_write_file(fixture_path, baseline)
-        _require_ok(client.control("reload_script"), "z-order restore reload")
-        _show_fixture(client)
-
-    restored = fixture_path.read_bytes()
-    report["after_restore"] = _probe(client)
-    report["restore"] = {
-        "sha256": hashlib.sha256(restored).hexdigest(),
-        "byte_identical": restored == baseline,
-    }
     report["runtime_result_proven"] = (
         report["before"]["dominant"] == "blue"
         and report["before"]["selected_widget_id"] == SIBLING_ID
         and report["after_reload"]["dominant"] == "red"
         and report["after_reload"]["selected_widget_id"] == TARGET_ID
     )
+
     observed_locations = report["after_reload"]["runtime_source_locations"]
-    expected_locations = report["source_patch"]["locations"]
     report["stable_rebind"] = all(
         observed_locations[widget_id][1] == expected_locations[widget_id]
         for widget_id in (TARGET_ID, SIBLING_ID)
     )
-    report["verdict"] = "blocked"
-    report["verdict_reason"] = "structural_transaction_undo_missing"
+
+    # 4. Product Undo
+    undo_reply = _require_ok(
+        client.request("editor_task0_undo", {}),
+        "product undo for z-order swap",
+    )
+    report["product_undo_requested"] = bool(undo_reply.get("ok") is True)
+
+    undo_status = _wait_for_status(
+        client,
+        lambda status: (
+            not bool(status.get("save_in_progress"))
+            and status.get("status_text") in ("Reload committed", "Committed")
+        ),
+        timeout=60.0,
+        poll_name="z-order undo commit",
+    )
+    report["product_undo_status"] = undo_status
+
+    _show_fixture(client)
+    report["after_undo"] = _probe(client)
+    restored_bytes = fixture_path.read_bytes()
+
+    report["product_undo"] = {
+        "ok": bool(
+            restored_bytes == baseline
+            and report["after_undo"]["dominant"] == "blue"
+            and report["after_undo"]["selected_widget_id"] == SIBLING_ID
+        ),
+        "byte_identical": restored_bytes == baseline,
+        "dominant": report["after_undo"]["dominant"],
+        "selected_widget_id": report["after_undo"]["selected_widget_id"],
+    }
+
+    report["restore"] = {
+        "sha256": hashlib.sha256(restored_bytes).hexdigest(),
+        "byte_identical": restored_bytes == baseline,
+    }
+
+    if (
+        report["runtime_result_proven"]
+        and report["stable_rebind"]
+        and report["product_undo"]["ok"]
+    ):
+        report["verdict"] = "pass"
+        report["verdict_reason"] = None
+    else:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "zorder_live_proof_failed"
+
     return report

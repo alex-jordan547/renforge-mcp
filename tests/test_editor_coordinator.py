@@ -2666,3 +2666,253 @@ def test_text_style_color_refused_attestation_restores_original_bytes(tmp_path: 
             assert status["result"]["state"] == "rolled_back"
     finally:
         coordinator.close()
+
+
+def test_zorder_structural_swap_commit_and_undo(tmp_path: Path) -> None:
+    root = tmp_path / "project_zorder"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    baseline = (
+        "screen zorder_test():\n"
+        '    button id "zorder_target" xpos 220 ypos 220 xsize 180 ysize 100:\n'
+        "        action NullAction()\n"
+        '    button id "zorder_sibling" xpos 220 ypos 220 xsize 180 ysize 100:\n'
+        "        action NullAction()\n"
+    )
+    source.write_text(baseline, encoding="utf-8")
+    baseline_bytes = source.read_bytes()
+    baseline_sha = hashlib.sha256(baseline_bytes).hexdigest()
+
+    target_obs = {
+        "rect": [220, 220, 180, 100],
+        "script_generation": 10,
+        "frame_id": "frame-target-1",
+        "measurement_method": "focus_list",
+        "runtime_key": {
+            "displayable_name": "button",
+            "screen": "zorder_test",
+            "invocation_path": "zorder_test",
+            "widget_id": "zorder_target",
+            "source_location": ["game/script.rpy", 2],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["game/script.rpy", 1],
+                    "screen_owner": "zorder_test",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Button",
+                    "source_location": ["game/script.rpy", 2],
+                    "screen_owner": "zorder_test",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+    }
+
+    probe = _Probe(
+        observe_reply={
+            **target_obs,
+            "frame_id": "frame-target-ind",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, target_obs, request_id="an-zorder")
+            assert analyzed["ok"] is True
+            res = analyzed["result"]
+            assert res["lock_reason"] is None
+            caps = res["capabilities"]
+            assert caps["zorder_raise_adjacent_sibling"] is True
+            assert caps["zorder_sibling_widget_id"] == "zorder_sibling"
+            assert caps["zorder_sibling_line"] == 4
+
+            # Submit structural swap intent
+            committed = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": res["analysis_id"],
+                            "source_key": res["source_key"],
+                            "operation": "raise_adjacent_sibling",
+                            "sibling_widget_id": "zorder_sibling",
+                            "sibling_line": 4,
+                        }
+                    ],
+                },
+                request_id="co-zorder",
+            )
+            assert committed["ok"] is True
+            tx_id = committed["result"]["transaction_id"]
+
+            handshake = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": tx_id, "script_generation": 11},
+                request_id="hs-zorder",
+            )
+            assert handshake["ok"] is True
+            assert handshake["result"]["state"] == "committed"
+
+            swapped_bytes = source.read_bytes()
+            assert swapped_bytes != baseline_bytes
+            swapped_text = swapped_bytes.decode("utf-8")
+            assert swapped_text.index("zorder_sibling") < swapped_text.index("zorder_target")
+
+            # Perform undo
+            undone = _send_editor_command(
+                sock,
+                auth,
+                command="undo_commit",
+                payload={"session_id": auth["session_id"], "transaction_id": tx_id},
+                request_id="un-zorder",
+            )
+            assert undone["ok"] is True
+            undo_tx_id = undone["result"]["transaction_id"]
+
+            undo_handshake = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": undo_tx_id, "script_generation": 12},
+                request_id="hs-zorder-undo",
+            )
+            assert undo_handshake["ok"] is True
+            assert undo_handshake["result"]["state"] == "committed"
+
+            restored_bytes = source.read_bytes()
+            assert restored_bytes == baseline_bytes
+            assert hashlib.sha256(restored_bytes).hexdigest() == baseline_sha
+    finally:
+        coordinator.close()
+
+
+def test_zorder_structural_swap_rejections(tmp_path: Path) -> None:
+    root = tmp_path / "project_zorder_rej"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    baseline = (
+        "screen zorder_test():\n"
+        '    button id "zorder_target" xpos 220 ypos 220 xsize 180 ysize 100:\n'
+        "        action NullAction()\n"
+        '    button id "zorder_sibling" xpos 220 ypos 220 xsize 180 ysize 100:\n'
+        "        action NullAction()\n"
+    )
+    source.write_text(baseline, encoding="utf-8")
+
+    target_obs = {
+        "rect": [220, 220, 180, 100],
+        "script_generation": 10,
+        "frame_id": "frame-target-1",
+        "measurement_method": "focus_list",
+        "runtime_key": {
+            "displayable_name": "button",
+            "screen": "zorder_test",
+            "invocation_path": "zorder_test",
+            "widget_id": "zorder_target",
+            "source_location": ["game/script.rpy", 2],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["game/script.rpy", 1],
+                    "screen_owner": "zorder_test",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Button",
+                    "source_location": ["game/script.rpy", 2],
+                    "screen_owner": "zorder_test",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+    }
+
+    probe = _Probe(
+        observe_reply={
+            **target_obs,
+            "frame_id": "frame-target-ind",
+        },
+        attest_reply={"ok": True, "state": "all_targets_attested"},
+    )
+
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, target_obs, request_id="an-zorder-rej")
+            res = analyzed["result"]
+
+            # 1. Combining structural swap with position fields
+            comb_res = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": res["analysis_id"],
+                            "source_key": res["source_key"],
+                            "operation": "raise_adjacent_sibling",
+                            "sibling_widget_id": "zorder_sibling",
+                            "sibling_line": 4,
+                            "x": 230,
+                            "y": 230,
+                        }
+                    ],
+                },
+                request_id="co-comb-rej",
+            )
+            assert comb_res["ok"] is False
+            assert comb_res["error"]["code"] == "STRUCTURAL_INTENT_COMBINATION_REJECTED"
+
+            # 2. Invalid non-adjacent sibling line
+            non_adj_res = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": res["analysis_id"],
+                            "source_key": res["source_key"],
+                            "operation": "raise_adjacent_sibling",
+                            "sibling_widget_id": "zorder_sibling",
+                            "sibling_line": 999,
+                        }
+                    ],
+                },
+                request_id="co-nonadj-rej",
+            )
+            assert non_adj_res["ok"] is False
+            assert non_adj_res["error"]["code"] in ("BUTTON_SIBLING_ORDER_INVALID", "SOURCE_LINE_INVALID", "BUTTON_BLOCK_REQUIRED", "TARGET_NOT_BUTTON")
+    finally:
+        coordinator.close()
