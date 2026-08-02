@@ -1015,7 +1015,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         state.targets[target_key] = {
             "analysis_id": "analysis-drag-target",
             "source_key": {"relative_path": "screens.rpy", "line": 12},
-            "capabilities": {"move": True},
+            "capabilities": {"move": True, "resize": False},
             "screen": screen_name,
             "widget_id": "drag_target",
             "runtime_baseline": list(baseline),
@@ -1028,7 +1028,7 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
         )
         assert analyzed["ok"] is True
         assert state.preview_position == baseline
-        assert state.current_capabilities == {"move": True}
+        assert state.current_capabilities == {"move": True, "resize": False}
 
         down = pygame.event.Event(
             pygame.MOUSEBUTTONDOWN,
@@ -2431,6 +2431,71 @@ def test_editor_allowed_ancestry_accepts_bar_and_rejects_unknown_and_side(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_reselect_resize_and_reset_use_the_selected_target_size(running_bridge):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(width=width, height=height)
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    state = globs["_renforge_editor_state"]()
+    state.active = True
+    state.preview_size = [300, 40]  # stale size from a previously selected target
+    runtime_key = {"screen": "size_screen", "widget_id": "first_bar"}
+    candidate = {"rect": [10, 20, 100, 20], "runtime_key": runtime_key}
+    target_key = "first-bar-target"
+    globs["_renforge_editor_target_key"] = lambda _runtime_key: target_key
+    state.targets[target_key] = {
+        "analysis_id": "analysis-first-bar",
+        "source_key": {
+            "relative_path": "screens.rpy",
+            "line": 12,
+            "size_mode": globs["_BAR_SIZE_MODE_XSIZE_YSIZE"],
+        },
+        "capabilities": {"move": True, "resize": True},
+        "screen": "size_screen",
+        "widget_id": "first_bar",
+        "runtime_baseline": [10, 20],
+        "source_position": [10, 20],
+        "position": [10, 20],
+        "runtime_size": [100, 20],
+        "source_size": [100, 20],
+        "size": [100, 20],
+        "dirty": False,
+    }
+    globs["_renforge_editor_focus_candidates"] = lambda: [candidate]
+    globs["_renforge_editor_validate_runtime_key"] = lambda _key: None
+    globs["_renforge_editor_observation_for_candidate"] = lambda _candidate: (
+        {"runtime_key": runtime_key},
+        None,
+    )
+    globs["_renforge_editor_show_target_overrides"] = lambda _screen: None
+    globs["_renforge_editor_set_label"] = lambda _x, _y: None
+    running_bridge.renpy.restart_interaction = lambda: None
+
+    selected = globs["_renforge_editor_select"](15, 25)
+    assert selected["ok"] is True
+    assert state.preview_size == [100, 20]
+    assert state.selected_original_size == [100, 20]
+    assert state.selected_rect == [10, 20, 100, 20]
+
+    resized = globs["_renforge_editor_resize"](10, 2)
+    assert resized == {"ok": True, "w": 110, "h": 22}
+    assert state.targets[target_key]["size"] == [110, 22]
+
+    reset = globs["_renforge_editor_reset_selected"]()
+    assert reset["ok"] is True
+    assert state.targets[target_key]["size"] == [100, 20]
+    assert state.targets[target_key]["dirty"] is False
+    assert state.history_entries[-1]["kind"] == "reset"
+
+    undone = globs["_renforge_editor_undo"]()
+    assert undone["ok"] is True
+    assert state.targets[target_key]["size"] == [110, 22]
+
+
 def test_editor_status_exposes_current_host_capabilities(
     running_bridge,
     monkeypatch,
@@ -2451,10 +2516,10 @@ def test_editor_status_exposes_current_host_capabilities(
     try:
         state = globs["_renforge_editor_state"]()
         state.current_analysis_id = "analysis-vbar"
-        state.current_capabilities = {"move": True}
+        state.current_capabilities = {"move": True, "resize": False}
 
         status = globs["_renforge_editor_h_status"]({})
-        assert status["current_capabilities"] == {"move": True}
+        assert status["current_capabilities"] == {"move": True, "resize": False}
 
         state.current_analysis_id = None
         assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
@@ -2483,7 +2548,7 @@ def test_editor_locked_selection_clears_current_host_capabilities(
         state = globs["_renforge_editor_state"]()
         state.current_analysis_id = "analysis-editable"
         state.current_source_key = {"relative_path": "screens.rpy", "line": 12}
-        state.current_capabilities = {"move": True}
+        state.current_capabilities = {"move": True, "resize": False}
         globs["_renforge_editor_focus_candidates"] = lambda: [
             {
                 "rect": [0, 0, 20, 20],

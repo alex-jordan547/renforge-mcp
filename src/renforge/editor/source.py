@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, TypedDict
 
 
 class EditorSourceError(ValueError):
@@ -19,6 +19,17 @@ DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
 # Modes whose editor original_position is the measured focus_list top-left and whose
 # write-back is authored + (runtime − baseline). Preview uses absolute xpos/ypos.
 RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
+BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
+
+
+class _BarSizeModel(TypedDict):
+    xsize: int | None
+    ysize: int | None
+    xsize_span: tuple[int, int] | None
+    ysize_span: tuple[int, int] | None
+    size_mode: str | None
+    resize_lock_code: str | None
+    resize_lock_message: str | None
 
 
 def uses_runtime_delta_position(mode: str | None) -> bool:
@@ -163,7 +174,15 @@ class BarStatement:
     ypos: int
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
-
+    # Optional authored size model (issue #47). Only pure integer xsize+ysize
+    # unlocks resize; every other form leaves these None and sets resize_lock.
+    xsize: int | None = None
+    ysize: int | None = None
+    xsize_span: tuple[int, int] | None = None
+    ysize_span: tuple[int, int] | None = None
+    size_mode: str | None = None
+    resize_lock_code: str | None = None
+    resize_lock_message: str | None = None
 
 @dataclass(frozen=True)
 class VbarStatement:
@@ -1089,6 +1108,7 @@ _BAR_POSITION_FOLLOWER_WORDS = frozenset(
         "style",
         "xsize",
         "ysize",
+        "xysize",
         "xmaximum",
         "ymaximum",
         "xminimum",
@@ -1248,13 +1268,168 @@ def _analyze_bar_like_statement(
     )
 
 
+def _bar_resize_lock(code: str, message: str) -> tuple[str, str]:
+    return code, message
+
+
+_BAR_SIZE_CONSTRAINT_WORDS = frozenset(
+    {
+        "xmaximum",
+        "ymaximum",
+        "xminimum",
+        "yminimum",
+        "xfill",
+        "yfill",
+    }
+)
+
+
+def _analyze_bar_size_model(line: str) -> _BarSizeModel:
+    """Return bar size fields for issue #47 without affecting move unlock.
+
+    Unlocked form: pure integer ``xsize`` + pure integer ``ysize``, both > 0,
+    with no ``xysize`` and no size-constraint keywords on the same statement.
+    """
+    statement_text = _statement_text(line)
+    tokens = _lex_single_line(statement_text)
+    has_xysize = any(
+        token.depth == 0 and token.kind == "WORD" and token.text == "xysize" for token in tokens
+    )
+    constraint_hits = sorted(
+        {
+            token.text
+            for token in tokens
+            if token.depth == 0
+            and token.kind == "WORD"
+            and token.text in _BAR_SIZE_CONSTRAINT_WORDS
+        }
+    )
+    keyword_counts = {"xsize": 0, "ysize": 0}
+    values: dict[str, int] = {}
+    spans: dict[str, tuple[int, int]] = {}
+    invalid_literals: set[str] = set()
+
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text not in keyword_counts:
+            continue
+        keyword = token.text
+        keyword_counts[keyword] += 1
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None:
+            invalid_literals.add(keyword)
+            continue
+        value_token = tokens[value_index]
+        if value_token.kind != "NUMBER":
+            invalid_literals.add(keyword)
+            continue
+        following_index = _next_top_level_index(tokens, value_index)
+        if following_index is not None:
+            following = tokens[following_index]
+            if following.kind != "WORD" or following.text not in _BAR_POSITION_FOLLOWER_WORDS:
+                invalid_literals.add(keyword)
+                continue
+        values[keyword] = int(value_token.text)
+        spans[keyword] = (value_token.start, value_token.end)
+
+    empty: _BarSizeModel = {
+        "xsize": None,
+        "ysize": None,
+        "xsize_span": None,
+        "ysize_span": None,
+        "size_mode": None,
+        "resize_lock_code": None,
+        "resize_lock_message": None,
+    }
+
+    if has_xysize:
+        code, message = _bar_resize_lock(
+            "BAR_XYSIZE_UNSUPPORTED",
+            "bar xysize form is not writable; author separate xsize/ysize literals",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if constraint_hits:
+        code, message = _bar_resize_lock(
+            "BAR_SIZE_CONSTRAINT_UNSUPPORTED",
+            "bar size constraints are not writable: " + ", ".join(constraint_hits),
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+
+    if keyword_counts["xsize"] == 0 and keyword_counts["ysize"] == 0:
+        code, message = _bar_resize_lock(
+            "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+            "bar size is not directly authored as literal xsize/ysize",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if keyword_counts["xsize"] == 0 or keyword_counts["ysize"] == 0:
+        code, message = _bar_resize_lock(
+            "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+            "bar size requires both literal xsize and ysize",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if keyword_counts["xsize"] != 1:
+        code, message = _bar_resize_lock(
+            "XSIZE_DUPLICATE",
+            "bar statement must contain exactly one xsize",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if keyword_counts["ysize"] != 1:
+        code, message = _bar_resize_lock(
+            "YSIZE_DUPLICATE",
+            "bar statement must contain exactly one ysize",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if "xsize" in invalid_literals or "xsize" not in values or "xsize" not in spans:
+        code, message = _bar_resize_lock(
+            "XSIZE_LITERAL_REQUIRED",
+            "xsize must be a pure integer literal",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if "ysize" in invalid_literals or "ysize" not in values or "ysize" not in spans:
+        code, message = _bar_resize_lock(
+            "YSIZE_LITERAL_REQUIRED",
+            "ysize must be a pure integer literal",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+    if values["xsize"] <= 0 or values["ysize"] <= 0:
+        code, message = _bar_resize_lock(
+            "BAR_SIZE_NON_POSITIVE",
+            "bar xsize and ysize must be positive integers",
+        )
+        return {**empty, "resize_lock_code": code, "resize_lock_message": message}
+
+    return {
+        "xsize": values["xsize"],
+        "ysize": values["ysize"],
+        "xsize_span": spans["xsize"],
+        "ysize_span": spans["ysize"],
+        "size_mode": BAR_SIZE_MODE_XSIZE_YSIZE,
+        "resize_lock_code": None,
+        "resize_lock_message": None,
+    }
+
+
 def analyze_bar_statement(line: str, *, expected_widget_id: str) -> BarStatement:
-    return _analyze_bar_like_statement(
+    base = _analyze_bar_like_statement(
         line,
         expected_widget_id=expected_widget_id,
         expected_source_kind="bar",
         statement_cls=BarStatement,
         human_kind="bar",
+    )
+    size = _analyze_bar_size_model(line)
+    return BarStatement(
+        widget_id=base.widget_id,
+        xpos=base.xpos,
+        ypos=base.ypos,
+        xpos_span=base.xpos_span,
+        ypos_span=base.ypos_span,
+        xsize=size["xsize"],
+        ysize=size["ysize"],
+        xsize_span=size["xsize_span"],
+        ysize_span=size["ysize_span"],
+        size_mode=size["size_mode"],
+        resize_lock_code=size["resize_lock_code"],
+        resize_lock_message=size["resize_lock_message"],
     )
 
 
@@ -1327,19 +1502,32 @@ def analyze_slider_statement(line: str, *, expected_widget_id: str) -> SliderSta
 def _apply_integer_span_patch(
     source_bytes: bytes,
     *,
-    xpos_span: tuple[int, int],
-    ypos_span: tuple[int, int],
-    x: int,
-    y: int,
+    replacements: list[tuple[tuple[int, int], int]] | None = None,
+    xpos_span: tuple[int, int] | None = None,
+    ypos_span: tuple[int, int] | None = None,
+    x: int | None = None,
+    y: int | None = None,
 ) -> bytes:
+    """Replace one or more integer spans. Spans are absolute in ``source_bytes``."""
+    items: list[tuple[tuple[int, int], int]] = list(replacements or [])
+    if xpos_span is not None:
+        if x is None:
+            raise EditorSourceError("XPOS_LITERAL_REQUIRED", "xpos patch value is required")
+        items.append((xpos_span, int(x)))
+    if ypos_span is not None:
+        if y is None:
+            raise EditorSourceError("YPOS_LITERAL_REQUIRED", "ypos patch value is required")
+        items.append((ypos_span, int(y)))
+    if not items:
+        return source_bytes
     source_text = source_bytes.decode("utf-8")
-    replacements = [
-        (xpos_span[0], xpos_span[1], str(int(x))),
-        (ypos_span[0], ypos_span[1], str(int(y))),
-    ]
-    replacements.sort(key=lambda item: item[0], reverse=True)
+    ordered = sorted(
+        ((span[0], span[1], str(int(value))) for span, value in items),
+        key=lambda item: item[0],
+        reverse=True,
+    )
     patched = source_text
-    for start, end, replacement in replacements:
+    for start, end, replacement in ordered:
         patched = f"{patched[:start]}{replacement}{patched[end:]}"
     return patched.encode("utf-8")
 
@@ -1443,14 +1631,44 @@ def apply_imagebutton_patch(
     )
 
 
-def apply_bar_patch(source_bytes: bytes, statement: BarStatement, *, x: int, y: int) -> bytes:
-    return _apply_integer_span_patch(
-        source_bytes,
-        xpos_span=statement.xpos_span,
-        ypos_span=statement.ypos_span,
-        x=x,
-        y=y,
-    )
+def apply_bar_patch(
+    source_bytes: bytes,
+    statement: BarStatement,
+    *,
+    x: int,
+    y: int,
+    width: int | None = None,
+    height: int | None = None,
+) -> bytes:
+    replacements: list[tuple[tuple[int, int], int]] = [
+        (statement.xpos_span, int(x)),
+        (statement.ypos_span, int(y)),
+    ]
+    if width is not None or height is not None:
+        if (
+            statement.size_mode != BAR_SIZE_MODE_XSIZE_YSIZE
+            or statement.xsize_span is None
+            or statement.ysize_span is None
+            or statement.xsize is None
+            or statement.ysize is None
+        ):
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "bar size patch requires unlocked xsize/ysize literals",
+            )
+        if width is None or height is None:
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "bar size patch requires both width and height",
+            )
+        if int(width) <= 0 or int(height) <= 0:
+            raise EditorSourceError(
+                "BAR_SIZE_NON_POSITIVE",
+                "bar xsize and ysize must be positive integers",
+            )
+        replacements.append((statement.xsize_span, int(width)))
+        replacements.append((statement.ysize_span, int(height)))
+    return _apply_integer_span_patch(source_bytes, replacements=replacements)
 
 
 def apply_vbar_patch(source_bytes: bytes, statement: VbarStatement, *, x: int, y: int) -> bytes:
@@ -1517,26 +1735,55 @@ def apply_editable_statement_patch(
     *,
     x: int,
     y: int,
+    width: int | None = None,
+    height: int | None = None,
 ) -> bytes:
     if kind == "textbutton":
         if not isinstance(statement, TextbuttonStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match textbutton kind")
+        if width is not None or height is not None:
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "resize is only supported for bar xsize/ysize",
+            )
         return apply_textbutton_patch(source_bytes, statement, x=x, y=y)
     if kind == "imagebutton":
         if not isinstance(statement, ImagebuttonStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match imagebutton kind")
+        if width is not None or height is not None:
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "resize is only supported for bar xsize/ysize",
+            )
         return apply_imagebutton_patch(source_bytes, statement, x=x, y=y)
     if kind == "bar":
         if not isinstance(statement, BarStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match bar kind")
-        return apply_bar_patch(source_bytes, statement, x=x, y=y)
+        return apply_bar_patch(
+            source_bytes,
+            statement,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+        )
     if kind == "vbar":
         if not isinstance(statement, VbarStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match vbar kind")
+        if width is not None or height is not None:
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "resize is only supported for bar xsize/ysize",
+            )
         return apply_vbar_patch(source_bytes, statement, x=x, y=y)
     if kind == "slider":
         if not isinstance(statement, SliderStatement):
             raise EditorSourceError("STATEMENT_KIND_MISMATCH", "statement does not match slider kind")
+        if width is not None or height is not None:
+            raise EditorSourceError(
+                "BAR_SIZE_NOT_DIRECTLY_AUTHORED",
+                "resize is only supported for bar xsize/ysize",
+            )
         return apply_slider_patch(source_bytes, statement, x=x, y=y)
     raise EditorSourceError("STATEMENT_KIND_MISMATCH", f"unsupported statement kind: {kind!r}")
 

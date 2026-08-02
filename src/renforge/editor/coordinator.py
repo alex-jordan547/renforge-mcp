@@ -30,7 +30,9 @@ from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
 from .source import (
+    BAR_SIZE_MODE_XSIZE_YSIZE,
     DEFAULT_ALIGN_PARENT_SIZE,
+    BarStatement,
     EditorSourceError,
     align_geometry_matches_parent,
     analyze_button_statement,
@@ -72,6 +74,8 @@ class _AnalysisRecord:
     generation: int
     lock_reason: dict[str, Any] | None
     independent_frame_id: str
+    original_size: list[int] | None = None
+    runtime_size: list[int] | None = None
 
 
 @dataclass
@@ -515,6 +519,8 @@ class EditorCoordinator:
         source_key: dict[str, Any] | None = None
         runtime_position = self._extract_position(independent)
         original_position = list(runtime_position)
+        runtime_size: list[int] | None = self._extract_size(independent)
+        original_size: list[int] | None = None
 
         try:
             source_location = runtime_key.get("source_location")
@@ -601,6 +607,23 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
+            # Issue #47: bar-only resize capability from pure xsize/ysize.
+            if statement_kind == "bar" and isinstance(statement, BarStatement):
+                if (
+                    statement.size_mode == BAR_SIZE_MODE_XSIZE_YSIZE
+                    and statement.xsize is not None
+                    and statement.ysize is not None
+                ):
+                    original_size = [int(statement.xsize), int(statement.ysize)]
+                    source_key["size_mode"] = BAR_SIZE_MODE_XSIZE_YSIZE
+                    source_key["authored_size"] = list(original_size)
+                else:
+                    source_key["size_mode"] = None
+                    if statement.resize_lock_code is not None:
+                        source_key["resize_lock_reason"] = self._lock_reason(
+                            statement.resize_lock_code,
+                            statement.resize_lock_message or statement.resize_lock_code,
+                        )
             if uses_runtime_delta_position(position_mode):
                 # Shared authored + measured baseline fields for delta write-back.
                 authored = (
@@ -696,6 +719,14 @@ class EditorCoordinator:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
 
         analysis_id = uuid.uuid4().hex
+        can_move = lock_reason is None
+        can_resize = (
+            can_move
+            and original_size is not None
+            and runtime_size is not None
+            and isinstance(source_key, dict)
+            and source_key.get("size_mode") == BAR_SIZE_MODE_XSIZE_YSIZE
+        )
         record = _AnalysisRecord(
             analysis_id=analysis_id,
             session_id=self._session_id,
@@ -706,6 +737,8 @@ class EditorCoordinator:
             generation=generation,
             lock_reason=lock_reason,
             independent_frame_id=str(independent.get("frame_id", "")),
+            original_size=list(original_size) if original_size is not None else None,
+            runtime_size=list(runtime_size) if runtime_size is not None else None,
         )
         with self._lock:
             self._analyses[analysis_id] = record
@@ -714,7 +747,8 @@ class EditorCoordinator:
             "analysis_id": analysis_id,
             "source_key": source_key,
             "original_position": original_position,
-            "capabilities": {"move": lock_reason is None},
+            "original_size": list(original_size) if original_size is not None else None,
+            "capabilities": {"move": can_move, "resize": can_resize},
             "lock_reason": lock_reason,
         }
 
@@ -733,7 +767,7 @@ class EditorCoordinator:
             raise EditorError("RUNTIME_PROBE_UNAVAILABLE", "runtime probe is not attached")
 
         seen_analysis_ids: set[str] = set()
-        selected_records: list[tuple[_AnalysisRecord, int, int, dict[str, Any]]] = []
+        selected_records: list[tuple[_AnalysisRecord, int, int, int | None, int | None, dict[str, Any]]] = []
         source_paths: set[str] = set()
         with self._lock:
             generation = self._script_generation
@@ -754,6 +788,13 @@ class EditorCoordinator:
             y = intent.get("y")
             if not isinstance(x, int) or not isinstance(y, int):
                 raise EditorError("INTENT_POSITION_INVALID", "intent x and y must be integers")
+            width = intent.get("w", intent.get("width"))
+            height = intent.get("h", intent.get("height"))
+            if width is not None or height is not None:
+                if type(width) is not int or type(height) is not int:
+                    raise EditorError("INTENT_SIZE_INVALID", "intent w and h must both be integers when resizing")
+                if int(width) <= 0 or int(height) <= 0:
+                    raise EditorError("BAR_SIZE_NON_POSITIVE", "intent size must be positive")
             with self._lock:
                 record = self._analyses.get(analysis_id)
             if record is None:
@@ -768,9 +809,28 @@ class EditorCoordinator:
                 raise EditorError("ANALYSIS_SOURCE_KEY_MISSING", "analysis does not include a writable source key")
             if record.source_key != source_key:
                 raise EditorError("SOURCE_KEY_MISMATCH", "intent source_key does not match analyzed source key")
+            if width is not None or height is not None:
+                if (
+                    record.original_size is None
+                    or record.runtime_size is None
+                    or source_key.get("size_mode") != BAR_SIZE_MODE_XSIZE_YSIZE
+                ):
+                    raise EditorError(
+                        "ANALYSIS_RESIZE_UNSUPPORTED",
+                        "analysis does not unlock resize for this target",
+                    )
             relative_path = self._require_source_relative_path(source_key)
             source_paths.add(relative_path)
-            selected_records.append((record, x, y, source_key))
+            selected_records.append(
+                (
+                    record,
+                    x,
+                    y,
+                    int(width) if width is not None else None,
+                    int(height) if height is not None else None,
+                    source_key,
+                )
+            )
 
         if len(source_paths) != 1:
             raise EditorError("MULTI_FILE_UNSUPPORTED", "all intents must resolve to exactly one source file")
@@ -780,7 +840,7 @@ class EditorCoordinator:
         current_bytes = source_path.read_bytes()
         current_sha = sha256_bytes(current_bytes)
 
-        for record, _x, _y, source_key in selected_records:
+        for record, _x, _y, _w, _h, source_key in selected_records:
             baseline = source_key.get("baseline_sha256")
             if not isinstance(baseline, str):
                 raise EditorError("SOURCE_BASELINE_INVALID", "source_key baseline_sha256 is missing")
@@ -818,8 +878,23 @@ class EditorCoordinator:
                         int(record.runtime_position[0]) + int(x) - int(record.original_position[0]),
                         int(record.runtime_position[1]) + int(y) - int(record.original_position[1]),
                     ],
+                    **(
+                        {
+                            "size": [
+                                int(record.runtime_size[0]) + int(width) - int(record.original_size[0]),
+                                int(record.runtime_size[1]) + int(height) - int(record.original_size[1]),
+                            ]
+                        }
+                        if (
+                            width is not None
+                            and height is not None
+                            and record.original_size is not None
+                            and record.runtime_size is not None
+                        )
+                        else {}
+                    ),
                 }
-                for record, x, y, source_key in selected_records
+                for record, x, y, width, height, source_key in selected_records
             ],
             state="staged",
         )
@@ -1108,15 +1183,26 @@ class EditorCoordinator:
             raise EditorError("RECT_INVALID", "observation rect coordinates must be integers")
         return [x, y]
 
+    def _extract_size(self, observation: dict[str, Any]) -> list[int] | None:
+        rect = observation.get("rect")
+        if not isinstance(rect, list) or len(rect) < 4:
+            return None
+        width, height = rect[2], rect[3]
+        if type(width) is not int or type(height) is not int:
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return [int(width), int(height)]
+
     def _apply_same_file_intents(
         self,
         source_bytes: bytes,
-        selected_records: list[tuple[_AnalysisRecord, int, int, dict[str, Any]]],
+        selected_records: list[tuple[_AnalysisRecord, int, int, int | None, int | None, dict[str, Any]]],
     ) -> bytes:
         lines = source_bytes.decode("utf-8").splitlines(keepends=True)
         seen_targets: set[tuple[str, int, str]] = set()
 
-        for _record, x, y, source_key in selected_records:
+        for _record, x, y, width, height, source_key in selected_records:
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
             if not isinstance(line_no, int) or not isinstance(widget_id, str):
@@ -1146,6 +1232,11 @@ class EditorCoordinator:
                         "source_key statement_kind does not match source line",
                     )
             if actual_kind == "button":
+                if width is not None or height is not None:
+                    raise EditorError(
+                        "ANALYSIS_RESIZE_UNSUPPORTED",
+                        "resize is only supported for bar xsize/ysize",
+                    )
                 statement = analyze_button_statement(
                     source_text,
                     source_line=line_no,
@@ -1158,6 +1249,11 @@ class EditorCoordinator:
                     y=y,
                 ).decode("utf-8").splitlines(keepends=True)
             elif actual_kind == "textbutton" and is_textbutton_block_header(lines[line_no - 1]):
+                if width is not None or height is not None:
+                    raise EditorError(
+                        "ANALYSIS_RESIZE_UNSUPPORTED",
+                        "resize is only supported for bar xsize/ysize",
+                    )
                 statement = analyze_textbutton_block_statement(
                     source_text,
                     source_line=line_no,
@@ -1177,6 +1273,11 @@ class EditorCoordinator:
                 if kind == "textbutton" and uses_runtime_delta_position(
                     getattr(statement, "position_mode", "xy")
                 ):
+                    if width is not None or height is not None:
+                        raise EditorError(
+                            "ANALYSIS_RESIZE_UNSUPPORTED",
+                            "resize is only supported for bar xsize/ysize",
+                        )
                     lines[line_no - 1] = apply_textbutton_patch(
                         lines[line_no - 1].encode("utf-8"),
                         statement,
@@ -1191,6 +1292,8 @@ class EditorCoordinator:
                         statement,
                         x=x,
                         y=y,
+                        width=width,
+                        height=height,
                     ).decode("utf-8")
 
         return "".join(lines).encode("utf-8")
