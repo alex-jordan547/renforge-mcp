@@ -510,7 +510,8 @@ class EditorCoordinator:
             if self._script_generation != generation:
                 raise EditorError("SCRIPT_GENERATION_MISMATCH", "observation generation does not match coordinator")
 
-        lock_reason = self._runtime_lock_reason(runtime_key)
+        runtime_lock_reason = self._runtime_lock_reason(runtime_key)
+        lock_reason = runtime_lock_reason
         source_key: dict[str, Any] | None = None
         runtime_position = self._extract_position(independent)
         original_position = list(runtime_position)
@@ -688,6 +689,12 @@ class EditorCoordinator:
             lock_reason = self._lock_reason(exc.code, exc.message)
         except (OSError, UnicodeDecodeError) as exc:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
+
+        # Instance identity gates the source form. A repeated statement stays
+        # locked for being repeated, whatever its position keywords read like;
+        # otherwise the reported reason would depend on which gate ran last.
+        if runtime_lock_reason is not None:
+            lock_reason = runtime_lock_reason
 
         analysis_id = uuid.uuid4().hex
         record = _AnalysisRecord(

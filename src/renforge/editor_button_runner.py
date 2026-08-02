@@ -267,8 +267,17 @@ def run_editor_button_live_scenario(client: Any, *, fixture_path: Path) -> dict[
         },
     )
     ambiguous = dupe_select.get("lock_reason") if isinstance(dupe_select, dict) else None
-    if ambiguous not in {"SYNTHETIC_WIDGET_ID", "MULTI_INSTANCE_UNSUPPORTED"}:
-        raise AssertionError(f"duplicate button was not locked ambiguously: {dupe_select!r}")
+    if ambiguous in (None, "", "ANALYZING"):
+        # The repetition lock is decided by the host, so it settles after select.
+        status = _wait_for_status(
+            client,
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
+            timeout=10.0,
+            poll_name="button dupe lock",
+        )
+        ambiguous = status.get("selected_lock_reason")
+    if ambiguous != "REPEATED_USE_UNSUPPORTED":
+        raise AssertionError(f"duplicate button was not locked as repeated use: {dupe_select!r}")
     report["locks"]["ambiguous"] = ambiguous
 
     unknown = client.request(

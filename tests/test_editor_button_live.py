@@ -116,7 +116,7 @@ def test_button_seven_step_live_proof(demo_copy: Path) -> None:
     assert locks["computed"] == "XPOS_LITERAL_REQUIRED"
     assert locks["position_in_block"] == "POSITION_IN_BLOCK"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
-    assert locks["ambiguous"] in {"SYNTHETIC_WIDGET_ID", "MULTI_INSTANCE_UNSUPPORTED"}
+    assert locks["ambiguous"] == "REPEATED_USE_UNSUPPORTED"
     assert locks["unproven"] == "UNKNOWN_ANCESTRY_TYPE"
 
     undo = report["byte_identical_undo"]

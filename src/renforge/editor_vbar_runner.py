@@ -230,13 +230,13 @@ def run_editor_vbar_live_scenario(client: Any, *, fixture_path: Path) -> dict[st
     if ambiguous in (None, ""):
         status = _wait_for_status(
             client,
-            lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
             timeout=10.0,
             poll_name="vbar dupe lock",
         )
         ambiguous = status.get("selected_lock_reason")
-    if ambiguous != "SYNTHETIC_WIDGET_ID":
-        raise AssertionError(f"duplicate vbar lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}")
+    if ambiguous != "REPEATED_USE_UNSUPPORTED":
+        raise AssertionError(f"duplicate vbar lock was not REPEATED_USE_UNSUPPORTED: {ambiguous!r}")
     report["locks"]["ambiguous"] = ambiguous
 
     # Measured live: Side is not in the ancestry allowlist → UNKNOWN_ANCESTRY_TYPE.

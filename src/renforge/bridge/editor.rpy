@@ -228,6 +228,7 @@ init 1100 python:
     _EDITOR_LOCKED_TEXT = "LOCKED"
     _SNAP_ACQUIRE = 6
     _SNAP_RELEASE = 10
+    _CACHE_WALK_MAX_DEPTH = 32
     _ALLOWED_ANCESTRY_TYPES = set(
         [
             "ScreenDisplayable",
@@ -697,6 +698,130 @@ init 1100 python:
         return screen, widgets
 
 
+    def _renforge_editor_cache_index(screen):
+        """Map every cached displayable to the SL2 cache path that produced it.
+
+        Ren'Py keys `SLFor` iterations by the author's own loop index
+        (`slast.py` `newcaches[index]`) and gives every `use` call site its own
+        cache dict carrying an `"ast"` entry. That path is authored data, so it
+        identifies one runtime instance of a repeated statement without any
+        synthetic id. `screen.widgets` cannot: it holds a single displayable per
+        widget id, so the last iteration overwrites its siblings.
+        """
+        index = {}
+        root = getattr(screen, "cache", None)
+        if not isinstance(root, builtins.dict):
+            return index
+
+        def walk(cache, path, uses, depth):
+            if depth > _CACHE_WALK_MAX_DEPTH:
+                return
+            if isinstance(cache, builtins.dict):
+                for key, value in cache.items():
+                    if key == "ast":
+                        continue
+                    # An SLUse cache dict carries its target ast; that marks the
+                    # boundary as a call site rather than a loop iteration.
+                    boundary = isinstance(value, builtins.dict) and "ast" in value
+                    walk(value, path + [key], uses + [boundary], depth + 1)
+                return
+            displayable = getattr(cache, "displayable", None)
+            if displayable is None:
+                return
+            index[id(displayable)] = {
+                "path": tuple(builtins.repr(part) for part in path),
+                "use_boundaries": tuple(uses),
+                "displayable": displayable,
+            }
+
+        walk(root, [], [], 0)
+        return index
+
+
+    def _renforge_editor_statement_widget_ids(screen_name, cache_index):
+        """Learn each statement's authored widget id from any one instance.
+
+        `screen.widgets` keeps only the last instance of a repeated statement,
+        so its siblings resolve to no id at all. Instances that share a terminal
+        cache segment come from the same source statement and therefore carry
+        the same authored `id` literal.
+        """
+        statement_ids = {}
+        for entry in cache_index.values():
+            path = entry["path"]
+            if not path or path[-1] in statement_ids:
+                continue
+            _screen, widget_id, error = _renforge_editor_resolve_widget_id(
+                screen_name,
+                entry["displayable"],
+            )
+            if error is None and widget_id:
+                statement_ids[path[-1]] = widget_id
+        return statement_ids
+
+
+    def _renforge_editor_instance_discriminator(entry, cache_index):
+        """Describe how many runtime instances share one authored statement.
+
+        Instances of the same statement share the terminal cache segment (the
+        statement serial) and differ earlier in the path. The divergent segment
+        tells loop iterations apart from repeated `use` call sites.
+        """
+        if not entry:
+            return None
+        path = entry["path"]
+        terminal = path[-1] if path else None
+        siblings = [
+            other for other in cache_index.values() if other["path"] and other["path"][-1] == terminal
+        ]
+        instance_count = len(siblings)
+        # A unique instance keeps the bare static descriptor. Cache paths carry
+        # AST serials that are reassigned on every script reload, so they must
+        # never reach the descriptor the host compares when rebinding.
+        if instance_count <= 1:
+            return {"kind": "static", "instance_count": 1}
+        depth = _renforge_editor_divergence_depth(siblings)
+        kind = "static"
+        if depth is not None:
+            kind = "use" if any(other["use_boundaries"][depth] for other in siblings) else "loop"
+        discriminator = {
+            "kind": kind,
+            "instance_count": instance_count,
+            "instance_key": builtins.list(path),
+        }
+        if kind == "use":
+            discriminator["repeated"] = True
+            discriminator["repeated_use"] = True
+        elif kind == "loop":
+            discriminator["loop"] = True
+        return discriminator
+
+
+    def _renforge_editor_divergence_depth(siblings):
+        """First path segment on which sibling instances disagree."""
+        for depth in builtins.range(builtins.min(len(other["path"]) for other in siblings)):
+            if len(set(other["path"][depth] for other in siblings)) > 1:
+                return depth
+        return None
+
+
+    def _renforge_editor_rebind_signature(runtime_key):
+        """Identity a target keeps across frames, ignoring focus_list order.
+
+        Repeated statements share screen, id and source location, so the cache
+        instance key is what tells their instances apart. It is absent for a
+        unique statement, which leaves the signature unchanged.
+        """
+        discriminator = runtime_key.get("instance_discriminator") or {}
+        instance_key = discriminator.get("instance_key")
+        return (
+            str(runtime_key.get("screen") or ""),
+            str(runtime_key.get("widget_id") or ""),
+            tuple(runtime_key.get("source_location") or []),
+            tuple(instance_key) if isinstance(instance_key, (builtins.list, tuple)) else None,
+        )
+
+
     def _renforge_editor_descendant_ids(widget):
         found = set()
         stack = [widget]
@@ -775,12 +900,24 @@ init 1100 python:
         return "none"
 
 
-    def _renforge_editor_runtime_key_from_focus(focus, ordinal):
+    def _renforge_editor_runtime_key_from_focus(focus, ordinal, instances=None):
         screen_name = _renforge_editor_screen_name(focus)
         if not isinstance(screen_name, str):
             return None, "MISSING_INVOCATION_PATH", None, None
         widget = getattr(focus, "widget", None)
+        cache_index = instances.get(screen_name) if instances else None
+        cache_entry = cache_index["entries"].get(id(widget)) if cache_index else None
         screen, widget_id, resolve_error = _renforge_editor_resolve_widget_id(screen_name, widget)
+        if resolve_error == "SYNTHETIC_WIDGET_ID" and cache_entry is not None:
+            # A sibling instance of the same statement owns the authored id.
+            if cache_index["statement_ids"] is None:
+                cache_index["statement_ids"] = _renforge_editor_statement_widget_ids(
+                    screen_name,
+                    cache_index["entries"],
+                )
+            statement_id = cache_index["statement_ids"].get(cache_entry["path"][-1])
+            if statement_id:
+                widget_id, resolve_error = statement_id, None
         if resolve_error is not None:
             return None, resolve_error, None, None
         if not isinstance(widget_id, str) or not widget_id:
@@ -793,10 +930,14 @@ init 1100 python:
             named_widget = widgets.get(widget_id)
         if named_widget is None:
             named_widget = widget
+        # The source location belongs to the statement, so a sibling instance
+        # from the widgets map carries it; ancestry and geometry must come from
+        # the focused instance, whose parents can differ between call sites.
         source_location = _renforge_editor_location(named_widget)
         if source_location is None:
             return None, "MISSING_SOURCE_LOCATION", None, None
-        ancestry_nodes = _renforge_editor_find_ancestry(screen, named_widget)
+        instance_widget = widget if cache_entry is not None else named_widget
+        ancestry_nodes = _renforge_editor_find_ancestry(screen, instance_widget)
         if not ancestry_nodes:
             return None, "UNKNOWN_ANCESTRY_TYPE", None, None
         ancestry = []
@@ -834,16 +975,21 @@ init 1100 python:
                     "layout": layout_name,
                 }
             )
+        discriminator = {"kind": "static", "instance_count": 1}
+        if cache_entry is not None:
+            measured = _renforge_editor_instance_discriminator(
+                cache_entry,
+                cache_index["entries"],
+            )
+            if measured is not None:
+                discriminator = measured
+        discriminator["ordinal"] = int(ordinal)
         key = {
             "screen": screen_name,
             "invocation_path": screen_name,
             "widget_id": widget_id,
             "source_location": source_location,
-            "instance_discriminator": {
-                "kind": "static",
-                "instance_count": 1,
-                "ordinal": int(ordinal),
-            },
+            "instance_discriminator": discriminator,
             "ancestry": ancestry,
         }
         return key, None, named_widget, widget
@@ -901,8 +1047,23 @@ init 1100 python:
         return None
 
 
+    def _renforge_editor_screen_instances(screen_name, instances):
+        """Cache-derived instance identity for one screen, built once per frame."""
+        if screen_name in instances:
+            return instances[screen_name]
+        screen, _widgets = _renforge_editor_widget_map(screen_name)
+        instances[screen_name] = {
+            "entries": _renforge_editor_cache_index(screen) if screen is not None else {},
+            # Resolving statement ids costs a descendant walk per statement, so
+            # it is deferred until a widget id actually fails to resolve.
+            "statement_ids": None,
+        }
+        return instances[screen_name]
+
+
     def _renforge_editor_focus_candidates():
         candidates = []
+        instances = {}
         try:
             focus_list = list(renpy.display.focus.focus_list or [])
         except Exception:
@@ -920,11 +1081,14 @@ init 1100 python:
                 continue
             if rect[2] <= 0 or rect[3] <= 0:
                 continue
+            screen_name = _renforge_editor_screen_name(focus)
+            if isinstance(screen_name, str):
+                _renforge_editor_screen_instances(screen_name, instances)
             runtime_key, resolve_error, named_widget, focused_widget = _renforge_editor_runtime_key_from_focus(
                 focus,
                 ordinal,
+                instances,
             )
-            screen_name = _renforge_editor_screen_name(focus)
             owner_hit = bool(screen_name in _EDITOR_SCREENS)
             if runtime_key is not None:
                 for node in runtime_key.get("ancestry", []):
@@ -962,8 +1126,15 @@ init 1100 python:
                 key.get("widget_id"),
                 tuple(key.get("source_location") or []),
             )
-            if counts.get(signature, 0) > 1:
-                candidate["resolve_error"] = "MULTI_INSTANCE_UNSUPPORTED"
+            if counts.get(signature, 0) <= 1:
+                continue
+            # Repetition the cache walk identified is not ambiguity: the host
+            # gets a distinct instance key and answers with the precise
+            # repetition lock. Only unidentified duplicates stay ambiguous.
+            discriminator = key.get("instance_discriminator") or {}
+            if discriminator.get("kind") in ("loop", "use"):
+                continue
+            candidate["resolve_error"] = "MULTI_INSTANCE_UNSUPPORTED"
         return candidates
 
 
@@ -2511,21 +2682,12 @@ init 1100 python:
         if not candidates:
             # fallback by stable signature
             candidates = []
-            wanted = (
-                str(runtime_key.get("screen") or ""),
-                str(runtime_key.get("widget_id") or ""),
-                tuple(runtime_key.get("source_location") or []),
-            )
+            wanted = _renforge_editor_rebind_signature(runtime_key)
             for candidate in _renforge_editor_focus_candidates():
                 candidate_key = candidate.get("runtime_key")
                 if not isinstance(candidate_key, builtins.dict):
                     continue
-                signature = (
-                    str(candidate_key.get("screen") or ""),
-                    str(candidate_key.get("widget_id") or ""),
-                    tuple(candidate_key.get("source_location") or []),
-                )
-                if signature == wanted:
+                if _renforge_editor_rebind_signature(candidate_key) == wanted:
                     candidates.append(candidate)
         if len(candidates) > 1:
             return {"ok": False, "error": "AMBIGUOUS_REBIND"}
@@ -2581,22 +2743,13 @@ init 1100 python:
                 and isinstance(candidate.get("runtime_key", {}).get("source_location"), list)
             ]
             if not targets:
-                wanted = (
-                    str(expected_runtime_key.get("screen") or ""),
-                    str(expected_runtime_key.get("widget_id") or ""),
-                    tuple(expected_runtime_key.get("source_location") or []),
-                )
+                wanted = _renforge_editor_rebind_signature(expected_runtime_key)
                 signature_matches = []
                 for candidate in _renforge_editor_focus_candidates():
                     candidate_key = candidate.get("runtime_key")
                     if not isinstance(candidate_key, builtins.dict):
                         continue
-                    signature = (
-                        str(candidate_key.get("screen") or ""),
-                        str(candidate_key.get("widget_id") or ""),
-                        tuple(candidate_key.get("source_location") or []),
-                    )
-                    if signature == wanted:
+                    if _renforge_editor_rebind_signature(candidate_key) == wanted:
                         signature_matches.append(candidate)
                 if len(signature_matches) > 1:
                     return {"ok": False, "error": "AMBIGUOUS_REBIND", "widget_id": widget_id}

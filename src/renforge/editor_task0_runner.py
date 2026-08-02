@@ -300,7 +300,16 @@ def run_editor_task0_live_scenario(
     report["clipped_lock"] = clipped_select.get("lock_reason")
 
     dupe_select = client.request("editor_task0_select", {"x": dupe_pick[0], "y": dupe_pick[1]})
-    report["dupe_lock"] = dupe_select.get("lock_reason")
+    dupe_lock = dupe_select.get("lock_reason")
+    if dupe_lock in (None, "", "ANALYZING"):
+        # The repetition lock is decided by the host, so it settles after select.
+        dupe_lock = _wait_for_status(
+            client,
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
+            timeout=10.0,
+            poll_name="task0 dupe lock",
+        ).get("selected_lock_reason")
+    report["dupe_lock"] = dupe_lock
 
     validate_unknown = client.request(
         "editor_task0_validate_runtime_key",

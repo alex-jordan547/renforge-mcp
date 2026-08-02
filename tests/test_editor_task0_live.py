@@ -83,7 +83,7 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     assert report["top_select_widget"] == "task0_top"
     assert report["target_select_widget"] == "task0_target"
     assert report["clipped_lock"] == "CLIPPED_ANCESTRY_UNSUPPORTED"
-    assert report["dupe_lock"] in {"MULTI_INSTANCE_UNSUPPORTED", "SYNTHETIC_WIDGET_ID"}
+    assert report["dupe_lock"] == "REPEATED_USE_UNSUPPORTED"
     assert report["multi_instance_lock"] == "MULTI_INSTANCE_UNSUPPORTED"
     assert report["unique_rebind"]["ok"] is True
     assert report["unique_rebind"]["state"] == "all_targets_attested"

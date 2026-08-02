@@ -717,6 +717,47 @@ def test_analyze_target_denies_unproven_crop_states(tmp_path: Path, crop_state: 
         coordinator.close()
 
 
+def test_repetition_lock_outranks_a_source_form_lock(tmp_path: Path) -> None:
+    """Issue #42: a repeated statement locks for being repeated, not for its form.
+
+    Both gates are true for a repeated `use` whose position is an expression.
+    Reporting the source-form reason would hide the one that actually blocks the
+    edit, and would make the message depend on which gate ran last.
+    """
+    project, source = _make_project(tmp_path)
+    source.write_text(
+        "screen test_screen:\n"
+        '    textbutton "Play" id "start_btn" xpos left_x ypos 10 action NullAction()\n',
+        encoding="utf-8",
+    )
+    observation = _base_observation()
+    observation["runtime_key"]["instance_discriminator"] = {
+        "kind": "use",
+        "instance_count": 2,
+        "repeated": True,
+        "instance_key": ["0", "17", "12"],
+    }
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-42",
+            "object_id": "obj-independent-42",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-repeat-precedence")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"]["code"] == "REPEATED_USE_UNSUPPORTED"
+            assert analysis["result"]["capabilities"] == {"move": False}
+    finally:
+        coordinator.close()
+
+
 def test_runtime_key_ordinal_drift_is_ignored_for_single_static_instance(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation()

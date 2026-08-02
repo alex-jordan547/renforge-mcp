@@ -115,9 +115,9 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
         "container": select_lock(client, "pos_container", "CONTAINER_POSITION_UNSUPPORTED", fixture_screen=FIXTURE_SCREEN),
     }
 
-    # Measured live: two use-statements share id "pos_dupe_target". The first
-    # instance is still selectable by focus bounds and locks as SYNTHETIC_WIDGET_ID
-    # (list_ui may only name the second instance).
+    # Measured live: two use-statements share id "pos_dupe_target". Both
+    # instances now resolve through the SL2 cache path and lock with the
+    # precise REPEATED_USE_UNSUPPORTED reason (issue #42).
     dupe_info = list_ui_info(client, FIXTURE_SCREEN)
     dupe_elements = dupe_info.get("elements") if isinstance(dupe_info, dict) else None
     # Prefer the unnamed first instance (NullAction-ish id) then fall back to
@@ -146,14 +146,14 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     if ambiguous in (None, ""):
         status = _wait_for_status(
             client,
-            lambda current: current.get("selected_lock_reason") == "SYNTHETIC_WIDGET_ID",
+            lambda current: current.get("selected_lock_reason") == "REPEATED_USE_UNSUPPORTED",
             timeout=10.0,
             poll_name="pos dupe lock",
         )
         ambiguous = status.get("selected_lock_reason")
-    if ambiguous != "SYNTHETIC_WIDGET_ID":
+    if ambiguous != "REPEATED_USE_UNSUPPORTED":
         raise AssertionError(
-            f"duplicate pos textbutton lock was not SYNTHETIC_WIDGET_ID: {ambiguous!r}"
+            f"duplicate pos textbutton lock was not REPEATED_USE_UNSUPPORTED: {ambiguous!r}"
         )
     report["locks"]["ambiguous"] = ambiguous
 

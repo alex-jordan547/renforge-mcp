@@ -35,7 +35,7 @@ The proof uses fresh `focus_list` observations for every visual position and ver
 value is invariant across preview and reload. Vbar inherits #34's exact measured lock boundaries:
 computed/non-literal coordinates (`XPOS_LITERAL_REQUIRED` / `YPOS_LITERAL_REQUIRED`), style-driven
 position (`BAR_STYLE_POSITION_UNSUPPORTED`), missing direct position (`BAR_POSITION_NOT_DIRECTLY_AUTHORED`),
-container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), duplicate instances (`SYNTHETIC_WIDGET_ID`),
+container ancestry (`CONTAINER_POSITION_UNSUPPORTED`), repeated instances (`REPEATED_USE_UNSUPPORTED`),
 unknown ancestry (`UNKNOWN_ANCESTRY_TYPE`), and multi-line statements (`MULTILINE_STATEMENT_REJECTED`).
 These remain selectable but locked; all other vbar forms remain pending.
 
@@ -67,11 +67,46 @@ Real screens are messier.
 | `pos (x, y)` / `align` / `anchor` / `offset` | Different property, same intent | **`pos` (#38)**, **`align` (#39)**, **`anchor` (#40)**, **`offset` (#41)** implemented for single-line `textbutton`. Write-back preserves form. Lives: `RENFORGE_POS_LIVE=1`, `RENFORGE_ALIGN_LIVE=1`, `RENFORGE_ANCHOR_LIVE=1`, `RENFORGE_OFFSET_LIVE=1`. |
 | Position from a **variable or expression** | Cannot be rewritten without changing semantics | **Stays locked.** Offer to show the computed value, never to overwrite the expression |
 | Element inside `hbox` / `vbox` / `grid` | Position is computed by the layout, not authored | **Stays locked** for direct move. A layout-aware edit is a different feature |
-| Multiple instances from one loop / `use` | One source line, N runtime widgets | Needs a disambiguation UI; the stable key already carries `ordinal` |
+| Multiple instances from one loop / `use` | One source line, N runtime widgets | **Selection proven, write blocked (issue #42).** Instances are now identified individually; the source write stays locked. See below. |
 
 **Design rule inherited from the agreed spec:** the editor preserves the form the author used. An
 element written with `xpos` gets `xpos` back; one written with `offset` gets `offset`. The editor is
 not entitled to normalise someone's source.
+
+### Repetition (issue #42) — selection proven, instance-specific write blocked
+
+Measured live on Ren'Py **8.5.3** via `RENFORGE_LOOP_LIVE=1`.
+
+**Selection is proven.** Ren'Py keys each `SLFor` iteration in its SL2 cache by the author's own loop
+index (`slast.py`: `newcaches[index] = ctx.new_cache = {}`) and gives every `use` call site its own
+cache dict. Walking that cache maps every focus entry to exactly one instance — 12/12 in the fixture,
+no collisions — using authored data rather than a synthetic id. `screen.widgets` cannot do this: it
+stores one displayable per widget id, so the last iteration overwrites its siblings, which is why
+these instances previously locked as `SYNTHETIC_WIDGET_ID` by accident rather than by design.
+
+**The instance-specific source write is blocked**, and this is a property of the source, not a gap in
+the implementation. Every repetition shape keeps the authored position in a single location shared by
+all N instances:
+
+| Shape | Measured | Why no write is possible |
+|---|---|---|
+| Literal position in a loop | 3 instances, all at `(200,160)` | One literal serves N; a write moves all of them |
+| Loop-derived position | 3 instances at `x = 200 + i·160` | The position is an expression, locked by the expression gate |
+| Layout-positioned in a loop | 3 instances in a `vbox` | Locked by the container gate |
+| Repeated `use` | 2 call sites, both resolving to line 8 | One authored line backs both sites |
+
+Moving one instance alone would mean synthesising a per-instance expression — which the design rule
+above forbids. The gate therefore stays locked, but the lock is now *precise*: `LOOP_INSTANCE_UNSUPPORTED`
+and `REPEATED_USE_UNSUPPORTED` replace the incidental `SYNTHETIC_WIDGET_ID`, and the runtime key
+carries `kind`, `instance_count` and `instance_key` so a failed-gate UI can explain which instance of
+how many is selected (issue #52).
+
+**Identity outranks form.** When a statement is both repeated and expression-positioned, the analysis
+reports the repetition lock. Otherwise the reported reason would depend on which gate ran last.
+
+**Known limit:** `instance_key` contains SL2 AST serials, which Ren'Py reassigns on every script
+reload. It is stable within one script generation — enough to rebind during a session — and is
+deliberately absent from unique statements so it never enters their rebinding equality.
 
 ---
 
