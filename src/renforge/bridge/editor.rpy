@@ -1166,13 +1166,10 @@ init 1100 python:
             return "clipping_true"
         crop = getattr(node, "crop", None)
         if crop not in (None, False):
-            # Issue #45 unlocks pure crop only. rotate / non-default zoom is #46.
             if _renforge_editor_transform_crop_is_composite(node):
-                return "transform_crop_composite"
-            # Issue #45: only fully-visible pure-crop children are unlocked.
-            # Top/left clamps make focus x/y crop-bound while source xpos/ypos
-            # still describe the unclipped layout, so preview deltas attest
-            # against the wrong origin (Codex P1 on #65).
+                transform_d = _renforge_editor_find_transform(node)
+                if transform_d is None or transform_d == "MULTIPLE_TRANSFORMS" or getattr(transform_d, "reverse", None) is None:
+                    return "transform_crop_composite"
             visibility = _renforge_editor_focus_crop_visibility(focus, target)
             if visibility == "partial":
                 return "transform_crop_partial"
@@ -1835,6 +1832,72 @@ init 1100 python:
                 and comparable_style != baseline_style
                 and (target.get("capabilities") or {}).get("style_color") is True
             )
+            props.update(_renforge_editor_collect_target_override_props(target))
+            if style_dirty:
+                props["color"] = style_color
+            if props:
+                properties[str(widget_id)] = props
+        return properties
+
+
+    def _renforge_editor_find_widget_by_id(screen_name, widget_id):
+        if not isinstance(screen_name, str) or not isinstance(widget_id, str):
+            return None
+        screen, widgets = _renforge_editor_widget_map(screen_name)
+        if isinstance(widgets, builtins.dict):
+            return widgets.get(widget_id)
+        return None
+
+
+    def _renforge_editor_compute_next_position(target):
+        source_position = target.get("source_position") or [0, 0]
+        position = target.get("position") or [0, 0]
+        runtime_baseline = target.get("runtime_baseline") or [0, 0]
+
+        dx_screen = int(position[0]) - int(runtime_baseline[0])
+        dy_screen = int(position[1]) - int(runtime_baseline[1])
+
+        default_x = int(source_position[0]) + dx_screen
+        default_y = int(source_position[1]) + dy_screen
+
+        if dx_screen == 0 and dy_screen == 0:
+            return default_x, default_y
+
+        screen_name = target.get("screen")
+        widget_id = target.get("widget_id")
+        widget = None
+        if isinstance(screen_name, str) and isinstance(widget_id, str):
+            widget = _renforge_editor_find_widget_by_id(screen_name, widget_id)
+
+        if widget is None:
+            return default_x, default_y
+
+        transform_d = _renforge_editor_find_transform(widget)
+        if transform_d is None or transform_d == "MULTIPLE_TRANSFORMS":
+            return default_x, default_y
+
+        reverse_fn = getattr(transform_d, "reverse", None)
+        if reverse_fn is None:
+            return default_x, default_y
+
+        p0 = [float(runtime_baseline[0]), float(runtime_baseline[1])]
+        p1 = [float(position[0]), float(position[1])]
+        m0 = _renforge_editor_matrix_map(reverse_fn, p0)
+        m1 = _renforge_editor_matrix_map(reverse_fn, p1)
+        if m0 is None or m1 is None:
+            return default_x, default_y
+
+        dx_source = float(m1[0]) - float(m0[0])
+        dy_source = float(m1[1]) - float(m0[1])
+
+        next_x = int(round(float(source_position[0]) + dx_source))
+        next_y = int(round(float(source_position[1]) + dy_source))
+        return next_x, next_y
+
+
+    def _renforge_editor_collect_target_override_props(target):
+        props = {}
+        if isinstance(target, builtins.dict):
             position = target.get("position")
             runtime_baseline = target.get("runtime_baseline")
             source_position = target.get("source_position")
@@ -1849,8 +1912,7 @@ init 1100 python:
                 and (target.get("capabilities") or {}).get("move") is not False
             )
             if position_dirty:
-                next_x = int(source_position[0]) + int(position[0]) - int(runtime_baseline[0])
-                next_y = int(source_position[1]) + int(position[1]) - int(runtime_baseline[1])
+                next_x, next_y = _renforge_editor_compute_next_position(target)
                 source_key = target.get("source_key") or {}
                 position_mode = source_key.get("position_mode") if builtins.isinstance(source_key, builtins.dict) else None
                 props.update(_renforge_editor_preview_properties(next_x, next_y, position_mode))
@@ -1867,11 +1929,7 @@ init 1100 python:
                 ):
                     props["xsize"] = int(source_size[0]) + int(size[0]) - int(runtime_size[0])
                     props["ysize"] = int(source_size[1]) + int(size[1]) - int(runtime_size[1])
-            if style_dirty:
-                props["color"] = style_color
-            if props:
-                properties[str(widget_id)] = props
-        return properties
+        return props
 
 
     def _renforge_editor_preview_properties(next_x, next_y, position_mode):
@@ -2042,11 +2100,12 @@ init 1100 python:
                 and len(source_position) == 2
             ):
                 return []
+            next_x, next_y = _renforge_editor_compute_next_position(target)
             intent = {
                 "analysis_id": analysis_id,
                 "source_key": source_key,
-                "x": int(source_position[0]) + int(position[0]) - int(runtime_baseline[0]),
-                "y": int(source_position[1]) + int(position[1]) - int(runtime_baseline[1]),
+                "x": next_x,
+                "y": next_y,
             }
             size = target.get("size")
             runtime_size = target.get("runtime_size")

@@ -357,13 +357,13 @@ def measure_composite_divergence(client: Any) -> dict[str, Any]:
             "crop_with_zoom": select_lock(
                 client,
                 "crop_with_zoom",
-                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                None,
                 fixture_screen=FIXTURE_SCREEN,
             ),
             "crop_with_rotate": select_lock(
                 client,
                 "crop_with_rotate",
-                "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+                "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
                 fixture_screen=FIXTURE_SCREEN,
             ),
         },
@@ -434,13 +434,13 @@ def run_editor_crop_live_scenario(
         "crop_with_rotate": select_lock(
             client,
             "crop_with_rotate",
-            "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+            "TRANSFORM_CROP_PARTIAL_UNSUPPORTED",
             fixture_screen=FIXTURE_SCREEN,
         ),
         "crop_with_zoom": select_lock(
             client,
             "crop_with_zoom",
-            "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED",
+            None,
             fixture_screen=FIXTURE_SCREEN,
         ),
     }

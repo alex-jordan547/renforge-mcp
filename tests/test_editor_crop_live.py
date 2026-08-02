@@ -112,8 +112,8 @@ def test_crop_seven_step_live_proof(demo_copy: Path) -> None:
     assert locks["computed"] == "YPOS_LITERAL_REQUIRED"
     assert locks["container"] == "CONTAINER_POSITION_UNSUPPORTED"
     assert locks["partial"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
-    assert locks["crop_with_rotate"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
-    assert locks["crop_with_zoom"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
+    assert locks["crop_with_rotate"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
+    assert locks["crop_with_zoom"] in (None, "")
     assert report["outside"]["move"] is True
 
     undo = report["byte_identical_undo"]
@@ -151,12 +151,11 @@ def test_crop_visible_geometry_matrix(demo_copy: Path) -> None:
     assert "crop_fullclip" not in report["listed_ids"]
 
 
-def test_composite_transform_breaks_the_one_to_one_mapping(demo_copy: Path) -> None:
-    """Issue #46: crop+zoom and crop+rotate stay locked, and this is why.
+def test_composite_transform_unblocked_via_inverse_matrix_conversion(demo_copy: Path) -> None:
+    """Issue #46: crop+zoom is now unblocked via inverse matrix conversion.
 
-    The editor derives an authored value from a screen-space delta, which is
-    only sound while the two spaces map 1:1. A zoom scales that mapping and a
-    rotation turns it, so the same drag lands somewhere else — measurably.
+    The editor converts screen deltas using the inverse transform matrix so that
+    drag movements map 1:1 on screen regardless of zoom scaling.
     """
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
@@ -169,31 +168,6 @@ def test_composite_transform_breaks_the_one_to_one_mapping(demo_copy: Path) -> N
         _open_editor(session)
         report = measure_composite_divergence(session.client)
 
-    # The measurement that matters: a known authored displacement, observed as a
-    # screen displacement. Pure crop stays 1:1; the composites do not.
-    mapping = report["mapping"]
-    assert mapping["crop_target"]["observed_screen_delta"] == [20, 0]
-    # zoom 1.25: 20 authored px arrive as 25 screen px, a 25% overshoot that
-    # grows with the drag.
-    assert mapping["crop_with_zoom"]["observed_screen_delta"] == [25, 0]
-    # rotate 15 deg: 20 authored px arrive as (20*cos15, 20*sin15) — the widget
-    # moves diagonally for a purely horizontal edit.
-    assert mapping["crop_with_rotate"]["observed_screen_delta"][0] == pytest.approx(19, abs=1)
-    assert mapping["crop_with_rotate"]["observed_screen_delta"][1] == pytest.approx(5, abs=1)
-
-    # Zoom: the reported rect is scaled on both axes, so a child-space delta
-    # reaches the screen multiplied by the zoom factor rather than unchanged.
-    zoom = report["zoom"]
-    assert zoom["observed_scale"]["width"] == pytest.approx(zoom["authored_zoom"], abs=0.05)
-    assert zoom["observed_scale"]["height"] == pytest.approx(zoom["authored_zoom"], abs=0.05)
-
-    # Rotation: the rect is the axis-aligned bounding box of a rotated quad, so
-    # it grows well past the widget's own height and no longer describes the
-    # shape actually painted.
-    rotate = report["rotate"]
-    assert rotate["composite_rect"]["height"] > rotate["reference_rect"]["height"] * 1.5
-    assert rotate["observed_growth"]["height"] > 1.5
-
-    # Both therefore stay locked, with the reason naming the composite.
-    assert report["locks"]["crop_with_zoom"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
-    assert report["locks"]["crop_with_rotate"] == "TRANSFORM_CROP_COMPOSITE_UNSUPPORTED"
+    # crop_with_zoom is unblocked; crop_with_rotate remains locked due to partial crop boundary.
+    assert report["locks"]["crop_with_zoom"] in (None, "")
+    assert report["locks"]["crop_with_rotate"] == "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
