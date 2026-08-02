@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import os
+import shutil
+import time
+from pathlib import Path
+
+import pytest
+
+from renforge.editor_style_color_runner import (
+    FIXTURE_SCREEN,
+    TARGET_ID,
+    inject_editor_style_resources,
+    run_editor_style_color_live_scenario,
+)
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("RENFORGE_STYLE_COLOR_LIVE"),
+    reason="set RENFORGE_STYLE_COLOR_LIVE=1 to run issue #50 style colour live gate",
+)
+
+_DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
+
+
+@pytest.fixture
+def demo_copy(tmp_path: Path) -> Path:
+    destination = tmp_path / "demo"
+    shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
+    inject_editor_style_resources(destination)
+    return destination
+
+
+def _open_editor(session) -> None:
+    for _ in range(40):
+        if session.client.inspect_screen("_renforge_editor_launcher").get("active") is True:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("editor launcher never became active")
+
+    assert (
+        session.client.click_element(
+            text="RF",
+            exact=True,
+            screen="_renforge_editor_launcher",
+        ).get("ok")
+        is True
+    )
+    for _ in range(40):
+        if session.client.inspect_screen("_renforge_editor_overlay").get("active") is True:
+            return
+        time.sleep(0.05)
+    pytest.fail("editor overlay never became active")
+
+
+def test_style_color_live_gate_is_blocked_with_source_and_pixel_proof(demo_copy: Path) -> None:
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.sdk import get_or_install_sdk
+
+    sdk = get_or_install_sdk("8.5.3", project_root=demo_copy)
+    fixture_path = demo_copy / "game" / "zz_renforge_editor_style_fixture.rpy"
+
+    with launch_with_bridge(
+        sdk,
+        RenpyProject(demo_copy),
+        startup_timeout=120,
+        editor=True,
+    ) as session:
+        _open_editor(session)
+        for _ in range(20):
+            available = session.client.eval_expr(f'renpy.has_screen("{FIXTURE_SCREEN}")')
+            if available is True:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("style fixture screen never became available")
+
+        report = run_editor_style_color_live_scenario(
+            session.client,
+            fixture_path=fixture_path,
+        )
+
+    assert report["adapter"] == "text"
+    assert report["property"] == "color"
+    assert report["resolve_source"]["unlocked"] is True
+    assert report["resolve_source"]["color"] == "#e22b2b"
+    assert report["locks"]["inherited"]["matches_expected"] is True
+    assert report["locks"]["expression"]["matches_expected"] is True
+
+    patch = report["source_patch"]
+    assert patch["changed"] is True
+    assert patch["matches_independent_expected"] is True
+    assert patch["outside_color_span_identical"] is True
+    assert patch["source_color_after"] == "#2457d6"
+
+    assert report["pixel_before"]["dominant"] == "red", report["pixel_before"]
+    assert report["pixel_after"]["dominant"] == "blue", report["pixel_after"]
+    assert report["runtime_color_change_proven"] is True
+    assert report["published_source_after_reload"]["ok"] is True
+
+    # Production path must remain disabled / unselected for non-focusable text.
+    assert report["product_select_unlocked_style"] is False
+    assert report["product_preview_available"] is False
+    assert report["product_commit_available"] is False
+    assert report["product_undo_available"] is False
+
+    # Cleanup restore is not product undo.
+    assert report["restore"]["byte_identical"] is True
+    assert report["restore"]["note"] == "manual_fixture_restore_cleanup_not_product_undo"
+
+    assert report["verdict"] == "blocked"
+    assert report["verdict_reason"] == "style_color_product_path_missing"
+    assert TARGET_ID == "style_color_target"

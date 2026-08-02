@@ -21,6 +21,8 @@ DEFAULT_ALIGN_PARENT_SIZE: tuple[int, int] = (1280, 720)
 # write-back is authored + (runtime − baseline). Preview uses absolute xpos/ypos.
 RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
 BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
+# Issue #50: pure hex string-literal ``color`` on a single-line ``text`` statement.
+TEXT_STYLE_COLOR_MODE_LITERAL = "literal_hex"
 
 
 class _BarSizeModel(TypedDict):
@@ -212,6 +214,26 @@ class SliderStatement:
     ypos: int
     xpos_span: tuple[int, int]
     ypos_span: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class TextColorStyleStatement:
+    """Style-colour ownership for a single-line screen-language ``text`` statement.
+
+    Unlocked only when a pure hex string-literal ``color`` is authored on the
+    statement itself. Inherited, expression, and unsupported forms leave
+    ``style_mode``/``color`` empty and set a stable lock code. Spans are
+    relative to the single statement line (including quotes on the colour token).
+    """
+
+    widget_id: str
+    color: str | None = None
+    color_span: tuple[int, int] | None = None
+    quote_char: str | None = None
+    baseline_sha256: str | None = None
+    style_mode: str | None = None
+    style_lock_code: str | None = None
+    style_lock_message: str | None = None
 
 
 _StatementT = TypeVar(
@@ -2097,3 +2119,257 @@ def apply_button_sibling_swap(
     target_new_start = target_start + len(sibling_block) + len(separator)
     target_line = staged[:target_new_start].count(b"\n") + 1
     return staged, ((plan.target_widget_id, target_line), (plan.sibling_widget_id, sibling_line))
+
+
+# ---------------------------------------------------------------------------
+# Issue #50 — dedicated style-colour source contract (text + color only)
+# ---------------------------------------------------------------------------
+
+# Property keywords that may follow a pure colour string on a ``text`` line.
+# Expression operators (if/or/else/and) are intentionally absent so compound
+# colour values fail closed rather than looking like pure literals.
+_TEXT_COLOR_FOLLOWER_WORDS = frozenset(
+    {
+        "id",
+        "xpos",
+        "ypos",
+        "pos",
+        "align",
+        "offset",
+        "anchor",
+        "xalign",
+        "yalign",
+        "xanchor",
+        "yanchor",
+        "xoffset",
+        "yoffset",
+        "xcenter",
+        "ycenter",
+        "xsize",
+        "ysize",
+        "xmaximum",
+        "ymaximum",
+        "xminimum",
+        "yminimum",
+        "xfill",
+        "yfill",
+        "size",
+        "font",
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "kerning",
+        "line_spacing",
+        "justify",
+        "textalign",
+        "layout",
+        "style",
+        "tooltip",
+        "substitute",
+        "slow_cps",
+        "slow_abortable",
+    }
+)
+
+
+def _is_hex_color_literal(value: str) -> bool:
+    """True for ``#rgb``, ``#rrggbb``, or ``#rrggbbaa`` (case-insensitive)."""
+    if not isinstance(value, str) or not value.startswith("#"):
+        return False
+    body = value[1:]
+    if len(body) not in (3, 6, 8):
+        return False
+    return all(ch in "0123456789abcdefABCDEF" for ch in body)
+
+
+def _normalize_hex_color_for_write(value: str) -> str:
+    """Return a write-safe hex colour; raises on unsupported forms."""
+    if not _is_hex_color_literal(value):
+        raise EditorSourceError(
+            "STYLE_COLOR_UNSUPPORTED_FORM",
+            "color must be a #rgb, #rrggbb, or #rrggbbaa hex literal",
+        )
+    return "#" + value[1:].lower()
+
+
+def _text_style_lock(code: str, message: str) -> tuple[str, str]:
+    return code, message
+
+
+def analyze_text_color_style(line: str, *, expected_widget_id: str) -> TextColorStyleStatement:
+    """Analyze ownership of a pure literal ``color`` on a single-line ``text``.
+
+    This is a dedicated style contract — not a position/size analyser. Coordinate
+    tokens are ignored except as follower words that prove a pure colour literal.
+    """
+    statement_text = _statement_text(line)
+    tokens = _lex_single_line(statement_text)
+    top_level = [token for token in tokens if token.depth == 0]
+    if not top_level or top_level[0].kind != "WORD" or top_level[0].text != "text":
+        raise EditorSourceError(
+            "STATEMENT_KIND_MISMATCH",
+            "style colour contract only supports single-line text statements",
+        )
+    if any(token.kind == "SYMBOL" and token.text == ":" for token in top_level):
+        raise EditorSourceError(
+            "MULTILINE_STATEMENT_REJECTED",
+            "text style colour requires a single-line statement",
+        )
+
+    widget_id = _require_single_literal_id(
+        tokens,
+        expected_widget_id=expected_widget_id,
+        human_kind="text",
+    )
+
+    color_count = 0
+    color_value: str | None = None
+    color_span: tuple[int, int] | None = None
+    quote_char: str | None = None
+    lock_code: str | None = None
+    lock_message: str | None = None
+
+    for index, token in enumerate(tokens):
+        if token.depth != 0 or token.kind != "WORD" or token.text != "color":
+            continue
+        color_count += 1
+        value_index = _next_top_level_index(tokens, index)
+        if value_index is None:
+            lock_code, lock_message = _text_style_lock(
+                "STYLE_COLOR_LITERAL_REQUIRED",
+                "color must be a pure string literal",
+            )
+            continue
+        value_token = tokens[value_index]
+        if value_token.kind != "STRING":
+            lock_code, lock_message = _text_style_lock(
+                "STYLE_COLOR_LITERAL_REQUIRED",
+                "color must be a pure string literal",
+            )
+            continue
+        following_index = _next_top_level_index(tokens, value_index)
+        if following_index is not None:
+            following = tokens[following_index]
+            if following.kind != "WORD" or following.text not in _TEXT_COLOR_FOLLOWER_WORDS:
+                lock_code, lock_message = _text_style_lock(
+                    "STYLE_COLOR_EXPRESSION_UNSUPPORTED",
+                    "color expressions and compound values are not writable",
+                )
+                continue
+        try:
+            decoded = _parse_string_token(value_token)
+        except EditorSourceError:
+            lock_code, lock_message = _text_style_lock(
+                "STYLE_COLOR_LITERAL_REQUIRED",
+                "color must be a pure string literal",
+            )
+            continue
+        if not _is_hex_color_literal(decoded):
+            lock_code, lock_message = _text_style_lock(
+                "STYLE_COLOR_UNSUPPORTED_FORM",
+                "color must be a #rgb, #rrggbb, or #rrggbbaa hex literal",
+            )
+            continue
+        color_value = decoded
+        color_span = (value_token.start, value_token.end)
+        quote_char = value_token.text[0] if value_token.text else '"'
+
+    if color_count == 0:
+        code, message = _text_style_lock(
+            "STYLE_COLOR_NOT_DIRECTLY_AUTHORED",
+            "text color is not directly authored as a literal on this statement",
+        )
+        return TextColorStyleStatement(
+            widget_id=widget_id,
+            style_lock_code=code,
+            style_lock_message=message,
+        )
+    if color_count > 1:
+        code, message = _text_style_lock(
+            "STYLE_COLOR_DUPLICATE",
+            "text statement must contain exactly one color",
+        )
+        return TextColorStyleStatement(
+            widget_id=widget_id,
+            style_lock_code=code,
+            style_lock_message=message,
+        )
+    if lock_code is not None:
+        return TextColorStyleStatement(
+            widget_id=widget_id,
+            style_lock_code=lock_code,
+            style_lock_message=lock_message,
+        )
+    if color_value is None or color_span is None or quote_char is None:
+        code, message = _text_style_lock(
+            "STYLE_COLOR_LITERAL_REQUIRED",
+            "color must be a pure string literal",
+        )
+        return TextColorStyleStatement(
+            widget_id=widget_id,
+            style_lock_code=code,
+            style_lock_message=message,
+        )
+
+    return TextColorStyleStatement(
+        widget_id=widget_id,
+        color=color_value,
+        color_span=color_span,
+        quote_char=quote_char,
+        baseline_sha256=hashlib.sha256(line.encode("utf-8")).hexdigest(),
+        style_mode=TEXT_STYLE_COLOR_MODE_LITERAL,
+        style_lock_code=None,
+        style_lock_message=None,
+    )
+
+
+def apply_text_color_patch(
+    source_bytes: bytes,
+    statement: TextColorStyleStatement,
+    *,
+    color: str,
+) -> bytes:
+    """Rewrite only the authored colour string token on a text statement line.
+
+    Spans are character offsets in the decoded single statement line. Unrelated
+    bytes, the original quote character, and the authored hex family are preserved.
+    """
+    if (
+        statement.style_mode != TEXT_STYLE_COLOR_MODE_LITERAL
+        or statement.color_span is None
+        or statement.quote_char is None
+        or statement.baseline_sha256 is None
+        or statement.color is None
+    ):
+        code = statement.style_lock_code or "STYLE_COLOR_NOT_DIRECTLY_AUTHORED"
+        message = statement.style_lock_message or "text color patch requires an unlocked literal color"
+        raise EditorSourceError(code, message)
+
+    if hashlib.sha256(source_bytes).hexdigest() != statement.baseline_sha256:
+        raise EditorSourceError(
+            "STALE_SOURCE",
+            "source changed since text color style analysis",
+        )
+    written = _normalize_hex_color_for_write(color)
+    if len(written) != len(statement.color):
+        raise EditorSourceError(
+            "STYLE_COLOR_HEX_FAMILY_MISMATCH",
+            "new color must preserve the authored hex literal length",
+        )
+    quote = statement.quote_char
+    if quote not in ("'", '"'):
+        raise EditorSourceError(
+            "STYLE_COLOR_UNSUPPORTED_FORM",
+            "color token quote character is unsupported",
+        )
+    replacement = f"{quote}{written}{quote}"
+    source_text = source_bytes.decode("utf-8")
+    start, end = statement.color_span
+    if not (0 <= start < end <= len(source_text)):
+        raise EditorSourceError(
+            "STYLE_COLOR_SPAN_INVALID",
+            "color span is out of range for the source line",
+        )
+    patched = f"{source_text[:start]}{replacement}{source_text[end:]}"
+    return patched.encode("utf-8")
