@@ -2595,16 +2595,211 @@ init 1100 python:
             state.accepted_observations[:] = state.accepted_observations[-20:]
 
 
+    def _renforge_editor_matrix_map(transform_fn, point):
+        if transform_fn is None:
+            return None
+        x, y = float(point[0]), float(point[1])
+        try:
+            if hasattr(transform_fn, "transform"):
+                mapped = transform_fn.transform(x, y)
+            elif callable(transform_fn):
+                mapped = transform_fn(x, y)
+            else:
+                return None
+        except Exception:
+            return None
+        if mapped is None:
+            return None
+        try:
+            return [float(mapped[0]), float(mapped[1])]
+        except Exception:
+            return None
+
+
+    def _renforge_editor_find_transform(displayable):
+        def _as_candidates(node):
+            values = []
+            for attr in ("at", "transform", "_transform", "child_transform", "transformation", "transforms"):
+                value = getattr(node, attr, None)
+                if value is None:
+                    continue
+                if isinstance(value, (builtins.list, tuple)):
+                    values.extend(value)
+                else:
+                    values.append(value)
+            return values
+
+        transforms = []
+        seen = set()
+
+        current = displayable
+        for _ in range(16):
+            if current is None or id(current) in seen:
+                break
+            seen.add(id(current))
+            for candidate in _as_candidates(current):
+                if candidate is None:
+                    continue
+                if getattr(candidate, "forward", None) is not None or getattr(candidate, "reverse", None) is not None:
+                    if candidate not in transforms:
+                        transforms.append(candidate)
+            if getattr(current, "forward", None) is not None or getattr(current, "reverse", None) is not None:
+                if current not in transforms:
+                    transforms.append(current)
+            name = type(current).__name__
+            if name in ("Transform", "ATLTransform", "Motion", "TransformBase"):
+                if current not in transforms:
+                    transforms.append(current)
+            next_child = getattr(current, "child", None)
+            if next_child is None:
+                next_child = getattr(current, "raw_child", None)
+            if next_child is None:
+                next_child = getattr(current, "original_child", None)
+            current = next_child
+
+        current = displayable
+        seen = set()
+        for _ in range(8):
+            if current is None or id(current) in seen:
+                break
+            seen.add(id(current))
+            parent = getattr(current, "parent", None)
+            if parent is None:
+                break
+            for candidate in _as_candidates(parent):
+                if candidate is None:
+                    continue
+                if getattr(candidate, "forward", None) is not None or getattr(candidate, "reverse", None) is not None:
+                    if candidate not in transforms:
+                        transforms.append(candidate)
+            if getattr(parent, "forward", None) is not None or getattr(parent, "reverse", None) is not None:
+                if parent not in transforms:
+                    transforms.append(parent)
+            if type(parent).__name__ in ("Transform", "ATLTransform", "Motion", "TransformBase"):
+                if parent not in transforms:
+                    transforms.append(parent)
+            current = parent
+
+        if len(transforms) == 1:
+            return transforms[0]
+        if len(transforms) > 1:
+            return "MULTIPLE_TRANSFORMS"
+        return None
+
+
+    def _renforge_editor_screen_quad_from_local(local_quad, transform_displayable, focus_rect):
+        for seam in ("forward", "reverse"):
+            seam_fn = getattr(transform_displayable, seam, None)
+            if seam_fn is None:
+                continue
+            projected = []
+            for point in local_quad:
+                mapped = _renforge_editor_matrix_map(seam_fn, point)
+                if mapped is None:
+                    return None, seam, None, "transform_map_failed"
+                projected.append(mapped)
+            projected_center = [
+                sum(float(point[0]) for point in projected) / len(projected),
+                sum(float(point[1]) for point in projected) / len(projected),
+            ]
+            focus_center = [
+                float(focus_rect[0]) + float(focus_rect[2]) / 2.0,
+                float(focus_rect[1]) + float(focus_rect[3]) / 2.0,
+            ]
+            screen_quad = [
+                [
+                    float(point[0]) + focus_center[0] - projected_center[0],
+                    float(point[1]) + focus_center[1] - projected_center[1],
+                ]
+                for point in projected
+            ]
+            min_x = min(p[0] for p in screen_quad)
+            max_x = max(p[0] for p in screen_quad)
+            min_y = min(p[1] for p in screen_quad)
+            max_y = max(p[1] for p in screen_quad)
+            rect_min_x = float(focus_rect[0]) - 1.5
+            rect_max_x = float(focus_rect[0]) + float(focus_rect[2]) + 1.5
+            rect_min_y = float(focus_rect[1]) - 1.5
+            rect_max_y = float(focus_rect[1]) + float(focus_rect[3]) + 1.5
+            if not (rect_min_x <= min_x and max_x <= rect_max_x and rect_min_y <= min_y and max_y <= rect_max_y):
+                return None, seam, None, "TRANSFORM_GEOMETRY_UNPROVEN"
+
+            return screen_quad, seam, projected, None
+        return None, "transform", None, "transform_seam_unavailable"
+
+
+    def _renforge_editor_point_in_quad(x, y, quad):
+        if not (isinstance(quad, (builtins.list, tuple)) and len(quad) == 4):
+            return False
+        x, y = float(x), float(y)
+        signs = []
+        for i in range(4):
+            p1 = quad[i]
+            p2 = quad[(i + 1) % 4]
+            dx = float(p2[0]) - float(p1[0])
+            dy = float(p2[1]) - float(p1[1])
+            vx = x - float(p1[0])
+            vy = y - float(p1[1])
+            cross = dx * vy - dy * vx
+            if abs(cross) < 1e-9:
+                continue
+            signs.append(cross > 0)
+        if not signs:
+            return True
+        return all(s == signs[0] for s in signs)
+
+
+    def _renforge_editor_candidate_hit(candidate, x, y):
+        rect = candidate.get("rect") or []
+        if len(rect) != 4:
+            return False
+        x, y = int(x), int(y)
+        if not (rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]):
+            return False
+
+        widget = candidate.get("focused_widget") or candidate.get("named_widget")
+        if widget is None and candidate.get("focus") is not None:
+            widget = getattr(candidate.get("focus"), "widget", None)
+
+        transform_d = _renforge_editor_find_transform(widget) if widget is not None else None
+        if transform_d is None:
+            return True
+
+        if transform_d == "MULTIPLE_TRANSFORMS":
+            candidate["resolve_error"] = "TRANSFORM_GEOMETRY_UNPROVEN"
+            return True
+
+        child_size = getattr(transform_d, "child_size", None)
+        if isinstance(child_size, (builtins.list, tuple)) and len(child_size) >= 2:
+            w, h = int(child_size[0]), int(child_size[1])
+        else:
+            w, h = int(rect[2]), int(rect[3])
+        if w <= 0 or h <= 0:
+            candidate["resolve_error"] = "TRANSFORM_GEOMETRY_UNPROVEN"
+            return True
+
+        local_quad = ([0.0, 0.0], [float(w), 0.0], [float(w), float(h)], [0.0, float(h)])
+        screen_quad, seam_name, seam_quad, seam_error = _renforge_editor_screen_quad_from_local(
+            local_quad,
+            transform_d,
+            rect,
+        )
+        if screen_quad is None:
+            candidate["resolve_error"] = seam_error or "TRANSFORM_GEOMETRY_UNPROVEN"
+            return True
+
+        if _renforge_editor_point_in_quad(x, y, screen_quad):
+            return True
+        return False
+
+
     def _renforge_editor_hit_candidates(x, y):
         """Return focus hits first; only fall back to text when no focusable covers the point."""
         focus_hits = []
         for candidate in reversed(_renforge_editor_focus_candidates()):
             if candidate.get("editor_owned"):
                 continue
-            rect = candidate.get("rect") or []
-            if len(rect) != 4:
-                continue
-            if rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]:
+            if _renforge_editor_candidate_hit(candidate, x, y):
                 focus_hits.append(candidate)
         if focus_hits:
             return focus_hits
@@ -2612,10 +2807,7 @@ init 1100 python:
         for candidate in reversed(_renforge_editor_text_candidates()):
             if candidate.get("editor_owned"):
                 continue
-            rect = candidate.get("rect") or []
-            if len(rect) != 4:
-                continue
-            if rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]:
+            if _renforge_editor_candidate_hit(candidate, x, y):
                 text_hits.append(candidate)
         return text_hits
 
@@ -2645,7 +2837,7 @@ init 1100 python:
             rect = candidate.get("rect") or []
             if len(rect) != 4:
                 continue
-            if not (rect[0] <= int(x) < rect[0] + rect[2] and rect[1] <= int(y) < rect[1] + rect[3]):
+            if not _renforge_editor_candidate_hit(candidate, x, y):
                 continue
             state.pointer = [int(x), int(y)]
             state.selected_target_key = None

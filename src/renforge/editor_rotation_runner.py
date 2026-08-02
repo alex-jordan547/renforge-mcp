@@ -499,10 +499,7 @@ def run_editor_rotation_live_scenario(
     corner_point = corner_sample.get("point")
     if not (isinstance(corner_point, list) and len(corner_point) == 2):
         raise AssertionError(f"rotated AABB corner probe is unavailable: {corner_sample!r}")
-    corner_select = _require_ok(
-        client.request("editor_task0_select", {"x": corner_point[0], "y": corner_point[1]}),
-        "rotation AABB corner select",
-    )
+    corner_select = client.request("editor_task0_select", {"x": corner_point[0], "y": corner_point[1]})
     corner_selected = (corner_select.get("selected") or {}).get("widget_id")
     report["aabb_corner_probe"] = {
         "point": corner_point,

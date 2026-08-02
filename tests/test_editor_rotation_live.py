@@ -56,8 +56,8 @@ def _open_editor(session) -> None:
         pytest.fail("rotation fixture screen never became active")
 
 
-def test_rotation_spike_evidence_leads_to_blocked(demo_copy: Path) -> None:
-    """Issue #48 stays blocked when an unpainted AABB corner selects the rotated target."""
+def test_rotation_product_path_pass(demo_copy: Path) -> None:
+    """Issue #48 passes when fine quad selection rejects unpainted AABB corners and allows drag/move."""
     from renforge.bridge.launcher import launch_with_bridge
     from renforge.project import RenpyProject
     from renforge.sdk import get_or_install_sdk
@@ -78,8 +78,8 @@ def test_rotation_spike_evidence_leads_to_blocked(demo_copy: Path) -> None:
             )
 
     assert [(item["verdict"], item["verdict_reason"]) for item in reports] == [
-        ("blocked", "aabb_false_positive"),
-        ("blocked", "aabb_false_positive"),
+        ("pass", None),
+        ("pass", None),
     ]
     report = reports[-1]
     rotated = report["transform_plane"]["rotated"]
@@ -112,8 +112,8 @@ def test_rotation_spike_evidence_leads_to_blocked(demo_copy: Path) -> None:
 
     corner = report["aabb_corner_probe"]
     assert corner["painted"] is False
-    assert corner["selected_rotated"] is True
-    assert corner["selected_widget_id"] == "rotation_target"
+    assert corner["selected_rotated"] is False
+    assert corner["selected_widget_id"] != "rotation_target"
 
     assert report["product_undo"]["ok"] is True
     assert report["write_chain"]["ok"] is True
