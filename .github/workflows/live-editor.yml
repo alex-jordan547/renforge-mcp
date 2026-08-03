@@ -47,10 +47,23 @@ jobs:
       # Ren'Py needs a display. The launcher's display="auto" detects a headless
       # host and falls back to Xvfb plus SDL_AUDIODRIVER=dummy on its own, so
       # having the binary present is all that is required here.
-      - name: Install Xvfb
+      - name: Install and start Xvfb
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
+          # Start the display ourselves rather than letting the launcher wrap
+          # each run in xvfb-run: the default virtual screen is too small, Ren'Py
+          # shrinks its window to fit, and every suite that reads absolute pixel
+          # coordinates then measures the wrong geometry. Observed on the first
+          # Ubuntu run: screenshots came back 1178x662 instead of 1280x720, and
+          # hit_sentinel, rotation and task0 failed on that alone.
+          Xvfb :99 -screen 0 1920x1080x24 &
+          for _ in $(seq 1 30); do
+            xdpyinfo -display :99 >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          xdpyinfo -display :99 | grep dimensions
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
 
       # The SDK is a few hundred MB. Without this the download dominates the run.
       - name: Cache Ren'Py SDK
