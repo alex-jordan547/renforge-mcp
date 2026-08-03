@@ -84,6 +84,12 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Cache frontend static bundle
+        uses: actions/cache@v4
+        with:
+          path: src/renforge/ui/static
+          key: ui-static-${{ runner.os }}-${{ hashFiles('ui/package-lock.json', 'ui/package.json', 'ui/tsconfig*.json', 'ui/vite.config.ts', 'ui/index.html', 'ui/src/**', 'ui/public/**', 'ui/scripts/**') }}
+
       - name: Build frontend if the static bundle is missing
         run: |
           if [ -d src/renforge/ui/static ] && [ -n "$(ls -A src/renforge/ui/static 2>/dev/null)" ]; then
