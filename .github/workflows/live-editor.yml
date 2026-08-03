@@ -59,6 +59,22 @@ jobs:
           path: ${{ env.RENPY_SDK_CACHE_DIR }}
           key: renpy-sdk-8.5.3-${{ runner.os }}
 
+      # The package build force-includes src/renforge/ui/static, so it must exist
+      # before `uv sync`. The CI workflow gets it from the ui-build job's
+      # artifact; this workflow stands alone, so it builds the frontend itself.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build frontend
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Install project
         run: uv sync --all-extras
 
