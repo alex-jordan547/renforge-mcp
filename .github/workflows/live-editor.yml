@@ -69,9 +69,13 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Build frontend
-        working-directory: ui
+      - name: Build frontend if the static bundle is missing
         run: |
+          if [ -d src/renforge/ui/static ] && [ -n "$(ls -A src/renforge/ui/static 2>/dev/null)" ]; then
+            echo "src/renforge/ui/static already present — skipping frontend build"
+            exit 0
+          fi
+          cd ui
           npm ci
           npm run build
 
