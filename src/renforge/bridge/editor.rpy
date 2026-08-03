@@ -2642,9 +2642,23 @@ init 1100 python:
                     and key.get("widget_id") == selected_widget
                     and tuple(key.get("source_location") or []) == selected_source
                 ):
-                    loose_matches.append(candidate)
+                    already_seen = False
+                    for seen in loose_matches:
+                        seen_key = seen.get("runtime_key")
+                        if isinstance(seen_key, builtins.dict) and _renforge_editor_rebind_signature(seen_key) == _renforge_editor_rebind_signature(key):
+                            already_seen = True
+                            break
+                    if not already_seen:
+                        loose_matches.append(candidate)
                 elif _renforge_editor_rebind_signature(key) == _renforge_editor_rebind_signature(selected_key):
-                    loose_matches.append(candidate)
+                    already_seen = False
+                    for seen in loose_matches:
+                        seen_key = seen.get("runtime_key")
+                        if isinstance(seen_key, builtins.dict) and _renforge_editor_rebind_signature(seen_key) == _renforge_editor_rebind_signature(key):
+                            already_seen = True
+                            break
+                    if not already_seen:
+                        loose_matches.append(candidate)
         if len(matches) == 0:
             if len(loose_matches) == 1:
                 return loose_matches[0], None
@@ -3986,14 +4000,15 @@ init 1100 python:
         candidates = [
             candidate
             for candidate in _renforge_editor_all_candidates()
-            if candidate.get("runtime_key") == runtime_key
+            if candidate.get("runtime_key") is not None
+            and _renforge_editor_same_target_key(candidate.get("runtime_key"), runtime_key)
         ]
         if len(candidates) > 1:
             # The focus pass and the non-focusable text pass both walk the same
             # screen, so one widget can surface in each (#72). These candidates
-            # matched runtime_key exactly, so they denote a single target seen
-            # twice, not two instances. Keep the first — focus candidates come
-            # first, and focus_list is the reference measurement. Genuine
+            # matched runtime_key under same_target_key, so they denote a single
+            # target seen twice, not two instances. Keep the first — focus candidates
+            # come first, and focus_list is the reference measurement. Genuine
             # ambiguity is still caught on the signature fallback below.
             candidates = candidates[:1]
         if not candidates:
@@ -4005,7 +4020,14 @@ init 1100 python:
                 if not isinstance(candidate_key, builtins.dict):
                     continue
                 if _renforge_editor_rebind_signature(candidate_key) == wanted:
-                    candidates.append(candidate)
+                    already_seen = False
+                    for seen in candidates:
+                        seen_key = seen.get("runtime_key")
+                        if isinstance(seen_key, builtins.dict) and _renforge_editor_rebind_signature(seen_key) == wanted:
+                            already_seen = True
+                            break
+                    if not already_seen:
+                        candidates.append(candidate)
         if len(candidates) > 1:
             return {"ok": False, "error": "AMBIGUOUS_REBIND"}
         if not candidates:
@@ -4059,6 +4081,8 @@ init 1100 python:
                 and _renforge_editor_same_target_key(candidate.get("runtime_key"), expected_runtime_key)
                 and isinstance(candidate.get("runtime_key", {}).get("source_location"), list)
             ]
+            if len(targets) > 1:
+                targets = targets[:1]
             if not targets:
                 wanted = _renforge_editor_rebind_signature(expected_runtime_key)
                 signature_matches = []
@@ -4070,11 +4094,12 @@ init 1100 python:
                         continue
                     # The focus pass and the non-focusable text pass both walk the
                     # same screen, so one widget can surface in each (#72). Count
-                    # an identical runtime key once: it is one target seen twice,
+                    # an identical target signature once: it is one target seen twice,
                     # not two instances competing for the rebind.
                     already_seen = False
                     for seen in signature_matches:
-                        if seen.get("runtime_key") == candidate_key:
+                        seen_key = seen.get("runtime_key")
+                        if isinstance(seen_key, builtins.dict) and _renforge_editor_rebind_signature(seen_key) == wanted:
                             already_seen = True
                             break
                     if not already_seen:
