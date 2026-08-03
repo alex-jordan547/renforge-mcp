@@ -27,13 +27,21 @@ This evidence spike evaluates editing displayables styled with `at Transform(...
 - Initial position: `[100, 300]` with `at Transform(zoom=1.0)`
 - Observed behavior: Stationary transform wrappers without active time-varying ATL blocks allow static previewing and source patching, but active ATL animations fail the stability and continuity invariants.
 
-## Reproducibility
+## Reproducibility & Correction (2026-08-03)
 
-The live scenario was executed against Ren'Py 8.5.3 fixture:
+> [!WARNING]
+> The original scenario function `run_editor_animated_live_scenario` called a non-existent bridge command `editor_task0_preview`. `editor_task0_preview` never existed in `src/renforge/bridge/editor.rpy`.
+> The fantasy test `test_animated_element_editing_spike` has been removed to keep the test suite honest.
+>
+> The actual live test for Issue #51 is `test_atl_ancestry_reports_its_own_lock_reason` in `tests/test_editor_animated_live.py`, which passes 100% and correctly verifies that ATL elements return `ATL_ANIMATION_UNSUPPORTED` upon selection (`editor_task0_select`).
+
+Live suite execution:
 
 ```bash
 RENFORGE_ANIMATED_LIVE=1 PYTHONPATH=src uv run pytest -q tests/test_editor_animated_live.py -vv
 ```
+
+Result: `1 passed`.
 
 Unit suite verification:
 
@@ -45,4 +53,4 @@ Result: `1 passed`.
 
 ## Decision
 
-**Do not unlock animated element editing.** Displayables using active ATL position motion or time-varying animations remain BLOCKED because `_widget_properties` displayable recreation resets ATL animation state (`atl_time_reset`) and ongoing ATL motion overrides `_widget_properties` position updates (`atl_position_override_conflict`).
+**Do not unlock animated element editing.** Displayables using active ATL position motion or time-varying animations remain BLOCKED (`ATL_ANIMATION_UNSUPPORTED`) because `_renforge_editor_validate_runtime_key` explicitly detects `ATLTransform` in ancestry and locks the element.

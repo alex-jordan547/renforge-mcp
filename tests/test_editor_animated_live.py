@@ -11,7 +11,6 @@ from renforge.editor_animated_runner import (
     FIXTURE_SCREEN,
     _show_fixture,
     inject_editor_animated_resources,
-    run_editor_animated_live_scenario,
 )
 from renforge.editor_live_common import wait_bounds
 
@@ -57,26 +56,6 @@ def _open_editor(session) -> None:
         pytest.fail("animated fixture screen never became active")
 
 
-def test_animated_element_editing_spike(demo_copy: Path) -> None:
-    """Issue #51: Animated elements stay blocked under _widget_properties preview seam."""
-    from renforge.bridge.launcher import launch_with_bridge
-    from renforge.project import RenpyProject
-    from renforge.sdk import get_or_install_sdk
-
-    sdk = get_or_install_sdk("8.5.3", project_root=demo_copy)
-    project = RenpyProject(demo_copy)
-    fixture_path = demo_copy / "game" / "zz_renforge_editor_animated_fixture.rpy"
-
-    with launch_with_bridge(sdk, project, startup_timeout=120, editor=True) as session:
-        _open_editor(session)
-        report = run_editor_animated_live_scenario(
-            session.client,
-            fixture_path=fixture_path,
-        )
-
-    assert report["verdict"] == "blocked"
-    assert report["reason_code"] in {"atl_position_override_conflict", "atl_time_reset"}
-    assert "variants" in report
 
 
 def test_atl_ancestry_reports_its_own_lock_reason(demo_copy: Path) -> None:
