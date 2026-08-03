@@ -1,0 +1,66 @@
+name: Live editor suites
+
+# The editor live suites drive a real Ren'Py 8.5.3 process. They are opt-in
+# behind per-suite RENFORGE_*_LIVE variables, so the normal CI never runs them —
+# which is how a regression once stayed green across six merged PRs. This job is
+# the place where they do run.
+#
+# Not on every push: the whole set takes ~6 minutes and only exercises Ren'Py
+# behaviour, not Python portability. Nightly, on demand, or on a PR labelled
+# `live-tests`.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+concurrency:
+  group: live-editor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: Live editor suites (Ren'Py 8.5.3)
+    # On a PR, only when it carries the `live-tests` label.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'live-tests')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RENPY_SDK_CACHE_DIR: ${{ github.workspace }}/.renpy-sdk-cache
+      PYTHONPATH: src
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Ren'Py needs a display. The launcher's display="auto" detects a headless
+      # host and falls back to Xvfb plus SDL_AUDIODRIVER=dummy on its own, so
+      # having the binary present is all that is required here.
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      # The SDK is a few hundred MB. Without this the download dominates the run.
+      - name: Cache Ren'Py SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RENPY_SDK_CACHE_DIR }}
+          key: renpy-sdk-8.5.3-${{ runner.os }}
+
+      - name: Install project
+        run: uv sync --all-extras
+
+      - name: Run every live editor suite
+        run: bash scripts/run_live_editor_suites.sh
