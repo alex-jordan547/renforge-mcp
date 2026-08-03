@@ -50,7 +50,9 @@ jobs:
       - name: Install and start Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          # x11-utils provides xdpyinfo, used below to wait for the server and to
+          # log the screen size.
+          sudo apt-get install -y xvfb x11-utils
           # Start the display ourselves rather than letting the launcher wrap
           # each run in xvfb-run: the default virtual screen is too small, Ren'Py
           # shrinks its window to fit, and every suite that reads absolute pixel
