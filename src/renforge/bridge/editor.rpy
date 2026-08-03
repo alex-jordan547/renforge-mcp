@@ -2946,6 +2946,13 @@ init 1100 python:
                 _renforge_editor_set_label(x, y)
                 state.selected_rect = list(rect)
                 observation, _ignore = _renforge_editor_observation_for_candidate(candidate)
+                if observation is None:
+                    # `_renforge_editor_observation_for_candidate` refuses to build an
+                    # observation for exactly the keys this lock rejects, so asking it
+                    # again here yields nothing. Fall back to the runtime key that
+                    # justifies the lock: the failed-gate UI (#52) needs the instance
+                    # discriminator to explain *why* the target is locked.
+                    observation = {"runtime_key": runtime_key, "rect": list(rect)}
                 return {
                     "ok": False,
                     "lock_reason": lock,
