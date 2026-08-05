@@ -44,6 +44,9 @@ _EDITOR_INJECTED_PREFIX: str = "zzrenforge_editor_"
 _EDITOR_MANIFEST_NAME: str = "editor-session.json"
 _EDITOR_DEFAULT_LANGUAGE: str = "en"
 _EDITOR_SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
+# Languages Ren'Py's bundled font cannot draw: its own documentation says it
+# omits Chinese, Japanese and Korean for size reasons.
+_EDITOR_CJK_LANGUAGES: frozenset[str] = frozenset({"zh-CN"})
 
 
 class ProjectBridgeLock:
@@ -173,7 +176,63 @@ def _write_editor_assets(assets_dir: Path) -> list[dict[str, str]]:
     return written
 
 
-def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str]:
+def _editor_font_candidates() -> tuple[Path, ...]:
+    """System fonts that cover Chinese, most likely first, by platform."""
+    if sys.platform == "darwin":
+        names = (
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Supplemental/Songti.ttc",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        )
+    elif os.name == "nt":
+        names = (
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/simsun.ttc",
+        )
+    else:
+        names = (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        )
+    return tuple(Path(name) for name in names)
+
+
+def _write_editor_font(assets_dir: Path, entries: list[dict[str, str]]) -> str:
+    """Borrow a system CJK font when the interface language needs one.
+
+    Nothing font-shaped ships in this repository. Ren'Py refuses to load a font
+    from outside the game tree, so the only way to draw Chinese is to place one
+    inside it — and that copy happens solely when a language actually calls for
+    it, then leaves with the rest of the session artifacts.
+    """
+    if _editor_language() not in _EDITOR_CJK_LANGUAGES:
+        return ""
+    for candidate in _editor_font_candidates():
+        try:
+            if not candidate.is_file():
+                continue
+            payload = candidate.read_bytes()
+        except OSError:
+            continue
+        relative = "fonts/cjk%s" % (candidate.suffix.lower() or ".ttf")
+        target = assets_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        entries.append({"path": relative, "sha256": hashlib.sha256(payload).hexdigest()})
+        return relative
+    return ""
+
+
+def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str, str]:
     """Inject the editor and its assets, returning ``(source path, assets dirname)``.
 
     The assets directory shares the ``.rpy`` stem, so the same collision-free
@@ -207,6 +266,7 @@ def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str]:
                 handle.flush()
                 os.fsync(handle.fileno())
             assets = _write_editor_assets(assets_dir)
+            font_relative = _write_editor_font(assets_dir, assets)
             manifest = {
                 "schema_version": 2,
                 "basename": basename,
@@ -223,7 +283,7 @@ def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str]:
                 _editor_manifest_path(project.root),
                 json.dumps(manifest, separators=(",", ":")).encode("utf-8"),
             )
-            return source_path, stem
+            return source_path, stem, font_relative
         except BaseException:
             shutil.rmtree(assets_dir, ignore_errors=True)
             try:
@@ -407,14 +467,22 @@ def _editor_language() -> str:
     return requested if requested in _EDITOR_SUPPORTED_LANGUAGES else _EDITOR_DEFAULT_LANGUAGE
 
 
-def _editor_environment(endpoint: EditorEndpoint, *, assets_dirname: str) -> dict[str, str]:
+def _editor_environment(
+    endpoint: EditorEndpoint, *, assets_dirname: str, font_relative: str = ""
+) -> dict[str, str]:
+    language = _editor_language()
+    # A language with no font to draw it renders as empty boxes. Readable
+    # English is a better answer than an interface the user cannot read at all.
+    if language in _EDITOR_CJK_LANGUAGES and not font_relative:
+        language = _EDITOR_DEFAULT_LANGUAGE
     return {
         "RENFORGE_EDITOR_HOST": endpoint.host,
         "RENFORGE_EDITOR_PORT": str(endpoint.port),
         "RENFORGE_EDITOR_TOKEN": endpoint.token,
         "RENFORGE_EDITOR_PROTOCOL": str(endpoint.protocol_version),
         "RENFORGE_EDITOR_ASSETS": assets_dirname,
-        "RENFORGE_EDITOR_LANG": _editor_language(),
+        "RENFORGE_EDITOR_LANG": language,
+        "RENFORGE_EDITOR_FONT": font_relative,
     }
 
 
@@ -704,9 +772,10 @@ def _launch_after_project_lock(
         injected.write_text(_BRIDGE_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         _write_session_init(project, savedir=savedir_path)
         editor_assets_dirname: str | None = None
+        editor_font_relative: str = ""
         if editor_endpoint is not None:
             _phase("injecting_editor")
-            _, editor_assets_dirname = _inject_editor_artifact(project)
+            _, editor_assets_dirname, editor_font_relative = _inject_editor_artifact(project)
     except OSError as exc:
         raise LaunchError(
             "BRIDGE_FILE_NOT_CREATED",
@@ -719,7 +788,11 @@ def _launch_after_project_lock(
     env["RENFORGE_BRIDGE_PORT"] = str(port)
     if editor_endpoint is not None:
         env.update(
-            _editor_environment(editor_endpoint, assets_dirname=editor_assets_dirname or "")
+            _editor_environment(
+                editor_endpoint,
+                assets_dirname=editor_assets_dirname or "",
+                font_relative=editor_font_relative,
+            )
         )
 
     command = project.renpy_command(sdk, ("run", "--warp", warp) if warp is not None else ("run",))

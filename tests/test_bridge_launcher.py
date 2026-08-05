@@ -699,6 +699,7 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
         "RENFORGE_EDITOR_PROTOCOL",
         "RENFORGE_EDITOR_ASSETS",
         "RENFORGE_EDITOR_LANG",
+        "RENFORGE_EDITOR_FONT",
     }
     assert env["RENFORGE_EDITOR_HOST"] == "127.0.0.1"
     assert env["RENFORGE_EDITOR_PORT"] == "51234"
@@ -1139,3 +1140,57 @@ def test_editor_builtin_english_matches_the_shipped_catalogue() -> None:
         (_EDITOR_ASSETS_RESOURCE / "locales" / "en.json").read_text(encoding="utf-8")
     )
     assert builtins_map == english
+
+
+def test_editor_falls_back_to_english_when_no_cjk_font_exists(monkeypatch) -> None:
+    """Chinese without a font renders as empty boxes, which is worse than English."""
+    from renforge.bridge import launcher
+
+    endpoint = EditorEndpoint(
+        host="127.0.0.1", port=1, token="t", protocol_version=PROTOCOL_VERSION
+    )
+    monkeypatch.setenv("RENFORGE_LANG", "zh-CN")
+
+    stranded = launcher._editor_environment(endpoint, assets_dirname="d", font_relative="")
+    assert stranded["RENFORGE_EDITOR_LANG"] == "en"
+    assert stranded["RENFORGE_EDITOR_FONT"] == ""
+
+    served = launcher._editor_environment(
+        endpoint, assets_dirname="d", font_relative="fonts/cjk.ttc"
+    )
+    assert served["RENFORGE_EDITOR_LANG"] == "zh-CN"
+    assert served["RENFORGE_EDITOR_FONT"] == "fonts/cjk.ttc"
+
+
+def test_editor_font_is_only_borrowed_for_languages_that_need_one(monkeypatch, tmp_path) -> None:
+    """A 20 MB copy into the user's game directory needs an actual reason."""
+    from renforge.bridge import launcher
+
+    source = tmp_path / "fake-cjk.ttc"
+    source.write_bytes(b"not really a font, but bytes all the same")
+    monkeypatch.setattr(launcher, "_editor_font_candidates", lambda: (source,))
+
+    english_dir = tmp_path / "english"
+    english_dir.mkdir()
+    entries: list[dict[str, str]] = []
+    monkeypatch.setenv("RENFORGE_LANG", "en")
+    assert launcher._write_editor_font(english_dir, entries) == ""
+    assert entries == []
+    assert not (english_dir / "fonts").exists()
+
+    chinese_dir = tmp_path / "chinese"
+    chinese_dir.mkdir()
+    monkeypatch.setenv("RENFORGE_LANG", "zh-CN")
+    relative = launcher._write_editor_font(chinese_dir, entries)
+    assert relative == "fonts/cjk.ttc"
+    # Recorded like any other asset, so session cleanup can prove and remove it.
+    assert entries[0]["path"] == "fonts/cjk.ttc"
+    assert (chinese_dir / relative).read_bytes() == source.read_bytes()
+
+
+def test_editor_font_absent_from_the_repository() -> None:
+    """No font ships here: the interface borrows one from the host machine."""
+    from renforge.bridge.launcher import _editor_asset_sources
+
+    shipped = {relative for relative, _source in _editor_asset_sources()}
+    assert not any(name.startswith("fonts/") for name in shipped)

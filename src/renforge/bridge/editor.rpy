@@ -164,36 +164,44 @@ screen _rf_editor_toolbar(tools_visible):
                 action Function(_renforge_editor_consume, _renforge_editor_exit)
                 sensitive not _renforge_editor_state().save_in_progress
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             textbutton _renforge_editor_t("toolbar.undo"):
                 id "rf_undo"
                 action Function(_renforge_editor_consume, _renforge_editor_undo)
                 sensitive _renforge_editor_can_undo()
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             textbutton _renforge_editor_t("toolbar.redo"):
                 id "rf_redo"
                 action Function(_renforge_editor_consume, _renforge_editor_redo)
                 sensitive _renforge_editor_can_redo()
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             textbutton _renforge_editor_t("toolbar.reset"):
                 id "rf_reset"
                 action Function(_renforge_editor_consume, _renforge_editor_reset_selected)
                 sensitive _renforge_editor_has_selection()
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             textbutton (_renforge_editor_t("toolbar.tools_on") if tools_visible else _renforge_editor_t("toolbar.tools_off")):
                 id "rf_tools"
                 action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
                 background Solid("#7c3aed" if tools_visible else "#3f3f46")
                 text_color "#ffffff"
+                text_font _renforge_editor_ui_font()
             textbutton _renforge_editor_t("toolbar.opacity_down"):
                 id "rf_opacity_down"
                 action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1)
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             textbutton _renforge_editor_t("toolbar.opacity_up"):
                 id "rf_opacity_up"
                 action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
                 text_color "#f4f4f5"
+                text_font _renforge_editor_ui_font()
             text _renforge_editor_status_text():
                 color "#a1a1aa"
+                font _renforge_editor_ui_font()
                 size 14
                 yalign 0.5
                 xminimum 120
@@ -205,6 +213,7 @@ screen _rf_editor_toolbar(tools_visible):
                 hover_background Solid("#8b5cf6")
                 insensitive_background Solid("#3f3f46")
                 text_color "#ffffff"
+                text_font _renforge_editor_ui_font()
             if _renforge_editor_style_color_capable():
                 textbutton _renforge_editor_style_color_label():
                     id "rf_style_color"
@@ -213,6 +222,7 @@ screen _rf_editor_toolbar(tools_visible):
                     background Solid("#2457d6")
                     hover_background Solid("#3b6fe0")
                     text_color "#ffffff"
+                    text_font _renforge_editor_ui_font()
 
 
 init 1090 python:
@@ -282,12 +292,33 @@ init 1090 python:
         "toolbar.opacity_down": "-",
         "toolbar.opacity_up": "+",
         "launcher.activate": "RF",
+        "save.idle": "Save",
+        "save.saving": "Saving / Reloading...",
+        "save.saved": "Saved",
     }
     _RF_UI_STRINGS_READY = []
 
     def _renforge_editor_language():
         import os
         return (os.environ.get("RENFORGE_EDITOR_LANG") or "").strip() or "en"
+
+    def _renforge_editor_ui_font():
+        """Interface font: the borrowed CJK face, else the game's own.
+
+        Never None. Ren'Py does not read a None font as "inherit" — it passes
+        it to load_face as a filename and dies on `"@" in fn`. So when no font
+        was borrowed, hand back the font the game is already drawing with.
+        """
+        import os
+        assets = (os.environ.get("RENFORGE_EDITOR_ASSETS") or "").strip()
+        font = (os.environ.get("RENFORGE_EDITOR_FONT") or "").strip()
+        if assets and font:
+            return "%s/%s" % (assets, font)
+        try:
+            inherited = style.default.font
+        except Exception:
+            inherited = None
+        return inherited or "DejaVuSans.ttf"
 
     def _renforge_editor_load_strings():
         """Overlay the requested locale on the built-in English, key by key.
@@ -604,10 +635,10 @@ init 1100 python:
     def _renforge_editor_save_label():
         state = _renforge_editor_state()
         if state.save_button_state == "saving":
-            return "Saving / Reloading..."
+            return _renforge_editor_t("save.saving")
         if state.save_button_state == "saved":
-            return "Saved"
-        return "Save"
+            return _renforge_editor_t("save.saved")
+        return _renforge_editor_t("save.idle")
 
 
     def _renforge_editor_tools_visible():

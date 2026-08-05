@@ -7,5 +7,8 @@
   "toolbar.tools_off": "工具：关",
   "toolbar.opacity_down": "-",
   "toolbar.opacity_up": "+",
-  "launcher.activate": "RF"
+  "launcher.activate": "RF",
+  "save.idle": "保存",
+  "save.saving": "保存 / 重新加载…",
+  "save.saved": "已保存"
 }
