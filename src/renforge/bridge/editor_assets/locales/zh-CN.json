@@ -14,5 +14,8 @@
   "lock.locked": "已锁定",
   "lock.blocked": "此处受限",
   "lock.refused": "已拒绝",
-  "tree.title": "场景树"
+  "tree.title": "场景树",
+  "inspector.position": "位置",
+  "inspector.size": "尺寸",
+  "inspector.no_geometry": "此选择没有测得的几何信息。"
 }

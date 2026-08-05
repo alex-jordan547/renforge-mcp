@@ -14,5 +14,8 @@
   "lock.locked": "Locked",
   "lock.blocked": "Blocked here",
   "lock.refused": "Refused",
-  "tree.title": "SCENE TREE"
+  "tree.title": "SCENE TREE",
+  "inspector.position": "POSITION",
+  "inspector.size": "SIZE",
+  "inspector.no_geometry": "No measured geometry for this selection."
 }

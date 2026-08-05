@@ -1284,3 +1284,16 @@ def test_region_screens_are_not_duplicated_in_the_core_file() -> None:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("screen "):
                 assert line not in core, f"{line!r} defined in both {path.name} and editor.rpy"
+
+
+def test_analysis_in_flight_is_not_reported_as_a_refusal() -> None:
+    """ANALYZING shares the lock field but means "still deciding", not "no".
+
+    Announcing a refusal for the half-second an analysis takes would teach the
+    user to distrust the word when it matters.
+    """
+    classify = _load_lock_classifier()
+    assert classify("ANALYZING") is None
+    # Genuinely unmeasured is still a refusal to act, and must stay visible.
+    assert classify("UNMEASURED") == "blocked"
+    assert classify("AMBIGUOUS_HIT") == "locked"

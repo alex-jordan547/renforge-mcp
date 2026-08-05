@@ -42,6 +42,7 @@ screen _renforge_editor_overlay():
             # under the chrome entirely.
             if _rf_tools_visible:
                 use _rf_editor_tree()
+                use _rf_editor_inspector()
 
             if _rf_tools_visible and _rf_guide["line_x"] is not None:
                 add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
@@ -242,6 +243,9 @@ init 1090 python:
         "lock.blocked": "Blocked here",
         "lock.refused": "Refused",
         "tree.title": "SCENE TREE",
+        "inspector.position": "POSITION",
+        "inspector.size": "SIZE",
+        "inspector.no_geometry": "No measured geometry for this selection.",
     }
     _RF_UI_STRINGS_READY = []
 
@@ -690,6 +694,37 @@ init 1100 python:
         return _renforge_editor_ui_px(int(depth) * 26)
 
 
+    # ── Inspector (Lot 1.C) ─────────────────────────────────────────────────
+
+    def _renforge_editor_inspector_facts():
+        """Everything the inspector shows about the current selection.
+
+        Geometry comes from the live selection rect rather than from the source
+        literals: what the user is looking at is where the widget actually is,
+        including any preview the editor has applied but not yet written.
+        """
+        state = _renforge_editor_state()
+        widget_id = str(getattr(state, "selected_widget_id", "") or "")
+        if not widget_id:
+            return None
+        screen_name = str(getattr(state, "selected_screen", "") or "")
+        source = ""
+        if screen_name:
+            _screen, widgets = _renforge_editor_widget_map(screen_name)
+            widget = widgets.get(widget_id) if widgets else None
+            if widget is not None:
+                location = _renforge_editor_location(widget)
+                if location:
+                    source = "%s:%s" % (location[0], location[1])
+        return {
+            "id": widget_id,
+            "screen": screen_name,
+            "source": source,
+            "rect": _renforge_editor_selection_snapshot(),
+            "lock": _renforge_editor_selected_lock(),
+        }
+
+
     # ── The language of refusal (Lot 2.A) ───────────────────────────────────
     # The editor refuses often, and for good reasons. A refusal the interface
     # does not explain is indistinguishable from a bug: a click that does
@@ -707,6 +742,12 @@ init 1100 python:
         "ATTESTATION_FAILED": "refused",
     }
 
+    # Work in flight is not a refusal. ANALYZING sits in the same field as the
+    # lock codes while the coordinator is still deciding, and announcing
+    # "blocked" for the half-second it takes would teach the user to distrust
+    # the word.
+    _RF_LOCK_PENDING = frozenset({"ANALYZING"})
+
     def _renforge_editor_lock_level(code):
         """Sort a lock code into locked, blocked or refused.
 
@@ -720,6 +761,8 @@ init 1100 python:
         if not code:
             return None
         name = str(code).upper()
+        if name in _RF_LOCK_PENDING:
+            return None
         explicit = _RF_LOCK_EXPLICIT.get(name)
         if explicit is not None:
             return explicit
