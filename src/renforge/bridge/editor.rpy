@@ -199,6 +199,13 @@ screen _rf_editor_toolbar(tools_visible):
                 action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
                 text_color "#f4f4f5"
                 text_font _renforge_editor_ui_font()
+            if _renforge_editor_selected_lock() is not None:
+                text _renforge_editor_lock_headline():
+                    id "rf_lock"
+                    color _renforge_editor_lock_color()
+                    font _renforge_editor_ui_font()
+                    size 14
+                    yalign 0.5
             text _renforge_editor_status_text():
                 color "#a1a1aa"
                 font _renforge_editor_ui_font()
@@ -248,6 +255,10 @@ init 1090 python:
         "accent_bright": "#2997ff",
         "accent_on": "#ffffff",
         "warn": "#eab308",
+        # One colour per refusal level, so the severity reads before the words.
+        "lock_locked": "#eab308",
+        "lock_blocked": "#e8913c",
+        "lock_refused": "#dc2626",
     }
 
     def _renforge_editor_ui_scale():
@@ -295,6 +306,9 @@ init 1090 python:
         "save.idle": "Save",
         "save.saving": "Saving / Reloading...",
         "save.saved": "Saved",
+        "lock.locked": "Locked",
+        "lock.blocked": "Blocked here",
+        "lock.refused": "Refused",
     }
     _RF_UI_STRINGS_READY = []
 
@@ -651,6 +665,90 @@ init 1100 python:
         if lock_reason is None:
             return None
         return str(lock_reason)
+
+
+    # ── The language of refusal (Lot 2.A) ───────────────────────────────────
+    # The editor refuses often, and for good reasons. A refusal the interface
+    # does not explain is indistinguishable from a bug: a click that does
+    # nothing gets reported as broken, while a locked element with a stated
+    # reason is a feature. Every refusal therefore lands in one of three
+    # levels, and carries the coordinator's own message as its detail.
+
+    # Classification is by the shape of the code, not a fixed list. The
+    # vocabulary grows with every capability — 26 codes in the coordinator and
+    # more in the source layer today — so an unclassified code must still land
+    # somewhere honest rather than vanish.
+    _RF_LOCK_EXPLICIT = {
+        "EDITOR_OWNED_TARGET": "locked",
+        "SOURCE_READ_FAILED": "refused",
+        "ATTESTATION_FAILED": "refused",
+    }
+
+    def _renforge_editor_lock_level(code):
+        """Sort a lock code into locked, blocked or refused.
+
+        locked   — this source form is never editable in place
+        blocked  — editable in principle, not proven on this instance
+        refused  — attempted, rejected, and rolled back
+
+        Unknown codes fall to `blocked`: claiming a capability boundary we have
+        not measured would be a stronger statement than the evidence supports.
+        """
+        if not code:
+            return None
+        name = str(code).upper()
+        explicit = _RF_LOCK_EXPLICIT.get(name)
+        if explicit is not None:
+            return explicit
+        if name.endswith("_MISMATCH") or name.startswith("ANALYSIS_"):
+            return "refused"
+        if (
+            name.endswith("_UNSUPPORTED")
+            or name.endswith("_REQUIRED")
+            or name.endswith("_REJECTED")
+            or name.endswith("_AMBIGUOUS")
+            or name.startswith("AMBIGUOUS_")
+        ):
+            return "locked"
+        return "blocked"
+
+    def _renforge_editor_lock_message(lock_reason):
+        """The coordinator's own sentence about this refusal, if it wrote one."""
+        if isinstance(lock_reason, builtins.dict):
+            return str(lock_reason.get("message") or "")
+        return ""
+
+    def _renforge_editor_selected_lock():
+        """Current selection's refusal as (level, code, message), or None."""
+        reason = getattr(_renforge_editor_state(), "selected_lock_reason", None)
+        if not reason:
+            return None
+        code = _renforge_editor_lock_code(reason)
+        level = _renforge_editor_lock_level(code)
+        if level is None:
+            return None
+        return (level, code or "", _renforge_editor_lock_message(reason))
+
+    def _renforge_editor_lock_headline():
+        """Short label naming the level, for a control the user reads at a glance."""
+        current = _renforge_editor_selected_lock()
+        if current is None:
+            return ""
+        return _renforge_editor_t("lock.%s" % current[0])
+
+    def _renforge_editor_lock_detail():
+        """The reason in full: level, message, and the code to report with."""
+        current = _renforge_editor_selected_lock()
+        if current is None:
+            return ""
+        level, code, message = current
+        return "%s — %s (%s)" % (_renforge_editor_t("lock.%s" % level), message or code, code)
+
+    def _renforge_editor_lock_color():
+        current = _renforge_editor_selected_lock()
+        if current is None:
+            return _renforge_editor_ui_color("meta")
+        return _renforge_editor_ui_color("lock_%s" % current[0])
 
 
     def _renforge_editor_can_undo():

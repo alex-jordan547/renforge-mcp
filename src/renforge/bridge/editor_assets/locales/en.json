@@ -10,5 +10,8 @@
   "launcher.activate": "RF",
   "save.idle": "Save",
   "save.saving": "Saving / Reloading...",
-  "save.saved": "Saved"
+  "save.saved": "Saved",
+  "lock.locked": "Locked",
+  "lock.blocked": "Blocked here",
+  "lock.refused": "Refused"
 }

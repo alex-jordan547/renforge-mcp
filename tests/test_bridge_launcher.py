@@ -1194,3 +1194,61 @@ def test_editor_font_absent_from_the_repository() -> None:
 
     shipped = {relative for relative, _source in _editor_asset_sources()}
     assert not any(name.startswith("fonts/") for name in shipped)
+
+
+def _load_lock_classifier():
+    """Pull the classifier out of the .rpy so plain pytest can exercise it.
+
+    It is deliberately dependency-free — a dict and string suffixes — precisely
+    so the rule can be checked without booting Ren'Py.
+    """
+    import textwrap
+    from renforge.bridge.launcher import _EDITOR_RESOURCE
+
+    source = _EDITOR_RESOURCE.read_text(encoding="utf-8")
+    start = source.index("    _RF_LOCK_EXPLICIT = {")
+    end = source.index("    def _renforge_editor_lock_message(")
+    namespace: dict[str, object] = {}
+    exec(textwrap.dedent(source[start:end]), namespace)
+    return namespace["_renforge_editor_lock_level"]
+
+
+def test_every_real_lock_code_lands_in_a_level() -> None:
+    """No refusal may be silent: an unclassified code would show nothing at all."""
+    import re
+    from pathlib import Path as _Path
+
+    classify = _load_lock_classifier()
+    root = _Path(__file__).resolve().parents[1] / "src" / "renforge" / "editor"
+    codes: set[str] = set()
+    for name in ("coordinator.py", "source.py"):
+        text = (root / name).read_text(encoding="utf-8")
+        codes.update(re.findall(r'_lock_reason\(\s*"([A-Z_]{4,})"', text))
+        codes.update(re.findall(r'Error\(\s*"([A-Z_]{4,})"', text))
+
+    assert codes, "expected to find lock codes in the editor sources"
+    for code in codes:
+        assert classify(code) in {"locked", "blocked", "refused"}, code
+
+
+def test_lock_levels_say_only_what_was_measured() -> None:
+    classify = _load_lock_classifier()
+
+    # A source form that can never be edited in place.
+    assert classify("MULTILINE_STATEMENT_REJECTED") == "locked"
+    assert classify("CONTAINER_POSITION_UNSUPPORTED") == "locked"
+    assert classify("ID_LITERAL_REQUIRED") == "locked"
+
+    # Editable in principle, unproven on this instance.
+    assert classify("ANCESTRY_TYPE_UNPROVEN") == "blocked"
+    assert classify("RUNTIME_KEY_INVALID") == "blocked"
+
+    # Attempted, rejected, rolled back.
+    assert classify("ID_MISMATCH") == "refused"
+    assert classify("ATTESTATION_FAILED") == "refused"
+    assert classify("ANALYSIS_STALE_GENERATION") == "refused"
+
+    # An unknown code must not claim a capability boundary nobody measured.
+    assert classify("SOME_CODE_ADDED_NEXT_YEAR") == "blocked"
+    assert classify(None) is None
+    assert classify("") is None
