@@ -44,6 +44,7 @@ screen _renforge_editor_overlay():
                 use _rf_editor_tree()
                 use _rf_editor_inspector()
                 use _rf_editor_style()
+                use _rf_editor_hud()
 
             if _rf_tools_visible and _rf_guide["line_x"] is not None:
                 add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
@@ -250,6 +251,17 @@ init 1090 python:
         "lock.refused": "Refused",
         "tree.title": "SCENE TREE",
         "style.title": "STYLE",
+        "hud.reload": "Hot-reload active",
+        "hud.pending": "unsaved change(s)",
+        "hud.selection": "selection",
+        "hud.none": "no selection",
+        "toolbar.screen": "screen",
+        "toolbar.select": "Select",
+        "toolbar.move": "Move",
+        "toolbar.measure": "Measure",
+        "toolbar.preview": "Preview",
+        "toolbar.edit": "Edit",
+        "toolbar.guides": "Guides",
         "inspector.position": "POSITION",
         "inspector.size": "SIZE",
         "inspector.no_geometry": "No measured geometry for this selection.",

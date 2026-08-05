@@ -18,5 +18,16 @@
   "inspector.position": "位置",
   "inspector.size": "尺寸",
   "inspector.no_geometry": "此选择没有测得的几何信息。",
-  "style.title": "样式"
+  "style.title": "样式",
+  "hud.reload": "热重载已启用",
+  "hud.pending": "项未保存的更改",
+  "hud.selection": "选择",
+  "hud.none": "未选择",
+  "toolbar.screen": "屏幕",
+  "toolbar.select": "选择",
+  "toolbar.move": "移动",
+  "toolbar.measure": "测量",
+  "toolbar.preview": "预览",
+  "toolbar.edit": "编辑",
+  "toolbar.guides": "参考线"
 }

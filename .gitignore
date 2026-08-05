@@ -58,6 +58,10 @@ traceback.txt
 errors.txt
 .renforge/
 screens
+# ...but the editor's own region screens are source, not a game artifact.
+# The bare rule above matches any path component named 'screens', which
+# silently kept every panel out of the repository.
+!src/renforge/bridge/screens/
 *.mp4
 
 # Local design source files; runtime copies live under ui/public/brand.

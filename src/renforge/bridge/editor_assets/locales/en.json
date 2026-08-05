@@ -18,5 +18,16 @@
   "inspector.position": "POSITION",
   "inspector.size": "SIZE",
   "inspector.no_geometry": "No measured geometry for this selection.",
-  "style.title": "STYLE"
+  "style.title": "STYLE",
+  "hud.reload": "Hot-reload active",
+  "hud.pending": "unsaved change(s)",
+  "hud.selection": "selection",
+  "hud.none": "no selection",
+  "toolbar.screen": "screen",
+  "toolbar.select": "Select",
+  "toolbar.move": "Move",
+  "toolbar.measure": "Measure",
+  "toolbar.preview": "Preview",
+  "toolbar.edit": "Edit",
+  "toolbar.guides": "Guides"
 }
