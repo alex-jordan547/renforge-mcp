@@ -755,6 +755,35 @@ init 1100 python:
         return {"ok": True, "tool_mode": _renforge_editor_tool_mode()}
 
 
+
+    def _renforge_editor_select_widget(screen_name, widget_id):
+        """Select by identity rather than by coordinate.
+
+        The pointer path resolves a click to whatever is topmost, which is the
+        right answer for a click on the game and the wrong one for a click in
+        the tree: there the user has already named the widget. Matching the
+        focus candidates by id and selecting at that rect's centre keeps a
+        single selection path while letting the tree address occluded widgets.
+        """
+        wanted = str(widget_id or "")
+        if not wanted:
+            return {"ok": False, "error": "widget_id required"}
+        for candidate in _renforge_editor_focus_candidates() or []:
+            key = candidate.get("runtime_key") or {}
+            if str(key.get("widget_id") or "") != wanted:
+                continue
+            if screen_name and str(key.get("screen") or "") != str(screen_name):
+                continue
+            rect = candidate.get("rect") or []
+            if len(rect) < 4:
+                continue
+            return _renforge_editor_select(
+                int(rect[0]) + int(rect[2]) // 2,
+                int(rect[1]) + int(rect[3]) // 2,
+            )
+        return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
+
+
     # ── Canvas decorations (Lot 1.F) ────────────────────────────────────────
 
     def _renforge_editor_handle_points(x, y, w, h, size):
