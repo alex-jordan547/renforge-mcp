@@ -124,12 +124,12 @@ screen _renforge_editor_overlay():
             frame:
                 id "rf_toolbar"
                 xalign 0.5
-                ypos 14
-                background Solid("#111116")
-                padding (8, 6)
+                ypos _renforge_editor_ui_px(28)
+                background Solid(_renforge_editor_ui_color("panel"))
+                padding (_renforge_editor_ui_px(24), _renforge_editor_ui_px(16))
 
                 hbox:
-                    spacing 6
+                    spacing _renforge_editor_ui_px(18)
                     textbutton "Exit":
                         id "rf_exit"
                         action Function(_renforge_editor_consume, _renforge_editor_exit)
@@ -204,6 +204,54 @@ screen _renforge_editor_overlay():
                 add Solid("#a78bfa", xysize=(2, _rf_exit_h)):
                     xpos _rf_exit_x + _rf_exit_w - 2
                     ypos _rf_exit_y
+init 1090 python:
+    # ── Design tokens (Lot 0.B) ─────────────────────────────────────────────
+    # The editor chrome is designed against a 2560-wide canvas. Games run at
+    # whatever width they please, so every measurement is authored in that
+    # space and converted here. Nothing below may be hardcoded in a screen:
+    # a literal pixel in screen language is a bug at 1280 and at 3840 alike.
+
+    _RF_UI_BASE_WIDTH = 2560.0
+
+    # Colors are the maquette's :root, verbatim. Ren'Py has no alpha in a
+    # Solid() hex without the trailing pair, so translucency is spelled out
+    # where it is wanted rather than implied.
+    _RF_UI_COLORS = {
+        "panel": "#272729",
+        "panel_head": "#2a2a2c",
+        "sunken": "#00000057",
+        "hairline": "#ffffff1a",
+        "surface": "#f5f5f7",
+        "meta": "#86868b",
+        "accent": "#0071e3",
+        "accent_bright": "#2997ff",
+        "accent_on": "#ffffff",
+        "warn": "#eab308",
+    }
+
+    def _renforge_editor_ui_scale():
+        """Chrome scale for this game, derived from its own width.
+
+        Clamped because the editor must stay usable on a 640-wide toy project
+        without becoming a magnifying glass on a 5K one.
+        """
+        try:
+            width = float(config.screen_width)
+        except Exception:
+            return 1.0
+        if width <= 0:
+            return 1.0
+        return max(0.45, min(1.35, width / _RF_UI_BASE_WIDTH))
+
+    def _renforge_editor_ui_px(value):
+        """Convert a 2560-space measurement into this game's pixels."""
+        return int(round(float(value) * _renforge_editor_ui_scale()))
+
+    def _renforge_editor_ui_color(name):
+        """Look up a design token. Unknown names shout in magenta on purpose."""
+        return _RF_UI_COLORS.get(name, "#ff00ff")
+
+
 init 1100 python:
     import builtins
     import hashlib

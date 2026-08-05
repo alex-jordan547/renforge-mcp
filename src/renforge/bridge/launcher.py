@@ -39,8 +39,11 @@ _BRIDGE_RESOURCE: Path = Path(__file__).parent / "bridge.rpy"
 _INJECTED_NAME: str = "renforge_bridge.rpy"
 _SESSION_INIT_NAME: str = "00renforge_session.rpy"
 _EDITOR_RESOURCE: Path = Path(__file__).parent / "editor.rpy"
+_EDITOR_ASSETS_RESOURCE: Path = Path(__file__).parent / "editor_assets"
 _EDITOR_INJECTED_PREFIX: str = "zzrenforge_editor_"
 _EDITOR_MANIFEST_NAME: str = "editor-session.json"
+_EDITOR_DEFAULT_LANGUAGE: str = "en"
+_EDITOR_SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
 
 
 class ProjectBridgeLock:
@@ -132,17 +135,67 @@ def _editor_manifest_path(project_root: Path) -> Path:
     return project_root / ".renforge" / _EDITOR_MANIFEST_NAME
 
 
-def _inject_editor_artifact(project: RenpyProject) -> Path:
+def _editor_asset_sources() -> list[tuple[str, Path]]:
+    """Every shipped editor asset, as ``(relative posix path, absolute source)``.
+
+    The editor used to be a lone ``.rpy``. Rounded frames, icons and the locale
+    catalogues cannot be expressed in screen language, so they travel beside it
+    as real files. An absent or empty resource directory is normal and yields no
+    assets, which keeps the whole asset path inert until something ships in it.
+    """
+    if not _EDITOR_ASSETS_RESOURCE.is_dir():
+        return []
+    return [
+        (path.relative_to(_EDITOR_ASSETS_RESOURCE).as_posix(), path)
+        for path in sorted(_EDITOR_ASSETS_RESOURCE.rglob("*"))
+        if path.is_file()
+    ]
+
+
+def _write_editor_assets(assets_dir: Path) -> list[dict[str, str]]:
+    """Copy the asset tree under ``assets_dir``, returning its manifest entries.
+
+    ``O_EXCL`` on every file for the same reason the ``.rpy`` uses it: the game
+    directory belongs to the user, and RenForge only ever removes bytes it can
+    prove it wrote.
+    """
+    written: list[dict[str, str]] = []
+    for relative, source in _editor_asset_sources():
+        target = assets_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = source.read_bytes()
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        written.append({"path": relative, "sha256": hashlib.sha256(payload).hexdigest()})
+    return written
+
+
+def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str]:
+    """Inject the editor and its assets, returning ``(source path, assets dirname)``.
+
+    The assets directory shares the ``.rpy`` stem, so the same collision-free
+    draw covers both, and the runtime learns its name from the environment
+    rather than guessing a hash it cannot see.
+    """
     payload = _EDITOR_RESOURCE.read_bytes()
     for _attempt in range(32):
-        basename = f"{_EDITOR_INJECTED_PREFIX}{secrets.token_hex(8)}.rpy"
+        stem = f"{_EDITOR_INJECTED_PREFIX}{secrets.token_hex(8)}"
+        basename = f"{stem}.rpy"
         source_path = project.game_dir / basename
+        assets_dir = project.game_dir / stem
         sibling_names = (basename, f"{basename}c", f"{basename}c.bak")
         sibling_paths = [project.game_dir / name for name in sibling_names]
         absent_before = {name: not path.exists() for name, path in zip(sibling_names, sibling_paths)}
         if not all(absent_before.values()):
             continue
         if any(path.is_symlink() for path in sibling_paths):
+            continue
+        # The assets directory is drawn from the same random stem, so it has to
+        # clear the same absence bar before the draw is accepted.
+        if assets_dir.exists() or assets_dir.is_symlink():
             continue
         try:
             descriptor = os.open(source_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -153,10 +206,13 @@ def _inject_editor_artifact(project: RenpyProject) -> Path:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            assets = _write_editor_assets(assets_dir)
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "basename": basename,
                 "source_sha256": hashlib.sha256(payload).hexdigest(),
+                "assets_dirname": stem,
+                "assets": assets,
                 "absent_before": {
                     "rpy": absent_before[basename],
                     "rpyc": absent_before[f"{basename}c"],
@@ -167,8 +223,9 @@ def _inject_editor_artifact(project: RenpyProject) -> Path:
                 _editor_manifest_path(project.root),
                 json.dumps(manifest, separators=(",", ":")).encode("utf-8"),
             )
-            return source_path
+            return source_path, stem
         except BaseException:
+            shutil.rmtree(assets_dir, ignore_errors=True)
             try:
                 source_path.unlink()
             except FileNotFoundError:
@@ -266,16 +323,98 @@ def _remove_editor_artifacts(project_root: Path) -> None:
                 raise RuntimeError("editor compiled backup artifact is not a regular file")
             sibling_backup_path.unlink()
 
+    _remove_editor_asset_tree(project_root / "game", manifest)
+
     source_path.unlink(missing_ok=True)
     manifest_path.unlink(missing_ok=True)
 
 
-def _editor_environment(endpoint: EditorEndpoint) -> dict[str, str]:
+def _remove_editor_asset_tree(game_dir: Path, manifest: dict[str, Any]) -> None:
+    """Remove the injected asset tree, file by proven file.
+
+    Ownership is established exactly as it is for the ``.rpy``: the directory
+    name must carry the injection prefix, and every file must still hash to what
+    was written. A schema 1 manifest predates assets and owns nothing here.
+    Directories are removed only once empty, so anything the user dropped inside
+    survives — and keeps its parent alive with it.
+    """
+    dirname = manifest.get("assets_dirname")
+    assets = manifest.get("assets")
+    if dirname is None and not assets:
+        return
+    if (
+        not isinstance(dirname, str)
+        or not dirname
+        or Path(dirname).name != dirname
+        or not dirname.startswith(_EDITOR_INJECTED_PREFIX)
+        or not isinstance(assets, list)
+    ):
+        raise RuntimeError("editor asset manifest failed ownership validation")
+
+    root = game_dir / dirname
+    if root.is_symlink():
+        raise RuntimeError("editor asset directory became a symlink")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise RuntimeError("editor asset directory is not a directory")
+
+    for entry in assets:
+        if not isinstance(entry, dict):
+            raise RuntimeError("editor asset manifest failed ownership validation")
+        relative = entry.get("path")
+        expected_sha256 = entry.get("sha256")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+        ):
+            raise RuntimeError("editor asset manifest failed ownership validation")
+        parts = Path(relative).parts
+        if Path(relative).is_absolute() or ".." in parts:
+            raise RuntimeError("editor asset manifest failed ownership validation")
+        try:
+            int(expected_sha256, 16)
+        except ValueError as exc:
+            raise RuntimeError("editor asset manifest failed ownership validation") from exc
+
+        target = root.joinpath(*parts)
+        if target.is_symlink():
+            raise RuntimeError("editor asset became a symlink")
+        if not target.exists():
+            continue
+        if not target.is_file():
+            raise RuntimeError("editor asset is not a regular file")
+        if hashlib.sha256(target.read_bytes()).hexdigest() != expected_sha256:
+            raise RuntimeError("editor asset changed after injection")
+        target.unlink()
+
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+            path.rmdir()
+    if not any(root.iterdir()):
+        root.rmdir()
+
+
+def _editor_language() -> str:
+    """The editor's interface language, which follows RenForge — never the game.
+
+    Changing the host game's language would rebuild its styles and replay its
+    translation blocks, so the overlay carries its own catalogue instead.
+    """
+    requested = os.environ.get("RENFORGE_LANG", "").strip()
+    return requested if requested in _EDITOR_SUPPORTED_LANGUAGES else _EDITOR_DEFAULT_LANGUAGE
+
+
+def _editor_environment(endpoint: EditorEndpoint, *, assets_dirname: str) -> dict[str, str]:
     return {
         "RENFORGE_EDITOR_HOST": endpoint.host,
         "RENFORGE_EDITOR_PORT": str(endpoint.port),
         "RENFORGE_EDITOR_TOKEN": endpoint.token,
         "RENFORGE_EDITOR_PROTOCOL": str(endpoint.protocol_version),
+        "RENFORGE_EDITOR_ASSETS": assets_dirname,
+        "RENFORGE_EDITOR_LANG": _editor_language(),
     }
 
 
@@ -564,9 +703,10 @@ def _launch_after_project_lock(
         injected = project.game_dir / _INJECTED_NAME
         injected.write_text(_BRIDGE_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         _write_session_init(project, savedir=savedir_path)
+        editor_assets_dirname: str | None = None
         if editor_endpoint is not None:
             _phase("injecting_editor")
-            _inject_editor_artifact(project)
+            _, editor_assets_dirname = _inject_editor_artifact(project)
     except OSError as exc:
         raise LaunchError(
             "BRIDGE_FILE_NOT_CREATED",
@@ -578,7 +718,9 @@ def _launch_after_project_lock(
     env["RENFORGE_BRIDGE_TOKEN"] = token
     env["RENFORGE_BRIDGE_PORT"] = str(port)
     if editor_endpoint is not None:
-        env.update(_editor_environment(editor_endpoint))
+        env.update(
+            _editor_environment(editor_endpoint, assets_dirname=editor_assets_dirname or "")
+        )
 
     command = project.renpy_command(sdk, ("run", "--warp", warp) if warp is not None else ("run",))
     if headless:

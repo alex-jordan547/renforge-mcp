@@ -697,11 +697,14 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
         "RENFORGE_EDITOR_PORT",
         "RENFORGE_EDITOR_TOKEN",
         "RENFORGE_EDITOR_PROTOCOL",
+        "RENFORGE_EDITOR_ASSETS",
+        "RENFORGE_EDITOR_LANG",
     }
     assert env["RENFORGE_EDITOR_HOST"] == "127.0.0.1"
     assert env["RENFORGE_EDITOR_PORT"] == "51234"
     assert env["RENFORGE_EDITOR_TOKEN"] == "editor-token"
     assert env["RENFORGE_EDITOR_PROTOCOL"] == "1"
+    assert env["RENFORGE_EDITOR_LANG"] == "en"
     assert probe["project_root"] == str(project_root)
     assert isinstance(probe["value"], _Probe)
 
@@ -716,6 +719,15 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
     assert manifest["source_sha256"] == expected_hash
     assert manifest["absent_before"] == {"rpy": True, "rpyc": True, "rpyc_bak": True}
     assert source_path.read_bytes() == expected_resource.read_bytes()
+
+    # The asset tree shares the .rpy stem so one collision-free draw covers both,
+    # and the runtime is told its name rather than having to guess the hash.
+    assert manifest["schema_version"] == 2
+    assert manifest["assets_dirname"] == basename[: -len(".rpy")]
+    assert env["RENFORGE_EDITOR_ASSETS"] == manifest["assets_dirname"]
+    for entry in manifest["assets"]:
+        shipped = project_root / "game" / manifest["assets_dirname"] / entry["path"]
+        assert hashlib.sha256(shipped.read_bytes()).hexdigest() == entry["sha256"]
 
     close_result = session.close(timeout=0.1)
     assert close_result["cleaned"]["editor_coordinator"] is True
