@@ -71,12 +71,12 @@ screen _renforge_editor_overlay():
                     id "rf_distance_x"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#27272a")
-                    padding (6, 3)
+                    background Solid(_renforge_editor_ui_color("panel"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
                     text _rf_distance["text_x"]:
                         id "rf_distance_x_text"
-                        color "#ffffff"
-                        size 12
+                        color _renforge_editor_ui_color("surface")
+                        size _renforge_editor_ui_px(24)
 
             if _rf_tools_visible and _rf_show_dy:
                 $ _rf_anchor_y = _rf_guide_y_val if _rf_guide_y_val is not None else int(_rf_distance["y"]) + int(_rf_distance["h"])
@@ -86,12 +86,12 @@ screen _renforge_editor_overlay():
                     id "rf_distance_y"
                     xpos _rf_distance_x
                     ypos _rf_distance_y
-                    background Solid("#27272a")
-                    padding (6, 3)
+                    background Solid(_renforge_editor_ui_color("panel"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
                     text _rf_distance["text_y"]:
                         id "rf_distance_y_text"
-                        color "#ffffff"
-                        size 12
+                        color _renforge_editor_ui_color("surface")
+                        size _renforge_editor_ui_px(24)
 
             if _rf_tools_visible and _rf_selection is not None:
                 $ _rf_x = int(_rf_selection["x"])
@@ -127,12 +127,12 @@ screen _renforge_editor_overlay():
                     ypos int(_rf_label["y"])
                     xsize int(_rf_label["w"])
                     ysize int(_rf_label["h"])
-                    background Solid("#111116")
-                    padding (10, 5)
+                    background Solid(_renforge_editor_ui_color("scrim"))
+                    padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(10))
                     at Transform(alpha=float(_rf_label["alpha"]))
                     text _rf_label["text"]:
-                        color "#f4f4f5"
-                        size 14
+                        color _renforge_editor_ui_color("surface")
+                        size _renforge_editor_ui_px(28)
                         xalign 0.0
                         yalign 0.5
 
@@ -183,6 +183,9 @@ init 1090 python:
         "accent_bright": "#2997ff",
         "accent_on": "#ffffff",
         "warn": "#eab308",
+        # Canvas overlays sit on the game, not in the chrome, so they keep
+        # the maquette's darker scrim rather than the panel fill.
+        "scrim": "#111116",
         # One colour per refusal level, so the severity reads before the words.
         "lock_locked": "#eab308",
         "lock_blocked": "#e8913c",
