@@ -1,0 +1,11 @@
+{
+  "toolbar.exit": "退出",
+  "toolbar.undo": "撤销",
+  "toolbar.redo": "重做",
+  "toolbar.reset": "重置",
+  "toolbar.tools_on": "工具：开",
+  "toolbar.tools_off": "工具：关",
+  "toolbar.opacity_down": "-",
+  "toolbar.opacity_up": "+",
+  "launcher.activate": "RF"
+}

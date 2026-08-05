@@ -1066,3 +1066,76 @@ def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
     finally:
         reacquired.release()
 
+
+
+def test_editor_language_falls_back_to_english_for_anything_unsupported(monkeypatch) -> None:
+    from renforge.bridge.launcher import _editor_language
+
+    monkeypatch.setenv("RENFORGE_LANG", "zh-CN")
+    assert _editor_language() == "zh-CN"
+
+    # Whitespace is operator error, not a language.
+    monkeypatch.setenv("RENFORGE_LANG", "  ")
+    assert _editor_language() == "en"
+
+    # An unshipped locale must not reach the overlay: it would render every
+    # label as its own key rather than as text.
+    monkeypatch.setenv("RENFORGE_LANG", "fr")
+    assert _editor_language() == "en"
+
+    monkeypatch.delenv("RENFORGE_LANG", raising=False)
+    assert _editor_language() == "en"
+
+
+def test_editor_asset_sources_ship_both_locale_catalogues() -> None:
+    from renforge.bridge.launcher import _editor_asset_sources
+
+    shipped = {relative for relative, _source in _editor_asset_sources()}
+    # en.json is what keeps the live suites green: it must reproduce the
+    # literals the runners assert on, so it can never go missing silently.
+    assert "locales/en.json" in shipped
+    assert "locales/zh-CN.json" in shipped
+
+
+def test_editor_locale_catalogues_have_identical_keys() -> None:
+    import json as _json
+    from renforge.bridge.launcher import _EDITOR_ASSETS_RESOURCE
+
+    locales = _EDITOR_ASSETS_RESOURCE / "locales"
+    english = _json.loads((locales / "en.json").read_text(encoding="utf-8"))
+    chinese = _json.loads((locales / "zh-CN.json").read_text(encoding="utf-8"))
+    # Same parity rule the dashboard enforces at build time.
+    assert sorted(english) == sorted(chinese)
+    assert all(value.strip() for value in english.values())
+    assert all(value.strip() for value in chinese.values())
+
+
+def test_editor_builtin_english_matches_the_shipped_catalogue() -> None:
+    """The .rpy carries English so a missing catalogue degrades to readable text.
+
+    Those built-ins and en.json must agree, or the editor would render one set
+    of labels when assets ship and a different one when they do not.
+    """
+    import ast
+    import json as _json
+    from renforge.bridge.launcher import _EDITOR_ASSETS_RESOURCE, _EDITOR_RESOURCE
+
+    source = _EDITOR_RESOURCE.read_text(encoding="utf-8")
+    start = source.index("_RF_UI_STRINGS = {")
+    literal = source[start + len("_RF_UI_STRINGS = ") :]
+    depth, end = 0, None
+    for index, char in enumerate(literal):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    assert end is not None
+    builtins_map = ast.literal_eval(literal[:end])
+
+    english = _json.loads(
+        (_EDITOR_ASSETS_RESOURCE / "locales" / "en.json").read_text(encoding="utf-8")
+    )
+    assert builtins_map == english

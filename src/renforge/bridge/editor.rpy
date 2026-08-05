@@ -121,69 +121,7 @@ screen _renforge_editor_overlay():
                         xalign 0.0
                         yalign 0.5
 
-            frame:
-                id "rf_toolbar"
-                xalign 0.5
-                ypos _renforge_editor_ui_px(28)
-                background Solid(_renforge_editor_ui_color("panel"))
-                padding (_renforge_editor_ui_px(24), _renforge_editor_ui_px(16))
-
-                hbox:
-                    spacing _renforge_editor_ui_px(18)
-                    textbutton "Exit":
-                        id "rf_exit"
-                        action Function(_renforge_editor_consume, _renforge_editor_exit)
-                        sensitive not _renforge_editor_state().save_in_progress
-                        text_color "#f4f4f5"
-                    textbutton "Undo":
-                        id "rf_undo"
-                        action Function(_renforge_editor_consume, _renforge_editor_undo)
-                        sensitive _renforge_editor_can_undo()
-                        text_color "#f4f4f5"
-                    textbutton "Redo":
-                        id "rf_redo"
-                        action Function(_renforge_editor_consume, _renforge_editor_redo)
-                        sensitive _renforge_editor_can_redo()
-                        text_color "#f4f4f5"
-                    textbutton "Reset":
-                        id "rf_reset"
-                        action Function(_renforge_editor_consume, _renforge_editor_reset_selected)
-                        sensitive _renforge_editor_has_selection()
-                        text_color "#f4f4f5"
-                    textbutton ("Tools On" if _rf_tools_visible else "Tools Off"):
-                        id "rf_tools"
-                        action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
-                        background Solid("#7c3aed" if _rf_tools_visible else "#3f3f46")
-                        text_color "#ffffff"
-                    textbutton "-":
-                        id "rf_opacity_down"
-                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1)
-                        text_color "#f4f4f5"
-                    textbutton "+":
-                        id "rf_opacity_up"
-                        action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
-                        text_color "#f4f4f5"
-                    text _renforge_editor_status_text():
-                        color "#a1a1aa"
-                        size 14
-                        yalign 0.5
-                        xminimum 120
-                    textbutton _renforge_editor_save_label():
-                        id "rf_save"
-                        action Function(_renforge_editor_consume, _renforge_editor_save)
-                        sensitive _renforge_editor_save_enabled()
-                        background Solid("#7c3aed")
-                        hover_background Solid("#8b5cf6")
-                        insensitive_background Solid("#3f3f46")
-                        text_color "#ffffff"
-                    if _renforge_editor_style_color_capable():
-                        textbutton _renforge_editor_style_color_label():
-                            id "rf_style_color"
-                            action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
-                            sensitive not _renforge_editor_state().save_in_progress
-                            background Solid("#2457d6")
-                            hover_background Solid("#3b6fe0")
-                            text_color "#ffffff"
+            use _rf_editor_toolbar(_rf_tools_visible)
 
         if _renforge_editor_opacity() < 0.25:
             $ _rf_exit_rect = _renforge_editor_control_rect("rf_exit")
@@ -204,6 +142,79 @@ screen _renforge_editor_overlay():
                 add Solid("#a78bfa", xysize=(2, _rf_exit_h)):
                     xpos _rf_exit_x + _rf_exit_w - 2
                     ypos _rf_exit_y
+
+
+# ── Lot 0.C — the overlay composes regions instead of holding one block ──────
+# Each region is its own screen so the panels of Lot 1 can be written in
+# parallel without six people editing the same lines. Widget ids stay visible
+# to renpy.get_widget("_renforge_editor_overlay", ...) because `use` runs the
+# region's body inside the calling screen.
+screen _rf_editor_toolbar(tools_visible):
+    frame:
+        id "rf_toolbar"
+        xalign 0.5
+        ypos _renforge_editor_ui_px(28)
+        background Solid(_renforge_editor_ui_color("panel"))
+        padding (_renforge_editor_ui_px(24), _renforge_editor_ui_px(16))
+
+        hbox:
+            spacing _renforge_editor_ui_px(18)
+            textbutton _renforge_editor_t("toolbar.exit"):
+                id "rf_exit"
+                action Function(_renforge_editor_consume, _renforge_editor_exit)
+                sensitive not _renforge_editor_state().save_in_progress
+                text_color "#f4f4f5"
+            textbutton _renforge_editor_t("toolbar.undo"):
+                id "rf_undo"
+                action Function(_renforge_editor_consume, _renforge_editor_undo)
+                sensitive _renforge_editor_can_undo()
+                text_color "#f4f4f5"
+            textbutton _renforge_editor_t("toolbar.redo"):
+                id "rf_redo"
+                action Function(_renforge_editor_consume, _renforge_editor_redo)
+                sensitive _renforge_editor_can_redo()
+                text_color "#f4f4f5"
+            textbutton _renforge_editor_t("toolbar.reset"):
+                id "rf_reset"
+                action Function(_renforge_editor_consume, _renforge_editor_reset_selected)
+                sensitive _renforge_editor_has_selection()
+                text_color "#f4f4f5"
+            textbutton (_renforge_editor_t("toolbar.tools_on") if tools_visible else _renforge_editor_t("toolbar.tools_off")):
+                id "rf_tools"
+                action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
+                background Solid("#7c3aed" if tools_visible else "#3f3f46")
+                text_color "#ffffff"
+            textbutton _renforge_editor_t("toolbar.opacity_down"):
+                id "rf_opacity_down"
+                action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1)
+                text_color "#f4f4f5"
+            textbutton _renforge_editor_t("toolbar.opacity_up"):
+                id "rf_opacity_up"
+                action Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1)
+                text_color "#f4f4f5"
+            text _renforge_editor_status_text():
+                color "#a1a1aa"
+                size 14
+                yalign 0.5
+                xminimum 120
+            textbutton _renforge_editor_save_label():
+                id "rf_save"
+                action Function(_renforge_editor_consume, _renforge_editor_save)
+                sensitive _renforge_editor_save_enabled()
+                background Solid("#7c3aed")
+                hover_background Solid("#8b5cf6")
+                insensitive_background Solid("#3f3f46")
+                text_color "#ffffff"
+            if _renforge_editor_style_color_capable():
+                textbutton _renforge_editor_style_color_label():
+                    id "rf_style_color"
+                    action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
+                    sensitive not _renforge_editor_state().save_in_progress
+                    background Solid("#2457d6")
+                    hover_background Solid("#3b6fe0")
+                    text_color "#ffffff"
+
+
 init 1090 python:
     # ── Design tokens (Lot 0.B) ─────────────────────────────────────────────
     # The editor chrome is designed against a 2560-wide canvas. Games run at
@@ -250,6 +261,82 @@ init 1090 python:
     def _renforge_editor_ui_color(name):
         """Look up a design token. Unknown names shout in magenta on purpose."""
         return _RF_UI_COLORS.get(name, "#ff00ff")
+
+    # ── Interface catalogue (Lot 0.D) ───────────────────────────────────────
+    # The overlay is a guest in someone else's game, so it never touches
+    # renpy.change_language(): that would replay the host's translation blocks
+    # and rebuild its styles. It carries its own catalogue instead, shipped
+    # beside the .rpy and selected by the launcher's RENFORGE_EDITOR_LANG.
+
+    # English lives in the .rpy, not only in a shipped file. A catalogue that
+    # fails to load must degrade to readable English, never to raw keys: an
+    # editor whose button reads "toolbar.exit" is worse than one that was never
+    # translated. The JSON files add languages and may override, nothing more.
+    _RF_UI_STRINGS = {
+        "toolbar.exit": "Exit",
+        "toolbar.undo": "Undo",
+        "toolbar.redo": "Redo",
+        "toolbar.reset": "Reset",
+        "toolbar.tools_on": "Tools On",
+        "toolbar.tools_off": "Tools Off",
+        "toolbar.opacity_down": "-",
+        "toolbar.opacity_up": "+",
+        "launcher.activate": "RF",
+    }
+    _RF_UI_STRINGS_READY = []
+
+    def _renforge_editor_language():
+        import os
+        return (os.environ.get("RENFORGE_EDITOR_LANG") or "").strip() or "en"
+
+    def _renforge_editor_load_strings():
+        """Overlay the requested locale on the built-in English, key by key.
+
+        The requested language overrides; the English catalogue only fills keys
+        neither it nor the built-ins provide. A half-translated catalogue
+        therefore degrades one label at a time instead of wholesale.
+        """
+        import json as _json
+        import os
+
+        assets = (os.environ.get("RENFORGE_EDITOR_ASSETS") or "").strip()
+        if not assets:
+            return
+        for candidate, overrides in ((_renforge_editor_language(), True), ("en", False)):
+            try:
+                handle = renpy.open_file("%s/locales/%s.json" % (assets, candidate))
+            except Exception:
+                continue
+            try:
+                payload = handle.read()
+                if not isinstance(payload, str):
+                    payload = payload.decode("utf-8")
+                for key, value in _json.loads(payload).items():
+                    if not value:
+                        continue
+                    if overrides or key not in _RF_UI_STRINGS:
+                        _RF_UI_STRINGS[key] = value
+            except Exception:
+                pass
+            finally:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+
+    def _renforge_editor_t(key):
+        """Translate an interface string.
+
+        A missing key renders as the key itself. A blank label is a bug report
+        the user cannot describe; a visible ``toolbar.exit`` is one we can.
+        """
+        if not _RF_UI_STRINGS_READY:
+            _RF_UI_STRINGS_READY.append(True)
+            try:
+                _renforge_editor_load_strings()
+            except Exception:
+                pass
+        return _RF_UI_STRINGS.get(key, key)
 
 
 init 1100 python:

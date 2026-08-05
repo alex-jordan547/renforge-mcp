@@ -14,8 +14,8 @@ artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -60,12 +60,28 @@ def main() -> int:
     return 0
 
 
+def _manifest_path(project_root: Path) -> Path:
+    return project_root / ".renforge" / "editor-session.json"
+
+
 def _injected_editor_path(project_root: Path) -> Path:
     """Resolve the injected copy from the session manifest the launcher wrote."""
-    manifest = json.loads(
-        (project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads(_manifest_path(project_root).read_text(encoding="utf-8"))
     return project_root / "game" / manifest["basename"]
+
+
+def _restamp_manifest(project_root: Path, payload: bytes) -> None:
+    """Record the bytes we just wrote as the ones we own.
+
+    Cleanup refuses to delete an injected file whose digest no longer matches
+    the manifest — that guard is what keeps RenForge from touching a file a user
+    edited. Hot reload rewrites that file on purpose, so it has to re-establish
+    ownership rather than quietly break it.
+    """
+    path = _manifest_path(project_root)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["source_sha256"] = hashlib.sha256(payload).hexdigest()
+    path.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
 
 
 def _watch_and_reload(session: object, injected: Path) -> None:
@@ -84,7 +100,9 @@ def _watch_and_reload(session: object, injected: Path) -> None:
         if current == last_seen:
             continue
         last_seen = current
-        shutil.copyfile(EDITOR_SOURCE, injected)
+        payload = EDITOR_SOURCE.read_bytes()
+        injected.write_bytes(payload)
+        _restamp_manifest(injected.parents[1], payload)
         try:
             session.client.control("reload_script")  # type: ignore[attr-defined]
             print(f"reloaded     {time.strftime('%H:%M:%S')}", flush=True)

@@ -1,0 +1,11 @@
+{
+  "toolbar.exit": "Exit",
+  "toolbar.undo": "Undo",
+  "toolbar.redo": "Redo",
+  "toolbar.reset": "Reset",
+  "toolbar.tools_on": "Tools On",
+  "toolbar.tools_off": "Tools Off",
+  "toolbar.opacity_down": "-",
+  "toolbar.opacity_up": "+",
+  "launcher.activate": "RF"
+}
