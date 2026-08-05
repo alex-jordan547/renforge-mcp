@@ -4,14 +4,15 @@
 # quietly describe a scene that no longer exists.
 screen _rf_editor_tree():
     $ _rf_rows = _renforge_editor_tree_rows()
+    $ _rf_docked = _renforge_editor_layout_mode() == "docked"
 
     frame:
         id "rf_tree_panel"
-        xpos _renforge_editor_ui_px(32)
-        ypos _renforge_editor_ui_px(148)
-        xsize _renforge_editor_ui_px(480)
-        ysize _renforge_editor_ui_px(940)
-        background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+        xpos (0 if _rf_docked else _renforge_editor_ui_px(32))
+        ypos (_renforge_editor_ui_px(124) if _rf_docked else _renforge_editor_ui_px(148))
+        xsize _renforge_editor_ui_px(540 if _rf_docked else 480)
+        ysize _renforge_editor_ui_px(968 if _rf_docked else 940)
+        background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
         padding (0, 0)
 
         vbox:

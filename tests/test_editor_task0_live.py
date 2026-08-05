@@ -82,6 +82,28 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     assert report["save_enabled"] is False
     assert report["top_select_widget"] == "task0_top"
     assert report["target_select_widget"] == "task0_target"
+    docked = report["docked_view_mode"]
+    assert docked["selected"] == "task0_target"
+    assert docked["docked"]["layout"] == "docked"
+    assert docked["docked"]["view"] == "edit"
+    assert docked["docked"]["transforms"] > 0
+    assert docked["docked"]["editor_is_top"] is True
+    assert docked["docked"]["editor_transforms"] == 0
+    assert docked["preview"] == {
+        "layout": "docked",
+        "view": "preview",
+        "transforms": 0,
+        "editor_is_top": True,
+        "editor_transforms": 0,
+    }
+    assert docked["redocked"] == docked["docked"]
+    assert docked["overlay"] == {
+        "layout": "overlay",
+        "view": "edit",
+        "transforms": 0,
+        "editor_is_top": True,
+        "editor_transforms": 0,
+    }
     assert report["clipped_lock"] is None
     assert report["dupe_lock"] == "REPEATED_USE_UNSUPPORTED"
     assert report["multi_instance_lock"] == "MULTI_INSTANCE_UNSUPPORTED"

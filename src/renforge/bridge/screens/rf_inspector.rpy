@@ -7,15 +7,17 @@ screen _rf_editor_inspector():
     $ _rf_facts = _renforge_editor_inspector_facts()
     $ _rf_props_by_widget = _renforge_editor_widget_properties(_rf_facts["screen"]) if _rf_facts is not None else {}
     $ _rf_props = _rf_props_by_widget.get(_rf_facts["id"], {}) if _rf_facts is not None else {}
+    $ _rf_docked = _renforge_editor_layout_mode() == "docked"
 
     if _rf_facts is not None:
         frame:
             id "rf_inspector_panel"
             xalign 1.0
-            xoffset -_renforge_editor_ui_px(32)
-            ypos _renforge_editor_ui_px(148)
+            xoffset (0 if _rf_docked else -_renforge_editor_ui_px(32))
+            ypos (_renforge_editor_ui_px(124) if _rf_docked else _renforge_editor_ui_px(148))
             xsize _renforge_editor_ui_px(540)
-            background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+            ysize (_renforge_editor_ui_px(624) if _rf_docked else None)
+            background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
             padding (0, 0)
 
             vbox:

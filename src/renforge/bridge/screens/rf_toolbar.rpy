@@ -8,12 +8,16 @@ screen _rf_editor_toolbar(tools_visible):
     $ _rf_screen = _rf_facts["screen"] if _rf_facts and _rf_facts.get("screen") else (getattr(_renforge_editor_state(), "selected_screen", "") or "")
     $ _rf_tool_mode = _renforge_editor_tool_mode()
     $ _rf_view_mode = _renforge_editor_view_mode()
+    $ _rf_layout_mode = _renforge_editor_layout_mode()
+    $ _rf_docked = _rf_layout_mode == "docked"
 
     frame:
         id "rf_toolbar"
-        xalign 0.5
-        ypos _renforge_editor_ui_px(28)
-        background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+        xalign (0.0 if _rf_docked else 0.5)
+        ypos (0 if _rf_docked else _renforge_editor_ui_px(28))
+        xsize (config.screen_width if _rf_docked else None)
+        ysize (_renforge_editor_ui_px(124) if _rf_docked else None)
+        background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
         padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(14))
 
         hbox:
@@ -166,6 +170,31 @@ screen _rf_editor_toolbar(tools_visible):
                 size _renforge_editor_ui_px(16)
                 yalign 0.5
                 xminimum _renforge_editor_ui_px(120)
+
+            hbox:
+                id "rf_toolbar_layout_modes"
+                spacing _renforge_editor_ui_px(4)
+                yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.overlay"):
+                    id "rf_toolbar_layout_overlay"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_layout_mode, "overlay")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_layout_mode == "overlay" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_layout_mode == "overlay" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.docked"):
+                    id "rf_toolbar_layout_docked"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_layout_mode, "docked")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_layout_mode == "docked" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_layout_mode == "docked" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
 
             # View mode segmented control
             hbox:

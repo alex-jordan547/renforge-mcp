@@ -29,6 +29,8 @@
   "toolbar.measure": "Measure",
   "toolbar.preview": "Preview",
   "toolbar.edit": "Edit",
+  "toolbar.overlay": "Overlay",
+  "toolbar.docked": "Edges",
   "toolbar.guides": "Guides",
   "tree.filter": "Filter",
   "inspector.offset": "OFFSET",

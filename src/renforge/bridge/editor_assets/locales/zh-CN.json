@@ -29,6 +29,8 @@
   "toolbar.measure": "测量",
   "toolbar.preview": "预览",
   "toolbar.edit": "编辑",
+  "toolbar.overlay": "叠加",
+  "toolbar.docked": "边缘",
   "toolbar.guides": "参考线",
   "tree.filter": "筛选",
   "inspector.offset": "偏移",

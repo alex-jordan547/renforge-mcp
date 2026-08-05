@@ -4,15 +4,17 @@
 screen _rf_editor_style():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
+    $ _rf_docked = _renforge_editor_layout_mode() == "docked"
 
     if _rf_facts is not None:
         frame:
             id "rf_style_panel"
             xalign 1.0
-            xoffset -_renforge_editor_ui_px(32)
-            ypos _renforge_editor_ui_px(800)
+            xoffset (0 if _rf_docked else -_renforge_editor_ui_px(32))
+            ypos (_renforge_editor_ui_px(748) if _rf_docked else _renforge_editor_ui_px(800))
             xsize _renforge_editor_ui_px(540)
-            background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+            ysize (_renforge_editor_ui_px(692) if _rf_docked else None)
+            background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
             padding (0, 0)
 
             vbox:

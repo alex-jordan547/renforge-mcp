@@ -1,5 +1,5 @@
 screen _renforge_editor_launcher():
-    layer "screens"
+    layer "renforge_editor"
     zorder 11999
 
     if _renforge_editor_is_editor_injected() and not _renforge_editor_is_active():
@@ -18,7 +18,7 @@ screen _renforge_editor_launcher():
 
 
 screen _renforge_editor_overlay():
-    layer "screens"
+    layer "renforge_editor"
     zorder 12000
 
     if _renforge_editor_is_active():
@@ -46,95 +46,18 @@ screen _renforge_editor_overlay():
                 use _rf_editor_style()
                 use _rf_editor_hud()
 
-            if _rf_tools_visible and _rf_guide["line_x"] is not None:
-                add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
-                    id "rf_guide_x"
-                    xpos int(_rf_guide["line_x"][0])
-                    ypos int(_rf_guide["line_x"][1])
-
-            if _rf_tools_visible and _rf_guide["line_y"] is not None:
-                add Solid("#ff3b30", xysize=(max(1, int(_rf_guide["line_y"][2])), 1)):
-                    id "rf_guide_y"
-                    xpos int(_rf_guide["line_y"][0])
-                    ypos int(_rf_guide["line_y"][1])
-
-            $ _rf_guide_x_val = _renforge_editor_guide_x()
-            $ _rf_guide_y_val = _renforge_editor_guide_y()
-            $ _rf_show_dx = _rf_distance is not None and (_rf_guide_x_val is not None or (_rf_measure is not None and _rf_measure["dx"] != 0))
-            $ _rf_show_dy = _rf_distance is not None and (_rf_guide_y_val is not None or (_rf_measure is not None and _rf_measure["dy"] != 0))
-
-            if _rf_tools_visible and _rf_show_dx:
-                $ _rf_anchor_x = _rf_guide_x_val if _rf_guide_x_val is not None else int(_rf_distance["x"]) + int(_rf_distance["w"])
-                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_anchor_x) + 8))
-                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_distance["y"]) + int(_rf_distance["h"]) + 6))
-                frame:
-                    id "rf_distance_x"
-                    xpos _rf_distance_x
-                    ypos _rf_distance_y
-                    background Solid(_renforge_editor_ui_color("panel"))
-                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
-                    text _rf_distance["text_x"]:
-                        id "rf_distance_x_text"
-                        color _renforge_editor_ui_color("surface")
-                        size _renforge_editor_ui_px(24)
-
-            if _rf_tools_visible and _rf_show_dy:
-                $ _rf_anchor_y = _rf_guide_y_val if _rf_guide_y_val is not None else int(_rf_distance["y"]) + int(_rf_distance["h"])
-                $ _rf_distance_x = max(4, min(config.screen_width - 92, int(_rf_distance["x"]) + int(_rf_distance["w"]) + 6))
-                $ _rf_distance_y = max(48, min(config.screen_height - 28, int(_rf_anchor_y) + 8))
-                frame:
-                    id "rf_distance_y"
-                    xpos _rf_distance_x
-                    ypos _rf_distance_y
-                    background Solid(_renforge_editor_ui_color("panel"))
-                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
-                    text _rf_distance["text_y"]:
-                        id "rf_distance_y_text"
-                        color _renforge_editor_ui_color("surface")
-                        size _renforge_editor_ui_px(24)
-
-            if _rf_tools_visible and _rf_selection is not None:
-                $ _rf_x = int(_rf_selection["x"])
-                $ _rf_y = int(_rf_selection["y"])
-                $ _rf_w = int(_rf_selection["w"])
-                $ _rf_h = int(_rf_selection["h"])
-                $ _rf_color = _rf_selection["color"]
-                $ _rf_handle = _renforge_editor_ui_px(18)
-                for _rf_hx, _rf_hy in _renforge_editor_handle_points(_rf_x, _rf_y, _rf_w, _rf_h, _rf_handle):
-                    add Solid(_rf_color, xysize=(_rf_handle, _rf_handle)):
-                        xpos _rf_hx
-                        ypos _rf_hy
-                    add Solid(_renforge_editor_ui_color("surface"), xysize=(max(1, _rf_handle - 6), max(1, _rf_handle - 6))):
-                        xpos _rf_hx + 3
-                        ypos _rf_hy + 3
-                add Solid(_rf_color, xysize=(_rf_w, 2)):
-                    xpos _rf_x
-                    ypos _rf_y
-                add Solid(_rf_color, xysize=(_rf_w, 2)):
-                    xpos _rf_x
-                    ypos _rf_y + _rf_h - 2
-                add Solid(_rf_color, xysize=(2, _rf_h)):
-                    xpos _rf_x
-                    ypos _rf_y
-                add Solid(_rf_color, xysize=(2, _rf_h)):
-                    xpos _rf_x + _rf_w - 2
-                    ypos _rf_y
-
-            if _rf_tools_visible and _rf_label is not None:
-                frame:
-                    id "rf_label"
-                    xpos int(_rf_label["x"])
-                    ypos int(_rf_label["y"])
-                    xsize int(_rf_label["w"])
-                    ysize int(_rf_label["h"])
-                    background Solid(_renforge_editor_ui_color("scrim"))
-                    padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(10))
-                    at Transform(alpha=float(_rf_label["alpha"]))
-                    text _rf_label["text"]:
-                        color _renforge_editor_ui_color("surface")
-                        size _renforge_editor_ui_px(28)
-                        xalign 0.0
-                        yalign 0.5
+            fixed:
+                xfill True
+                yfill True
+                at _renforge_editor_canvas_transform
+                use _rf_editor_canvas_decor(
+                    _rf_tools_visible,
+                    _rf_selection,
+                    _rf_label,
+                    _rf_distance,
+                    _rf_measure,
+                    _rf_guide,
+                )
 
             use _rf_editor_toolbar(_rf_tools_visible)
 
@@ -270,6 +193,8 @@ init 1090 python:
         "toolbar.measure": "Measure",
         "toolbar.preview": "Preview",
         "toolbar.edit": "Edit",
+        "toolbar.overlay": "Overlay",
+        "toolbar.docked": "Edges",
         "toolbar.guides": "Guides",
         "inspector.position": "POSITION",
         "inspector.size": "SIZE",
@@ -374,6 +299,7 @@ init 1100 python:
 
     _EDITOR_SCREEN = "_renforge_editor_overlay"
     _EDITOR_LAUNCHER_SCREEN = "_renforge_editor_launcher"
+    _EDITOR_LAYER = "renforge_editor"
     _EDITOR_SCREENS = set([_EDITOR_SCREEN, _EDITOR_LAUNCHER_SCREEN])
     _EDITOR_OWNER = "renforge.editor.v1"
     _EDITOR_VIOLET = "#a78bfa"
@@ -384,6 +310,14 @@ init 1100 python:
     _SNAP_ACQUIRE = 6
     _SNAP_RELEASE = 10
     _CACHE_WALK_MAX_DEPTH = 32
+    _RF_DOCK_SCALE = 0.57
+
+    if not hasattr(renpy.config, "top_layers"):
+        renpy.config.top_layers = []
+    if _EDITOR_LAYER not in renpy.config.top_layers:
+        renpy.config.top_layers.append(_EDITOR_LAYER)
+    if not hasattr(renpy.config, "layer_transforms"):
+        renpy.config.layer_transforms = {}
     _ALLOWED_ANCESTRY_TYPES = set(
         [
             "ScreenDisplayable",
@@ -460,6 +394,7 @@ init 1100 python:
             state.guide_y_span = None
             state.opacity = 0.86
             state.tools_visible = True
+            state.layout_mode = "overlay"
             state.label_rect = [20, 20, 260, 32]
             state.label_alpha = 1.0
             state.label_text = "No selection"
@@ -522,6 +457,8 @@ init 1100 python:
             state.guide_y_span = None
         if not hasattr(state, "tools_visible"):
             state.tools_visible = True
+        if not hasattr(state, "layout_mode"):
+            state.layout_mode = "overlay"
         if not hasattr(state, "selected_source_position"):
             state.selected_source_position = None
         if not hasattr(state, "selected_target_key"):
@@ -577,7 +514,8 @@ init 1100 python:
             return {"ok": False, "error": "editor session unavailable"}
         state.active = True
         state.selected_lock_reason = None
-        renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
+        _renforge_editor_apply_layout_transform()
+        renpy.show_screen(_EDITOR_SCREEN, _layer=_EDITOR_LAYER)
         renpy.restart_interaction()
         return {"ok": True}
 
@@ -737,6 +675,9 @@ init 1100 python:
     def _renforge_editor_set_view_mode(mode):
         if mode in ("edit", "preview"):
             _renforge_editor_state().view_mode = mode
+            _renforge_editor_apply_layout_transform(
+                mode == "edit" and _renforge_editor_layout_mode() == "docked"
+            )
             renpy.restart_interaction()
         return {"ok": True, "view_mode": _renforge_editor_view_mode()}
 
@@ -753,6 +694,114 @@ init 1100 python:
             _renforge_editor_state().tool_mode = mode
             renpy.restart_interaction()
         return {"ok": True, "tool_mode": _renforge_editor_tool_mode()}
+
+    def _renforge_editor_layout_mode():
+        mode = getattr(_renforge_editor_state(), "layout_mode", None)
+        return mode if mode in ("overlay", "docked") else "overlay"
+
+    def _renforge_editor_layout_transform(child=None):
+        return Transform(
+            child=child,
+            xpos=_renforge_editor_ui_px(550),
+            ypos=_renforge_editor_ui_px(372),
+            zoom=_RF_DOCK_SCALE,
+        )
+
+    _renforge_editor_layout_transform._renforge_editor_layout = True
+
+    def _renforge_editor_canvas_transform(child=None):
+        if (
+            _renforge_editor_layout_mode() == "docked"
+            and _renforge_editor_view_mode() == "edit"
+        ):
+            return _renforge_editor_layout_transform(child)
+        return Transform(child=child)
+
+    def _renforge_editor_layout_layers():
+        result = []
+        for name in (
+            builtins.list(getattr(renpy.config, "bottom_layers", []) or [])
+            + builtins.list(getattr(renpy.config, "layers", []) or [])
+            + builtins.list(getattr(renpy.config, "top_layers", []) or [])
+        ):
+            if name != _EDITOR_LAYER and name not in result:
+                result.append(name)
+        return result
+
+    def _renforge_editor_apply_layout_transform(enabled=None):
+        if enabled is None:
+            state = _renforge_editor_state()
+            enabled = (
+                bool(state.active)
+                and _renforge_editor_layout_mode() == "docked"
+                and _renforge_editor_view_mode() == "edit"
+            )
+        for layer in _renforge_editor_layout_layers():
+            existing = builtins.list(renpy.config.layer_transforms.get(layer, []) or [])
+            kept = [
+                item for item in existing
+                if not getattr(item, "_renforge_editor_layout", False)
+            ]
+            if enabled:
+                kept.append(_renforge_editor_layout_transform)
+            if kept:
+                renpy.config.layer_transforms[layer] = kept
+            else:
+                renpy.config.layer_transforms.pop(layer, None)
+
+    def _renforge_editor_layout_transform_count():
+        count = 0
+        for layer in _renforge_editor_layout_layers():
+            for item in renpy.config.layer_transforms.get(layer, []) or []:
+                if getattr(item, "_renforge_editor_layout", False):
+                    count += 1
+        return count
+
+    def _renforge_editor_set_layout_mode(mode):
+        if mode in ("overlay", "docked"):
+            _renforge_editor_state().layout_mode = mode
+            _renforge_editor_apply_layout_transform(
+                mode == "docked" and _renforge_editor_view_mode() == "edit"
+            )
+            renpy.restart_interaction()
+        return {"ok": True, "layout_mode": _renforge_editor_layout_mode()}
+
+    def _renforge_editor_screen_to_canvas_point(x, y):
+        if (
+            _renforge_editor_layout_mode() != "docked"
+            or _renforge_editor_view_mode() != "edit"
+        ):
+            return float(x), float(y)
+        return (
+            (float(x) - float(_renforge_editor_ui_px(550))) / _RF_DOCK_SCALE,
+            (float(y) - float(_renforge_editor_ui_px(372))) / _RF_DOCK_SCALE,
+        )
+
+    def _renforge_editor_canvas_to_screen_point(x, y):
+        if (
+            _renforge_editor_layout_mode() != "docked"
+            or _renforge_editor_view_mode() != "edit"
+        ):
+            return float(x), float(y)
+        return (
+            float(_renforge_editor_ui_px(550)) + float(x) * _RF_DOCK_SCALE,
+            float(_renforge_editor_ui_px(372)) + float(y) * _RF_DOCK_SCALE,
+        )
+
+    def _renforge_editor_screen_to_canvas_rect(rect):
+        if not isinstance(rect, (builtins.list, tuple)) or len(rect) != 4:
+            return rect
+        left, top = _renforge_editor_screen_to_canvas_point(rect[0], rect[1])
+        right, bottom = _renforge_editor_screen_to_canvas_point(
+            rect[0] + rect[2],
+            rect[1] + rect[3],
+        )
+        return [
+            int(round(left)),
+            int(round(top)),
+            max(1, int(round(right - left))),
+            max(1, int(round(bottom - top))),
+        ]
 
 
 
@@ -1847,6 +1896,9 @@ init 1100 python:
             if rect[2] <= 0 or rect[3] <= 0:
                 continue
             screen_name = _renforge_editor_screen_name(focus)
+            screen_rect = list(rect)
+            if screen_name not in _EDITOR_SCREENS:
+                rect = _renforge_editor_screen_to_canvas_rect(rect)
             if isinstance(screen_name, str):
                 _renforge_editor_screen_instances(screen_name, instances)
             runtime_key, resolve_error, named_widget, focused_widget = _renforge_editor_runtime_key_from_focus(
@@ -1863,6 +1915,7 @@ init 1100 python:
             candidate = {
                 "focus": focus,
                 "rect": rect,
+                "screen_rect": screen_rect,
                 "ordinal": int(ordinal),
                 "runtime_key": runtime_key,
                 "resolve_error": resolve_error,
@@ -3282,12 +3335,21 @@ init 1100 python:
         return all(s == signs[0] for s in signs)
 
 
-    def _renforge_editor_candidate_hit(candidate, x, y):
+    def _renforge_editor_candidate_hit(candidate, x, y, screen_x=None, screen_y=None):
         rect = candidate.get("rect") or []
         if len(rect) != 4:
             return False
         x, y = int(x), int(y)
-        if not (rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]):
+        hit_rect = rect
+        hit_x, hit_y = x, y
+        screen_rect = candidate.get("screen_rect") or []
+        if screen_x is not None and screen_y is not None and len(screen_rect) == 4:
+            hit_rect = screen_rect
+            hit_x, hit_y = int(screen_x), int(screen_y)
+        if not (
+            hit_rect[0] <= hit_x < hit_rect[0] + hit_rect[2]
+            and hit_rect[1] <= hit_y < hit_rect[1] + hit_rect[3]
+        ):
             return False
 
         widget = candidate.get("focused_widget") or candidate.get("named_widget")
@@ -3326,13 +3388,13 @@ init 1100 python:
         return False
 
 
-    def _renforge_editor_hit_candidates(x, y):
+    def _renforge_editor_hit_candidates(x, y, screen_x=None, screen_y=None):
         """Return focus hits first; only fall back to text when no focusable covers the point."""
         focus_hits = []
         for candidate in reversed(_renforge_editor_focus_candidates()):
             if candidate.get("editor_owned"):
                 continue
-            if _renforge_editor_candidate_hit(candidate, x, y):
+            if _renforge_editor_candidate_hit(candidate, x, y, screen_x, screen_y):
                 focus_hits.append(candidate)
         if focus_hits:
             return focus_hits
@@ -3347,10 +3409,14 @@ init 1100 python:
 
     def _renforge_editor_select(x, y, requested_candidate=None):
         state = _renforge_editor_state()
+        screen_x, screen_y = None, None
+        if requested_candidate is None:
+            screen_x, screen_y = x, y
+            x, y = _renforge_editor_screen_to_canvas_point(x, y)
         hits = (
             [requested_candidate]
             if isinstance(requested_candidate, builtins.dict)
-            else _renforge_editor_hit_candidates(x, y)
+            else _renforge_editor_hit_candidates(x, y, screen_x, screen_y)
         )
         if not hits:
             return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
@@ -3374,7 +3440,9 @@ init 1100 python:
             rect = candidate.get("rect") or []
             if len(rect) != 4:
                 continue
-            if requested_candidate is None and not _renforge_editor_candidate_hit(candidate, x, y):
+            if requested_candidate is None and not _renforge_editor_candidate_hit(
+                candidate, x, y, screen_x, screen_y
+            ):
                 continue
             state.pointer = [int(x), int(y)]
             state.selected_target_key = None
@@ -3732,7 +3800,8 @@ init 1100 python:
         state.guide_y = None
         state.guide_x_span = None
         state.guide_y_span = None
-        renpy.hide_screen(_EDITOR_SCREEN, layer="screens")
+        _renforge_editor_apply_layout_transform(False)
+        renpy.hide_screen(_EDITOR_SCREEN, layer=_EDITOR_LAYER)
         renpy.restart_interaction()
         return {"ok": True, "active": False}
 
@@ -3742,14 +3811,15 @@ init 1100 python:
         if not state.active:
             return None
         event_type = getattr(event, "type", None)
-        pointer_x, pointer_y = _renforge_editor_event_pos(event, x, y)
+        screen_x, screen_y = _renforge_editor_event_pos(event, x, y)
+        pointer_x, pointer_y = _renforge_editor_screen_to_canvas_point(screen_x, screen_y)
         key = getattr(event, "key", None)
         shift = _renforge_editor_event_shift(event)
         state.pointer = [int(pointer_x), int(pointer_y)]
         _renforge_editor_set_label(pointer_x, pointer_y)
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
-                _renforge_editor_select(pointer_x, pointer_y)
+                _renforge_editor_select(screen_x, screen_y)
                 if (
                     not state.selected_lock_reason
                     and (state.current_capabilities or {}).get("move", True) is True
@@ -3993,9 +4063,13 @@ init 1100 python:
                         _renforge_editor_clear_current_analysis(state)
                         state.selected_target_key = None
                         if len(selected_rect) == 4:
-                            _renforge_editor_select(
+                            screen_x, screen_y = _renforge_editor_canvas_to_screen_point(
                                 int(selected_rect[0]) + int(selected_rect[2]) // 2,
                                 int(selected_rect[1]) + int(selected_rect[3]) // 2,
+                            )
+                            _renforge_editor_select(
+                                screen_x,
+                                screen_y,
                             )
                         state.status_text = "Reload committed"
                     else:
@@ -4065,6 +4139,7 @@ init 1100 python:
         state = _renforge_editor_state()
         state.script_generation = int(state.script_generation) + 1
         state.pending_reload_draw_generation = None
+        _renforge_editor_apply_layout_transform()
 
 
     def _renforge_editor_periodic():
@@ -4073,7 +4148,7 @@ init 1100 python:
             return
         if not state.active:
             if state.editor_injected and renpy.get_screen(_EDITOR_LAUNCHER_SCREEN) is None:
-                renpy.show_screen(_EDITOR_LAUNCHER_SCREEN, _layer="screens")
+                renpy.show_screen(_EDITOR_LAUNCHER_SCREEN, _layer=_EDITOR_LAYER)
                 renpy.restart_interaction()
             return
         editor_session_screen = state.editor_session_screen
@@ -4085,7 +4160,7 @@ init 1100 python:
             if not session_shown and editor_session_screen is not None:
                 renpy.show_screen(editor_session_screen, _layer="screens")
             if not overlay_shown:
-                renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
+                renpy.show_screen(_EDITOR_SCREEN, _layer=_EDITOR_LAYER)
             renpy.restart_interaction()
             return
         _renforge_editor_apply_coordinator_results()
@@ -4172,7 +4247,8 @@ init 1100 python:
         state.last_event_trace = []
         _renforge_editor_ensure_coordinator()
         renpy.show_screen(screen, _layer="screens")
-        renpy.show_screen(_EDITOR_SCREEN, _layer="screens")
+        _renforge_editor_apply_layout_transform()
+        renpy.show_screen(_EDITOR_SCREEN, _layer=_EDITOR_LAYER)
         renpy.restart_interaction()
         return {
             "ok": True,
@@ -4237,6 +4313,9 @@ init 1100 python:
         y = payload.get("y")
         if not isinstance(x, int) or isinstance(x, bool) or not isinstance(y, int) or isinstance(y, bool):
             return {"ok": False, "error": "x and y must be integers"}
+        if payload.get("coordinate_space", "logical") != "screen":
+            x, y = _renforge_editor_canvas_to_screen_point(x, y)
+            x, y = int(round(x)), int(round(y))
         return _renforge_editor_select(x, y)
 
 
@@ -4253,10 +4332,14 @@ init 1100 python:
             return {"ok": False, "error": "pygame_sdl2 is unavailable"}
 
         normalized_points = []
+        coordinate_space = payload.get("coordinate_space", "logical")
         for point in points:
             if not builtins.isinstance(point, (builtins.list, tuple)) or len(point) < 2:
                 return {"ok": False, "error": "invalid point"}
-            normalized_points.append([int(point[0]), int(point[1])])
+            point_x, point_y = int(point[0]), int(point[1])
+            if coordinate_space != "screen":
+                point_x, point_y = _renforge_editor_canvas_to_screen_point(point_x, point_y)
+            normalized_points.append([int(round(point_x)), int(round(point_y))])
 
         def dispatch(event, px, py):
             try:
@@ -4664,6 +4747,8 @@ init 1100 python:
         y = payload.get("y")
         if not isinstance(x, int) or isinstance(x, bool) or not isinstance(y, int) or isinstance(y, bool):
             return {"ok": False, "error": "x and y must be integers"}
+        if payload.get("coordinate_space", "logical") == "screen":
+            x, y = _renforge_editor_screen_to_canvas_point(x, y)
         state = _renforge_editor_state()
         state.pointer = [int(x), int(y)]
         _renforge_editor_set_label(int(x), int(y))

@@ -296,6 +296,52 @@ def run_editor_task0_live_scenario(
             },
         )
 
+    def layout_snapshot() -> dict[str, Any]:
+        return client.eval_expr(
+            "{'layout': _renforge_editor_layout_mode(), "
+            "'view': _renforge_editor_view_mode(), "
+            "'transforms': _renforge_editor_layout_transform_count(), "
+            "'editor_is_top': _EDITOR_LAYER in renpy.config.top_layers, "
+            "'editor_transforms': len(renpy.config.layer_transforms.get(_EDITOR_LAYER, []))}"
+        )
+
+    def click_editor_control(widget_id: str, name: str) -> None:
+        _require_ok(
+            client.click_element(id=widget_id, screen="_renforge_editor_overlay"),
+            name,
+        )
+
+    click_editor_control("rf_toolbar_layout_docked", "switch docked")
+    docked_point = client.eval_expr(
+        f"list(_renforge_editor_canvas_to_screen_point({target_center[0]}, {target_center[1]}))"
+    )
+    docked_select = client.request(
+        "editor_task0_select",
+        {
+            "x": int(round(docked_point[0])),
+            "y": int(round(docked_point[1])),
+            "coordinate_space": "screen",
+        },
+    )
+    if docked_select.get("ok") is not True:
+        raise AssertionError(
+            f"docked transformed select failed at {docked_point!r}: "
+            f"{docked_select!r}"
+        )
+    docked = layout_snapshot()
+    click_editor_control("rf_toolbar_view_preview", "switch preview")
+    preview = layout_snapshot()
+    click_editor_control("rf_toolbar_view_edit", "restore edit")
+    redocked = layout_snapshot()
+    click_editor_control("rf_toolbar_layout_overlay", "restore overlay")
+    report["docked_view_mode"] = {
+        "selected": docked_select.get("selected", {}).get("widget_id"),
+        "docked": docked,
+        "preview": preview,
+        "redocked": redocked,
+        "overlay": layout_snapshot(),
+    }
+
     clipped_select = client.request("editor_task0_select", {"x": clipped_center[0], "y": clipped_center[1]})
     report["clipped_lock"] = clipped_select.get("lock_reason")
 

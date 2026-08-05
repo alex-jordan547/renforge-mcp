@@ -8,13 +8,15 @@ screen _rf_editor_hud():
     $ _rf_pending_text = str(_rf_pending_count) + " " + _renforge_editor_t("hud.pending")
     $ _rf_selected_id = _rf_facts["id"] if (_rf_facts is not None and _rf_facts.get("id")) else None
     $ _rf_selection_text = (_renforge_editor_t("hud.selection") + " " + str(_rf_selected_id)) if _rf_selected_id else _renforge_editor_t("hud.none")
+    $ _rf_docked = _renforge_editor_layout_mode() == "docked"
 
     frame:
         id "rf_hud_band"
-        xalign 0.5
+        xpos (_renforge_editor_ui_px(576) if _rf_docked else 0.5)
+        xanchor (0.0 if _rf_docked else 0.5)
         ypos _renforge_editor_ui_px(148)
-        xsize _renforge_editor_ui_px(1180)
-        background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+        xsize _renforge_editor_ui_px(1408 if _rf_docked else 1180)
+        background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
         padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(12))
 
         hbox:
