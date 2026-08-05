@@ -5,6 +5,8 @@
 screen _rf_editor_inspector():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
+    $ _rf_props_by_widget = _renforge_editor_widget_properties(_rf_facts["screen"]) if _rf_facts is not None else {}
+    $ _rf_props = _rf_props_by_widget.get(_rf_facts["id"], {}) if _rf_facts is not None else {}
 
     if _rf_facts is not None:
         frame:
@@ -65,6 +67,36 @@ screen _rf_editor_inspector():
                             spacing _renforge_editor_ui_px(24)
                             use _rf_editor_field("xsize", str(_rf_facts["rect"]["w"]))
                             use _rf_editor_field("ysize", str(_rf_facts["rect"]["h"]))
+
+                        text _renforge_editor_t("inspector.offset"):
+                            color _renforge_editor_ui_color("meta")
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(16)
+                            yoffset _renforge_editor_ui_px(8)
+                        hbox:
+                            spacing _renforge_editor_ui_px(24)
+                            use _rf_editor_field("xoffset", str(_rf_props.get("xoffset", "0")))
+                            use _rf_editor_field("yoffset", str(_rf_props.get("yoffset", "0")))
+
+                        text _renforge_editor_t("inspector.anchor"):
+                            color _renforge_editor_ui_color("meta")
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(16)
+                            yoffset _renforge_editor_ui_px(8)
+                        hbox:
+                            spacing _renforge_editor_ui_px(24)
+                            use _rf_editor_field("xanchor", str(_rf_props.get("xanchor", "0")))
+                            use _rf_editor_field("yanchor", str(_rf_props.get("yanchor", "0")))
+
+                        text _renforge_editor_t("inspector.fill"):
+                            color _renforge_editor_ui_color("meta")
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(16)
+                            yoffset _renforge_editor_ui_px(8)
+                        hbox:
+                            spacing _renforge_editor_ui_px(24)
+                            use _rf_editor_field("xfill", str(_rf_props.get("xfill", "false")))
+                            use _rf_editor_field("yfill", str(_rf_props.get("yfill", "false")))
                     else:
                         text _renforge_editor_t("inspector.no_geometry"):
                             color _renforge_editor_ui_color("meta")

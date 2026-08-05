@@ -41,6 +41,19 @@ screen _rf_editor_tree():
                         size _renforge_editor_ui_px(18)
                         yalign 0.5
 
+            frame:
+                id "rf_tree_filter"
+                xfill True
+                ysize _renforge_editor_ui_px(50)
+                background Solid(_renforge_editor_ui_color("sunken"))
+                padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(10))
+                text _renforge_editor_t("tree.filter"):
+                    id "rf_tree_filter_text"
+                    color _renforge_editor_ui_color("meta")
+                    font _renforge_editor_ui_font()
+                    size _renforge_editor_ui_px(16)
+                    yalign 0.5
+
             viewport:
                 id "rf_tree_viewport"
                 xfill True
@@ -50,26 +63,44 @@ screen _rf_editor_tree():
                 vbox:
                     xfill True
                     spacing _renforge_editor_ui_px(2)
+                    $ _rf_current_screen = ""
                     for row in _rf_rows:
-                        hbox:
-                            xalign 0.0
-                            spacing _renforge_editor_ui_px(8)
-                            null width _renforge_editor_tree_indent(row["depth"])
-                            text row["tag"]:
-                                color (
-                                    _renforge_editor_ui_color("accent_bright")
-                                    if row["selected"]
-                                    else _renforge_editor_ui_color("meta")
-                                )
-                                font _renforge_editor_ui_font()
-                                size _renforge_editor_ui_px(17)
-                                yalign 0.5
-                            text (row["label"] + ("  " + row["id"] if row["id"] else "")):
-                                color (
-                                    _renforge_editor_ui_color("surface")
-                                    if row["selected"]
-                                    else _renforge_editor_ui_color("border")
-                                )
-                                font _renforge_editor_ui_font()
-                                size _renforge_editor_ui_px(19)
-                                yalign 0.5
+                        if row["depth"] == 0:
+                            $ _rf_current_screen = row["id"]
+
+                        if row["depth"] > 0 and row["id"]:
+                            button:
+                                id ("rf_tree_item_" + str(_rf_current_screen) + "_" + str(row["id"]))
+                                action Function(_renforge_editor_consume, _renforge_editor_select_widget, _rf_current_screen, row["id"])
+                                hover_background Solid(_renforge_editor_ui_color("sunken"))
+                                xfill True
+                                padding (_renforge_editor_ui_px(4), _renforge_editor_ui_px(2))
+                                hbox:
+                                    xalign 0.0
+                                    spacing _renforge_editor_ui_px(8)
+                                    null width _renforge_editor_tree_indent(row["depth"])
+                                    text row["tag"]:
+                                        color (_renforge_editor_ui_color("accent_bright") if row["selected"] else _renforge_editor_ui_color("meta"))
+                                        font _renforge_editor_ui_font()
+                                        size _renforge_editor_ui_px(17)
+                                        yalign 0.5
+                                    text (row["label"] + ("  " + row["id"] if row["id"] else "")):
+                                        color (_renforge_editor_ui_color("surface") if row["selected"] else _renforge_editor_ui_color("border"))
+                                        font _renforge_editor_ui_font()
+                                        size _renforge_editor_ui_px(19)
+                                        yalign 0.5
+                        else:
+                            hbox:
+                                xalign 0.0
+                                spacing _renforge_editor_ui_px(8)
+                                null width _renforge_editor_tree_indent(row["depth"])
+                                text row["tag"]:
+                                    color (_renforge_editor_ui_color("accent_bright") if row["selected"] else _renforge_editor_ui_color("meta"))
+                                    font _renforge_editor_ui_font()
+                                    size _renforge_editor_ui_px(17)
+                                    yalign 0.5
+                                text (row["label"] + ("  " + row["id"] if row["id"] else "")):
+                                    color (_renforge_editor_ui_color("surface") if row["selected"] else _renforge_editor_ui_color("border"))
+                                    font _renforge_editor_ui_font()
+                                    size _renforge_editor_ui_px(19)
+                                    yalign 0.5

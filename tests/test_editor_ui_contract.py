@@ -154,3 +154,11 @@ def test_catalogues_agree_on_their_keys():
                 problems.append(f"{key!r} in {name} is empty: {value!r}")
 
     assert not problems, "catalogue mismatch:\n" + "\n".join(problems)
+
+
+def test_inspector_reads_the_selected_widget_preview_map():
+    """The preview builder requires placement arguments and cannot be a getter."""
+    inspector = (SCREENS_DIR / "rf_inspector.rpy").read_text(encoding="utf-8")
+
+    assert "_renforge_editor_preview_properties()" not in inspector
+    assert '_renforge_editor_widget_properties(_rf_facts["screen"])' in inspector

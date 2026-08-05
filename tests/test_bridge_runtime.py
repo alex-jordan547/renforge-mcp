@@ -2496,6 +2496,76 @@ def test_editor_reselect_resize_and_reset_use_the_selected_target_size(running_b
     assert state.targets[target_key]["size"] == [110, 22]
 
 
+def test_editor_select_widget_keeps_the_requested_identity_when_widgets_overlap(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        behind = {
+            "rect": [10, 20, 100, 20],
+            "runtime_key": {"screen": "overlap_screen", "widget_id": "behind"},
+            "editor_owned": False,
+        }
+        top = {
+            "rect": [10, 20, 100, 20],
+            "runtime_key": {"screen": "overlap_screen", "widget_id": "top"},
+            "editor_owned": False,
+        }
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        for widget_id in ("behind", "top"):
+            state.targets[widget_id] = {
+                "analysis_id": "analysis-" + widget_id,
+                "source_key": {},
+                "capabilities": {"move": True},
+                "screen": "overlap_screen",
+                "widget_id": widget_id,
+                "runtime_baseline": [10, 20],
+                "source_position": [10, 20],
+                "position": [10, 20],
+                "dirty": False,
+            }
+
+        globs["_renforge_editor_focus_candidates"] = lambda: [behind, top]
+        globs["_renforge_editor_all_candidates"] = lambda: [behind, top]
+        globs["_renforge_editor_hit_candidates"] = lambda _x, _y: [top, behind]
+        globs["_renforge_editor_candidate_hit"] = lambda *_args: True
+        globs["_renforge_editor_validate_runtime_key"] = lambda _key: None
+        globs["_renforge_editor_observation_for_candidate"] = lambda candidate: (
+            {"runtime_key": candidate["runtime_key"]},
+            None,
+        )
+        globs["_renforge_editor_target_key"] = lambda key: key["widget_id"]
+        globs["_renforge_editor_set_label"] = lambda _x, _y: None
+
+        selected = globs["_renforge_editor_select_widget"](
+            "overlap_screen", "behind"
+        )
+
+        assert selected["ok"] is True
+        assert selected["selected"]["widget_id"] == "behind"
+        assert state.selected_widget_id == "behind"
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_status_exposes_current_host_capabilities(
     running_bridge,
     monkeypatch,

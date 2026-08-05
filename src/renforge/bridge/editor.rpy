@@ -768,7 +768,7 @@ init 1100 python:
         wanted = str(widget_id or "")
         if not wanted:
             return {"ok": False, "error": "widget_id required"}
-        for candidate in _renforge_editor_focus_candidates() or []:
+        for candidate in _renforge_editor_all_candidates() or []:
             key = candidate.get("runtime_key") or {}
             if str(key.get("widget_id") or "") != wanted:
                 continue
@@ -780,6 +780,7 @@ init 1100 python:
             return _renforge_editor_select(
                 int(rect[0]) + int(rect[2]) // 2,
                 int(rect[1]) + int(rect[3]) // 2,
+                candidate,
             )
         return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
 
@@ -3344,9 +3345,13 @@ init 1100 python:
         return text_hits
 
 
-    def _renforge_editor_select(x, y):
+    def _renforge_editor_select(x, y, requested_candidate=None):
         state = _renforge_editor_state()
-        hits = _renforge_editor_hit_candidates(x, y)
+        hits = (
+            [requested_candidate]
+            if isinstance(requested_candidate, builtins.dict)
+            else _renforge_editor_hit_candidates(x, y)
+        )
         if not hits:
             return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
         # Fail closed when multiple non-focusable text targets cover the same point.
@@ -3369,7 +3374,7 @@ init 1100 python:
             rect = candidate.get("rect") or []
             if len(rect) != 4:
                 continue
-            if not _renforge_editor_candidate_hit(candidate, x, y):
+            if requested_candidate is None and not _renforge_editor_candidate_hit(candidate, x, y):
                 continue
             state.pointer = [int(x), int(y)]
             state.selected_target_key = None

@@ -6,6 +6,8 @@
 screen _rf_editor_toolbar(tools_visible):
     $ _rf_facts = _renforge_editor_inspector_facts()
     $ _rf_screen = _rf_facts["screen"] if _rf_facts and _rf_facts.get("screen") else (getattr(_renforge_editor_state(), "selected_screen", "") or "")
+    $ _rf_tool_mode = _renforge_editor_tool_mode()
+    $ _rf_view_mode = _renforge_editor_view_mode()
 
     frame:
         id "rf_toolbar"
@@ -54,6 +56,42 @@ screen _rf_editor_toolbar(tools_visible):
                         font _renforge_editor_ui_font()
                         size _renforge_editor_ui_px(16)
                         yalign 0.5
+
+            # Tool mode selector group
+            hbox:
+                id "rf_toolbar_tool_modes"
+                spacing _renforge_editor_ui_px(4)
+                yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.select"):
+                    id "rf_toolbar_tool_select"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "select")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_tool_mode == "select" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_tool_mode == "select" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.move"):
+                    id "rf_toolbar_tool_move"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "move")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_tool_mode == "move" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_tool_mode == "move" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.measure"):
+                    id "rf_toolbar_tool_measure"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "measure")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_tool_mode == "measure" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_tool_mode == "measure" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
 
             # Flexible space
             null width 1 xfill True
@@ -128,6 +166,32 @@ screen _rf_editor_toolbar(tools_visible):
                 size _renforge_editor_ui_px(16)
                 yalign 0.5
                 xminimum _renforge_editor_ui_px(120)
+
+            # View mode segmented control
+            hbox:
+                id "rf_toolbar_view_modes"
+                spacing _renforge_editor_ui_px(4)
+                yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.preview"):
+                    id "rf_toolbar_view_preview"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_view_mode, "preview")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_view_mode == "preview" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_view_mode == "preview" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
+
+                textbutton _renforge_editor_t("toolbar.edit"):
+                    id "rf_toolbar_view_edit"
+                    action Function(_renforge_editor_consume, _renforge_editor_set_view_mode, "edit")
+                    background Solid(_renforge_editor_ui_color("accent" if _rf_view_mode == "edit" else "sunken"))
+                    padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                    text_color _renforge_editor_ui_color("accent_on" if _rf_view_mode == "edit" else "meta")
+                    text_font _renforge_editor_ui_font()
+                    text_size _renforge_editor_ui_px(17)
+                    yalign 0.5
 
             textbutton _renforge_editor_save_label():
                 id "rf_save"
