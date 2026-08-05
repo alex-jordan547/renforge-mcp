@@ -29,5 +29,11 @@
   "toolbar.measure": "Measure",
   "toolbar.preview": "Preview",
   "toolbar.edit": "Edit",
-  "toolbar.guides": "Guides"
+  "toolbar.guides": "Guides",
+  "tree.filter": "Filter",
+  "inspector.offset": "OFFSET",
+  "inspector.anchor": "ANCHOR",
+  "inspector.fill": "FILL",
+  "style.color": "Text colour",
+  "style.locked": "Outside the allowlist"
 }

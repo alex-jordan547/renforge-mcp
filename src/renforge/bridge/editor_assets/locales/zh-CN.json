@@ -29,5 +29,11 @@
   "toolbar.measure": "测量",
   "toolbar.preview": "预览",
   "toolbar.edit": "编辑",
-  "toolbar.guides": "参考线"
+  "toolbar.guides": "参考线",
+  "tree.filter": "筛选",
+  "inspector.offset": "偏移",
+  "inspector.anchor": "锚点",
+  "inspector.fill": "填充",
+  "style.color": "文字颜色",
+  "style.locked": "不在白名单内"
 }

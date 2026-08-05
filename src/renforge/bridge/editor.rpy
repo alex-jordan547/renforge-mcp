@@ -40,7 +40,7 @@ screen _renforge_editor_overlay():
             # the panels first keeps selection, guides and labels legible on
             # top of them until the docked layout moves the game out from
             # under the chrome entirely.
-            if _rf_tools_visible:
+            if _renforge_editor_panels_visible():
                 use _rf_editor_tree()
                 use _rf_editor_inspector()
                 use _rf_editor_style()
@@ -254,6 +254,12 @@ init 1090 python:
         "lock.refused": "Refused",
         "tree.title": "SCENE TREE",
         "style.title": "STYLE",
+        "tree.filter": "Filter",
+        "inspector.offset": "OFFSET",
+        "inspector.anchor": "ANCHOR",
+        "inspector.fill": "FILL",
+        "style.color": "Text colour",
+        "style.locked": "Outside the allowlist",
         "hud.reload": "Hot-reload active",
         "hud.pending": "unsaved change(s)",
         "hud.selection": "selection",
@@ -714,6 +720,39 @@ init 1100 python:
 
     def _renforge_editor_tree_indent(depth):
         return _renforge_editor_ui_px(int(depth) * 26)
+
+
+
+    # ── View mode and tool mode (Lot 2.B groundwork) ────────────────────────
+    # Both live on the editor state rather than in a screen, so every region
+    # reads the same answer and a hot reload does not desynchronise them.
+
+    _RF_TOOL_MODES = ("select", "move", "measure")
+
+    def _renforge_editor_view_mode():
+        """Either "edit" or "preview". Preview hides the panels, not the state."""
+        mode = getattr(_renforge_editor_state(), "view_mode", None)
+        return mode if mode in ("edit", "preview") else "edit"
+
+    def _renforge_editor_set_view_mode(mode):
+        if mode in ("edit", "preview"):
+            _renforge_editor_state().view_mode = mode
+            renpy.restart_interaction()
+        return {"ok": True, "view_mode": _renforge_editor_view_mode()}
+
+    def _renforge_editor_panels_visible():
+        """Panels show only while editing, and only when the guides are on."""
+        return _renforge_editor_tools_visible() and _renforge_editor_view_mode() == "edit"
+
+    def _renforge_editor_tool_mode():
+        mode = getattr(_renforge_editor_state(), "tool_mode", None)
+        return mode if mode in _RF_TOOL_MODES else "select"
+
+    def _renforge_editor_set_tool_mode(mode):
+        if mode in _RF_TOOL_MODES:
+            _renforge_editor_state().tool_mode = mode
+            renpy.restart_interaction()
+        return {"ok": True, "tool_mode": _renforge_editor_tool_mode()}
 
 
     # ── Canvas decorations (Lot 1.F) ────────────────────────────────────────
