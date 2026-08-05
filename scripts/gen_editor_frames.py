@@ -34,7 +34,13 @@ HEAD_FILL = (42, 42, 44, 245)
 HAIRLINE = (255, 255, 255, 26)
 
 
-def rounded(path: Path, fill: tuple[int, int, int, int]) -> None:
+def rounded(
+    path: Path,
+    fill: tuple[int, int, int, int],
+    *,
+    corners: tuple[bool, bool, bool, bool] = (True, True, True, True),
+    bottom_rule: bool = False,
+) -> None:
     image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
@@ -43,16 +49,28 @@ def rounded(path: Path, fill: tuple[int, int, int, int]) -> None:
         fill=fill,
         outline=HAIRLINE,
         width=1,
+        corners=corners,
     )
+    if bottom_rule:
+        draw.line((0, SIZE - 1, SIZE - 1, SIZE - 1), fill=HAIRLINE, width=1)
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
-    print(f"{path.relative_to(REPO_ROOT)}  {SIZE}x{SIZE}  radius {RADIUS}")
+    shape = "".join("R" if corner else "-" for corner in corners)
+    print(f"{path.relative_to(REPO_ROOT)}  {SIZE}x{SIZE}  radius {RADIUS}  corners {shape}")
 
 
 def main() -> int:
     rounded(OUT_DIR / "panel.png", PANEL_FILL)
-    rounded(OUT_DIR / "panel_head.png", HEAD_FILL)
-    print(f"\nFrame borders: {RADIUS + 1}")
+    # The header is not a rounded box of its own. In the maquette it is a plain
+    # band whose top corners are clipped by the panel's own radius, closed by a
+    # hairline. Rounding its bottom would carve a notch out of the panel body.
+    rounded(
+        OUT_DIR / "panel_head.png",
+        HEAD_FILL,
+        corners=(True, True, False, False),
+        bottom_rule=True,
+    )
+    print(f"\nFrame borders: panel {RADIUS + 1}, head ({RADIUS + 1}, {RADIUS + 1}, {RADIUS + 1}, 2)")
     return 0
 
 
