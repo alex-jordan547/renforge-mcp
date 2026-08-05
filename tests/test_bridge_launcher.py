@@ -1297,3 +1297,22 @@ def test_analysis_in_flight_is_not_reported_as_a_refusal() -> None:
     # Genuinely unmeasured is still a refusal to act, and must stay visible.
     assert classify("UNMEASURED") == "blocked"
     assert classify("AMBIGUOUS_HIT") == "locked"
+
+
+def test_no_widget_id_is_claimed_by_two_region_screens() -> None:
+    """Two widgets sharing an id make renpy.get_widget return an arbitrary one.
+
+    Panels are written independently, so nothing but a test stops a new one from
+    reusing a name the toolbar already owns.
+    """
+    import re
+    from collections import Counter
+    from renforge.bridge.launcher import _EDITOR_RESOURCE, _editor_screen_sources
+
+    owners: Counter[str] = Counter()
+    for path in [_EDITOR_RESOURCE, *_editor_screen_sources()]:
+        found = set(re.findall(r'^\s*id\s+"(rf_[a-z_]+)"', path.read_text(encoding="utf-8"), re.M))
+        owners.update(found)
+
+    duplicated = sorted(name for name, count in owners.items() if count > 1)
+    assert not duplicated, f"widget ids claimed by more than one file: {duplicated}"

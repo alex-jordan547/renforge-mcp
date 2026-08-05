@@ -17,5 +17,6 @@
   "tree.title": "SCENE TREE",
   "inspector.position": "POSITION",
   "inspector.size": "SIZE",
-  "inspector.no_geometry": "No measured geometry for this selection."
+  "inspector.no_geometry": "No measured geometry for this selection.",
+  "style.title": "STYLE"
 }

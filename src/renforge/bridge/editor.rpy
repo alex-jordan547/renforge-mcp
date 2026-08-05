@@ -43,6 +43,7 @@ screen _renforge_editor_overlay():
             if _rf_tools_visible:
                 use _rf_editor_tree()
                 use _rf_editor_inspector()
+                use _rf_editor_style()
 
             if _rf_tools_visible and _rf_guide["line_x"] is not None:
                 add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
@@ -97,9 +98,14 @@ screen _renforge_editor_overlay():
                 $ _rf_w = int(_rf_selection["w"])
                 $ _rf_h = int(_rf_selection["h"])
                 $ _rf_color = _rf_selection["color"]
-                add Solid("#7c3aed", xysize=(8, 8)):
-                    xpos _rf_x - 3
-                    ypos _rf_y - 3
+                $ _rf_handle = _renforge_editor_ui_px(18)
+                for _rf_hx, _rf_hy in _renforge_editor_handle_points(_rf_x, _rf_y, _rf_w, _rf_h, _rf_handle):
+                    add Solid(_rf_color, xysize=(_rf_handle, _rf_handle)):
+                        xpos _rf_hx
+                        ypos _rf_hy
+                    add Solid(_renforge_editor_ui_color("surface"), xysize=(max(1, _rf_handle - 6), max(1, _rf_handle - 6))):
+                        xpos _rf_hx + 3
+                        ypos _rf_hy + 3
                 add Solid(_rf_color, xysize=(_rf_w, 2)):
                     xpos _rf_x
                     ypos _rf_y
@@ -243,6 +249,7 @@ init 1090 python:
         "lock.blocked": "Blocked here",
         "lock.refused": "Refused",
         "tree.title": "SCENE TREE",
+        "style.title": "STYLE",
         "inspector.position": "POSITION",
         "inspector.size": "SIZE",
         "inspector.no_geometry": "No measured geometry for this selection.",
@@ -692,6 +699,29 @@ init 1100 python:
 
     def _renforge_editor_tree_indent(depth):
         return _renforge_editor_ui_px(int(depth) * 26)
+
+
+    # ── Canvas decorations (Lot 1.F) ────────────────────────────────────────
+
+    def _renforge_editor_handle_points(x, y, w, h, size):
+        """Top-left corner of each of the eight resize handles.
+
+        Handles straddle the selection edge rather than sitting inside it, so
+        the box the user sees is the box the widget occupies — an inset handle
+        would quietly misreport the bounds it is there to describe.
+        """
+        half = size // 2
+        mid_x = x + w // 2 - half
+        mid_y = y + h // 2 - half
+        left = x - half
+        right = x + w - half
+        top = y - half
+        bottom = y + h - half
+        return [
+            (left, top), (mid_x, top), (right, top),
+            (left, mid_y), (right, mid_y),
+            (left, bottom), (mid_x, bottom), (right, bottom),
+        ]
 
 
     # ── Inspector (Lot 1.C) ─────────────────────────────────────────────────

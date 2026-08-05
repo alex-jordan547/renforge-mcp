@@ -17,5 +17,6 @@
   "tree.title": "场景树",
   "inspector.position": "位置",
   "inspector.size": "尺寸",
-  "inspector.no_geometry": "此选择没有测得的几何信息。"
+  "inspector.no_geometry": "此选择没有测得的几何信息。",
+  "style.title": "样式"
 }
