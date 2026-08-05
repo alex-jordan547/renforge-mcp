@@ -13,5 +13,6 @@
   "save.saved": "Saved",
   "lock.locked": "Locked",
   "lock.blocked": "Blocked here",
-  "lock.refused": "Refused"
+  "lock.refused": "Refused",
+  "tree.title": "SCENE TREE"
 }

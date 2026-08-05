@@ -13,5 +13,6 @@
   "save.saved": "已保存",
   "lock.locked": "已锁定",
   "lock.blocked": "此处受限",
-  "lock.refused": "已拒绝"
+  "lock.refused": "已拒绝",
+  "tree.title": "场景树"
 }

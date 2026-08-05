@@ -36,6 +36,13 @@ screen _renforge_editor_overlay():
             yfill True
             at Transform(alpha=_renforge_editor_opacity())
 
+            # Panels are chrome; the canvas decorations are the tool. Drawing
+            # the panels first keeps selection, guides and labels legible on
+            # top of them until the docked layout moves the game out from
+            # under the chrome entirely.
+            if _rf_tools_visible:
+                use _rf_editor_tree()
+
             if _rf_tools_visible and _rf_guide["line_x"] is not None:
                 add Solid("#ff3b30", xysize=(1, max(1, int(_rf_guide["line_x"][2])))):
                     id "rf_guide_x"
@@ -232,6 +239,83 @@ screen _rf_editor_toolbar(tools_visible):
                     text_font _renforge_editor_ui_font()
 
 
+# ── Lot 1.B — scene tree ────────────────────────────────────────────────────
+# Reads the live displayable tree every frame rather than caching it: the game
+# is running and its screens change under the editor, so a cached tree would
+# quietly describe a scene that no longer exists.
+screen _rf_editor_tree():
+    $ _rf_rows = _renforge_editor_tree_rows()
+
+    frame:
+        id "rf_tree_panel"
+        xpos _renforge_editor_ui_px(32)
+        ypos _renforge_editor_ui_px(148)
+        xsize _renforge_editor_ui_px(480)
+        ysize _renforge_editor_ui_px(940)
+        background Frame(_renforge_editor_ui_frame("panel"), 25, 25)
+        padding (0, 0)
+
+        vbox:
+            xfill True
+            yfill True
+            spacing 0
+
+            frame:
+                xfill True
+                ysize _renforge_editor_ui_px(76)
+                background Frame(_renforge_editor_ui_frame("panel_head"), 25, 25)
+                padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(10))
+                hbox:
+                    xfill True
+                    yalign 0.5
+                    text _renforge_editor_t("tree.title"):
+                        id "rf_tree_title"
+                        color _renforge_editor_ui_color("meta")
+                        font _renforge_editor_ui_font()
+                        size _renforge_editor_ui_px(18)
+                        yalign 0.5
+                    null width 1 xfill True
+                    text ("%d" % len(_rf_rows)):
+                        id "rf_tree_count"
+                        color _renforge_editor_ui_color("surface")
+                        font _renforge_editor_ui_font()
+                        size _renforge_editor_ui_px(18)
+                        yalign 0.5
+
+            viewport:
+                id "rf_tree_viewport"
+                xfill True
+                yfill True
+                mousewheel True
+                draggable True
+                vbox:
+                    xfill True
+                    spacing _renforge_editor_ui_px(2)
+                    for row in _rf_rows:
+                        hbox:
+                            xalign 0.0
+                            spacing _renforge_editor_ui_px(8)
+                            null width _renforge_editor_tree_indent(row["depth"])
+                            text row["tag"]:
+                                color (
+                                    _renforge_editor_ui_color("accent_bright")
+                                    if row["selected"]
+                                    else _renforge_editor_ui_color("meta")
+                                )
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(17)
+                                yalign 0.5
+                            text (row["label"] + ("  " + row["id"] if row["id"] else "")):
+                                color (
+                                    _renforge_editor_ui_color("surface")
+                                    if row["selected"]
+                                    else _renforge_editor_ui_color("border")
+                                )
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(19)
+                                yalign 0.5
+
+
 init 1090 python:
     # ── Design tokens (Lot 0.B) ─────────────────────────────────────────────
     # The editor chrome is designed against a 2560-wide canvas. Games run at
@@ -251,6 +335,7 @@ init 1090 python:
         "hairline": "#ffffff1a",
         "surface": "#f5f5f7",
         "meta": "#86868b",
+        "border": "#d2d2d7",
         "accent": "#0071e3",
         "accent_bright": "#2997ff",
         "accent_on": "#ffffff",
@@ -278,6 +363,18 @@ init 1090 python:
     def _renforge_editor_ui_px(value):
         """Convert a 2560-space measurement into this game's pixels."""
         return int(round(float(value) * _renforge_editor_ui_scale()))
+
+    def _renforge_editor_ui_frame(name):
+        """Path of a shipped nine-patch, or a flat colour when assets are absent.
+
+        Ren'Py builds rounded corners from an image, so a launch without the
+        asset directory has to degrade to a square panel rather than crash.
+        """
+        import os
+        assets = (os.environ.get("RENFORGE_EDITOR_ASSETS") or "").strip()
+        if not assets:
+            return Solid(_RF_UI_COLORS.get("panel", "#272729"))
+        return "%s/frames/%s.png" % (assets, name)
 
     def _renforge_editor_ui_color(name):
         """Look up a design token. Unknown names shout in magenta on purpose."""
@@ -309,6 +406,7 @@ init 1090 python:
         "lock.locked": "Locked",
         "lock.blocked": "Blocked here",
         "lock.refused": "Refused",
+        "tree.title": "SCENE TREE",
     }
     _RF_UI_STRINGS_READY = []
 
@@ -665,6 +763,96 @@ init 1100 python:
         if lock_reason is None:
             return None
         return str(lock_reason)
+
+
+    # ── Scene tree (Lot 1.B) ────────────────────────────────────────────────
+    # Built from the live displayable tree, not from a description of it. Ren'Py
+    # wraps generously, so a raw walk buries the author's structure under
+    # engine scaffolding: only nodes the author would recognise are listed,
+    # while the walk still descends through the ones it hides.
+
+    _RF_TREE_KINDS = {
+        "Frame": ("F", "frame"),
+        "Window": ("F", "window"),
+        "Text": ("T", "text"),
+        "Button": ("B", "button"),
+        "TextButton": ("B", "textbutton"),
+        "ImageButton": ("B", "imagebutton"),
+        "Viewport": ("P", "viewport"),
+        "Bar": ("R", "bar"),
+        "Grid": ("G", "grid"),
+        "Image": ("I", "image"),
+        "ImageReference": ("I", "image"),
+        "Transform": ("X", "transform"),
+    }
+    _RF_TREE_MAX_ROWS = 120
+    _RF_TREE_MAX_DEPTH = 8
+
+    def _renforge_editor_tree_kind(displayable):
+        """(badge, label) for a displayable, or None when it is scaffolding."""
+        name = type(displayable).__name__
+        if name == "MultiBox":
+            layout = getattr(displayable, "layout", None)
+            if layout == "vertical":
+                return ("V", "vbox")
+            if layout == "horizontal":
+                return ("H", "hbox")
+            return ("X", "fixed")
+        return _RF_TREE_KINDS.get(name)
+
+    def _renforge_editor_tree_walk(displayable, depth, by_id, rows, selected_id):
+        if len(rows) >= _RF_TREE_MAX_ROWS or depth > _RF_TREE_MAX_DEPTH:
+            return
+        kind = _renforge_editor_tree_kind(displayable)
+        widget_id = by_id.get(builtins.id(displayable), "")
+        # A wrapper with no id and no recognised kind is engine plumbing: step
+        # through it without spending a row or a level of indentation on it.
+        if kind is None and not widget_id:
+            for child in _renforge_editor_children(displayable) or []:
+                _renforge_editor_tree_walk(child, depth, by_id, rows, selected_id)
+            return
+        badge, label = kind if kind is not None else ("?", type(displayable).__name__)
+        rows.append({
+            "depth": depth,
+            "tag": badge,
+            "label": label,
+            "id": widget_id,
+            "selected": bool(widget_id) and widget_id == selected_id,
+        })
+        for child in _renforge_editor_children(displayable) or []:
+            _renforge_editor_tree_walk(child, depth + 1, by_id, rows, selected_id)
+
+    def _renforge_editor_tree_rows():
+        """Flatten every active game screen into displayable rows."""
+        rows = []
+        selected_id = ""
+        try:
+            selected_id = str(_renforge_editor_state().selected_widget_id or "")
+        except Exception:
+            selected_id = ""
+        for screen_name in _renforge_editor_active_game_screens():
+            if len(rows) >= _RF_TREE_MAX_ROWS:
+                break
+            screen, widgets = _renforge_editor_widget_map(screen_name)
+            if screen is None:
+                continue
+            by_id = {}
+            for wid, widget in widgets.items():
+                try:
+                    by_id[builtins.id(widget)] = str(wid)
+                except Exception:
+                    pass
+            rows.append({
+                "depth": 0, "tag": "S", "label": "screen",
+                "id": str(screen_name), "selected": False,
+            })
+            child = getattr(screen, "child", None)
+            if child is not None:
+                _renforge_editor_tree_walk(child, 1, by_id, rows, selected_id)
+        return rows
+
+    def _renforge_editor_tree_indent(depth):
+        return _renforge_editor_ui_px(int(depth) * 26)
 
 
     # ── The language of refusal (Lot 2.A) ───────────────────────────────────
