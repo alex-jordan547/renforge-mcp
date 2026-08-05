@@ -713,13 +713,13 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     basename = manifest["basename"]
     source_path = project_root / "game" / basename
-    expected_resource = (
-        Path(__file__).resolve().parents[1] / "src" / "renforge" / "bridge" / "editor.rpy"
-    )
-    expected_hash = hashlib.sha256(expected_resource.read_bytes()).hexdigest()
+    from renforge.bridge.launcher import _editor_payload
+
+    expected_bytes = _editor_payload()
+    expected_hash = hashlib.sha256(expected_bytes).hexdigest()
     assert manifest["source_sha256"] == expected_hash
     assert manifest["absent_before"] == {"rpy": True, "rpyc": True, "rpyc_bak": True}
-    assert source_path.read_bytes() == expected_resource.read_bytes()
+    assert source_path.read_bytes() == expected_bytes
 
     # The asset tree shares the .rpy stem so one collision-free draw covers both,
     # and the runtime is told its name rather than having to guess the hash.
@@ -1252,3 +1252,35 @@ def test_lock_levels_say_only_what_was_measured() -> None:
     assert classify("SOME_CODE_ADDED_NEXT_YEAR") == "blocked"
     assert classify(None) is None
     assert classify("") is None
+
+
+def test_injected_payload_is_the_sum_of_every_source_file() -> None:
+    """One artifact, many sources — that split is what lets panels be written in parallel."""
+    from renforge.bridge.launcher import (
+        _EDITOR_RESOURCE,
+        _editor_payload,
+        _editor_screen_sources,
+    )
+
+    screens = _editor_screen_sources()
+    assert screens, "expected the region screens to live in their own files"
+    assert {path.name for path in screens} >= {"rf_toolbar.rpy", "rf_tree.rpy"}
+
+    payload = _editor_payload()
+    assert payload.startswith(_EDITOR_RESOURCE.read_bytes())
+    for path in screens:
+        assert path.read_bytes() in payload
+
+    # Order must not drift with the filesystem, or the digest changes for no reason.
+    assert [path.name for path in screens] == sorted(path.name for path in screens)
+
+
+def test_region_screens_are_not_duplicated_in_the_core_file() -> None:
+    """A screen defined twice would silently shadow itself after a refactor."""
+    from renforge.bridge.launcher import _EDITOR_RESOURCE, _editor_screen_sources
+
+    core = _EDITOR_RESOURCE.read_text(encoding="utf-8")
+    for path in _editor_screen_sources():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("screen "):
+                assert line not in core, f"{line!r} defined in both {path.name} and editor.rpy"

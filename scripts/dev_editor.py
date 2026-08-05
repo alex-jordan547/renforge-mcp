@@ -22,9 +22,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
-EDITOR_SOURCE = REPO_ROOT / "src" / "renforge" / "bridge" / "editor.rpy"
+BRIDGE_DIR = REPO_ROOT / "src" / "renforge" / "bridge"
 
-from renforge.bridge.launcher import launch_with_bridge  # noqa: E402
+from renforge.bridge.launcher import _editor_payload, launch_with_bridge  # noqa: E402
 from renforge.project import RenpyProject  # noqa: E402
 from renforge.sdk import get_or_install_sdk  # noqa: E402
 
@@ -50,7 +50,7 @@ def main() -> int:
         print(f"pid          {session.process.pid}", flush=True)
         print(f"editor       {'injected' if session.editor else 'MISSING'}"
               " — click RF, top right, to activate", flush=True)
-        print(f"watching     {EDITOR_SOURCE.relative_to(REPO_ROOT)} → {injected.name}", flush=True)
+        print(f"watching     {len(_watched())} source files → {injected.name}", flush=True)
         print("stop         Ctrl-C", flush=True)
         _watch_and_reload(session, injected)
     except KeyboardInterrupt:
@@ -58,6 +58,22 @@ def main() -> int:
     finally:
         session.close(timeout=10.0)
     return 0
+
+
+def _watched() -> list[Path]:
+    """Every file that ends up in the injected artifact."""
+    return [BRIDGE_DIR / "editor.rpy", *sorted((BRIDGE_DIR / "screens").glob("*.rpy"))]
+
+
+def _sources_stamp() -> tuple[int, ...]:
+    """Change signature across all sources, so any panel file triggers a reload."""
+    stamps = []
+    for path in _watched():
+        try:
+            stamps.append(path.stat().st_mtime_ns)
+        except FileNotFoundError:
+            stamps.append(0)
+    return tuple(stamps)
 
 
 def _manifest_path(project_root: Path) -> Path:
@@ -88,19 +104,17 @@ def _watch_and_reload(session: object, injected: Path) -> None:
     """Re-copy the editor source into the game on every edit, then hot-reload.
 
     The game reads its own injected copy, so reloading alone would replay the
-    bytes that were current at launch. Copy first, reload second.
+    bytes that were current at launch. Rebuild first, reload second — and watch
+    every panel file, not just editor.rpy, since the artifact is their sum.
     """
-    last_seen = EDITOR_SOURCE.stat().st_mtime_ns
+    last_seen = _sources_stamp()
     while True:
         time.sleep(0.5)
-        try:
-            current = EDITOR_SOURCE.stat().st_mtime_ns
-        except FileNotFoundError:
-            continue
+        current = _sources_stamp()
         if current == last_seen:
             continue
         last_seen = current
-        payload = EDITOR_SOURCE.read_bytes()
+        payload = _editor_payload()
         injected.write_bytes(payload)
         _restamp_manifest(injected.parents[1], payload)
         try:

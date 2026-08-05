@@ -39,6 +39,7 @@ _BRIDGE_RESOURCE: Path = Path(__file__).parent / "bridge.rpy"
 _INJECTED_NAME: str = "renforge_bridge.rpy"
 _SESSION_INIT_NAME: str = "00renforge_session.rpy"
 _EDITOR_RESOURCE: Path = Path(__file__).parent / "editor.rpy"
+_EDITOR_SCREENS_RESOURCE: Path = Path(__file__).parent / "screens"
 _EDITOR_ASSETS_RESOURCE: Path = Path(__file__).parent / "editor_assets"
 _EDITOR_INJECTED_PREFIX: str = "zzrenforge_editor_"
 _EDITOR_MANIFEST_NAME: str = "editor-session.json"
@@ -136,6 +137,31 @@ _DEFERRED_LOCKS: set[ProjectBridgeLock] = set()
 
 def _editor_manifest_path(project_root: Path) -> Path:
     return project_root / ".renforge" / _EDITOR_MANIFEST_NAME
+
+
+def _editor_screen_sources() -> list[Path]:
+    """The region screens, in a stable order.
+
+    One file per panel is what makes the UI work parallel: six authors touch six
+    files instead of queueing on one. Ren'Py does not care how the source was
+    organised, so they are concatenated at injection time.
+    """
+    if not _EDITOR_SCREENS_RESOURCE.is_dir():
+        return []
+    return sorted(_EDITOR_SCREENS_RESOURCE.glob("*.rpy"))
+
+
+def _editor_payload() -> bytes:
+    """The single artifact injected into the game, built from every source file.
+
+    Keeping one injected file keeps one manifest entry, one digest, one cleanup
+    path — the whole ownership contract stays as narrow as it was — while the
+    sources stay split for the people writing them.
+    """
+    parts = [_EDITOR_RESOURCE.read_bytes()]
+    for path in _editor_screen_sources():
+        parts.append(b"\n\n" + path.read_bytes())
+    return b"".join(parts)
 
 
 def _editor_asset_sources() -> list[tuple[str, Path]]:
@@ -239,7 +265,7 @@ def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str, str]:
     draw covers both, and the runtime learns its name from the environment
     rather than guessing a hash it cannot see.
     """
-    payload = _EDITOR_RESOURCE.read_bytes()
+    payload = _editor_payload()
     for _attempt in range(32):
         stem = f"{_EDITOR_INJECTED_PREFIX}{secrets.token_hex(8)}"
         basename = f"{stem}.rpy"
