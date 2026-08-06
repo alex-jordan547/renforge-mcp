@@ -9,7 +9,7 @@ screen _rf_editor_toolbar(tools_visible):
     $ _rf_tool_mode = _renforge_editor_tool_mode()
     $ _rf_view_mode = _renforge_editor_view_mode()
     $ _rf_layout_mode = _renforge_editor_layout_mode()
-    $ _rf_docked = _rf_layout_mode == "docked"
+    $ _rf_docked = _rf_layout_mode == "docked" and _rf_view_mode == "edit"
 
     frame:
         id "rf_toolbar"

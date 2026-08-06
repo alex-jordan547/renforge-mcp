@@ -30,6 +30,7 @@ screen _renforge_editor_overlay():
         $ _rf_measure = _renforge_editor_measure_snapshot()
         $ _rf_guide = _renforge_editor_guide_snapshot()
         $ _rf_tools_visible = _renforge_editor_tools_visible()
+        $ _rf_canvas_tools_visible = _rf_tools_visible and _renforge_editor_view_mode() == "edit"
 
         fixed:
             xfill True
@@ -51,7 +52,7 @@ screen _renforge_editor_overlay():
                 yfill True
                 at _renforge_editor_canvas_transform
                 use _rf_editor_canvas_decor(
-                    _rf_tools_visible,
+                    _rf_canvas_tools_visible,
                     _rf_selection,
                     _rf_label,
                     _rf_distance,
@@ -702,8 +703,9 @@ init 1100 python:
     def _renforge_editor_layout_transform(child=None):
         return Transform(
             child=child,
-            xpos=_renforge_editor_ui_px(550),
-            ypos=_renforge_editor_ui_px(372),
+            crop=(0, 0, config.screen_width, config.screen_height),
+            xoffset=_renforge_editor_ui_px(550),
+            yoffset=_renforge_editor_ui_px(372),
             zoom=_RF_DOCK_SCALE,
         )
 
@@ -3808,7 +3810,7 @@ init 1100 python:
 
     def _renforge_editor_handle_event(event, x, y, st):
         state = _renforge_editor_state()
-        if not state.active:
+        if not state.active or _renforge_editor_view_mode() == "preview":
             return None
         event_type = getattr(event, "type", None)
         screen_x, screen_y = _renforge_editor_event_pos(event, x, y)

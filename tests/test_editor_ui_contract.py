@@ -162,3 +162,23 @@ def test_inspector_reads_the_selected_widget_preview_map():
 
     assert "_renforge_editor_preview_properties()" not in inspector
     assert '_renforge_editor_widget_properties(_rf_facts["screen"])' in inspector
+
+
+def test_docked_canvas_and_preview_keep_their_visual_boundaries():
+    """Docking must crop the logical canvas; preview must release editor chrome."""
+    editor = EDITOR_RPY.read_text(encoding="utf-8")
+    toolbar = (SCREENS_DIR / "rf_toolbar.rpy").read_text(encoding="utf-8")
+
+    assert "crop=(0, 0, config.screen_width, config.screen_height)" in editor
+    assert (
+        '$ _rf_canvas_tools_visible = _rf_tools_visible and '
+        '_renforge_editor_view_mode() == "edit"'
+    ) in editor
+    assert (
+        'if not state.active or _renforge_editor_view_mode() == "preview":'
+        in editor
+    )
+    assert (
+        '$ _rf_docked = _rf_layout_mode == "docked" and '
+        '_rf_view_mode == "edit"'
+    ) in toolbar
