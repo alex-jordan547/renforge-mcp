@@ -2,48 +2,78 @@
 # Identity, source location and geometry for the current selection, plus the
 # refusal when there is one. Anchored to the right edge rather than to a fixed
 # x, so it stays on screen whatever width the game runs at.
+# Fields are read-only displays (maquette language); free-text edit is deferred.
 screen _rf_editor_inspector():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
     $ _rf_props_by_widget = _renforge_editor_widget_properties(_rf_facts["screen"]) if _rf_facts is not None else {}
     $ _rf_props = _rf_props_by_widget.get(_rf_facts["id"], {}) if _rf_facts is not None else {}
-    $ _rf_docked = _renforge_editor_layout_mode() == "docked"
+    $ _rf_docked = _renforge_editor_chrome_docked()
+    $ _rf_xa = _rf_props.get("xanchor", 0) if _rf_facts is not None else 0
+    $ _rf_ya = _rf_props.get("yanchor", 0) if _rf_facts is not None else 0
 
-    if _rf_facts is not None:
-        frame:
-            id "rf_inspector_panel"
+    frame:
+        id "rf_inspector_panel"
+        if _rf_docked:
             xalign 1.0
-            xoffset (0 if _rf_docked else -_renforge_editor_ui_px(32))
-            ypos (_renforge_editor_ui_px(124) if _rf_docked else _renforge_editor_ui_px(148))
-            xsize _renforge_editor_ui_px(540)
-            ysize (_renforge_editor_ui_px(624) if _rf_docked else None)
-            background (Solid(_renforge_editor_ui_color("panel")) if _rf_docked else Frame(_renforge_editor_ui_frame("panel"), 25, 25))
-            padding (0, 0)
+            xoffset 0
+            ypos _renforge_editor_ui_px(_RF_DOCK_INSPECTOR_Y)
+            xsize _renforge_editor_ui_px(_RF_DOCK_RAIL_W)
+            ysize _renforge_editor_ui_px(_RF_DOCK_INSPECTOR_H)
+            background Solid(_renforge_editor_ui_color("panel"))
+        else:
+            xpos _renforge_editor_ui_px(_RF_OVERLAY_INSPECTOR_X)
+            ypos _renforge_editor_ui_px(_RF_OVERLAY_INSPECTOR_Y)
+            xsize _renforge_editor_ui_px(_RF_OVERLAY_PANEL_W)
+            ysize _renforge_editor_ui_px(_RF_OVERLAY_INSPECTOR_H)
+            background Frame(_renforge_editor_ui_frame("panel"), _RF_FRAME_PANEL, _RF_FRAME_PANEL)
+        padding (0, 0)
 
-            vbox:
+        vbox:
+            xfill True
+            spacing 0
+
+            frame:
                 xfill True
-                spacing 0
+                background Frame(_renforge_editor_ui_frame("panel_head"), _RF_FRAME_PANEL, _RF_FRAME_PANEL, _RF_FRAME_PANEL, 2)
+                padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(12))
+                if _rf_facts is not None:
+                    hbox:
+                        spacing _renforge_editor_ui_px(12)
+                        yalign 0.5
+                        frame:
+                            xsize _renforge_editor_ui_px(_RF_TREE_BADGE)
+                            ysize _renforge_editor_ui_px(_RF_TREE_BADGE)
+                            background Solid(_renforge_editor_ui_color("sunken"))
+                            text "·":
+                                color _renforge_editor_ui_color("accent_bright")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(18)
+                                xalign 0.5
+                                yalign 0.5
+                        vbox:
+                            spacing _renforge_editor_ui_px(4)
+                            text _rf_facts["id"]:
+                                id "rf_inspector_name"
+                                color _renforge_editor_ui_color("surface")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(24)
+                            text (
+                                ("screen " + _rf_facts["screen"] if _rf_facts["screen"] else "")
+                                + ("  ·  " + _rf_facts["source"] if _rf_facts["source"] else "")
+                            ):
+                                id "rf_inspector_path"
+                                color _renforge_editor_ui_color("meta")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(17)
+                else:
+                    text _renforge_editor_t("inspector.none"):
+                        id "rf_inspector_name"
+                        color _renforge_editor_ui_color("meta")
+                        font _renforge_editor_ui_font()
+                        size _renforge_editor_ui_px(18)
 
-                frame:
-                    xfill True
-                    background Frame(_renforge_editor_ui_frame("panel_head"), 25, 25, 25, 2)
-                    padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(12))
-                    vbox:
-                        spacing _renforge_editor_ui_px(4)
-                        text _rf_facts["id"]:
-                            id "rf_inspector_name"
-                            color _renforge_editor_ui_color("surface")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(24)
-                        text (
-                            ("screen " + _rf_facts["screen"] if _rf_facts["screen"] else "")
-                            + ("  ·  " + _rf_facts["source"] if _rf_facts["source"] else "")
-                        ):
-                            id "rf_inspector_path"
-                            color _renforge_editor_ui_color("meta")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(17)
-
+            if _rf_facts is not None:
                 vbox:
                     xfill True
                     spacing _renforge_editor_ui_px(10)
@@ -56,19 +86,9 @@ screen _rf_editor_inspector():
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(16)
                         hbox:
-                            spacing _renforge_editor_ui_px(24)
+                            spacing _renforge_editor_ui_px(12)
                             use _rf_editor_field("xpos", str(_rf_facts["rect"]["x"]))
                             use _rf_editor_field("ypos", str(_rf_facts["rect"]["y"]))
-
-                        text _renforge_editor_t("inspector.size"):
-                            color _renforge_editor_ui_color("meta")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(16)
-                            yoffset _renforge_editor_ui_px(8)
-                        hbox:
-                            spacing _renforge_editor_ui_px(24)
-                            use _rf_editor_field("xsize", str(_rf_facts["rect"]["w"]))
-                            use _rf_editor_field("ysize", str(_rf_facts["rect"]["h"]))
 
                         text _renforge_editor_t("inspector.offset"):
                             color _renforge_editor_ui_color("meta")
@@ -76,7 +96,7 @@ screen _rf_editor_inspector():
                             size _renforge_editor_ui_px(16)
                             yoffset _renforge_editor_ui_px(8)
                         hbox:
-                            spacing _renforge_editor_ui_px(24)
+                            spacing _renforge_editor_ui_px(12)
                             use _rf_editor_field("xoffset", str(_rf_props.get("xoffset", "0")))
                             use _rf_editor_field("yoffset", str(_rf_props.get("yoffset", "0")))
 
@@ -86,9 +106,41 @@ screen _rf_editor_inspector():
                             size _renforge_editor_ui_px(16)
                             yoffset _renforge_editor_ui_px(8)
                         hbox:
-                            spacing _renforge_editor_ui_px(24)
-                            use _rf_editor_field("xanchor", str(_rf_props.get("xanchor", "0")))
-                            use _rf_editor_field("yanchor", str(_rf_props.get("yanchor", "0")))
+                            id "rf_inspector_anchor_grid"
+                            spacing _renforge_editor_ui_px(16)
+                            yalign 0.5
+                            # Display-only 3×3; free-text capture is deferred (plan 1.C).
+                            vbox:
+                                spacing _renforge_editor_ui_px(4)
+                                for _rf_row in (0, 1, 2):
+                                    hbox:
+                                        spacing _renforge_editor_ui_px(4)
+                                        for _rf_col in (0, 1, 2):
+                                            $ _rf_on = _renforge_editor_anchor_cell_on(_rf_xa, _rf_ya, _rf_col, _rf_row)
+                                            frame:
+                                                xsize _renforge_editor_ui_px(_RF_ANCHOR_CELL)
+                                                ysize _renforge_editor_ui_px(_RF_ANCHOR_CELL)
+                                                background Solid(_renforge_editor_ui_color("accent" if _rf_on else "sunken"))
+                                                add Solid(
+                                                    _renforge_editor_ui_color("accent_bright" if _rf_on else "meta"),
+                                                    xysize=(_renforge_editor_ui_px(7), _renforge_editor_ui_px(7)),
+                                                ):
+                                                    xalign 0.5
+                                                    yalign 0.5
+                            vbox:
+                                spacing _renforge_editor_ui_px(8)
+                                use _rf_editor_field("xanchor", str(_rf_xa))
+                                use _rf_editor_field("yanchor", str(_rf_ya))
+
+                        text _renforge_editor_t("inspector.size"):
+                            color _renforge_editor_ui_color("meta")
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(16)
+                            yoffset _renforge_editor_ui_px(8)
+                        hbox:
+                            spacing _renforge_editor_ui_px(12)
+                            use _rf_editor_field("xsize", str(_rf_facts["rect"]["w"]))
+                            use _rf_editor_field("ysize", str(_rf_facts["rect"]["h"]))
 
                         text _renforge_editor_t("inspector.fill"):
                             color _renforge_editor_ui_color("meta")
@@ -96,7 +148,7 @@ screen _rf_editor_inspector():
                             size _renforge_editor_ui_px(16)
                             yoffset _renforge_editor_ui_px(8)
                         hbox:
-                            spacing _renforge_editor_ui_px(24)
+                            spacing _renforge_editor_ui_px(12)
                             use _rf_editor_field("xfill", str(_rf_props.get("xfill", "false")))
                             use _rf_editor_field("yfill", str(_rf_props.get("yfill", "false")))
                     else:
@@ -105,8 +157,6 @@ screen _rf_editor_inspector():
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(17)
 
-                    # A refusal is stated where the values are, not hidden in a
-                    # status line the user has to go looking for.
                     if _rf_facts["lock"] is not None:
                         text (
                             _renforge_editor_t("lock.%s" % _rf_facts["lock"][0])
@@ -122,18 +172,20 @@ screen _rf_editor_inspector():
                 null height _renforge_editor_ui_px(28)
 
 
-# A labelled read-only value. Editing lands in a later slice; showing the value
-# with its name is what makes the tree selection mean anything today.
+# A labelled read-only value in a sunken field chip (maquette field language).
 screen _rf_editor_field(key, value):
-    hbox:
-        spacing _renforge_editor_ui_px(10)
-        text key:
-            color _renforge_editor_ui_color("meta")
-            font _renforge_editor_ui_font()
-            size _renforge_editor_ui_px(18)
-            yalign 0.5
-        text value:
-            color _renforge_editor_ui_color("surface")
-            font _renforge_editor_ui_font()
-            size _renforge_editor_ui_px(20)
-            yalign 0.5
+    frame:
+        background Solid(_renforge_editor_ui_color("sunken"))
+        padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(8))
+        hbox:
+            spacing _renforge_editor_ui_px(10)
+            text key:
+                color _renforge_editor_ui_color("meta")
+                font _renforge_editor_ui_font()
+                size _renforge_editor_ui_px(16)
+                yalign 0.5
+            text value:
+                color _renforge_editor_ui_color("surface")
+                font _renforge_editor_ui_font()
+                size _renforge_editor_ui_px(18)
+                yalign 0.5

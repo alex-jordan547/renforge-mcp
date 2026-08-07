@@ -18,6 +18,7 @@
   "inspector.position": "位置",
   "inspector.size": "尺寸",
   "inspector.no_geometry": "此选择没有测得的几何信息。",
+  "inspector.none": "未选择",
   "style.title": "样式",
   "hud.reload": "热重载已启用",
   "hud.pending": "项未保存的更改",
@@ -27,6 +28,9 @@
   "toolbar.select": "选择",
   "toolbar.move": "移动",
   "toolbar.measure": "测量",
+  "toolbar.picker": "吸管",
+  "toolbar.text": "文本",
+  "toolbar.hand": "抓手",
   "toolbar.preview": "预览",
   "toolbar.edit": "编辑",
   "toolbar.overlay": "叠加",
@@ -36,6 +40,8 @@
   "inspector.offset": "偏移",
   "inspector.anchor": "锚点",
   "inspector.fill": "填充",
-  "style.color": "文字颜色",
-  "style.locked": "不在白名单内"
+  "style.color": "切换颜色",
+  "style.color_label": "文字颜色",
+  "style.locked": "不在白名单内",
+  "style.none": "未选择"
 }

@@ -297,13 +297,7 @@ def run_editor_task0_live_scenario(
         )
 
     def layout_snapshot() -> dict[str, Any]:
-        return client.eval_expr(
-            "{'layout': _renforge_editor_layout_mode(), "
-            "'view': _renforge_editor_view_mode(), "
-            "'transforms': _renforge_editor_layout_transform_count(), "
-            "'editor_is_top': _EDITOR_LAYER in renpy.config.top_layers, "
-            "'editor_transforms': len(renpy.config.layer_transforms.get(_EDITOR_LAYER, []))}"
-        )
+        return client.eval_expr("_renforge_editor_layout_chrome_snapshot()")
 
     def click_editor_control(widget_id: str, name: str) -> None:
         _require_ok(
@@ -329,8 +323,86 @@ def run_editor_task0_live_scenario(
             f"{docked_select!r}"
         )
     docked = layout_snapshot()
+    origin_screen = client.eval_expr(
+        "list(_renforge_editor_canvas_to_screen_point(0, 0))"
+    )
+    far_screen = client.eval_expr(
+        "list(_renforge_editor_canvas_to_screen_point("
+        "config.screen_width, config.screen_height))"
+    )
+    selected_rect = client.eval_expr(
+        "list(_renforge_editor_state().selected_rect or [])"
+    )
+    marquee = None
+    if isinstance(selected_rect, list) and len(selected_rect) == 4:
+        tl = client.eval_expr(
+            "list(_renforge_editor_canvas_to_screen_point("
+            f"{int(selected_rect[0])}, {int(selected_rect[1])}))"
+        )
+        br = client.eval_expr(
+            "list(_renforge_editor_canvas_to_screen_point("
+            f"{int(selected_rect[0]) + int(selected_rect[2])}, "
+            f"{int(selected_rect[1]) + int(selected_rect[3])}))"
+        )
+        marquee = {
+            "canvas_rect": [int(v) for v in selected_rect],
+            "screen_tl": [float(tl[0]), float(tl[1])],
+            "screen_br": [float(br[0]), float(br[1])],
+        }
+        # Marquee corners must sit on the scaled canvas AABB (≤2 px).
+        aabb = docked.get("canvas_aabb") or []
+        if len(aabb) == 4:
+            left, top, width, height = [float(v) for v in aabb]
+            right, bottom = left + width, top + height
+            for label, point in (("tl", marquee["screen_tl"]), ("br", marquee["screen_br"])):
+                px, py = point
+                if not (
+                    left - 2 <= px <= right + 2 and top - 2 <= py <= bottom + 2
+                ):
+                    raise AssertionError(
+                        f"docked marquee {label} outside canvas AABB: "
+                        f"{point!r} vs {aabb!r}"
+                    )
+        # Round-trip: screen click centre should re-hit the same widget.
+        mid_screen = [
+            int(round((marquee["screen_tl"][0] + marquee["screen_br"][0]) / 2)),
+            int(round((marquee["screen_tl"][1] + marquee["screen_br"][1]) / 2)),
+        ]
+        reselect = client.request(
+            "editor_task0_select",
+            {
+                "x": mid_screen[0],
+                "y": mid_screen[1],
+                "coordinate_space": "screen",
+            },
+        )
+        if reselect.get("ok") is not True:
+            raise AssertionError(
+                f"docked marquee reselect failed at {mid_screen!r}: {reselect!r}"
+            )
+        if (reselect.get("selected") or {}).get("widget_id") != "task0_target":
+            raise AssertionError(
+                f"docked marquee reselect missed target: {reselect!r}"
+            )
+        marquee["reselect"] = {
+            "point": mid_screen,
+            "widget_id": (reselect.get("selected") or {}).get("widget_id"),
+        }
+
+    # Stage bands: void right of canvas must not paint game sky (black stage).
+    stage_probe = client.eval_expr(
+        "{"
+        "'bands': _renforge_editor_dock_stage_bands(),"
+        "'chrome_docked': _renforge_editor_chrome_docked(),"
+        "}"
+    )
+    docked_png = client.screenshot()
+
     click_editor_control("rf_toolbar_view_preview", "switch preview")
     preview = layout_snapshot()
+    # Preview must release transforms even while layout_mode stays docked.
+    if preview.get("chrome_docked") is not False or int(preview.get("transforms") or 0) != 0:
+        raise AssertionError(f"preview did not release dock chrome: {preview!r}")
     click_editor_control("rf_toolbar_view_edit", "restore edit")
     redocked = layout_snapshot()
     click_editor_control("rf_toolbar_layout_overlay", "restore overlay")
@@ -340,6 +412,11 @@ def run_editor_task0_live_scenario(
         "preview": preview,
         "redocked": redocked,
         "overlay": layout_snapshot(),
+        "canvas_origin_screen": origin_screen,
+        "canvas_far_screen": far_screen,
+        "marquee": marquee,
+        "stage_probe": stage_probe,
+        "docked_png_sha256": hashlib.sha256(docked_png).hexdigest(),
     }
 
     clipped_select = client.request("editor_task0_select", {"x": clipped_center[0], "y": clipped_center[1]})
@@ -530,9 +607,14 @@ def run_editor_task0_live_scenario(
     _require_ok(client.request("editor_task0_set_opacity", {"opacity": 1.0}), "opacity 1.0")
     guide_high_png = _wait_for_screenshot_change(client, opacity_before)
     guide_high = _open_png(guide_high_png)
+    # Re-read snapshot after the opacity restart so badge text cannot race a
+    # mid-frame delta; Ren'Py Text stores segments as a list.
+    report["distance_badge"] = client.eval_expr("_renforge_editor_distance_snapshot()")
     report["distance_badge_rendered_text"] = client.eval_expr(
-        "str(getattr(renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x_text'), 'text', '')) "
-        "if renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x_text') is not None else None"
+        "(lambda w: ('' if w is None else ("
+        "w.text if isinstance(getattr(w, 'text', None), str) else "
+        "''.join(str(part) for part in (getattr(w, 'text', None) or []))"
+        ")))(renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x_text'))"
     )
     tools_hide_click = _require_ok(
         client.click_element(id="rf_tools", screen="_renforge_editor_overlay"),

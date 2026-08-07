@@ -86,24 +86,48 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     assert docked["selected"] == "task0_target"
     assert docked["docked"]["layout"] == "docked"
     assert docked["docked"]["view"] == "edit"
+    assert docked["docked"]["chrome_docked"] is True
     assert docked["docked"]["transforms"] > 0
     assert docked["docked"]["editor_is_top"] is True
     assert docked["docked"]["editor_transforms"] == 0
-    assert docked["preview"] == {
-        "layout": "docked",
-        "view": "preview",
-        "transforms": 0,
-        "editor_is_top": True,
-        "editor_transforms": 0,
-    }
+    assert docked["docked"]["dock_scale"] == 0.57
+    assert isinstance(docked["docked"]["canvas_aabb"], list)
+    assert len(docked["docked"]["canvas_aabb"]) == 4
+    assert docked["docked"]["canvas_aabb"][0] == docked["docked"]["dock_offset"][0]
+    assert docked["docked"]["canvas_aabb"][1] == docked["docked"]["dock_offset"][1]
+    assert docked["docked"]["canvas_aabb"][2] > 0
+    assert docked["docked"]["canvas_aabb"][3] > 0
+    origin = docked["canvas_origin_screen"]
+    far = docked["canvas_far_screen"]
+    aabb = docked["docked"]["canvas_aabb"]
+    assert abs(float(origin[0]) - float(aabb[0])) <= 1.0, (origin, aabb)
+    assert abs(float(origin[1]) - float(aabb[1])) <= 1.0, (origin, aabb)
+    assert abs(float(far[0]) - float(aabb[0] + aabb[2])) <= 1.0, (far, aabb)
+    assert abs(float(far[1]) - float(aabb[1] + aabb[3])) <= 1.0, (far, aabb)
+    marquee = docked["marquee"]
+    assert isinstance(marquee, dict), docked
+    assert marquee["canvas_rect"][2] > 0 and marquee["canvas_rect"][3] > 0
+    assert marquee["reselect"]["widget_id"] == "task0_target"
+    stage_probe = docked["stage_probe"]
+    assert stage_probe["chrome_docked"] is True
+    assert isinstance(stage_probe["bands"], list) and len(stage_probe["bands"]) >= 1
+    assert docked["preview"]["layout"] == "docked"
+    assert docked["preview"]["view"] == "preview"
+    assert docked["preview"]["chrome_docked"] is False
+    assert docked["preview"]["transforms"] == 0
+    assert docked["preview"]["editor_is_top"] is True
+    assert docked["preview"]["editor_transforms"] == 0
+    assert docked["preview"]["canvas_aabb"][0] == 0
+    assert docked["preview"]["canvas_aabb"][1] == 0
     assert docked["redocked"] == docked["docked"]
-    assert docked["overlay"] == {
-        "layout": "overlay",
-        "view": "edit",
-        "transforms": 0,
-        "editor_is_top": True,
-        "editor_transforms": 0,
-    }
+    assert docked["overlay"]["layout"] == "overlay"
+    assert docked["overlay"]["view"] == "edit"
+    assert docked["overlay"]["chrome_docked"] is False
+    assert docked["overlay"]["transforms"] == 0
+    assert docked["overlay"]["editor_is_top"] is True
+    assert docked["overlay"]["editor_transforms"] == 0
+    assert docked["overlay"]["canvas_aabb"][0] == 0
+    assert docked["overlay"]["canvas_aabb"][1] == 0
     assert report["clipped_lock"] is None
     assert report["dupe_lock"] == "REPEATED_USE_UNSUPPORTED"
     assert report["multi_instance_lock"] == "MULTI_INSTANCE_UNSUPPORTED"

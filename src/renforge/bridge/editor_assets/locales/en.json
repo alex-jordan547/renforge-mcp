@@ -18,6 +18,7 @@
   "inspector.position": "POSITION",
   "inspector.size": "SIZE",
   "inspector.no_geometry": "No measured geometry for this selection.",
+  "inspector.none": "No selection",
   "style.title": "STYLE",
   "hud.reload": "Hot-reload active",
   "hud.pending": "unsaved change(s)",
@@ -27,6 +28,9 @@
   "toolbar.select": "Select",
   "toolbar.move": "Move",
   "toolbar.measure": "Measure",
+  "toolbar.picker": "Picker",
+  "toolbar.text": "Text",
+  "toolbar.hand": "Hand",
   "toolbar.preview": "Preview",
   "toolbar.edit": "Edit",
   "toolbar.overlay": "Overlay",
@@ -36,6 +40,8 @@
   "inspector.offset": "OFFSET",
   "inspector.anchor": "ANCHOR",
   "inspector.fill": "FILL",
-  "style.color": "Text colour",
-  "style.locked": "Outside the allowlist"
+  "style.color": "Cycle colour",
+  "style.color_label": "Text colour",
+  "style.locked": "Outside the allowlist",
+  "style.none": "No selection"
 }

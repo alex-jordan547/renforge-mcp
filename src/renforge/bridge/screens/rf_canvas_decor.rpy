@@ -54,7 +54,7 @@ screen _rf_editor_canvas_decor(tools_visible, selection, label, distance, measur
         $ selection_w = int(selection["w"])
         $ selection_h = int(selection["h"])
         $ selection_color = selection["color"]
-        $ handle = _renforge_editor_ui_px(18)
+        $ handle = _renforge_editor_canvas_handle_px()
         for handle_x, handle_y in _renforge_editor_handle_points(selection_x, selection_y, selection_w, selection_h, handle):
             add Solid(selection_color, xysize=(handle, handle)):
                 xpos handle_x

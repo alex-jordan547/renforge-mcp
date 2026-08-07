@@ -37,6 +37,20 @@ screen _renforge_editor_overlay():
             yfill True
             at Transform(alpha=_renforge_editor_opacity())
 
+            # Docked edit leaves empty window around the scaled game. Without a
+            # stage fill Ren'Py shows its checkerboard there — not the maquette.
+            # Paint only the void bands: a full-screen solid would cover the game
+            # (editor layer is above the transformed game layers).
+            if _renforge_editor_chrome_docked():
+                $ _rf_stage = _renforge_editor_dock_stage_bands()
+                for _rf_band in _rf_stage:
+                    add Solid(
+                        _renforge_editor_ui_color("stage"),
+                        xysize=(_rf_band[2], _rf_band[3]),
+                    ):
+                        xpos _rf_band[0]
+                        ypos _rf_band[1]
+
             # Panels are chrome; the canvas decorations are the tool. Drawing
             # the panels first keeps selection, guides and labels legible on
             # top of them until the docked layout moves the game out from
@@ -96,25 +110,40 @@ init 1090 python:
     # Solid() hex without the trailing pair, so translucency is spelled out
     # where it is wanted rather than implied.
     _RF_UI_COLORS = {
-        "panel": "#272729",
-        "panel_head": "#2a2a2c",
-        "sunken": "#00000057",
-        "hairline": "#ffffff1a",
+        "panel": "#272729f0",       # graphite-a @ 0.94
+        "panel_head": "#2a2a2cf5",  # graphite-d @ 0.96
+        "sunken": "#00000057",      # black @ 0.34
+        "hairline": "#ffffff1a",    # white @ 0.10
+        "row_hover": "#ffffff0d",   # white @ 0.05
+        "seg_on": "#ffffff21",      # white @ 0.13 (segment pressed)
         "surface": "#f5f5f7",
         "meta": "#86868b",
         "border": "#d2d2d7",
+        "fg": "#1d1d1f",
         "accent": "#0071e3",
         "accent_bright": "#2997ff",
         "accent_on": "#ffffff",
         "warn": "#eab308",
         # Canvas overlays sit on the game, not in the chrome, so they keep
         # the maquette's darker scrim rather than the panel fill.
-        "scrim": "#111116",
+        "scrim": "#111116e6",
+        # Docked stage under the scaled canvas (maquette --stage-black).
+        "stage": "#000000",
         # One colour per refusal level, so the severity reads before the words.
         "lock_locked": "#eab308",
         "lock_blocked": "#e8913c",
         "lock_refused": "#dc2626",
     }
+
+    # Maquette type scale at 2560 (Apple base × k=1.5).
+    _RF_T_MICRO = 18
+    _RF_T_XS = 21
+    _RF_T_SM = 26
+    # Spacing scale at 2560 (space-N × k=1.5).
+    _RF_S2 = 12
+    _RF_S3 = 18
+    _RF_S4 = 24
+    _RF_S6 = 36
 
     def _renforge_editor_ui_scale():
         """Chrome scale for this game, derived from its own width.
@@ -130,9 +159,16 @@ init 1090 python:
             return 1.0
         return max(0.45, min(1.35, width / _RF_UI_BASE_WIDTH))
 
-    def _renforge_editor_ui_px(value):
-        """Convert a 2560-space measurement into this game's pixels."""
-        return int(round(float(value) * _renforge_editor_ui_scale()))
+    def _renforge_editor_ui_px(value, minimum=0):
+        """Convert a 2560-space measurement into this game's pixels.
+
+        ``minimum`` is a floor in *device* pixels. Icons use it so glyphs stay
+        legible on 1280-wide games where pure scale would crush them to ~12 px.
+        """
+        px = int(round(float(value) * _renforge_editor_ui_scale()))
+        if minimum:
+            return max(int(minimum), px)
+        return px
 
     def _renforge_editor_ui_frame(name):
         """Path of a shipped nine-patch, or a flat colour when assets are absent.
@@ -146,9 +182,87 @@ init 1090 python:
             return Solid(_RF_UI_COLORS.get("panel", "#272729"))
         return "%s/frames/%s.png" % (assets, name)
 
+    def _renforge_editor_ui_icon(name):
+        """Path of a shipped toolbar icon (SVG), or a light square fallback.
+
+        Icons travel under ``RENFORGE_EDITOR_ASSETS/icons/<name>.svg``. Without
+        assets the chrome still lays out; it just loses the glyph.
+        """
+        import os
+        assets = (os.environ.get("RENFORGE_EDITOR_ASSETS") or "").strip()
+        if not assets:
+            return Solid(_RF_UI_COLORS.get("surface", "#f5f5f7"))
+        return "%s/icons/%s.svg" % (assets, name)
+
     def _renforge_editor_ui_color(name):
         """Look up a design token. Unknown names shout in magenta on purpose."""
         return _RF_UI_COLORS.get(name, "#ff00ff")
+
+    # ── Layout geometry (maquette 2560-space) ────────────────────────────────
+    # Overlay = floating chrome on a full-screen game.
+    # Docked  = solid edge rails + scaled canvas between them.
+    # Preview always releases dock chrome and the canvas scale.
+    # Numbers are authored once here; screens and transforms only read them.
+
+    _RF_DOCK_SCALE = 0.57
+    _RF_DOCK_CANVAS_X = 550
+    _RF_DOCK_CANVAS_Y = 372
+    _RF_DOCK_TOOLBAR_H = 124
+    _RF_DOCK_RAIL_W = 540
+    _RF_DOCK_TREE_Y = 124
+    _RF_DOCK_TREE_H = 968
+    _RF_DOCK_INSPECTOR_Y = 124
+    _RF_DOCK_INSPECTOR_H = 624
+    _RF_DOCK_STYLE_Y = 748
+    _RF_DOCK_STYLE_H = 692
+    _RF_DOCK_HUD_X = 576
+    _RF_DOCK_HUD_Y = 148
+    _RF_DOCK_HUD_W = 1408
+
+    # Overlay floating toolbar (maquette: left 32, top 28, w 2496, h 96).
+    _RF_OVERLAY_INSET = 32
+    _RF_OVERLAY_TOOLBAR_Y = 28
+    _RF_OVERLAY_TOOLBAR_H = 96
+    _RF_OVERLAY_TOOLBAR_W = 2496
+    _RF_OVERLAY_TREE_X = 32
+    _RF_OVERLAY_TREE_Y = 148
+    _RF_OVERLAY_TREE_W = 480
+    _RF_OVERLAY_TREE_H = 952
+    _RF_OVERLAY_INSPECTOR_X = 1988
+    _RF_OVERLAY_INSPECTOR_Y = 148
+    _RF_OVERLAY_INSPECTOR_H = 600
+    _RF_OVERLAY_STYLE_X = 1988
+    _RF_OVERLAY_STYLE_Y = 772
+    _RF_OVERLAY_STYLE_H = 636
+    _RF_OVERLAY_PANEL_W = 540
+    # HUD overlay: left 536, top 148, w 1180, h 56.
+    _RF_OVERLAY_HUD_X = 536
+    _RF_OVERLAY_HUD_Y = 148
+    _RF_OVERLAY_HUD_W = 1180
+    _RF_OVERLAY_HUD_H = 56
+    _RF_HANDLE_PX = 18
+    _RF_TREE_BADGE = 34
+    _RF_ANCHOR_CELL = 28
+    # Maquette tool cells 60×60; iconbtn actions 44×44; glyphs 28 / 24.
+    # Floors keep hits/glyphs readable when the host game is 1280-wide (scale 0.5).
+    _RF_ICON_BTN = 60
+    _RF_ICON_ACTION = 44
+    _RF_ICON_GLYPH = 28
+    _RF_ICON_GLYPH_SM = 24
+    _RF_ICON_BTN_MIN = 40
+    _RF_ICON_ACTION_MIN = 34
+    _RF_ICON_GLYPH_MIN = 22
+    _RF_ICON_GLYPH_SM_MIN = 20
+    _RF_BRAND_MARK = 44
+    _RF_SAVE_H = 56
+    _RF_SEG_H = 42
+    _RF_VRULE_H = 44
+    # Frame() borders for generated nine-patches (see scripts/gen_editor_frames.py).
+    _RF_FRAME_PANEL = 28
+    _RF_FRAME_CHIP = 13
+    _RF_FRAME_TOOLS = 19
+    _RF_FRAME_PILL = 29
+    _RF_FRAME_BRAND = 13
 
     # ── Interface catalogue (Lot 0.D) ───────────────────────────────────────
     # The overlay is a guest in someone else's game, so it never touches
@@ -192,6 +306,9 @@ init 1090 python:
         "toolbar.select": "Select",
         "toolbar.move": "Move",
         "toolbar.measure": "Measure",
+        "toolbar.picker": "Picker",
+        "toolbar.text": "Text",
+        "toolbar.hand": "Hand",
         "toolbar.preview": "Preview",
         "toolbar.edit": "Edit",
         "toolbar.overlay": "Overlay",
@@ -200,6 +317,9 @@ init 1090 python:
         "inspector.position": "POSITION",
         "inspector.size": "SIZE",
         "inspector.no_geometry": "No measured geometry for this selection.",
+        "inspector.none": "No selection",
+        "style.none": "No selection",
+        "style.color_label": "Text colour",
     }
     _RF_UI_STRINGS_READY = []
 
@@ -311,7 +431,6 @@ init 1100 python:
     _SNAP_ACQUIRE = 6
     _SNAP_RELEASE = 10
     _CACHE_WALK_MAX_DEPTH = 32
-    _RF_DOCK_SCALE = 0.57
 
     if not hasattr(renpy.config, "top_layers"):
         renpy.config.top_layers = []
@@ -676,9 +795,7 @@ init 1100 python:
     def _renforge_editor_set_view_mode(mode):
         if mode in ("edit", "preview"):
             _renforge_editor_state().view_mode = mode
-            _renforge_editor_apply_layout_transform(
-                mode == "edit" and _renforge_editor_layout_mode() == "docked"
-            )
+            _renforge_editor_apply_layout_transform()
             renpy.restart_interaction()
         return {"ok": True, "view_mode": _renforge_editor_view_mode()}
 
@@ -696,26 +813,93 @@ init 1100 python:
             renpy.restart_interaction()
         return {"ok": True, "tool_mode": _renforge_editor_tool_mode()}
 
+    def _renforge_editor_tool_allows_drag():
+        """Measure selects but does not move; select and move both drag."""
+        return _renforge_editor_tool_mode() != "measure"
+
+    def _renforge_editor_anchor_grid_cell(xanchor, yanchor):
+        """Map property anchors to a 3×3 cell (col, row) in {0,1,2}."""
+
+        def axis(value):
+            try:
+                v = float(value)
+            except Exception:
+                v = 0.0
+            if v <= 0.25:
+                return 0
+            if v >= 0.75:
+                return 2
+            return 1
+
+        return (axis(xanchor), axis(yanchor))
+
+    def _renforge_editor_anchor_cell_on(xanchor, yanchor, col, row):
+        cell = _renforge_editor_anchor_grid_cell(xanchor, yanchor)
+        return cell == (int(col), int(row))
+
     def _renforge_editor_layout_mode():
         mode = getattr(_renforge_editor_state(), "layout_mode", None)
         return mode if mode in ("overlay", "docked") else "overlay"
 
+    def _renforge_editor_chrome_docked():
+        """True only when edge rails and the scaled canvas should be active."""
+        return (
+            _renforge_editor_layout_mode() == "docked"
+            and _renforge_editor_view_mode() == "edit"
+        )
+
+    def _renforge_editor_dock_canvas_offset():
+        return (
+            _renforge_editor_ui_px(_RF_DOCK_CANVAS_X),
+            _renforge_editor_ui_px(_RF_DOCK_CANVAS_Y),
+        )
+
+    def _renforge_editor_dock_canvas_screen_rect():
+        """Screen AABB of the scaled game canvas under docked chrome."""
+        ox, oy = _renforge_editor_dock_canvas_offset()
+        width = int(round(float(config.screen_width) * _RF_DOCK_SCALE))
+        height = int(round(float(config.screen_height) * _RF_DOCK_SCALE))
+        return [int(ox), int(oy), max(1, width), max(1, height)]
+
+    def _renforge_editor_dock_stage_bands():
+        """Screen rects (x, y, w, h) to paint around the docked canvas, not over it."""
+        sw = int(config.screen_width)
+        sh = int(config.screen_height)
+        cx, cy, cw, ch = _renforge_editor_dock_canvas_screen_rect()
+        bands = []
+        if cy > 0:
+            bands.append([0, 0, sw, cy])
+        bottom = cy + ch
+        if bottom < sh:
+            bands.append([0, bottom, sw, sh - bottom])
+        if cx > 0:
+            bands.append([0, cy, cx, ch])
+        right = cx + cw
+        if right < sw:
+            bands.append([right, cy, sw - right, ch])
+        return bands
+
+    def _renforge_editor_canvas_handle_px():
+        """Handle size in canvas space so on-screen size stays ~constant when docked."""
+        size = float(_renforge_editor_ui_px(_RF_HANDLE_PX))
+        if _renforge_editor_chrome_docked():
+            size = size / _RF_DOCK_SCALE
+        return max(1, int(round(size)))
+
     def _renforge_editor_layout_transform(child=None):
+        ox, oy = _renforge_editor_dock_canvas_offset()
         return Transform(
             child=child,
             crop=(0, 0, config.screen_width, config.screen_height),
-            xoffset=_renforge_editor_ui_px(550),
-            yoffset=_renforge_editor_ui_px(372),
+            xoffset=ox,
+            yoffset=oy,
             zoom=_RF_DOCK_SCALE,
         )
 
     _renforge_editor_layout_transform._renforge_editor_layout = True
 
     def _renforge_editor_canvas_transform(child=None):
-        if (
-            _renforge_editor_layout_mode() == "docked"
-            and _renforge_editor_view_mode() == "edit"
-        ):
+        if _renforge_editor_chrome_docked():
             return _renforge_editor_layout_transform(child)
         return Transform(child=child)
 
@@ -733,11 +917,7 @@ init 1100 python:
     def _renforge_editor_apply_layout_transform(enabled=None):
         if enabled is None:
             state = _renforge_editor_state()
-            enabled = (
-                bool(state.active)
-                and _renforge_editor_layout_mode() == "docked"
-                and _renforge_editor_view_mode() == "edit"
-            )
+            enabled = bool(state.active) and _renforge_editor_chrome_docked()
         for layer in _renforge_editor_layout_layers():
             existing = builtins.list(renpy.config.layer_transforms.get(layer, []) or [])
             kept = [
@@ -762,32 +942,53 @@ init 1100 python:
     def _renforge_editor_set_layout_mode(mode):
         if mode in ("overlay", "docked"):
             _renforge_editor_state().layout_mode = mode
-            _renforge_editor_apply_layout_transform(
-                mode == "docked" and _renforge_editor_view_mode() == "edit"
-            )
+            _renforge_editor_apply_layout_transform()
             renpy.restart_interaction()
         return {"ok": True, "layout_mode": _renforge_editor_layout_mode()}
 
+    def _renforge_editor_layout_chrome_snapshot():
+        """Mode matrix + canvas AABB for live layout proof."""
+        docked = _renforge_editor_chrome_docked()
+        ox, oy = _renforge_editor_dock_canvas_offset()
+        if docked:
+            canvas_aabb = _renforge_editor_dock_canvas_screen_rect()
+        else:
+            canvas_aabb = [
+                0,
+                0,
+                int(config.screen_width),
+                int(config.screen_height),
+            ]
+        return {
+            "layout": _renforge_editor_layout_mode(),
+            "view": _renforge_editor_view_mode(),
+            "chrome_docked": docked,
+            "transforms": _renforge_editor_layout_transform_count(),
+            "editor_is_top": _EDITOR_LAYER in renpy.config.top_layers,
+            "editor_transforms": len(
+                renpy.config.layer_transforms.get(_EDITOR_LAYER, []) or []
+            ),
+            "canvas_aabb": canvas_aabb,
+            "dock_scale": _RF_DOCK_SCALE,
+            "dock_offset": [int(ox), int(oy)],
+        }
+
     def _renforge_editor_screen_to_canvas_point(x, y):
-        if (
-            _renforge_editor_layout_mode() != "docked"
-            or _renforge_editor_view_mode() != "edit"
-        ):
+        if not _renforge_editor_chrome_docked():
             return float(x), float(y)
+        ox, oy = _renforge_editor_dock_canvas_offset()
         return (
-            (float(x) - float(_renforge_editor_ui_px(550))) / _RF_DOCK_SCALE,
-            (float(y) - float(_renforge_editor_ui_px(372))) / _RF_DOCK_SCALE,
+            (float(x) - float(ox)) / _RF_DOCK_SCALE,
+            (float(y) - float(oy)) / _RF_DOCK_SCALE,
         )
 
     def _renforge_editor_canvas_to_screen_point(x, y):
-        if (
-            _renforge_editor_layout_mode() != "docked"
-            or _renforge_editor_view_mode() != "edit"
-        ):
+        if not _renforge_editor_chrome_docked():
             return float(x), float(y)
+        ox, oy = _renforge_editor_dock_canvas_offset()
         return (
-            float(_renforge_editor_ui_px(550)) + float(x) * _RF_DOCK_SCALE,
-            float(_renforge_editor_ui_px(372)) + float(y) * _RF_DOCK_SCALE,
+            float(ox) + float(x) * _RF_DOCK_SCALE,
+            float(oy) + float(y) * _RF_DOCK_SCALE,
         )
 
     def _renforge_editor_screen_to_canvas_rect(rect):
@@ -1135,7 +1336,8 @@ init 1100 python:
         return bool(caps.get("style_color") is True and state.selected_lock_reason in (None, ""))
 
 
-    def _renforge_editor_style_color_label():
+    def _renforge_editor_style_color_value():
+        """Hex (or placeholder) for the selected text colour, without the label prefix."""
         state = _renforge_editor_state()
         target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
         color = None
@@ -1143,7 +1345,10 @@ init 1100 python:
             color = target.get("style_color") or target.get("style_color_baseline")
         if not color:
             color = state.style_color_input or "#------"
-        return "Color %s" % color
+        return str(color)
+
+    def _renforge_editor_style_color_label():
+        return "Color %s" % _renforge_editor_style_color_value()
 
 
     def _renforge_editor_has_selection():
@@ -3823,7 +4028,8 @@ init 1100 python:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
                 _renforge_editor_select(screen_x, screen_y)
                 if (
-                    not state.selected_lock_reason
+                    _renforge_editor_tool_allows_drag()
+                    and not state.selected_lock_reason
                     and (state.current_capabilities or {}).get("move", True) is True
                 ):
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
