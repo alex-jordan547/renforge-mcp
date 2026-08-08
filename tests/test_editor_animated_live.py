@@ -12,7 +12,7 @@ from renforge.editor_animated_runner import (
     _show_fixture,
     inject_editor_animated_resources,
 )
-from renforge.editor_live_common import wait_bounds
+from renforge.editor_live_common import DEMO_COPY_IGNORE, wait_bounds
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("RENFORGE_ANIMATED_LIVE"),
@@ -25,7 +25,7 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 @pytest.fixture
 def demo_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "demo"
-    shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
+    shutil.copytree(_DEMO, destination, ignore=DEMO_COPY_IGNORE)
     inject_editor_animated_resources(destination)
     return destination
 

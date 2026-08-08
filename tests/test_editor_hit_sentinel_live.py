@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from renforge.editor_live_common import DEMO_COPY_IGNORE
 from renforge.editor_hit_sentinel_runner import (
     inject_hit_sentinel_resources,
     run_hit_sentinel_spike,
@@ -23,7 +24,7 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 @pytest.fixture
 def demo_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "demo"
-    shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
+    shutil.copytree(_DEMO, destination, ignore=DEMO_COPY_IGNORE)
     injected = inject_hit_sentinel_resources(destination)
     assert injected, "inject_hit_sentinel_resources returned no paths"
     for key, path_str in injected.items():

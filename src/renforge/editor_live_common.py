@@ -18,6 +18,27 @@ from renforge.editor_task0_runner import _require_ok, _wait_for_status
 EDITOR_RESOURCE = Path(__file__).resolve().parent / "bridge" / "editor.rpy"
 LIVE_FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "live_fixtures"
 
+# Drop compiled caches and any leftover session injects from a dirty demo tree.
+# Unowned legacy injects must not ride into live fixtures: they load alongside
+# schema-3 session files and break the bridge.
+DEMO_COPY_IGNORE = shutil.ignore_patterns(
+    "*.rpyc",
+    "*.rpyc.bak",
+    "cache",
+    "saves",
+    "renforge_bridge.rpy",
+    "renforge_bridge.rpyc",
+    "renforge_bridge.rpyc.bak",
+    "00renforge_session.rpy",
+    "00renforge_session.rpyc",
+    "00renforge_session.rpyc.bak",
+    "00renforge_session_*.rpy",
+    "00renforge_session_*.rpyc",
+    "00renforge_session_*.rpyc.bak",
+    "zzrenforge_*",
+    "zz_renforge_*",
+)
+
 
 def inject_editor_live_resources(
     project_root: Path,

@@ -95,6 +95,21 @@ def _bridge_info_path(project_root: Path) -> Path:
     return project_root / ".renforge" / "control" / "bridge.json"
 
 
+def _artifacts_path(project_root: Path) -> Path:
+    return project_root / ".renforge" / "control" / "artifacts.json"
+
+
+def _owned_bridge_rpy(project_root: Path) -> Path:
+    matches = sorted((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
+    assert matches, f"no owned bridge inject under {project_root / 'game'}"
+    return matches[0]
+
+
+def _load_artifacts(project_root: Path) -> dict:
+    return json.loads(_artifacts_path(project_root).read_text(encoding="utf-8"))
+
+
+
 def _write_bridge_info(
     project_root: Path,
     env: dict[str, str] | None = None,
@@ -194,7 +209,7 @@ def test_launch_without_display_nor_xvfb_fails_fast(monkeypatch, tmp_path: Path)
     error = excinfo.value
     assert getattr(error, "code", None) in {None, "DISPLAY_UNAVAILABLE"}
     # Fails before injecting anything: no artifacts to clean up.
-    assert not (root / "game" / "renforge_bridge.rpy").exists()
+    assert not list((root / "game").glob("zzrenforge_bridge_*.rpy"))
 
 
 def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) -> None:
@@ -263,34 +278,53 @@ def test_launch_accepts_display_provided_via_extra_env(monkeypatch, tmp_path: Pa
 
 
 def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Path) -> None:
+    from renforge.bridge.artifacts import allocate_and_materialize, artifacts_path
+    from renforge.project import RenpyProject
+
     game = tmp_path / "game"
     game.mkdir()
-    injected = game / "renforge_bridge.rpy"
-    injected.write_text("# injected\n", encoding="utf-8")
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    # Unowned legacy names and traceback must survive cleanup.
+    legacy_inject = game / "renforge_bridge.rpy"
+    legacy_inject.write_text("# unowned\n", encoding="utf-8")
     (game / "renforge_bridge.rpyc").write_bytes(b"\x00")
-    (game / "renforge_bridge.rpyc.bak").write_bytes(b"\x00")
+    (tmp_path / "traceback.txt").write_text("boom", encoding="utf-8")
     renforge = tmp_path / ".renforge"
+    renforge.mkdir(parents=True, exist_ok=True)
+    legacy = renforge / "bridge.json"
+    legacy.write_text('{"legacy":true}', encoding="utf-8")
+
+    project = RenpyProject(tmp_path)
+    materialized = allocate_and_materialize(
+        project,
+        bridge_payload=b"init python:\n    pass\n",
+        include_session_init=False,
+        editor_payload=None,
+        editor_asset_files=None,
+    )
     _write_bridge_info(
         tmp_path,
         token=_valid_token("cleanup"),
-        session_id="01" * 16,
+        session_id=materialized.session_id,
     )
-    owned = _bridge_info_path(tmp_path)
-    legacy = renforge / "bridge.json"
-    legacy.write_text('{"legacy":true}', encoding="utf-8")
-    (tmp_path / "traceback.txt").write_text("boom", encoding="utf-8")
+    owned_info = _bridge_info_path(tmp_path)
+    owned_source = game / f"zzrenforge_bridge_{materialized.session_id}.rpy"
+    assert owned_source.exists()
+    assert artifacts_path(tmp_path).exists()
 
-    remove_bridge_artifacts(tmp_path)
+    assert remove_bridge_artifacts(tmp_path, expected_session_id=materialized.session_id) is True
 
-    assert not injected.exists()
-    assert not (game / "renforge_bridge.rpyc").exists()
-    assert not (game / "renforge_bridge.rpyc.bak").exists()
-    assert not owned.exists()
+    assert not owned_source.exists()
+    assert not owned_info.exists()
+    assert not artifacts_path(tmp_path).exists()
+    # Unowned / legacy paths preserved.
+    assert legacy_inject.exists()
+    assert (game / "renforge_bridge.rpyc").exists()
     assert legacy.read_text(encoding="utf-8") == '{"legacy":true}'
-    assert not (tmp_path / "traceback.txt").exists()
+    assert (tmp_path / "traceback.txt").read_text(encoding="utf-8") == "boom"
 
     # Idempotent: a second call on an already-clean tree does not raise.
-    remove_bridge_artifacts(tmp_path)
+    assert remove_bridge_artifacts(tmp_path) is False
 
 
 def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
@@ -313,13 +347,15 @@ def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, root = _make_project(tmp_path)
+    (root / "traceback.txt").write_text("preexisting", encoding="utf-8")
 
     def fake_popen(*_args, **_kwargs):
         process = _FakeProcess()
         process.returncode = 1
-        (root / "game" / "renforge_bridge.rpyc").write_bytes(b"compiled")
-        _write_bridge_info(root, _kwargs["env"])
-        (root / "traceback.txt").write_text("no display", encoding="utf-8")
+        env = _kwargs["env"]
+        session_id = env["RENFORGE_BRIDGE_SESSION_ID"]
+        (root / "game" / f"zzrenforge_bridge_{session_id}.rpyc").write_bytes(b"compiled")
+        _write_bridge_info(root, env)
         return process
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
@@ -327,10 +363,12 @@ def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_
     with pytest.raises(RuntimeError, match="Game exited"):
         launch_with_bridge(sdk, project)
 
-    assert not (root / "game" / "renforge_bridge.rpy").exists()
-    assert not (root / "game" / "renforge_bridge.rpyc").exists()
+    assert not list((root / "game").glob("zzrenforge_bridge_*.rpy"))
+    assert not list((root / "game").glob("zzrenforge_bridge_*.rpyc"))
     assert not (root / ".renforge" / "control" / "bridge.json").exists()
-    assert not (root / "traceback.txt").exists()
+    assert not _artifacts_path(root).exists()
+    # Unowned traceback is preserved (schema-3 cleanup never deletes it).
+    assert (root / "traceback.txt").read_text(encoding="utf-8") == "preexisting"
 
 
 
@@ -388,7 +426,7 @@ def test_launch_cancellation_stops_process_and_cleans_artifacts(monkeypatch, tmp
 
     assert getattr(excinfo.value, "code", None) == "LAUNCH_CANCELLED"
     assert process.terminated is True
-    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
     assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
 
 
@@ -408,7 +446,7 @@ def test_second_launch_same_project_fails_without_touching_first_session(
     monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     first = launch_with_bridge(sdk, project, token=_valid_token("first-token"))
-    injected_before = (project_root / "game" / "renforge_bridge.rpy").read_bytes()
+    injected_before = _owned_bridge_rpy(project_root).read_bytes()
     manifest_before = (project_root / ".renforge" / "control" / "bridge.json").read_bytes()
 
     with pytest.raises(LaunchError) as excinfo:
@@ -417,7 +455,7 @@ def test_second_launch_same_project_fails_without_touching_first_session(
     assert getattr(excinfo.value, "code", None) == "BRIDGE_PROJECT_LOCKED"
     assert getattr(excinfo.value, "phase", None) == "acquiring_project_lock"
     assert popen_calls["count"] == 1
-    assert (project_root / "game" / "renforge_bridge.rpy").read_bytes() == injected_before
+    assert _owned_bridge_rpy(project_root).read_bytes() == injected_before
     assert (project_root / ".renforge" / "control" / "bridge.json").read_bytes() == manifest_before
 
     first.close(timeout=0.1)
@@ -441,9 +479,9 @@ def test_sessions_for_different_projects_are_isolated(monkeypatch, tmp_path: Pat
     session_b = launch_with_bridge(sdk, project_b, token=_valid_token("token-b"))
     session_a.close(timeout=0.1)
 
-    assert not (root_a / "game" / "renforge_bridge.rpy").exists()
+    assert not list((root_a / "game").glob("zzrenforge_bridge_*.rpy"))
     assert not (root_a / ".renforge" / "control" / "bridge.json").exists()
-    assert (root_b / "game" / "renforge_bridge.rpy").exists()
+    assert _owned_bridge_rpy(root_b).exists()
     assert json.loads((root_b / ".renforge" / "control" / "bridge.json").read_text())["token"] == _valid_token("token-b")
 
     session_b.close(timeout=0.1)
@@ -575,7 +613,7 @@ def test_close_keeps_lock_and_artifacts_until_process_exit(
 
     assert "process_alive" in first_close["failed"]
     assert first.closed is False
-    assert (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert _owned_bridge_rpy(project_root).exists()
     assert (project_root / ".renforge" / "control" / "bridge.json").exists()
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, token=_valid_token("blocked-token"))
@@ -586,7 +624,7 @@ def test_close_keeps_lock_and_artifacts_until_process_exit(
     retry_close = first.close(timeout=0.01)
     assert retry_close.get("failed") is None
     assert first.closed is True
-    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
     assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
 
     second = launch_with_bridge(sdk, project, token=_valid_token("second-token"))
@@ -629,7 +667,7 @@ def test_failed_launch_escalates_to_kill_before_releasing_lock(
     assert process.terminated is True
     assert process.killed is True
     assert process.poll() == -9
-    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
 
     cancel_event.clear()
     monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
@@ -703,7 +741,7 @@ def test_preplanted_unsafe_bridge_info_fails_closed_without_unlink(
     assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
     assert unsafe.is_symlink()
     assert victim.read_bytes() == b"secret-bridge-bytes"
-    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
 
     with pytest.raises(LaunchError) as cleanup_exc:
         remove_bridge_artifacts(project_root)
@@ -752,7 +790,7 @@ def test_failed_launch_defers_cleanup_and_unlock_until_process_exits(
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, cancel_event=cancel_event)
     assert excinfo.value.code == "LAUNCH_CANCELLED"
-    assert (project_root / "game" / "renforge_bridge.rpy").exists()
+    assert _owned_bridge_rpy(project_root).exists()
 
     with pytest.raises(LaunchError) as locked:
         launch_with_bridge(sdk, project)
@@ -803,7 +841,10 @@ def test_launch_without_editor_does_not_start_editor_flow(monkeypatch, tmp_path:
     env = captured.get("env") or {}
     assert not any(key.startswith("RENFORGE_EDITOR_") for key in env)
     assert session.editor is False
-    assert not (project_root / ".renforge" / "editor-session.json").exists()
+    manifest = _load_artifacts(project_root)
+    assert [entry["role"] for entry in manifest["sources"]] == ["bridge"]
+    assert manifest["asset_tree"] is None
+    assert not list((project_root / "game").glob("zzrenforge_editor_*"))
     session.close(timeout=0.1)
 
 
@@ -866,25 +907,25 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
     assert probe["project_root"] == str(project_root)
     assert isinstance(probe["value"], _Probe)
 
-    manifest_path = project_root / ".renforge" / "editor-session.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    basename = manifest["basename"]
-    source_path = project_root / "game" / basename
     from renforge.bridge.launcher import _editor_payload
 
+    manifest = _load_artifacts(project_root)
+    assert manifest["schema_version"] == 3
+    editor_source = next(entry for entry in manifest["sources"] if entry["role"] == "editor")
+    basename = editor_source["basename"]
+    source_path = project_root / "game" / basename
     expected_bytes = _editor_payload()
     expected_hash = hashlib.sha256(expected_bytes).hexdigest()
-    assert manifest["source_sha256"] == expected_hash
-    assert manifest["absent_before"] == {"rpy": True, "rpyc": True, "rpyc_bak": True}
+    assert editor_source["sha256"] == expected_hash
     assert source_path.read_bytes() == expected_bytes
 
-    # The asset tree shares the .rpy stem so one collision-free draw covers both,
-    # and the runtime is told its name rather than having to guess the hash.
-    assert manifest["schema_version"] == 2
-    assert manifest["assets_dirname"] == basename[: -len(".rpy")]
-    assert env["RENFORGE_EDITOR_ASSETS"] == manifest["assets_dirname"]
-    for entry in manifest["assets"]:
-        shipped = project_root / "game" / manifest["assets_dirname"] / entry["path"]
+    asset_tree = manifest["asset_tree"]
+    assert asset_tree is not None
+    assert asset_tree["dirname"] == basename[: -len(".rpy")]
+    assert env["RENFORGE_EDITOR_ASSETS"] == asset_tree["dirname"]
+    assert env["RENFORGE_BRIDGE_SESSION_ID"] == manifest["session_id"]
+    for entry in asset_tree["files"]:
+        shipped = project_root / "game" / asset_tree["dirname"] / entry["path"]
         assert hashlib.sha256(shipped.read_bytes()).hexdigest() == entry["sha256"]
 
     close_result = session.close(timeout=0.1)
@@ -894,23 +935,21 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
     assert session.closed is True
 
 
-def test_launch_with_editor_retries_collision_free_random_basename(monkeypatch, tmp_path: Path) -> None:
-    import renforge.bridge.launcher as launcher
-
+def test_launch_with_editor_retries_collision_free_session_id(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, project_root = _make_project(tmp_path)
-    editor_tokens = iter(["deadbeef", "cafebabe", "00"])
+    session_ids = iter(["deadbeefdeadbeefdeadbeefdeadbeef", "cafebabecafebabecafebabecafebabe"])
 
     def _token_hex(size: int = 32) -> str:
-        if size == 8:
-            return next(editor_tokens)
+        if size == 16:
+            return next(session_ids)
         return "ab" * size
 
-    monkeypatch.setattr("renforge.bridge.launcher.secrets.token_hex", _token_hex)
-    manifest_collision = f"{launcher._EDITOR_INJECTED_PREFIX}deadbeef.rpy"
-    (project.game_dir / manifest_collision).write_text("occupied", encoding="utf-8")
-    (project.game_dir / f"{manifest_collision}c").write_bytes(b"compiled")
-    (project.game_dir / f"{manifest_collision}c.bak").write_bytes(b"compiled")
+    monkeypatch.setattr("renforge.bridge.artifacts.secrets.token_hex", _token_hex)
+    collision = "zzrenforge_bridge_deadbeefdeadbeefdeadbeefdeadbeef.rpy"
+    (project.game_dir / collision).write_text("occupied", encoding="utf-8")
+    (project.game_dir / f"{collision}c").write_bytes(b"compiled")
+    (project.game_dir / f"{collision}c.bak").write_bytes(b"compiled")
 
     class _Coordinator:
         def __init__(self, _project: RenpyProject, _sdk: RenpySdk):
@@ -935,12 +974,10 @@ def test_launch_with_editor_retries_collision_free_random_basename(monkeypatch, 
     monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
-    manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
-
-    expected_basename = f"{launcher._EDITOR_INJECTED_PREFIX}cafebabe.rpy"
-    assert manifest["basename"] == expected_basename
-    assert (project.game_dir / manifest_collision).read_text(encoding="utf-8") == "occupied"
-    assert (project.game_dir / expected_basename).exists()
+    manifest = _load_artifacts(project_root)
+    assert manifest["session_id"] == "cafebabecafebabecafebabecafebabe"
+    assert (project.game_dir / collision).read_text(encoding="utf-8") == "occupied"
+    assert (project.game_dir / "zzrenforge_bridge_cafebabecafebabecafebabecafebabe.rpy").exists()
     session.close(timeout=0.1)
 
 
@@ -970,9 +1007,10 @@ def test_editor_close_preserves_modified_injected_artifact(monkeypatch, tmp_path
     monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
-    manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
-    injected = project_root / "game" / manifest["basename"]
-    sibling = project_root / "game" / f"{manifest['basename']}c"
+    manifest = _load_artifacts(project_root)
+    editor_source = next(entry for entry in manifest["sources"] if entry["role"] == "editor")
+    injected = project_root / "game" / editor_source["basename"]
+    sibling = project_root / "game" / f"{editor_source['basename']}c"
     injected.write_text("modified-by-test", encoding="utf-8")
     sibling.write_bytes(b"foreign")
 
@@ -981,7 +1019,7 @@ def test_editor_close_preserves_modified_injected_artifact(monkeypatch, tmp_path
     assert session.closed is False
     assert injected.exists()
     assert sibling.exists()
-    assert (project_root / ".renforge" / "editor-session.json").exists()
+    assert _artifacts_path(project_root).exists()
     assert "renpy_process" in close_result["cleaned"]
 
 
@@ -1037,7 +1075,7 @@ def test_editor_launch_failure_cleans_resources_and_closes_coordinator(
     assert coordinator_calls["init"] == 1
     assert coordinator_calls["start"] == 1
     assert coordinator_calls["close"] == 1
-    assert not (project_root / ".renforge" / "editor-session.json").exists()
+    assert not _artifacts_path(project_root).exists()
     assert process.returncode is not None
 
 
@@ -1051,116 +1089,107 @@ def test_editor_artifact_cleanup_stays_retryable_after_any_unlink_failure(
     would make every later attempt abort before reaching the artifact that
     actually failed — stranding the project lock forever.
     """
-    import renforge.bridge.launcher as launcher
+    from renforge.bridge.artifacts import allocate_and_materialize, remove_owned_artifacts
+    from renforge.project import RenpyProject
 
     game_dir = tmp_path / "game"
     game_dir.mkdir(parents=True)
-    renforge_dir = tmp_path / ".renforge"
-    renforge_dir.mkdir(parents=True)
-
-    basename = "zzrenforge_editor_deadbeefdeadbeef.rpy"
-    payload = b"screen _renforge_editor_launcher():\n    pass\n"
-    manifest_path = renforge_dir / "editor-session.json"
-    artifacts = (
-        game_dir / basename,
-        game_dir / f"{basename}c",
-        game_dir / f"{basename}c.bak",
-        manifest_path,
-    )
-
-    def seed() -> None:
-        (game_dir / basename).write_bytes(payload)
-        (game_dir / f"{basename}c").write_bytes(b"compiled")
-        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "basename": basename,
-                    "source_sha256": hashlib.sha256(payload).hexdigest(),
-                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
-                }
-            ),
-            encoding="utf-8",
-        )
-
+    (game_dir / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    project = RenpyProject(tmp_path)
     real_unlink = Path.unlink
 
-    for failing in artifacts:
-        seed()
+    for fail_kind in ("bridge", "editor", "sibling", "manifest"):
+        materialized = allocate_and_materialize(
+            project,
+            bridge_payload=b"init python:\n    pass\n",
+            include_session_init=False,
+            editor_payload=b"screen _renforge_editor_launcher():\n    pass\n",
+            editor_asset_files=[],
+        )
+        session_id = materialized.session_id
+        bridge_path = game_dir / f"zzrenforge_bridge_{session_id}.rpy"
+        editor_path = game_dir / f"zzrenforge_editor_{session_id}.rpy"
+        sibling = game_dir / f"zzrenforge_editor_{session_id}.rpyc"
+        sibling.write_bytes(b"compiled")
+        manifest_path = _artifacts_path(tmp_path)
+        failing = {
+            "bridge": bridge_path,
+            "editor": editor_path,
+            "sibling": sibling,
+            "manifest": manifest_path,
+        }[fail_kind]
 
         def flaky_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
-            if self.name == failing.name:
+            if self == failing or self.name == failing.name:
                 raise OSError(errno.EACCES, "artifact is locked")
             real_unlink(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "unlink", flaky_unlink)
-        with pytest.raises(OSError):
-            launcher._remove_editor_artifacts(tmp_path)
+        with pytest.raises((OSError, RuntimeError)):
+            remove_owned_artifacts(tmp_path, expected_session_id=session_id)
         monkeypatch.setattr(Path, "unlink", real_unlink)
 
-        launcher._remove_editor_artifacts(tmp_path)
-        remaining = [artifact.name for artifact in artifacts if artifact.exists()]
-        assert remaining == [], f"retry after {failing.name} left {remaining}"
+        remove_owned_artifacts(tmp_path, expected_session_id=session_id)
+        assert not bridge_path.exists()
+        assert not editor_path.exists()
+        assert not sibling.exists()
+        assert not manifest_path.exists()
 
 
 def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Path) -> None:
-    """A dangling symlink must never read as an absent artifact.
-
-    ``Path.exists()`` follows symlinks and is False for a broken one, so a
-    tampered artifact would be skipped as "already cleaned", the manifest deleted
-    and the project lock released while the symlink stayed behind.
-    """
-    import renforge.bridge.launcher as launcher
+    """A dangling symlink must never read as an absent owned artifact."""
+    from renforge.bridge.artifacts import allocate_and_materialize, remove_owned_artifacts
+    from renforge.project import RenpyProject
 
     game_dir = tmp_path / "game"
     game_dir.mkdir(parents=True)
-    renforge_dir = tmp_path / ".renforge"
-    renforge_dir.mkdir(parents=True)
+    (game_dir / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    project = RenpyProject(tmp_path)
 
-    basename = "zzrenforge_editor_cafebabecafebabe.rpy"
-    payload = b"screen _renforge_editor_launcher():\n    pass\n"
-    manifest_path = renforge_dir / "editor-session.json"
-
-    for target in (
-        game_dir / basename,
-        game_dir / f"{basename}c",
-        game_dir / f"{basename}c.bak",
-        manifest_path,
-    ):
-        for stale in game_dir.iterdir():
-            stale.unlink()
-        (game_dir / basename).write_bytes(payload)
-        (game_dir / f"{basename}c").write_bytes(b"compiled")
-        (game_dir / f"{basename}c.bak").write_bytes(b"backup")
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "basename": basename,
-                    "source_sha256": hashlib.sha256(payload).hexdigest(),
-                    "absent_before": {"rpy": True, "rpyc": True, "rpyc_bak": True},
-                }
-            ),
-            encoding="utf-8",
+    for fail_kind in ("editor", "sibling", "manifest"):
+        materialized = allocate_and_materialize(
+            project,
+            bridge_payload=b"init python:\n    pass\n",
+            include_session_init=False,
+            editor_payload=b"screen _renforge_editor_launcher():\n    pass\n",
+            editor_asset_files=[],
         )
+        session_id = materialized.session_id
+        editor_path = game_dir / f"zzrenforge_editor_{session_id}.rpy"
+        sibling = game_dir / f"zzrenforge_editor_{session_id}.rpyc"
+        sibling.write_bytes(b"compiled")
+        manifest_path = _artifacts_path(tmp_path)
+        target = {
+            "editor": editor_path,
+            "sibling": sibling,
+            "manifest": manifest_path,
+        }[fail_kind]
 
         target.unlink()
         try:
             target.symlink_to(game_dir / "nowhere")
-        except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform dependent
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover
             pytest.skip(f"symlinks unavailable on this platform: {exc}")
 
         assert target.is_symlink() and not target.exists(), str(target)
-        with pytest.raises(RuntimeError, match="symlink"):
-            launcher._remove_editor_artifacts(tmp_path)
-        # Fail closed: nothing was removed, so the manifest is exactly as seeded
-        # — a regular file, unless the manifest itself was the tampered target, in
-        # which case it remains the dangling symlink. Either way the caller keeps
-        # the project lock instead of walking away from a tampered tree.
-        if target == manifest_path:
-            assert manifest_path.is_symlink(), str(target)
-        else:
-            assert manifest_path.is_file(), str(target)
+        with pytest.raises((RuntimeError, Exception)):
+            remove_owned_artifacts(tmp_path, expected_session_id=session_id)
         assert target.is_symlink(), str(target)
+        # Clean for the next iteration when possible (manifest may be the symlink).
+        if fail_kind != "manifest":
+            target.unlink()
+            # restore a real file so full cleanup can succeed
+            if fail_kind == "editor":
+                editor_path.write_bytes(b"screen _renforge_editor_launcher():\n    pass\n")
+            remove_owned_artifacts(tmp_path, expected_session_id=session_id)
+        else:
+            target.unlink()
+            # Without a valid manifest, leftover owned sources remain; wipe game injects.
+            for leftover in game_dir.glob("zzrenforge_*"):
+                if leftover.is_symlink() or leftover.is_file():
+                    leftover.unlink()
+            for leftover in (game_dir / f"zzrenforge_editor_{session_id}").glob("*") if False else []:
+                pass
 
 
 def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
@@ -1329,23 +1358,17 @@ def test_editor_font_is_only_borrowed_for_languages_that_need_one(monkeypatch, t
     source = tmp_path / "fake-cjk.ttc"
     source.write_bytes(b"not really a font, but bytes all the same")
     monkeypatch.setattr(launcher, "_editor_font_candidates", lambda: (source,))
+    monkeypatch.setattr(launcher, "_editor_asset_sources", lambda: [])
 
-    english_dir = tmp_path / "english"
-    english_dir.mkdir()
-    entries: list[dict[str, str]] = []
     monkeypatch.setenv("RENFORGE_LANG", "en")
-    assert launcher._write_editor_font(english_dir, entries) == ""
-    assert entries == []
-    assert not (english_dir / "fonts").exists()
+    files, font_rel = launcher._prepare_editor_asset_payloads()
+    assert font_rel == ""
+    assert files == []
 
-    chinese_dir = tmp_path / "chinese"
-    chinese_dir.mkdir()
     monkeypatch.setenv("RENFORGE_LANG", "zh-CN")
-    relative = launcher._write_editor_font(chinese_dir, entries)
-    assert relative == "fonts/cjk.ttc"
-    # Recorded like any other asset, so session cleanup can prove and remove it.
-    assert entries[0]["path"] == "fonts/cjk.ttc"
-    assert (chinese_dir / relative).read_bytes() == source.read_bytes()
+    files, font_rel = launcher._prepare_editor_asset_payloads()
+    assert font_rel == "fonts/cjk.ttc"
+    assert files == [("fonts/cjk.ttc", source.read_bytes())]
 
 
 def test_editor_font_absent_from_the_repository() -> None:

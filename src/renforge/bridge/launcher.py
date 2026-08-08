@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import errno
 import json
-import hashlib
 import os
 import secrets
 import shutil
@@ -31,20 +30,20 @@ from ..launch_env import (
 )
 from ..project import RenpyProject
 from ..sdk import RenpySdk
+from .artifacts import (
+    ArtifactOwnershipError,
+    allocate_and_materialize,
+    remove_owned_artifacts,
+)
 from .client import BridgeClient, BridgeConfig, BridgeProtocolError
 from .control import read_bridge_info, write_starting_bridge_info
 from ..editor import BridgeRuntimeProbe, EditorCoordinator, EditorEndpoint
-from ..editor.paths import atomic_write_file
 from ..util.files import PrivatePathError, ensure_private_directory
 
 _BRIDGE_RESOURCE: Path = Path(__file__).parent / "bridge.rpy"
-_INJECTED_NAME: str = "renforge_bridge.rpy"
-_SESSION_INIT_NAME: str = "00renforge_session.rpy"
 _EDITOR_RESOURCE: Path = Path(__file__).parent / "editor.rpy"
 _EDITOR_SCREENS_RESOURCE: Path = Path(__file__).parent / "screens"
 _EDITOR_ASSETS_RESOURCE: Path = Path(__file__).parent / "editor_assets"
-_EDITOR_INJECTED_PREFIX: str = "zzrenforge_editor_"
-_EDITOR_MANIFEST_NAME: str = "editor-session.json"
 _EDITOR_DEFAULT_LANGUAGE: str = "en"
 _EDITOR_SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
 # Languages Ren'Py's bundled font cannot draw: its own documentation says it
@@ -354,10 +353,6 @@ class ProjectBridgeLock:
 
 _DEFERRED_LOCKS: set[ProjectBridgeLock] = set()
 
-def _editor_manifest_path(project_root: Path) -> Path:
-    return project_root / ".renforge" / _EDITOR_MANIFEST_NAME
-
-
 def _editor_screen_sources() -> list[Path]:
     """The region screens, in a stable order.
 
@@ -400,27 +395,6 @@ def _editor_asset_sources() -> list[tuple[str, Path]]:
     ]
 
 
-def _write_editor_assets(assets_dir: Path) -> list[dict[str, str]]:
-    """Copy the asset tree under ``assets_dir``, returning its manifest entries.
-
-    ``O_EXCL`` on every file for the same reason the ``.rpy`` uses it: the game
-    directory belongs to the user, and RenForge only ever removes bytes it can
-    prove it wrote.
-    """
-    written: list[dict[str, str]] = []
-    for relative, source in _editor_asset_sources():
-        target = assets_dir / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = source.read_bytes()
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        written.append({"path": relative, "sha256": hashlib.sha256(payload).hexdigest()})
-    return written
-
-
 def _editor_font_candidates() -> tuple[Path, ...]:
     """System fonts that cover Chinese, most likely first, by platform."""
     if sys.platform == "darwin":
@@ -447,259 +421,25 @@ def _editor_font_candidates() -> tuple[Path, ...]:
     return tuple(Path(name) for name in names)
 
 
-def _write_editor_font(assets_dir: Path, entries: list[dict[str, str]]) -> str:
-    """Borrow a system CJK font when the interface language needs one.
-
-    Nothing font-shaped ships in this repository. Ren'Py refuses to load a font
-    from outside the game tree, so the only way to draw Chinese is to place one
-    inside it — and that copy happens solely when a language actually calls for
-    it, then leaves with the rest of the session artifacts.
-    """
-    if _editor_language() not in _EDITOR_CJK_LANGUAGES:
-        return ""
-    for candidate in _editor_font_candidates():
-        try:
-            if not candidate.is_file():
-                continue
-            payload = candidate.read_bytes()
-        except OSError:
-            continue
-        relative = "fonts/cjk%s" % (candidate.suffix.lower() or ".ttf")
-        target = assets_dir / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        entries.append({"path": relative, "sha256": hashlib.sha256(payload).hexdigest()})
-        return relative
-    return ""
-
-
-def _inject_editor_artifact(project: RenpyProject) -> tuple[Path, str, str]:
-    """Inject the editor and its assets, returning ``(source path, assets dirname)``.
-
-    The assets directory shares the ``.rpy`` stem, so the same collision-free
-    draw covers both, and the runtime learns its name from the environment
-    rather than guessing a hash it cannot see.
-    """
-    payload = _editor_payload()
-    for _attempt in range(32):
-        stem = f"{_EDITOR_INJECTED_PREFIX}{secrets.token_hex(8)}"
-        basename = f"{stem}.rpy"
-        source_path = project.game_dir / basename
-        assets_dir = project.game_dir / stem
-        sibling_names = (basename, f"{basename}c", f"{basename}c.bak")
-        sibling_paths = [project.game_dir / name for name in sibling_names]
-        absent_before = {name: not path.exists() for name, path in zip(sibling_names, sibling_paths)}
-        if not all(absent_before.values()):
-            continue
-        if any(path.is_symlink() for path in sibling_paths):
-            continue
-        # The assets directory is drawn from the same random stem, so it has to
-        # clear the same absence bar before the draw is accepted.
-        if assets_dir.exists() or assets_dir.is_symlink():
-            continue
-        try:
-            descriptor = os.open(source_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            continue
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            assets = _write_editor_assets(assets_dir)
-            font_relative = _write_editor_font(assets_dir, assets)
-            manifest = {
-                "schema_version": 2,
-                "basename": basename,
-                "source_sha256": hashlib.sha256(payload).hexdigest(),
-                "assets_dirname": stem,
-                "assets": assets,
-                "absent_before": {
-                    "rpy": absent_before[basename],
-                    "rpyc": absent_before[f"{basename}c"],
-                    "rpyc_bak": absent_before[f"{basename}c.bak"],
-                },
-            }
-            atomic_write_file(
-                _editor_manifest_path(project.root),
-                json.dumps(manifest, separators=(",", ":")).encode("utf-8"),
-            )
-            return source_path, stem, font_relative
-        except BaseException:
-            shutil.rmtree(assets_dir, ignore_errors=True)
+def _prepare_editor_asset_payloads() -> tuple[list[tuple[str, bytes]], str]:
+    """Ship editor assets (and optional CJK font) as ``(relative path, bytes)``."""
+    files: list[tuple[str, bytes]] = []
+    for relative, source in _editor_asset_sources():
+        files.append((relative, source.read_bytes()))
+    font_relative = ""
+    if _editor_language() in _EDITOR_CJK_LANGUAGES:
+        for candidate in _editor_font_candidates():
             try:
-                source_path.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-    raise LaunchError(
-        "EDITOR_ARTIFACT_COLLISION",
-        "Could not allocate a collision-free editor injection filename.",
-        phase="injecting_editor",
-    )
-
-
-def _remove_editor_artifacts(project_root: Path) -> None:
-    manifest_path = _editor_manifest_path(project_root)
-    # Symlink check first: exists() follows symlinks and is False for a dangling
-    # one, which would read a tampered manifest as absent and return, leaving the
-    # symlink behind once the lock is released. Same invariant as the artifacts.
-    if manifest_path.is_symlink():
-        raise RuntimeError("editor artifact manifest became a symlink")
-    if not manifest_path.exists():
-        return
-    if not manifest_path.is_file():
-        raise RuntimeError("editor artifact manifest is not a regular file")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"editor artifact manifest is invalid: {exc}") from exc
-
-    if not isinstance(manifest, dict):
-        raise RuntimeError("editor artifact manifest is not a JSON object")
-
-    basename = manifest.get("basename")
-    expected_sha256 = manifest.get("source_sha256")
-    absence = manifest.get("absent_before") if isinstance(manifest.get("absent_before"), dict) else {}
-    if not isinstance(absence, dict):
-        absence = {}
-
-    if not isinstance(basename, str) or Path(basename).name != basename or not basename.startswith(
-        _EDITOR_INJECTED_PREFIX
-    ) or not basename.endswith(".rpy"):
-        raise RuntimeError("editor artifact manifest failed ownership validation")
-
-    if not isinstance(expected_sha256, str):
-        raise RuntimeError("editor artifact manifest failed ownership validation")
-
-    if len(expected_sha256) != 64:
-        raise RuntimeError("editor artifact manifest failed ownership validation")
-
-    try:
-        int(expected_sha256, 16)
-    except ValueError as exc:
-        raise RuntimeError("editor artifact manifest failed ownership validation") from exc
-
-    should_remove_compiled = {
-        "rpyc": bool(absence.get("rpyc", False)),
-        "rpyc_bak": bool(absence.get("rpyc_bak", False)),
-    }
-
-    source_path = project_root / "game" / basename
-    # Every step below tolerates an already-absent artifact. Cleanup is retried
-    # by BridgeSession.close() and the deferred reaper, so a partial failure must
-    # never leave a state where the next attempt aborts on an artifact the
-    # previous attempt already removed — that would strand the project lock
-    # forever. Ownership is proven by the validated manifest and basename above,
-    # plus the digest whenever the source is still present.
-    #
-    # Each symlink check runs *before* its exists() guard: exists() follows
-    # symlinks and is False for a dangling one, so a tampered artifact would
-    # otherwise read as absent, get skipped, and be left behind once the manifest
-    # is gone. Tampering is the one condition that must stay fail-closed.
-    if source_path.is_symlink():
-        raise RuntimeError("editor source artifact became a symlink")
-    if source_path.exists():
-        if not source_path.is_file():
-            raise RuntimeError("editor source artifact is not a regular file")
-        if hashlib.sha256(source_path.read_bytes()).hexdigest() != expected_sha256:
-            raise RuntimeError("editor source artifact changed after injection")
-
-    sibling_path = source_path.with_name(f"{basename}c")
-    sibling_backup_path = source_path.with_name(f"{basename}c.bak")
-
-    if should_remove_compiled["rpyc"]:
-        if sibling_path.is_symlink():
-            raise RuntimeError("editor compiled artifact became a symlink")
-        if sibling_path.exists():
-            if not sibling_path.is_file():
-                raise RuntimeError("editor compiled artifact is not a regular file")
-            sibling_path.unlink()
-
-    if should_remove_compiled["rpyc_bak"]:
-        if sibling_backup_path.is_symlink():
-            raise RuntimeError("editor compiled backup artifact became a symlink")
-        if sibling_backup_path.exists():
-            if not sibling_backup_path.is_file():
-                raise RuntimeError("editor compiled backup artifact is not a regular file")
-            sibling_backup_path.unlink()
-
-    _remove_editor_asset_tree(project_root / "game", manifest)
-
-    source_path.unlink(missing_ok=True)
-    manifest_path.unlink(missing_ok=True)
-
-
-def _remove_editor_asset_tree(game_dir: Path, manifest: dict[str, Any]) -> None:
-    """Remove the injected asset tree, file by proven file.
-
-    Ownership is established exactly as it is for the ``.rpy``: the directory
-    name must carry the injection prefix, and every file must still hash to what
-    was written. A schema 1 manifest predates assets and owns nothing here.
-    Directories are removed only once empty, so anything the user dropped inside
-    survives — and keeps its parent alive with it.
-    """
-    dirname = manifest.get("assets_dirname")
-    assets = manifest.get("assets")
-    if dirname is None and not assets:
-        return
-    if (
-        not isinstance(dirname, str)
-        or not dirname
-        or Path(dirname).name != dirname
-        or not dirname.startswith(_EDITOR_INJECTED_PREFIX)
-        or not isinstance(assets, list)
-    ):
-        raise RuntimeError("editor asset manifest failed ownership validation")
-
-    root = game_dir / dirname
-    if root.is_symlink():
-        raise RuntimeError("editor asset directory became a symlink")
-    if not root.exists():
-        return
-    if not root.is_dir():
-        raise RuntimeError("editor asset directory is not a directory")
-
-    for entry in assets:
-        if not isinstance(entry, dict):
-            raise RuntimeError("editor asset manifest failed ownership validation")
-        relative = entry.get("path")
-        expected_sha256 = entry.get("sha256")
-        if (
-            not isinstance(relative, str)
-            or not relative
-            or not isinstance(expected_sha256, str)
-            or len(expected_sha256) != 64
-        ):
-            raise RuntimeError("editor asset manifest failed ownership validation")
-        parts = Path(relative).parts
-        if Path(relative).is_absolute() or ".." in parts:
-            raise RuntimeError("editor asset manifest failed ownership validation")
-        try:
-            int(expected_sha256, 16)
-        except ValueError as exc:
-            raise RuntimeError("editor asset manifest failed ownership validation") from exc
-
-        target = root.joinpath(*parts)
-        if target.is_symlink():
-            raise RuntimeError("editor asset became a symlink")
-        if not target.exists():
-            continue
-        if not target.is_file():
-            raise RuntimeError("editor asset is not a regular file")
-        if hashlib.sha256(target.read_bytes()).hexdigest() != expected_sha256:
-            raise RuntimeError("editor asset changed after injection")
-        target.unlink()
-
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
-            path.rmdir()
-    if not any(root.iterdir()):
-        root.rmdir()
+                if not candidate.is_file():
+                    continue
+                payload = candidate.read_bytes()
+            except OSError:
+                continue
+            font_relative = "fonts/cjk%s" % (candidate.suffix.lower() or ".ttf")
+            files.append((font_relative, payload))
+            break
+    files.sort(key=lambda item: item[0])
+    return files, font_relative
 
 
 def _editor_language() -> str:
@@ -736,122 +476,24 @@ def remove_bridge_artifacts(
     *,
     expected_session_id: str | None = None,
     remove_bridge_info: bool = True,
-) -> None:
-    """Delete every file the bridge injects or leaves behind on ``project_root``.
+) -> bool:
+    """Remove schema-3 owned session artifacts after full ownership validation.
 
-    The caller must hold the project's :class:`ProjectBridgeLock` unless this is
-    a legacy maintenance or test cleanup. Missing files are ignored, so cleanup
-    remains idempotent. Control ``bridge.json`` is removed only after
-    ``read_bridge_info`` validates it; unsafe or invalid metadata is left
-    untouched and raises. Unowned pre-migration metadata outside control/ is
-    never touched.
+    Returns ``False`` when no ownership manifest exists and ``True`` after a
+    complete proven removal. Legacy fixed names, ``traceback.txt``,
+    ``errors.txt``, and unowned pre-migration metadata are never touched.
+    ``remove_bridge_info`` is retained for call-site compatibility; bridge-info
+    cleanup is owned by the schema-3 manifest path when present.
     """
-    if remove_bridge_info:
-        _remove_owned_bridge_info(project_root, expected_session_id=expected_session_id)
-    _remove_injected_bridge_files(project_root)
-    _remove_editor_artifacts(project_root)
-
-
-def _remove_injected_bridge_files(project_root: Path) -> None:
-    game_dir = project_root / "game"
-    for path in (
-        game_dir / _INJECTED_NAME,  # renforge_bridge.rpy
-        game_dir / (_INJECTED_NAME + "c"),  # renforge_bridge.rpyc
-        game_dir / (_INJECTED_NAME + "c.bak"),  # renforge_bridge.rpyc.bak
-        game_dir / _SESSION_INIT_NAME,
-        game_dir / (_SESSION_INIT_NAME + "c"),
-        game_dir / (_SESSION_INIT_NAME + "c.bak"),
-        project_root / "traceback.txt",
-        project_root / "errors.txt",
-    ):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-
-
-def _remove_owned_bridge_info(
-    project_root: Path,
-    *,
-    expected_session_id: str | None = None,
-) -> None:
-    """Unlink control/bridge.json only after private schema validation succeeds."""
-    info_path = Path(project_root) / ".renforge" / "control" / "bridge.json"
+    _ = remove_bridge_info
     try:
-        info_path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise LaunchError(
-            "BRIDGE_CONTROL_DIRECTORY_UNSAFE",
-            f"Bridge metadata path is unsafe: {exc}",
-            phase="cleaning_bridge_artifacts",
-            suggested_fix="Remove unsafe paths under .renforge/control and retry.",
-        ) from exc
-    if info_path.is_symlink():
-        raise LaunchError(
-            "BRIDGE_CONTROL_DIRECTORY_UNSAFE",
-            "Bridge metadata path is a symlink and was left untouched.",
-            phase="cleaning_bridge_artifacts",
-            suggested_fix="Remove unsafe paths under .renforge/control and retry.",
-        )
-
-    try:
-        read_bridge_info(
-            project_root,
-            require_ready=False,
+        return remove_owned_artifacts(
+            Path(project_root),
             expected_session_id=expected_session_id,
         )
-    except LaunchError:
-        raise
-    except (BridgeProtocolError, PrivatePathError, OSError, ValueError) as exc:
-        raise LaunchError(
-            "BRIDGE_INFO_CONFLICT",
-            "Bridge metadata failed validation and was left untouched.",
-            phase="cleaning_bridge_artifacts",
-            suggested_fix="Remove the conflicting .renforge/control/bridge.json and retry.",
-        ) from exc
-
-    try:
-        info_path.unlink()
-    except FileNotFoundError:
-        return
-
-
-
-
-
-
-def _write_session_init(project: RenpyProject, *, savedir: str | None) -> Path | None:
-    """Inject an early init file that redirects the save directory when needed."""
-    if not savedir:
-        return None
-    path = project.game_dir / _SESSION_INIT_NAME
-    # init -1500 runs before most game options; env is the authority so the
-    # same file works if a session is resumed with a different path.
-    path.write_text(
-        "\n".join(
-            [
-                "init -1500 python:",
-                "    import os",
-                "    _renforge_savedir = os.environ.get('RENFORGE_SAVEDIR')",
-                "    if _renforge_savedir:",
-                "        config.savedir = _renforge_savedir",
-                "    _renforge_persistent = os.environ.get('RENFORGE_PERSISTENT_MODE')",
-                "    if _renforge_persistent == 'empty':",
-                "        # Keep persistent empty for isolated agent sessions.",
-                "        try:",
-                "            renpy.loadsave.location.unlink('persistent')",
-                "        except Exception:",
-                "            pass",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
+    except ArtifactOwnershipError as exc:
+        # Preserve fail-closed cleanup for BridgeSession retries.
+        raise RuntimeError(exc.message) from exc
 
 
 class BridgeSession:
@@ -1202,17 +844,42 @@ def _launch_after_project_lock(
     # preferences reserved for future fixture support; accepted for API stability.
     _ = preferences
 
-    session_id, token = _allocate_bridge_identity(token=token)
+    # Token may be caller-supplied; session id is allocated with the artifact
+    # intent so names, ownership, and bridge.json share one identity.
+    if token is not None and not _is_bridge_token(token):
+        raise LaunchError(
+            "BRIDGE_TOKEN_INVALID",
+            "Bridge token must be 64 lowercase hexadecimal characters.",
+            phase="preparing_bridge_metadata",
+            suggested_fix="Omit token to let RenForge generate one, or pass secrets.token_hex(32).",
+        )
+    if token is None:
+        token = secrets.token_hex(32)
+
     _phase("injecting_bridge")
+    editor_assets_dirname: str | None = None
+    editor_font_relative: str = ""
     try:
-        injected = project.game_dir / _INJECTED_NAME
-        injected.write_text(_BRIDGE_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
-        _write_session_init(project, savedir=savedir_path)
-        editor_assets_dirname: str | None = None
-        editor_font_relative: str = ""
+        editor_payload: bytes | None = None
+        editor_assets: list[tuple[str, bytes]] | None = None
         if editor_endpoint is not None:
             _phase("injecting_editor")
-            _, editor_assets_dirname, editor_font_relative = _inject_editor_artifact(project)
+            editor_payload = _editor_payload()
+            editor_assets, editor_font_relative = _prepare_editor_asset_payloads()
+        materialized = allocate_and_materialize(
+            project,
+            bridge_payload=_BRIDGE_RESOURCE.read_bytes(),
+            include_session_init=bool(savedir_path),
+            editor_payload=editor_payload,
+            editor_asset_files=editor_assets,
+            editor_font_relative=editor_font_relative,
+        )
+        session_id = materialized.session_id
+        editor_assets_dirname = materialized.editor_assets_dirname
+        if materialized.editor_font_relative:
+            editor_font_relative = materialized.editor_font_relative
+    except LaunchError:
+        raise
     except OSError as exc:
         raise LaunchError(
             "BRIDGE_FILE_NOT_CREATED",

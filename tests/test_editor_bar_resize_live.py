@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from renforge.editor_bar_resize_runner import run_editor_bar_resize_live_scenario
+from renforge.editor_live_common import DEMO_COPY_IGNORE
 from renforge.editor_bar_runner import FIXTURE_SCREEN, inject_editor_bar_resources
 
 pytestmark = pytest.mark.skipif(
@@ -21,7 +22,7 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 @pytest.fixture
 def demo_copy(tmp_path: Path) -> Path:
     destination = tmp_path / "demo"
-    shutil.copytree(_DEMO, destination, ignore=shutil.ignore_patterns("*.rpyc", "cache"))
+    shutil.copytree(_DEMO, destination, ignore=DEMO_COPY_IGNORE)
     inject_editor_bar_resources(destination)
     return destination
 
