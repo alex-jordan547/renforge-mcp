@@ -397,7 +397,12 @@ class EditorCoordinator:
                 raise EditorError("PROTOCOL_MISMATCH", f"expected protocol {PROTOCOL_NAME}")
             if version != PROTOCOL_VERSION:
                 raise EditorError("PROTOCOL_VERSION_MISMATCH", "unsupported protocol version")
-            if token != self._token:
+            import hmac
+
+            if not hmac.compare_digest(
+                token.encode("utf-8"),
+                str(self._token).encode("utf-8"),
+            ):
                 raise EditorError("AUTH_TOKEN_INVALID", "invalid editor token")
 
             with self._lock:

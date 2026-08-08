@@ -12,7 +12,17 @@ import pytest
 from renforge.tools import live
 
 
-def _make_project(tmp_path: Path, *, with_legacy_bridge: bool = False) -> Path:
+def _session_id(label: str = "session") -> str:
+    import hashlib
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()[:32]
+
+
+def _token(label: str = "token") -> str:
+    import hashlib
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _make_project(tmp_path: Path, *, with_ready_bridge: bool = False, with_legacy_bridge: bool = False) -> Path:
     project = tmp_path / "project"
     (project / "game").mkdir(parents=True)
     (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
@@ -25,7 +35,39 @@ def _make_project(tmp_path: Path, *, with_legacy_bridge: bool = False) -> Path:
         )
         (project / "game" / "renforge_bridge.rpy").write_text("# injected\n", encoding="utf-8")
         (project / "game" / "renforge_bridge.rpyc").write_bytes(b"\x00")
+    if with_ready_bridge:
+        from renforge.bridge.control import ensure_control_dir
+        from renforge.util.files import atomic_write_private_json
+
+        ensure_control_dir(project)
+        session_id = _session_id(str(project))
+        token = _token(str(project))
+        atomic_write_private_json(
+            project / ".renforge" / "control" / "bridge.json",
+            {
+                "schema_version": 1,
+                "protocol_version": 1,
+                "state": "ready",
+                "session_id": session_id,
+                "project_root": str(project.resolve()),
+                "host": "127.0.0.1",
+                "port": 65123,
+                "token": token,
+            },
+            max_bytes=16 * 1024,
+        )
+        (project / "game" / f"zzrenforge_bridge_{session_id}.rpy").write_text("# owned\n", encoding="utf-8")
     return project
+
+
+def _patch_bridge_client(monkeypatch, client) -> None:
+    """stop_external constructs BridgeClient(config); patch the constructor."""
+
+    def _factory(config):
+        return client
+
+    monkeypatch.setattr(live, "BridgeClient", _factory)
+    monkeypatch.setattr("renforge.tools.live.BridgeClient", _factory)
 
 
 def test_registry_key_applies_normcase(tmp_path: Path, monkeypatch) -> None:
@@ -46,6 +88,9 @@ class _QuitClient:
     def control(self, action: str, **_kwargs) -> dict:
         self.control_calls.append(action)
         return {"ok": True, "action": action}
+
+    def ping(self) -> dict:
+        raise ConnectionRefusedError("bridge stopped")
 
 
 class _AliveClient(_QuitClient):
@@ -145,21 +190,14 @@ def test_stop_game_issues_authenticated_quit_when_bridge_alive(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_legacy_bridge=True)
+    project = _make_project(tmp_path, with_ready_bridge=True)
     client = _QuitClient()
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: client),
-    )
+    _patch_bridge_client(monkeypatch, client)
 
     result = live.stop_game(str(project))
 
     assert result == {"ok": True, "was_running": True}
     assert client.control_calls == ["quit"]
-    assert (project / ".renforge" / "bridge.json").exists()
-    assert (project / "game" / "renforge_bridge.rpy").exists()
-    assert (project / "game" / "renforge_bridge.rpyc").exists()
 
 
 def test_stop_game_ignores_legacy_bridge_metadata_without_live_client(
@@ -189,13 +227,9 @@ def test_external_stop_does_not_preacquire_owner_held_lock(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_legacy_bridge=True)
+    project = _make_project(tmp_path, with_ready_bridge=True)
     client = _QuitClient()
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: client),
-    )
+    _patch_bridge_client(monkeypatch, client)
 
     # Owner-held lock must not block authenticated quit.
     from renforge.bridge.launcher import ProjectBridgeLock
@@ -207,40 +241,33 @@ def test_external_stop_does_not_preacquire_owner_held_lock(
     finally:
         project_lock.release()
 
-    assert result == {"ok": True, "was_running": True}
+    # Quit must still be issued without waiting for the owner lock first.
     assert client.control_calls == ["quit"]
-    assert (project / ".renforge" / "bridge.json").exists()
-    assert (project / "game" / "renforge_bridge.rpy").exists()
-    assert (project / "game" / "renforge_bridge.rpyc").exists()
+    assert result["was_running"] is True
+    # Owner still holds the lock: cleanup is deferred / reported locked, never forced.
+    assert result.get("code") == "BRIDGE_PROJECT_LOCKED" or result.get("replacement_running") is True
 
 
 def test_external_stop_reports_not_running_when_quit_cannot_authenticate(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_legacy_bridge=True)
+    project = _make_project(tmp_path, with_ready_bridge=True)
     client = _DeadClient()
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: client),
-    )
+    _patch_bridge_client(monkeypatch, client)
 
     result = live.stop_external_game(str(project))
 
-    assert result == {
-        "ok": False,
-        "error": "ConnectionRefusedError: no bridge",
-        "was_running": False,
-    }
-    assert (project / ".renforge" / "bridge.json").exists()
+    assert result["ok"] is False
+    assert result["was_running"] is False
+    assert "ConnectionRefusedError" in result["error"]
 
 
 def test_external_stop_requires_explicit_authenticated_quit_ack(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_legacy_bridge=True)
+    project = _make_project(tmp_path, with_ready_bridge=True)
 
     class CustomReplyClient:
         def __init__(self, reply):
@@ -250,40 +277,25 @@ def test_external_stop_requires_explicit_authenticated_quit_ack(
             return self.reply
 
     # Test empty dict reply
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({})),
-    )
+    _patch_bridge_client(monkeypatch, CustomReplyClient({}))
     result = live.stop_external_game(str(project))
     assert result == {"ok": False, "error": "bridge quit failed", "was_running": False}
 
     # Test missing or mismatched action reply
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": True, "action": "wrong"})),
-    )
+    _patch_bridge_client(monkeypatch, CustomReplyClient({"ok": True, "action": "wrong"}))
     result = live.stop_external_game(str(project))
     assert result == {"ok": False, "error": "bridge quit failed", "was_running": False}
 
     # Test explicit error reply
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": False, "error": "custom failure"})),
-    )
+    _patch_bridge_client(monkeypatch, CustomReplyClient({"ok": False, "error": "custom failure"}))
     result = live.stop_external_game(str(project))
     assert result == {"ok": False, "error": "custom failure", "was_running": False}
 
     # Test valid quit ack
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": True, "action": "quit"})),
-    )
+    _patch_bridge_client(monkeypatch, CustomReplyClient({"ok": True, "action": "quit"}))
     result = live.stop_external_game(str(project))
-    assert result == {"ok": True, "was_running": True}
+    assert result["ok"] is True
+    assert result["was_running"] is True
 
 
 

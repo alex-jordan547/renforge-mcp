@@ -298,7 +298,10 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
     runtime = _ProjectRuntime(project_root, hub, dashboard_url, ui_token)
 
     async def _check_token(request: Request) -> bool:
-        return request.query_params.get("token") == ui_token
+        import hmac
+
+        provided = request.query_params.get("token") or ""
+        return hmac.compare_digest(str(provided).encode("utf-8"), str(ui_token).encode("utf-8"))
 
     async def index(_: Request):
         path = static_dir / "index.html"
@@ -775,7 +778,10 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         )
 
     async def ws_endpoint(websocket: WebSocket):
-        if websocket.query_params.get("token") != ui_token:
+        import hmac
+
+        provided = websocket.query_params.get("token") or ""
+        if not hmac.compare_digest(str(provided).encode("utf-8"), str(ui_token).encode("utf-8")):
             await websocket.close(code=4401)
             return
 

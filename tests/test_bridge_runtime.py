@@ -737,7 +737,7 @@ def test_screenshot_reports_when_the_aspect_ratio_is_unavailable(running_bridge)
 def test_bad_token_is_rejected(running_bridge):
     port = running_bridge.client._config.port
     wrong = BridgeClient(BridgeConfig(port=port, token="WRONG"))
-    assert wrong.request("ping").get("error") == "bad_token"
+    assert wrong.request("ping").get("error") == "authentication_failed"
 
 
 def test_advance_posts_dismiss_event(running_bridge):

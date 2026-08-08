@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import socket
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from renforge.util.frames import (
+    BRIDGE_REQUEST_MAX_BYTES,
+    BRIDGE_RESPONSE_MAX_BYTES,
+    BRIDGE_WRITE_DEADLINE_SECONDS,
+    FRAME_TOO_LARGE,
+    FRAME_TIMEOUT,
+    RESPONSE_TOO_LARGE,
+    TRUNCATED_FRAME,
+    FrameError,
+    decode_json_object,
+    encode_json_line,
+    recv_until_newline,
+    remaining_timeout,
+    send_all_deadline,
+)
 
 
 class BridgeError(RuntimeError):
@@ -18,12 +34,16 @@ class BridgeError(RuntimeError):
 class BridgeProtocolError(BridgeError):
     """Raised when the bridge response is malformed or invalid."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass
 class BridgeConfig:
     host: str = "127.0.0.1"
     port: int = 0
-    token: str = ""
+    token: str = field(default="", repr=False)
     timeout: float = 5.0
 
 
@@ -53,40 +73,59 @@ class BridgeClient:
             )
         )
 
-    def request(self, command: str, payload: dict[str, Any] | None = None) -> dict:
+    def request(
+        self,
+        command: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        deadline: float | None = None,
+    ) -> dict:
         body = {
             "token": self._config.token,
             "command": command,
             "payload": payload,
         }
-
-        with socket.create_connection(
-            (self._config.host, self._config.port), timeout=self._config.timeout
-        ) as sock:
-            sock.settimeout(self._config.timeout)
-            payload_bytes = (json.dumps(body) + "\n").encode("utf-8")
-
-            try:
-                sock.sendall(payload_bytes)
-            except OSError as exc:
-                raise BridgeError(f"bridge send failed: {exc}") from exc
-
-            file_obj = sock.makefile("r", encoding="utf-8")
-            try:
-                response_line = file_obj.readline()
-            except OSError as exc:
-                raise BridgeError(f"bridge read failed: {exc}") from exc
-
-        if not response_line:
-            raise BridgeProtocolError("bridge response was empty")
+        absolute_deadline = (
+            float(deadline)
+            if deadline is not None
+            else time.monotonic() + max(0.001, float(self._config.timeout))
+        )
+        try:
+            payload_bytes = encode_json_line(body)
+        except (TypeError, ValueError) as exc:
+            raise BridgeProtocolError("bridge request is not JSON-serializable") from exc
+        if len(payload_bytes) > BRIDGE_REQUEST_MAX_BYTES:
+            raise BridgeProtocolError(
+                f"bridge request exceeds {BRIDGE_REQUEST_MAX_BYTES} bytes",
+                code=FRAME_TOO_LARGE,
+            )
 
         try:
-            response = json.loads(response_line)
-        except json.JSONDecodeError as exc:
-            raise BridgeProtocolError("bridge response is not valid JSON") from exc
-
-        if not isinstance(response, dict):
-            raise BridgeProtocolError("bridge response must be a JSON object")
+            connect_timeout = remaining_timeout(absolute_deadline)
+            with socket.create_connection(
+                (self._config.host, self._config.port),
+                timeout=connect_timeout,
+            ) as sock:
+                write_deadline = min(
+                    absolute_deadline,
+                    time.monotonic() + BRIDGE_WRITE_DEADLINE_SECONDS,
+                )
+                send_all_deadline(sock, payload_bytes, deadline=write_deadline)
+                line = recv_until_newline(
+                    sock,
+                    max_bytes=BRIDGE_RESPONSE_MAX_BYTES,
+                    deadline=absolute_deadline,
+                )
+                response = decode_json_object(line)
+        except FrameError as exc:
+            code = exc.code
+            if code == FRAME_TOO_LARGE:
+                code = RESPONSE_TOO_LARGE if "response" in exc.message else FRAME_TOO_LARGE
+            if code == FRAME_TOO_LARGE and len(payload_bytes) <= BRIDGE_REQUEST_MAX_BYTES:
+                code = RESPONSE_TOO_LARGE
+            raise BridgeProtocolError(exc.message, code=code) from exc
+        except OSError as exc:
+            raise BridgeError(f"bridge connection failed: {exc}") from exc
 
         return response
 

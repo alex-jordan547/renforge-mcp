@@ -14,7 +14,7 @@ from .session_registry import dashboard_connection
 
 
 def _post(project_path: str, route: str, body: dict[str, Any]) -> dict[str, Any] | None:
-    connection = dashboard_connection()
+    connection = dashboard_connection(project_path)
     if not connection:
         return None
     url = connection.get("url")
@@ -22,6 +22,7 @@ def _post(project_path: str, route: str, body: dict[str, Any]) -> dict[str, Any]
     selected_project = connection.get("project")
     if not all(isinstance(value, str) and value for value in (url, token, selected_project)):
         return None
+    # Defense in depth: registry may be mocked or partially validated.
     selected_key = os.path.normcase(str(Path(selected_project).expanduser().resolve()))
     requested_key = os.path.normcase(str(Path(project_path).expanduser().resolve()))
     if selected_key != requested_key:

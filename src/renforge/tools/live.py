@@ -527,40 +527,150 @@ def stop_external_game(project_path: str, *, timeout: float = 5.0) -> dict:
     """Stop a game launched by another process via authenticated bridge control.
 
     Discovers the live bridge through private control-directory metadata and
-    issues ``control("quit")`` without acquiring the owner-held project lock.
-    Missing or unreachable metadata is a no-op; pre-migration metadata is
-    ignored.
+    issues ``control("quit")`` without first acquiring the owner-held project
+    lock. After quit, waits for the endpoint to die, then acquires the lock and
+    removes only schema-3 artifacts owned by the stopped session. A replacement
+    session observed during lock contention is left untouched.
     """
+    from renforge.bridge.client import BridgeConfig
+    from renforge.bridge.control import read_bridge_info
+    from renforge.bridge.launcher import ProjectBridgeLock, remove_bridge_artifacts
+    from renforge.launch_env import LaunchError
+
     try:
         project = RenpyProject(Path(project_path))
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    deadline = time.monotonic() + max(0.1, float(timeout))
+
     try:
-        client = BridgeClient.from_project(project.root, timeout=timeout)
+        info = read_bridge_info(project.root, require_ready=True)
     except Exception:
         return {"ok": True, "was_running": False}
+
+    old_session_id = info.session_id
+    remaining = max(0.05, deadline - time.monotonic())
+    client = BridgeClient(
+        BridgeConfig(
+            host=info.host,
+            port=info.port,
+            token=info.token,
+            timeout=remaining,
+        )
+    )
 
     try:
         reply = client.control("quit")
     except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "was_running": False}
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "was_running": False,
+        }
 
-    if (
+    if not (
         isinstance(reply, dict)
         and reply.get("ok") is True
         and reply.get("action") == "quit"
     ):
-        return {"ok": True, "was_running": True}
+        error_msg = "bridge quit failed"
+        if isinstance(reply, dict) and reply.get("error"):
+            error_msg = str(reply.get("error"))
+        return {"ok": False, "error": error_msg, "was_running": False}
 
-    error_msg = "bridge quit failed"
-    if isinstance(reply, dict) and reply.get("error"):
-        error_msg = str(reply.get("error"))
-    return {
-        "ok": False,
-        "error": error_msg,
-        "was_running": False,
-    }
+    # Wait for the old endpoint to stop answering / metadata to leave ready.
+    endpoint_dead = False
+    while time.monotonic() < deadline:
+        try:
+            still = read_bridge_info(
+                project.root,
+                require_ready=True,
+                expected_session_id=old_session_id,
+            )
+        except Exception:
+            endpoint_dead = True
+            break
+        try:
+            probe = BridgeClient(
+                BridgeConfig(
+                    host=still.host,
+                    port=still.port,
+                    token=still.token,
+                    timeout=max(0.05, min(0.25, deadline - time.monotonic())),
+                )
+            )
+            probe.ping()
+        except Exception:
+            endpoint_dead = True
+            break
+        time.sleep(0.05)
+    if not endpoint_dead:
+        return {
+            "ok": False,
+            "code": "BRIDGE_STOP_TIMEOUT",
+            "error": "BRIDGE_STOP_TIMEOUT",
+            "was_running": True,
+        }
+
+    lock = ProjectBridgeLock(project.root)
+    while time.monotonic() < deadline:
+        try:
+            lock.acquire()
+            break
+        except LaunchError as exc:
+            if getattr(exc, "code", None) != "BRIDGE_PROJECT_LOCKED":
+                return {
+                    "ok": False,
+                    "code": getattr(exc, "code", None),
+                    "error": str(exc),
+                    "was_running": True,
+                }
+            # Lock held: re-check whether a replacement session took over.
+            try:
+                current = read_bridge_info(project.root, require_ready=True)
+            except Exception:
+                time.sleep(0.05)
+                continue
+            if current.session_id != old_session_id:
+                try:
+                    BridgeClient(
+                        BridgeConfig(
+                            host=current.host,
+                            port=current.port,
+                            token=current.token,
+                            timeout=max(0.05, min(0.5, deadline - time.monotonic())),
+                        )
+                    ).ping()
+                except Exception:
+                    time.sleep(0.05)
+                    continue
+                return {
+                    "ok": True,
+                    "was_running": True,
+                    "replacement_running": True,
+                }
+            time.sleep(0.05)
+    else:
+        return {
+            "ok": False,
+            "code": "BRIDGE_PROJECT_LOCKED",
+            "error": "BRIDGE_PROJECT_LOCKED",
+            "was_running": True,
+        }
+
+    try:
+        remove_bridge_artifacts(project.root, expected_session_id=old_session_id)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "was_running": True,
+        }
+    finally:
+        lock.release()
+
+    return {"ok": True, "was_running": True}
 
 
 def stop_all() -> None:

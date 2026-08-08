@@ -24,6 +24,7 @@ init python:
     import builtins
     import collections
     import hashlib
+    import hmac as _hmac
     import json
     import os
     import queue
@@ -3945,16 +3946,55 @@ init python:
 
                 try:
                     with conn:
-                        line = conn.makefile("r", encoding="utf-8").readline()
+                        # Bounded one-shot frame: 1 MiB max, 2s read budget.
+                        conn.settimeout(2.0)
+                        chunks = []
+                        total = 0
+                        max_bytes = 1 * 1024 * 1024
+                        line = None
+                        while True:
+                            try:
+                                piece = conn.recv(min(4096, max(1, max_bytes - total + 1)))
+                            except Exception:
+                                piece = b""
+                            if not piece:
+                                break
+                            chunks.append(piece)
+                            total += len(piece)
+                            joined = b"".join(chunks)
+                            if b"\n" in joined:
+                                line = joined.split(b"\n", 1)[0]
+                                break
+                            if total > max_bytes:
+                                _renforge_reply(conn, {"ok": False, "error": "authentication_failed"})
+                                line = None
+                                break
                         if not line:
                             continue
                         try:
-                            msg = _json.loads(line)
-                        except ValueError:
-                            _renforge_reply(conn, {"error": "invalid_json"})
+                            msg = _json.loads(line.decode("utf-8"))
+                        except Exception:
+                            _renforge_reply(conn, {"ok": False, "error": "authentication_failed"})
                             continue
-                        if msg.get("token") != bridge.token:
-                            _renforge_reply(conn, {"error": "bad_token", "ok": False})
+                        # builtins.dict: game code may shadow `dict` with a RevertableDict.
+                        if not isinstance(msg, builtins.dict) or not isinstance(msg.get("token"), str):
+                            _renforge_reply(conn, {"ok": False, "error": "authentication_failed"})
+                            continue
+                        provided = str(msg.get("token") or "")
+                        expected = str(bridge.token or "")
+                        try:
+                            # Same-length only; mismatched lengths are invalid tokens.
+                            token_ok = (
+                                len(provided) == len(expected)
+                                and _hmac.compare_digest(
+                                    provided.encode("utf-8"),
+                                    expected.encode("utf-8"),
+                                )
+                            )
+                        except Exception:
+                            token_ok = False
+                        if not token_ok:
+                            _renforge_reply(conn, {"ok": False, "error": "authentication_failed"})
                             continue
 
                         req = _RenforgeRequest(msg.get("command"), msg.get("payload"))

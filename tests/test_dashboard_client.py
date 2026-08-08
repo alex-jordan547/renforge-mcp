@@ -24,7 +24,7 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     monkeypatch.setattr(
         dashboard_client,
         "dashboard_connection",
-        lambda: {
+        lambda *_a, **_k: {
             "project": str(project),
             "url": "http://127.0.0.1:8765/",
             "token": "secret token",
@@ -62,7 +62,7 @@ def test_dashboard_matching_applies_normcase(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(
         dashboard_client,
         "dashboard_connection",
-        lambda: {
+        lambda *_a, **_k: {
             "project": str(project).upper(),
             "url": "http://127.0.0.1:8765/",
             "token": "secret token",
@@ -93,7 +93,7 @@ def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         dashboard_client,
         "dashboard_connection",
-        lambda: {
+        lambda *_a, **_k: {
             "project": str(project),
             "url": "http://127.0.0.1:8765/",
             "token": "secret token",
@@ -129,7 +129,7 @@ def test_launch_game_ignores_dashboard_for_another_project(tmp_path: Path, monke
     monkeypatch.setattr(
         dashboard_client,
         "dashboard_connection",
-        lambda: {
+        lambda *_a, **_k: {
             "project": str(tmp_path / "selected"),
             "url": "http://127.0.0.1:8765/",
             "token": "secret",
@@ -152,7 +152,7 @@ def test_stop_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(
         dashboard_client,
         "dashboard_connection",
-        lambda: {
+        lambda *_a, **_k: {
             "project": str(project),
             "url": "http://127.0.0.1:8765/",
             "token": "secret token",
