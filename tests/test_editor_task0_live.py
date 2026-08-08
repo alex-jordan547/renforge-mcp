@@ -264,5 +264,23 @@ def test_task0_live_editor_prerequisite(demo_copy: Path) -> None:
     assert history["undo_return"]["ok"] is True
     assert history["redo_return"]["ok"] is True
 
+    fixed = report["fixed_toolbar_actions"]
+    assert fixed["window"] == [1280, 720]
+    assert set(fixed["bounds"]) == {"rf_undo", "rf_redo", "rf_reset", "rf_save", "rf_exit"}
+    for action_bounds in fixed["bounds"].values():
+        assert action_bounds["width"] > 0
+        assert action_bounds["height"] > 0
+        assert action_bounds["x"] >= 0
+        assert action_bounds["y"] >= 0
+        assert action_bounds["x"] + action_bounds["width"] <= 1280
+        assert action_bounds["y"] + action_bounds["height"] <= 720
+    assert fixed["undo_click"]["reply"]["ok"] is True
+    assert fixed["redo_click"]["reply"]["ok"] is True
+    assert fixed["undo_click"]["target_position"] == history["undo_position"]
+    assert fixed["redo_click"]["target_position"] == history["redo_position"]
+    assert fixed["reset_click"]["reply"]["ok"] is True
+    assert fixed["reset_click"]["product_reply"] == {"ok": False, "error": "RESET_UNAVAILABLE"}
+    assert fixed["exit_click"]["ok"] is True
+
     assert not (demo_copy / "game" / "zz_renforge_editor_task0.rpyc.bak").exists()
     assert not (demo_copy / "game" / "zz_renforge_editor_task0_fixture.rpyc.bak").exists()

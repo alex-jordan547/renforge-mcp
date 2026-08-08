@@ -234,8 +234,8 @@ screen village_gate_choices():
     modal True
     zorder 200
     text "The gate is silent. Choose your path." xpos 140 ypos 240
-    textbutton "Take the lantern and go." id "demo_lantern_take" xpos 160 ypos 320 action Return("take_lantern")
-    textbutton "Ask the Elder to send someone else." id "demo_lantern_decline" xpos 160 ypos 380 action Return("decline_lantern")
+    textbutton "Take the lantern and go." id "demo_lantern_take" xpos 160 ypos 318 action Return("take_lantern")
+    textbutton "Ask the Elder to send someone else." id "demo_lantern_decline" xpos 160 ypos 384 action Return("decline_lantern")
     textbutton "Hold the gate (locked demo)." id "demo_locked_expr" xpos gui.choice_spacing ypos 440 action NullAction()
 
 default renforge_story_button_x = 820

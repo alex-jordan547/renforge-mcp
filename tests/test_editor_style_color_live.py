@@ -144,6 +144,8 @@ def test_style_color_live_product_path_pass(demo_copy: Path) -> None:
     assert generations["post_undo"] >= generations["pre_undo"] + 1
 
     assert report["restore"]["byte_identical"] is True
+    buttons = report["style_button_clicks"]
+    assert buttons["ok"] is True, buttons
     assert report["verdict"] == "pass"
     assert report["verdict_reason"] is None
     assert TARGET_ID == "style_color_target"

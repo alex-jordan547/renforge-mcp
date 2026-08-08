@@ -133,6 +133,13 @@ init 1090 python:
         "lock_locked": "#eab308",
         "lock_blocked": "#e8913c",
         "lock_refused": "#dc2626",
+        "tree_screen": "#a855f7",
+        "tree_layout": "#38bdf8",
+        "tree_interactive": "#34d399",
+        "tree_content": "#fbbf24",
+        "tree_container": "#f472b6",
+        "tree_transform": "#c084fc",
+        "tree_guide": "#ffffff1c",
     }
 
     # Maquette type scale at 2560 (Apple base × k=1.5).
@@ -224,6 +231,10 @@ init 1090 python:
     _RF_OVERLAY_TOOLBAR_Y = 28
     _RF_OVERLAY_TOOLBAR_H = 96
     _RF_OVERLAY_TOOLBAR_W = 2496
+    # Screen-name/status labels may shrink, but trailing actions must always fit.
+    _RF_BADGE_MAX_W = 240
+    _RF_BADGE_TEXT_MAX_W = 200
+    _RF_STATUS_MAX_W = 120
     _RF_OVERLAY_TREE_X = 32
     _RF_OVERLAY_TREE_Y = 148
     _RF_OVERLAY_TREE_W = 480
@@ -296,7 +307,7 @@ init 1090 python:
         "inspector.offset": "OFFSET",
         "inspector.anchor": "ANCHOR",
         "inspector.fill": "FILL",
-        "style.color": "Text colour",
+        "style.color": "Cycle colour",
         "style.locked": "Outside the allowlist",
         "hud.reload": "Hot-reload active",
         "hud.pending": "unsaved change(s)",
@@ -697,33 +708,102 @@ init 1100 python:
     # while the walk still descends through the ones it hides.
 
     _RF_TREE_KINDS = {
-        "Frame": ("F", "frame"),
-        "Window": ("F", "window"),
-        "Text": ("T", "text"),
-        "Button": ("B", "button"),
-        "TextButton": ("B", "textbutton"),
-        "ImageButton": ("B", "imagebutton"),
-        "Viewport": ("P", "viewport"),
-        "Bar": ("R", "bar"),
-        "Grid": ("G", "grid"),
-        "Image": ("I", "image"),
-        "ImageReference": ("I", "image"),
-        "Transform": ("X", "transform"),
+        "Frame": ("F", "frame", "container"),
+        "Window": ("W", "window", "container"),
+        "Text": ("T", "text", "content"),
+        "Button": ("B", "button", "interactive"),
+        "TextButton": ("B", "textbutton", "interactive"),
+        "ImageButton": ("B", "imagebutton", "interactive"),
+        "Viewport": ("P", "viewport", "container"),
+        "Bar": ("R", "bar", "interactive"),
+        "Grid": ("G", "grid", "layout"),
+        "Image": ("I", "image", "content"),
+        "ImageReference": ("I", "image", "content"),
+        "Transform": ("X", "transform", "transform"),
     }
     _RF_TREE_MAX_ROWS = 120
     _RF_TREE_MAX_DEPTH = 8
 
     def _renforge_editor_tree_kind(displayable):
-        """(badge, label) for a displayable, or None when it is scaffolding."""
+        """(badge, label, category) for a displayable, or None when it is scaffolding."""
         name = type(displayable).__name__
         if name == "MultiBox":
             layout = getattr(displayable, "layout", None)
             if layout == "vertical":
-                return ("V", "vbox")
+                return ("V", "vbox", "layout")
             if layout == "horizontal":
-                return ("H", "hbox")
-            return ("X", "fixed")
+                return ("H", "hbox", "layout")
+            return ("X", "fixed", "layout")
         return _RF_TREE_KINDS.get(name)
+
+    def _renforge_editor_tree_badge_color(tag):
+        """Return hex color for a tree row badge based on its tag/type."""
+        if tag == "S":
+            return _renforge_editor_ui_color("tree_screen")
+        elif tag in ("V", "H", "G", "X"):
+            return _renforge_editor_ui_color("tree_layout")
+        elif tag in ("B", "R"):
+            return _renforge_editor_ui_color("tree_interactive")
+        elif tag in ("T", "I"):
+            return _renforge_editor_ui_color("tree_content")
+        elif tag in ("F", "P", "W"):
+            return _renforge_editor_ui_color("tree_container")
+        return _renforge_editor_ui_color("tree_transform")
+
+    def _renforge_editor_tree_flatten_text(value):
+        """Pull plain text out of Ren'Py Text / segment containers."""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (builtins.list, builtins.tuple, builtins.set)):
+            parts = []
+            for item in value:
+                flat = _renforge_editor_tree_flatten_text(item)
+                if flat:
+                    parts.append(flat)
+            return " ".join(parts)
+        # Segment-like objects expose nested .text; never str() the container
+        # (str(list) produces "['…']" which blows up Ren'Py substitution).
+        nested = getattr(value, "text", None)
+        if nested is not None and nested is not value:
+            return _renforge_editor_tree_flatten_text(nested)
+        return ""
+
+    def _renforge_editor_tree_escape(value):
+        """Make a string safe for Ren'Py ``text`` (interpolation + text tags)."""
+        text_str = " ".join(str(value or "").split())
+        # Double so Ren'Py shows a single character even if substitute is on.
+        text_str = text_str.replace("{", "{{").replace("[", "[[")
+        return text_str
+
+    def _renforge_editor_tree_snippet(displayable, name):
+        """Extract a short, human-readable preview snippet for tree rows."""
+        try:
+            if name in ("Text", "TextButton"):
+                text_str = _renforge_editor_tree_escape(
+                    _renforge_editor_tree_flatten_text(getattr(displayable, "text", None))
+                )
+                if text_str:
+                    if len(text_str) > 20:
+                        return text_str[:18] + "…"
+                    return text_str
+            elif name in ("Image", "ImageReference"):
+                img_name = getattr(displayable, "name", None)
+                val = _renforge_editor_tree_escape(
+                    _renforge_editor_tree_flatten_text(img_name)
+                )
+                if val:
+                    if len(val) > 22:
+                        return val[:20] + "…"
+                    return val
+            elif name in ("MultiBox", "Grid"):
+                children = _renforge_editor_children(displayable)
+                if children:
+                    return "%d items" % len(children)
+        except Exception:
+            pass
+        return ""
 
     def _renforge_editor_tree_walk(displayable, depth, by_id, rows, selected_id):
         if len(rows) >= _RF_TREE_MAX_ROWS or depth > _RF_TREE_MAX_DEPTH:
@@ -736,12 +816,22 @@ init 1100 python:
             for child in _renforge_editor_children(displayable) or []:
                 _renforge_editor_tree_walk(child, depth, by_id, rows, selected_id)
             return
-        badge, label = kind if kind is not None else ("?", type(displayable).__name__)
+        if kind is not None:
+            badge, label, kind_cat = kind
+        else:
+            badge, label, kind_cat = ("?", type(displayable).__name__, "default")
+        
+        snippet = _renforge_editor_tree_snippet(displayable, type(displayable).__name__)
+        badge_color = _renforge_editor_tree_badge_color(badge)
+
         rows.append({
             "depth": depth,
             "tag": badge,
             "label": label,
             "id": widget_id,
+            "snippet": snippet,
+            "kind_cat": kind_cat,
+            "badge_color": badge_color,
             "selected": bool(widget_id) and widget_id == selected_id,
         })
         for child in _renforge_editor_children(displayable) or []:
@@ -769,7 +859,10 @@ init 1100 python:
                     pass
             rows.append({
                 "depth": 0, "tag": "S", "label": "screen",
-                "id": str(screen_name), "selected": False,
+                "id": str(screen_name), "snippet": "",
+                "kind_cat": "screen",
+                "badge_color": _renforge_editor_ui_color("tree_screen"),
+                "selected": False,
             })
             child = getattr(screen, "child", None)
             if child is not None:

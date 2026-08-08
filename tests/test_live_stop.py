@@ -12,15 +12,15 @@ import pytest
 from renforge.tools import live
 
 
-def _make_project(tmp_path: Path, *, with_bridge: bool = True, pid: int = 4242) -> Path:
+def _make_project(tmp_path: Path, *, with_legacy_bridge: bool = False) -> Path:
     project = tmp_path / "project"
     (project / "game").mkdir(parents=True)
     (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
-    if with_bridge:
+    if with_legacy_bridge:
         renforge = project / ".renforge"
         renforge.mkdir(parents=True)
         (renforge / "bridge.json").write_text(
-            json.dumps({"host": "127.0.0.1", "port": 65123, "token": "t", "pid": pid}),
+            json.dumps({"host": "127.0.0.1", "port": 65123, "token": "t", "pid": 4242}),
             encoding="utf-8",
         )
         (project / "game" / "renforge_bridge.rpy").write_text("# injected\n", encoding="utf-8")
@@ -28,12 +28,35 @@ def _make_project(tmp_path: Path, *, with_bridge: bool = True, pid: int = 4242) 
     return project
 
 
-class _AliveClient:
+def test_registry_key_applies_normcase(tmp_path: Path, monkeypatch) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(
+        live.os.path,
+        "normcase",
+        lambda value: f"normalized:{value}",
+    )
+
+    assert live._key(project) == f"normalized:{project.resolve()}"
+
+
+class _QuitClient:
+    def __init__(self) -> None:
+        self.control_calls: list[str] = []
+
+    def control(self, action: str, **_kwargs) -> dict:
+        self.control_calls.append(action)
+        return {"ok": True, "action": action}
+
+
+class _AliveClient(_QuitClient):
     def ping(self) -> dict:
         return {"ok": True, "pong": True}
 
 
 class _DeadClient:
+    def control(self, action: str, **_kwargs) -> dict:
+        raise ConnectionRefusedError("no bridge")
+
     def ping(self) -> dict:
         raise ConnectionRefusedError("no bridge")
 
@@ -114,122 +137,154 @@ def _wait_for_launch_status(
 
 
 def test_stop_game_without_bridge_is_noop(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     assert live.stop_game(str(project)) == {"ok": True, "was_running": False}
 
 
-def test_stop_game_terminates_recorded_pid_when_bridge_alive(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, pid=4242)
+def test_stop_game_issues_authenticated_quit_when_bridge_alive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_project(tmp_path, with_legacy_bridge=True)
+    client = _QuitClient()
     monkeypatch.setattr(
         live.BridgeClient,
         "from_project",
-        classmethod(lambda cls, root, *, timeout=1.0: _AliveClient()),
+        classmethod(lambda cls, root, *, timeout=5.0: client),
     )
-    killed: dict[str, int] = {}
-
-    def fake_terminate(pid: int, **_kwargs) -> bool:
-        killed["pid"] = pid
-        return True
-
-    monkeypatch.setattr(live, "_terminate_pid", fake_terminate)
 
     result = live.stop_game(str(project))
 
     assert result == {"ok": True, "was_running": True}
-    assert killed["pid"] == 4242
-    assert not (project / "game" / "renforge_bridge.rpy").exists()
-    assert not (project / "game" / "renforge_bridge.rpyc").exists()
-    assert not (project / ".renforge" / "bridge.json").exists()
-
-
-def test_stop_game_cleans_stale_bridge_without_killing(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, pid=4242)
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        classmethod(lambda cls, root, *, timeout=1.0: _DeadClient()),
-    )
-    calls = {"terminated": False}
-
-    def fake_terminate(*_args, **_kwargs) -> bool:
-        calls["terminated"] = True
-        return True
-
-    monkeypatch.setattr(live, "_terminate_pid", fake_terminate)
-
-    result = live.stop_game(str(project))
-
-    assert result == {"ok": True, "was_running": False}
-    assert calls["terminated"] is False  # a dead bridge is never killed by PID
-    assert not (project / ".renforge" / "bridge.json").exists()
-    assert not (project / "game" / "renforge_bridge.rpy").exists()
-
-
-def test_external_stop_refuses_to_touch_an_active_lock_owner(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    project = _make_project(tmp_path, pid=4242)
-    project_lock = live.ProjectBridgeLock(project / ".renforge" / "bridge.lock")
-    project_lock.acquire()
-    monkeypatch.setattr(
-        live.BridgeClient,
-        "from_project",
-        lambda *_args, **_kwargs: pytest.fail("must not ping a locked bridge"),
-    )
-    monkeypatch.setattr(
-        live,
-        "_terminate_pid",
-        lambda *_args, **_kwargs: pytest.fail("must not kill a locked bridge"),
-    )
-    monkeypatch.setattr(
-        live,
-        "remove_bridge_artifacts",
-        lambda *_args, **_kwargs: pytest.fail("must not clean a locked bridge"),
-    )
-
-    try:
-        result = live.stop_external_game(str(project))
-    finally:
-        project_lock.release()
-
-    assert result["ok"] is False
-    assert result["ready"] is False
-    assert result["code"] == "BRIDGE_PROJECT_LOCKED"
-    assert result["phase"] == "acquiring_project_lock"
+    assert client.control_calls == ["quit"]
     assert (project / ".renforge" / "bridge.json").exists()
     assert (project / "game" / "renforge_bridge.rpy").exists()
     assert (project / "game" / "renforge_bridge.rpyc").exists()
 
 
-def test_external_cleanup_holds_project_lock_until_artifacts_are_removed(
+def test_stop_game_ignores_legacy_bridge_metadata_without_live_client(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path)
+    project = _make_project(tmp_path, with_legacy_bridge=True)
+
+    def missing_client(cls, root, *, timeout=5.0):
+        raise live.BridgeError("bridge metadata failed validation")
+
     monkeypatch.setattr(
         live.BridgeClient,
         "from_project",
-        classmethod(lambda cls, root, *, timeout=1.0: _DeadClient()),
+        classmethod(missing_client),
     )
-    cleanup_observed = {"locked": False}
 
-    def fake_remove(_project_root: Path) -> None:
-        competing_lock = live.ProjectBridgeLock(project / ".renforge" / "bridge.lock")
-        with pytest.raises(live.LaunchError) as excinfo:
-            competing_lock.acquire()
-        assert excinfo.value.code == "BRIDGE_PROJECT_LOCKED"
-        cleanup_observed["locked"] = True
+    result = live.stop_game(str(project))
 
-    monkeypatch.setattr(live, "remove_bridge_artifacts", fake_remove)
+    assert result == {"ok": True, "was_running": False}
+    assert (project / ".renforge" / "bridge.json").exists()
+    assert (project / "game" / "renforge_bridge.rpy").exists()
+    assert (project / "game" / "renforge_bridge.rpyc").exists()
+
+
+def test_external_stop_does_not_preacquire_owner_held_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_project(tmp_path, with_legacy_bridge=True)
+    client = _QuitClient()
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: client),
+    )
+
+    # Owner-held lock must not block authenticated quit.
+    from renforge.bridge.launcher import ProjectBridgeLock
+
+    project_lock = ProjectBridgeLock(project)
+    project_lock.acquire()
+    try:
+        result = live.stop_external_game(str(project))
+    finally:
+        project_lock.release()
+
+    assert result == {"ok": True, "was_running": True}
+    assert client.control_calls == ["quit"]
+    assert (project / ".renforge" / "bridge.json").exists()
+    assert (project / "game" / "renforge_bridge.rpy").exists()
+    assert (project / "game" / "renforge_bridge.rpyc").exists()
+
+
+def test_external_stop_reports_not_running_when_quit_cannot_authenticate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_project(tmp_path, with_legacy_bridge=True)
+    client = _DeadClient()
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: client),
+    )
 
     result = live.stop_external_game(str(project))
 
-    assert result == {"ok": True, "was_running": False}
-    assert cleanup_observed["locked"] is True
-    next_owner = live.ProjectBridgeLock(project / ".renforge" / "bridge.lock")
-    next_owner.acquire()
-    next_owner.release()
+    assert result == {
+        "ok": False,
+        "error": "ConnectionRefusedError: no bridge",
+        "was_running": False,
+    }
+    assert (project / ".renforge" / "bridge.json").exists()
+
+
+def test_external_stop_requires_explicit_authenticated_quit_ack(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _make_project(tmp_path, with_legacy_bridge=True)
+
+    class CustomReplyClient:
+        def __init__(self, reply):
+            self.reply = reply
+
+        def control(self, action: str, **_kwargs):
+            return self.reply
+
+    # Test empty dict reply
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({})),
+    )
+    result = live.stop_external_game(str(project))
+    assert result == {"ok": False, "error": "bridge quit failed", "was_running": False}
+
+    # Test missing or mismatched action reply
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": True, "action": "wrong"})),
+    )
+    result = live.stop_external_game(str(project))
+    assert result == {"ok": False, "error": "bridge quit failed", "was_running": False}
+
+    # Test explicit error reply
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": False, "error": "custom failure"})),
+    )
+    result = live.stop_external_game(str(project))
+    assert result == {"ok": False, "error": "custom failure", "was_running": False}
+
+    # Test valid quit ack
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, *, timeout=5.0: CustomReplyClient({"ok": True, "action": "quit"})),
+    )
+    result = live.stop_external_game(str(project))
+    assert result == {"ok": True, "was_running": True}
+
 
 
 def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypatch) -> None:
@@ -256,7 +311,7 @@ def test_launch_reuses_a_game_started_by_the_dashboard(tmp_path: Path, monkeypat
 
 
 def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     key = live._key(project)
     session = _OwnedRunningSession(editor=True)
     live._SESSIONS[key] = session
@@ -310,7 +365,7 @@ def test_launch_rejects_editor_mode_for_unproven_external_bridge(tmp_path: Path,
 
 
 def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     launch_kwargs: dict[str, object] = {}
     monkeypatch.setattr(live, "get_or_install_sdk", lambda *_args, **_kwargs: "sdk")
 
@@ -338,7 +393,7 @@ def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkey
 
 
 def test_launch_status_preserves_editor_for_owned_session(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     key = live._key(project)
     session = _OwnedRunningSession(editor=True)
     live._SESSIONS[key] = session
@@ -388,7 +443,7 @@ def test_warp_refuses_to_stop_a_live_external_bridge(tmp_path: Path, monkeypatch
 
 
 def test_new_launch_resolves_sdk_for_exact_project_root(tmp_path: Path, monkeypatch) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     project_path = project / ".." / project.name
     resolved: dict[str, object] = {}
 
@@ -411,14 +466,14 @@ def test_new_launch_resolves_sdk_for_exact_project_root(tmp_path: Path, monkeypa
         "version": "8.5.3",
         "project_root": project.resolve(),
     }
-    live._SESSIONS.pop(str(project.resolve()), None)
+    live._SESSIONS.pop(live._key(project), None)
 
 
 def test_warp_retries_incomplete_existing_session_teardown(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     key = live._key(project)
     session = _RetryingSession()
     live._SESSIONS[key] = session
@@ -451,7 +506,7 @@ def test_warp_retries_incomplete_existing_session_teardown(
 
 
 def test_warp_keeps_existing_session_when_teardown_raises(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     key = live._key(project)
     session = _RaisingSession()
     live._SESSIONS[key] = session
@@ -468,11 +523,12 @@ def test_warp_keeps_existing_session_when_teardown_raises(tmp_path: Path) -> Non
 
 
 def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     release = threading.Event()
     started = threading.Event()
 
-    def delayed_launch(_cancel_event: threading.Event) -> dict:
+    def delayed_launch(project_root: Path, _cancel_event: threading.Event) -> dict:
+        assert project_root == project.resolve()
         started.set()
         assert release.wait(2.0)
         return {"ok": True, "ready": True, "current_label": "main_menu"}
@@ -487,7 +543,7 @@ def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_p
     ignored_launch = threading.Event()
     conflict = live.start_launch(
         str(project),
-        lambda _cancel_event: ignored_launch.set() or {"ok": True, "ready": True},
+        lambda _project_root, _cancel_event: ignored_launch.set() or {"ok": True, "ready": True},
         wait_timeout=0.0,
     )
     assert conflict["ok"] is False
@@ -501,11 +557,11 @@ def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_p
 
 
 def test_start_launch_defaults_editor_false(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     release = threading.Event()
     started = threading.Event()
 
-    def delayed_launch(_cancel_event: threading.Event) -> dict:
+    def delayed_launch(_project_root: Path, _cancel_event: threading.Event) -> dict:
         started.set()
         assert release.wait(2.0)
         return {"ok": True, "ready": True, "current_label": "main_menu"}
@@ -527,11 +583,11 @@ def test_start_launch_defaults_editor_false(tmp_path: Path) -> None:
 
 
 def test_start_launch_exposes_requested_editor_true_in_status_and_result(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     release = threading.Event()
     started = threading.Event()
 
-    def delayed_launch(_cancel_event: threading.Event) -> dict:
+    def delayed_launch(_project_root: Path, _cancel_event: threading.Event) -> dict:
         started.set()
         assert release.wait(2.0)
         return {"ok": True, "ready": True, "current_label": "main_menu"}
@@ -558,11 +614,11 @@ def test_start_launch_exposes_requested_editor_true_in_status_and_result(tmp_pat
 
 
 def test_launch_status_exposes_a_failed_startup(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
 
     result = live.start_launch(
         str(project),
-        lambda _cancel_event: {
+        lambda _project_root, _cancel_event: {
             "ok": False,
             "code": "RENPY_PROCESS_EXITED",
             "error": "Game exited during startup.",
@@ -577,10 +633,10 @@ def test_launch_status_exposes_a_failed_startup(tmp_path: Path) -> None:
 
 
 def test_stop_game_cancels_a_pending_launch(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     started = threading.Event()
 
-    def cancellable_launch(cancel_event: threading.Event) -> dict:
+    def cancellable_launch(_project_root: Path, cancel_event: threading.Event) -> dict:
         started.set()
         assert cancel_event.wait(2.0)
         return live.cancelled_launch_result()
@@ -600,7 +656,7 @@ def test_stop_game_cancels_a_pending_launch(tmp_path: Path) -> None:
 
 
 def test_stop_game_keeps_a_partial_session_registered_for_retry(tmp_path: Path) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     key = live._key(project)
     session = _RetryingSession()
     live._SESSIONS[key] = session
@@ -639,11 +695,11 @@ def test_stop_game_attempts_external_stop_when_cancellation_is_still_pending(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project = _make_project(tmp_path, with_bridge=False)
+    project = _make_project(tmp_path)
     release = threading.Event()
     started = threading.Event()
 
-    def slow_cancel(_cancel_event: threading.Event) -> dict:
+    def slow_cancel(_project_root: Path, _cancel_event: threading.Event) -> dict:
         started.set()
         assert release.wait(2.0)
         return live.cancelled_launch_result()

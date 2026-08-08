@@ -7,6 +7,7 @@ import io
 import math
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,15 @@ FIXTURE_RESOURCE = (
 )
 
 BG_LUMA_MAX = 28
+
+# Visible Move offsets (screen px) used to carry each widget outside its own
+# rect while capturing isolation baselines. Destinations stay inside the
+# 1280x720 stage and clear every fixture home rect.
+ISOLATION_MOVE_DELTAS = {
+    TARGET_ID: (400, 240),
+    REFERENCE_ID: (200, 280),
+    EXTRA_ID: (420, -170),
+}
 
 
 def inject_editor_rotation_resources(project_root: Path) -> dict[str, str]:
@@ -246,25 +256,166 @@ def _measure_geometry(client: Any, *, target_ids: list[str] | None = None) -> di
     return geometry
 
 
-def _run_isolation(
-    client: Any,
-    target_id: str,
-    *,
-    aabb: list[int],
-    edge_probe: list[int] | None = None,
-) -> dict[str, Any]:
-    reply = client.request("rotation_spike_set_isolation", {"target_id": target_id})
-    if not isinstance(reply, dict) or reply.get("ok") is not True:
-        raise AssertionError(f"rotation_spike_set_isolation failed: {reply!r}")
+def _rects_overlap(a: list[int], b: list[int]) -> bool:
+    return not (
+        a[0] + a[2] <= b[0]
+        or b[0] + b[2] <= a[0]
+        or a[1] + a[3] <= b[1]
+        or b[1] + b[3] <= a[1]
+    )
 
-    png = client.screenshot()
-    image = Image.open(io.BytesIO(png)).convert("RGB")
-    mask = _build_isolation_mask(image, roi=aabb if aabb else None)
-    return {
-        "target_id": target_id,
-        "painted_pixels": len(mask),
-        "point_samples": _sample_mask_points(mask, aabb, edge_probe=edge_probe),
-    }
+
+def _set_view_mode(client: Any, mode: str) -> None:
+    """Toggle edit/preview through the visible toolbar segment."""
+    button_id = "rf_toolbar_view_preview" if mode == "preview" else "rf_toolbar_view_edit"
+    reply = client.click_element(id=button_id, screen="_renforge_editor_overlay")
+    if not isinstance(reply, dict) or reply.get("ok") is not True:
+        raise AssertionError(f"{button_id} click failed: {reply!r}")
+    deadline = time.monotonic() + 8.0
+    last: Any = None
+    while time.monotonic() < deadline:
+        last = client.eval_expr("_renforge_editor_view_mode()")
+        if last == mode:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"view mode never became {mode!r}: last={last!r}")
+
+
+def _settled_screenshot(client: Any) -> bytes:
+    """Screenshot once the frame stops changing (mode switches can animate)."""
+    previous = client.screenshot()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        time.sleep(0.12)
+        current = client.screenshot()
+        if current == previous:
+            return current
+        previous = current
+    return previous
+
+
+def _capture_preview_frame(client: Any) -> Image.Image:
+    """One chrome-free frame via the visible Preview path, restored to Edit."""
+    _set_view_mode(client, "preview")
+    png = _settled_screenshot(client)
+    _set_view_mode(client, "edit")
+    return Image.open(io.BytesIO(png)).convert("RGB")
+
+
+def _isolate_via_preview(
+    client: Any,
+    *,
+    fixture_path: Path,
+    focus_aabb: dict[str, list[int]],
+    transform_plane: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Isolate each widget's paint using only visible paths.
+
+    A Preview-mode frame shows the fixture without editor chrome. To prove
+    which pixels belong to one widget, carry that widget outside its own rect
+    with a visible Move gesture, capture the baseline frame, restore it with a
+    visible Undo, assert the source bytes never changed, and subtract the
+    baseline from the full frame before sampling the mask.
+    """
+    source_before = fixture_path.read_bytes()
+    full_image = _capture_preview_frame(client)
+
+    isolation: dict[str, Any] = {}
+    protocol: dict[str, Any] = {}
+    for wid in ROTATION_IDS:
+        aabb = list(focus_aabb[wid])
+        cx = aabb[0] + aabb[2] // 2
+        cy = aabb[1] + aabb[3] // 2
+        delta_x, delta_y = ISOLATION_MOVE_DELTAS[wid]
+
+        select = _require_ok(
+            client.request("editor_task0_select", {"x": cx, "y": cy}),
+            f"{wid} isolation select",
+        )
+        if (select.get("selected") or {}).get("widget_id") != wid:
+            raise AssertionError(f"isolation select for {wid} hit another widget: {select!r}")
+        lock = select.get("lock_reason")
+        if isinstance(lock, str) and lock and lock != "ANALYZING":
+            raise AssertionError(f"isolation select for {wid} is locked: {select!r}")
+
+        status_before = _wait_for_status(
+            client,
+            lambda status: status.get("selected_widget_id") == wid
+            and status.get("selected_lock_reason") != "ANALYZING"
+            and status.get("selected_analysis_pending") is not True,
+            timeout=10.0,
+            poll_name=f"{wid} isolation settle",
+        )
+        settled_lock = status_before.get("selected_lock_reason")
+        if isinstance(settled_lock, str) and settled_lock:
+            raise AssertionError(f"isolation target {wid} is locked: {settled_lock!r}")
+        home_raw = status_before.get("preview_position") or status_before.get("selected_original_position")
+        if not (isinstance(home_raw, (list, tuple)) and len(home_raw) == 2):
+            raise AssertionError(f"{wid} isolation has no home position: {status_before!r}")
+        home = [int(home_raw[0]), int(home_raw[1])]
+
+        _require_ok(
+            client.request(
+                "editor_task0_drag",
+                {
+                    "points": [[cx, cy], [cx + delta_x, cy + delta_y]],
+                    "coordinate_space": "screen",
+                },
+            ),
+            f"{wid} isolation move",
+        )
+        moved_status = _wait_for_status(
+            client,
+            lambda status: isinstance(status.get("preview_position"), (list, tuple))
+            and [int(v) for v in status.get("preview_position")] != home,
+            timeout=8.0,
+            poll_name=f"{wid} isolation move",
+        )
+        moved = [int(v) for v in moved_status["preview_position"]]
+        actual_delta = [moved[0] - home[0], moved[1] - home[1]]
+        moved_rect = [aabb[0] + actual_delta[0], aabb[1] + actual_delta[1], aabb[2], aabb[3]]
+        if _rects_overlap(moved_rect, aabb):
+            raise AssertionError(
+                f"{wid} isolation move did not leave its rect: moved {moved_rect!r} overlaps home {aabb!r}"
+            )
+
+        baseline_image = _capture_preview_frame(client)
+
+        _require_ok(
+            client.click_element(id="rf_undo", screen="_renforge_editor_overlay"),
+            f"{wid} isolation undo",
+        )
+        _wait_for_status(
+            client,
+            lambda status: list(status.get("preview_position") or []) == home,
+            timeout=8.0,
+            poll_name=f"{wid} isolation undo",
+        )
+        if fixture_path.read_bytes() != source_before:
+            raise AssertionError(f"{wid} isolation changed source bytes")
+
+        full_mask = _build_isolation_mask(full_image, roi=aabb)
+        baseline_mask = _build_isolation_mask(baseline_image, roi=aabb)
+        mask = full_mask - baseline_mask
+        edge_probe = (
+            _edge_probe_from_quad((transform_plane.get(wid) or {}).get("quad"))
+            if wid == TARGET_ID
+            else None
+        )
+        isolation[wid] = {
+            "target_id": wid,
+            "painted_pixels": len(mask),
+            "point_samples": _sample_mask_points(mask, aabb, edge_probe=edge_probe),
+        }
+        protocol[wid] = {
+            "home": home,
+            "requested_delta": [delta_x, delta_y],
+            "actual_delta": actual_delta,
+            "moved_rect": moved_rect,
+            "full_pixels_in_rect": len(full_mask),
+            "baseline_pixels_in_rect": len(baseline_mask),
+        }
+    return isolation, protocol
 
 
 def _attempt_save_and_rebind(
@@ -472,27 +623,25 @@ def run_editor_rotation_live_scenario(
         transform_plane[widget_id] = transform_plane[key]
     report["transform_plane"] = transform_plane
 
-    # Candidate-isolated paint mask evidence.
+    # Candidate-isolated paint mask evidence through visible paths only:
+    # Preview-mode frames (chrome hidden) and baseline subtraction after a
+    # visible Move gesture carries each widget outside its own rect.
+    isolation_results, isolation_protocol = _isolate_via_preview(
+        client,
+        fixture_path=fixture_path,
+        focus_aabb={wid: focus_aabb[wid]["aabb"] for wid in ROTATION_IDS},
+        transform_plane=transform_plane,
+    )
     report["isolation"] = {}
     for wid in ROTATION_IDS:
-        _require_ok(client.request("rotation_spike_set_isolation", {"target_id": "all"}), "rotation_spike_set_isolation all")
-        result = _run_isolation(
-            client,
-            wid,
-            aabb=focus_aabb[wid]["aabb"],
-            edge_probe=(
-                _edge_probe_from_quad(transform_plane[wid].get("quad"))
-                if wid == TARGET_ID
-                else None
-            ),
-        )
         alias_key = alias.get(wid, wid)
+        result = isolation_results[wid]
         report["isolation"][alias_key] = {
             **result,
             "aabb_corner_painted": result["point_samples"]["aabb_corner"]["painted"],
         }
         report["isolation"][wid] = report["isolation"][alias_key]
-    _require_ok(client.request("rotation_spike_set_isolation", {"target_id": "all"}), "rotation_spike_set_isolation all")
+    report["isolation_protocol"] = isolation_protocol
 
     # Probe the unpainted AABB corner through the real editor selection path.
     corner_sample = report["isolation"]["rotated"]["point_samples"]["aabb_corner"]

@@ -55,6 +55,36 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     }
 
 
+def test_dashboard_matching_applies_normcase(tmp_path: Path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "Game-Project"
+    monkeypatch.setattr(
+        dashboard_client,
+        "dashboard_connection",
+        lambda: {
+            "project": str(project).upper(),
+            "url": "http://127.0.0.1:8765/",
+            "token": "secret token",
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_client.os.path,
+        "normcase",
+        lambda value: value.casefold(),
+    )
+    monkeypatch.setattr(
+        dashboard_client,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response({"ok": True}),
+    )
+
+    assert dashboard_client.launch_game(str(project)) == {
+        "ok": True,
+        "via": "dashboard",
+    }
+
+
 def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
     from renforge import dashboard_client
 

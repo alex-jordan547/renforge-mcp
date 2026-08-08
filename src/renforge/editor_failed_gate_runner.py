@@ -76,6 +76,7 @@ def probe_locked_target(
     click_y: int,
     expected_lock_reason: str,
     target_name: str,
+    fixture_path: Path,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
     select_reply = client.request("editor_task0_select", {"x": click_x, "y": click_y})
@@ -106,11 +107,34 @@ def probe_locked_target(
     if save_enabled is True:
         raise AssertionError(f"save_enabled for locked target {target_name} must be False")
 
-    # Verify drag action fails
-    drag_reply = client.request("editor_task0_drag", {"dx": 20, "dy": 20})
-    drag_ok = drag_reply.get("ok") if isinstance(drag_reply, dict) else False
-    if drag_ok is not False:
-        raise AssertionError(f"expected drag ok=False for {target_name}, got {drag_reply!r}")
+    # Exercise the real drag protocol with a valid point path. A schema or
+    # validation error here would mean the lock was never exercised, so only
+    # the target-specific lock code counts as a prevented drag.
+    status_before = client.request("editor_task0_status", {})
+    preview_before = status_before.get("preview_position") if isinstance(status_before, dict) else None
+    source_before = fixture_path.read_bytes()
+    drag_reply = client.request(
+        "editor_task0_drag",
+        {
+            "points": [[click_x, click_y], [click_x + 20, click_y + 20]],
+            "coordinate_space": "screen",
+        },
+    )
+    if not isinstance(drag_reply, dict):
+        raise AssertionError(f"drag for {target_name} returned non-dict: {drag_reply!r}")
+    drag_error = drag_reply.get("error")
+    if drag_reply.get("ok") is not False or drag_error != expected_lock_reason:
+        raise AssertionError(
+            f"expected drag refusal {expected_lock_reason!r} for {target_name}, got {drag_reply!r}"
+        )
+    status_after = client.request("editor_task0_status", {})
+    preview_after = status_after.get("preview_position") if isinstance(status_after, dict) else None
+    if preview_after != preview_before:
+        raise AssertionError(
+            f"locked drag for {target_name} changed preview_position: {preview_before!r} -> {preview_after!r}"
+        )
+    if fixture_path.read_bytes() != source_before:
+        raise AssertionError(f"locked drag for {target_name} modified source bytes")
 
     # Frame capture
     frame = _capture_frame(client, f"failed_gate_{target_name}", output_dir)
@@ -123,7 +147,8 @@ def probe_locked_target(
         "label_text": label_text,
         "selected_rect": selected_rect,
         "save_enabled": save_enabled,
-        "drag_prevented": drag_ok is False,
+        "drag_prevented": True,
+        "drag_error": drag_error,
         "frame": frame,
     }
 
@@ -163,6 +188,7 @@ def run_editor_failed_gate_live_scenario(
         click_y=click_y,
         expected_lock_reason=LOCK_SYNTHETIC_WIDGET_ID,
         target_name="identity",
+        fixture_path=fixture_path,
         output_dir=output_dir,
     )
     report["gate_families"]["missing_identity"] = identity_res
@@ -177,6 +203,7 @@ def run_editor_failed_gate_live_scenario(
         click_y=click_y,
         expected_lock_reason=LOCK_TRANSFORM_CROP_COMPOSITE,
         target_name="clipping",
+        fixture_path=fixture_path,
         output_dir=output_dir,
     )
     report["gate_families"]["clipping_ancestry"] = clipping_res
@@ -191,6 +218,7 @@ def run_editor_failed_gate_live_scenario(
         click_y=click_y,
         expected_lock_reason=LOCK_LOOP_INSTANCE,
         target_name="repetition",
+        fixture_path=fixture_path,
         output_dir=output_dir,
     )
     report["gate_families"]["repeated_instance"] = repetition_res

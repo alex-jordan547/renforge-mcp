@@ -186,9 +186,9 @@ def _register_tools(app: Any) -> None:
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
         kwargs["editor"] = True
 
-        def _launch(cancel_event: threading.Event) -> dict:
+        def _launch(project_root: Path, cancel_event: threading.Event) -> dict:
             return _launch_game(
-                project_path,
+                str(project_root),
                 cancel_event=cancel_event,
                 **kwargs,
             )

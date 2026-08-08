@@ -205,6 +205,21 @@ def _wait_for_status(
     raise AssertionError(f"{poll_name} timeout: {last_status!r}")
 
 
+def _overlay_rect(client: Any, wanted_id: str) -> list[int]:
+    """Return ``[x, y, width, height]`` from the overlay's focusable UI elements."""
+    elements = client.list_ui_elements(screen="_renforge_editor_overlay")
+    element = _find_element(elements, wanted_id)
+    bounds = element.get("bounds")
+    if not isinstance(bounds, dict):
+        raise AssertionError(f"element {wanted_id!r} has no bounds: {element!r}")
+    return [
+        int(bounds["x"]),
+        int(bounds["y"]),
+        int(bounds["width"]),
+        int(bounds["height"]),
+    ]
+
+
 def run_editor_task0_live_scenario(
     client: Any,
     *,
@@ -592,11 +607,17 @@ def run_editor_task0_live_scenario(
         "start": visual_start,
         "snap": visual_snap,
     }
-    guide_status = _require_ok(client.request("editor_task0_status"), "guide status")
+    guide_status = _wait_for_status(
+        client,
+        lambda status: (
+            isinstance(status.get("guide_x"), int)
+            or isinstance(status.get("guide_y"), int)
+        ),
+        timeout=2.0,
+        poll_name="guide status",
+    )
     guide_x = guide_status.get("guide_x")
     guide_y = guide_status.get("guide_y")
-    if not isinstance(guide_x, int) and not isinstance(guide_y, int):
-        raise AssertionError(f"snap did not render a guide: {guide_status!r}")
     report["distance_badge"] = client.eval_expr("_renforge_editor_distance_snapshot()")
     guide_snapshot = client.eval_expr("_renforge_editor_guide_snapshot()")
     if guide_snapshot.get("line_x") is None and guide_snapshot.get("line_y") is None:
@@ -642,18 +663,11 @@ def run_editor_task0_live_scenario(
             "renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x') is not None"
         ),
     }
+    # Capture the exit rect directly from the layout tree before lowering
+    # opacity; the purple affordance is then sampled against this stable rect.
+    exit_bounds = _overlay_rect(client, "rf_exit")
     _require_ok(client.request("editor_task0_set_opacity", {"opacity": 0.2}), "opacity 0.2")
     _wait_for_screenshot_change(client, guide_high_png)
-    exit_status = _wait_for_status(
-        client,
-        lambda status: (
-            isinstance(status.get("rf_exit_rect"), list)
-            and len(status["rf_exit_rect"]) == 4
-        ),
-        timeout=2.0,
-        poll_name="RF Exit bounds",
-    )
-    exit_bounds = exit_status["rf_exit_rect"]
     exit_border_x = int(exit_bounds[0]) + int(exit_bounds[2]) // 2
     exit_border_y = int(exit_bounds[1])
     exit_fill_x = int(exit_bounds[0]) + 4
@@ -735,6 +749,90 @@ def run_editor_task0_live_scenario(
         "redo_position": after_redo,
     }
 
+    # Step 1 fixed-toolbar proof at the authored 1280x720 resolution: the five
+    # fixed actions must be visible inside the window, and undo/redo must work
+    # through the visible buttons, not only through the request protocol.
+    #
+    # rf_redo is `sensitive can_redo()`, so it leaves the focus list while the
+    # history sits at its head. Undo once through the protocol to make it
+    # focusable before the bounds check, then exercise undo/redo via buttons.
+    window_size = client.eval_expr("[config.screen_width, config.screen_height]")
+    if list(window_size) != [1280, 720]:
+        raise AssertionError(f"fixed toolbar proof expects a 1280x720 window: {window_size!r}")
+    _require_ok(client.request("editor_task0_undo"), "undo to enable rf_redo")
+
+    def _fixed_rects() -> dict[str, Any]:
+        elements = client.list_ui_elements(screen="_renforge_editor_overlay")
+        collected: dict[str, Any] = {}
+        for action_id in ("rf_undo", "rf_redo", "rf_reset", "rf_save", "rf_exit"):
+            element = _find_element(elements, action_id)
+            bounds = element.get("bounds")
+            if not isinstance(bounds, dict):
+                raise AssertionError(f"fixed action {action_id!r} has no bounds: {element!r}")
+            collected[action_id] = {
+                "x": int(bounds["x"]),
+                "y": int(bounds["y"]),
+                "width": int(bounds["width"]),
+                "height": int(bounds["height"]),
+            }
+        return collected
+
+    def _assert_in_window(rects: dict[str, Any]) -> None:
+        for action_id, rect in rects.items():
+            if (
+                rect["width"] <= 0
+                or rect["height"] <= 0
+                or rect["x"] < 0
+                or rect["y"] < 0
+                or rect["x"] + rect["width"] > 1280
+                or rect["y"] + rect["height"] > 720
+            ):
+                raise AssertionError(f"fixed action {action_id!r} escapes the window: {rect!r}")
+
+    # rf_redo is focusable now that history is off its head. Bounds-check all
+    # five fixed actions, then click redo and undo in the state where each is
+    # genuinely enabled.
+    fixed_bounds = _fixed_rects()
+    _assert_in_window(fixed_bounds)
+
+    redo_click = _require_ok(
+        client.click_element(id="rf_redo", screen="_renforge_editor_overlay"),
+        "toolbar redo click",
+    )
+    _wait_for_status(
+        client,
+        lambda status: status.get("status_text") == "Redo",
+        timeout=5.0,
+        poll_name="toolbar redo",
+    )
+    after_visible_redo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    if after_visible_redo != after_redo:
+        raise AssertionError(
+            f"toolbar redo did not restore the redo position: {after_visible_redo!r} != {after_redo!r}"
+        )
+
+    undo_click = _require_ok(
+        client.click_element(id="rf_undo", screen="_renforge_editor_overlay"),
+        "toolbar undo click",
+    )
+    _wait_for_status(
+        client,
+        lambda status: status.get("status_text") == "Undo",
+        timeout=5.0,
+        poll_name="toolbar undo",
+    )
+    after_visible_undo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    if after_visible_undo != after_undo:
+        raise AssertionError(
+            f"toolbar undo did not restore the undo position: {after_visible_undo!r} != {after_undo!r}"
+        )
+    report["fixed_toolbar_actions"] = {
+        "window": [1280, 720],
+        "bounds": fixed_bounds,
+        "undo_click": {"reply": undo_click, "target_position": after_visible_undo},
+        "redo_click": {"reply": redo_click, "target_position": after_visible_redo},
+    }
+
     target_before_multi = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     top_before_multi = _bounds_for(client, "task0_top", wanted_text="OVERLAP TOP")
     top_pick = (top_before_multi["x"] + 5, top_before_multi["y"] + 5)
@@ -793,15 +891,29 @@ def run_editor_task0_live_scenario(
         client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
         "save",
     )
-    saving_label = client.eval_expr(
-        "str(getattr(renpy.get_widget('_renforge_editor_overlay', 'rf_save'), 'text', [''])[0])"
-    )
-    save_pending_status = _wait_for_status(
+    _wait_for_status(
         client,
-        lambda status: bool(status.get("pending_transaction_id")),
+        lambda status: (
+            bool(status.get("pending_transaction_id"))
+            and status.get("save_button_state") == "saving"
+        ),
         timeout=6.0,
         poll_name="save pending",
     )
+    saving_label = ""
+    label_deadline = time.monotonic() + 2.0
+    while time.monotonic() < label_deadline:
+        saving_label = client.eval_expr(
+            "(lambda w: ('' if w is None else ("
+            "w.text if isinstance(getattr(w, 'text', None), str) else "
+            "''.join(str(part) for part in (getattr(w, 'text', None) or []))"
+            ")))(renpy.get_widget('_renforge_editor_overlay', 'rf_save_text'))"
+        )
+        if saving_label:
+            break
+        time.sleep(0.05)
+    if not saving_label:
+        raise AssertionError("saving label did not render before timeout")
     save_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
@@ -812,7 +924,10 @@ def run_editor_task0_live_scenario(
     )
     report["save_status"] = save_status
     saved_label = client.eval_expr(
-        "str(getattr(renpy.get_widget('_renforge_editor_overlay', 'rf_save'), 'text', [''])[0])"
+        "(lambda w: ('' if w is None else ("
+        "w.text if isinstance(getattr(w, 'text', None), str) else "
+        "''.join(str(part) for part in (getattr(w, 'text', None) or []))"
+        ")))(renpy.get_widget('_renforge_editor_overlay', 'rf_save_text'))"
     )
     report["save_control_labels"] = {
         "saving": saving_label,
@@ -829,8 +944,16 @@ def run_editor_task0_live_scenario(
     report["post_save_source"] = post_save_source
     report["post_save_target"] = post_save_target
 
+    reset_click = _require_ok(
+        client.click_element(id="rf_reset", screen="_renforge_editor_overlay"),
+        "toolbar reset click",
+    )
     reset_after_save = client.request("editor_task0_reset")
     report["reset_after_save"] = reset_after_save
+    report["fixed_toolbar_actions"]["reset_click"] = {
+        "reply": reset_click,
+        "product_reply": reset_after_save,
+    }
     successor_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
@@ -948,7 +1071,11 @@ def run_editor_task0_live_scenario(
     }
 
     clicks_before = int(client.get_var("renforge_editor_task0_clicks"))
-    _require_ok(client.request("editor_task0_key", {"key": "escape", "repeat": 1}), "escape")
+    exit_click = _require_ok(
+        client.click_element(id="rf_exit", screen="_renforge_editor_overlay"),
+        "toolbar exit click",
+    )
+    report["fixed_toolbar_actions"]["exit_click"] = exit_click
     clicked = _require_ok(client.click_element(text="MOVE ME", exact=True), "click after exit")
     clicks_after = int(client.get_var("renforge_editor_task0_clicks"))
     report["post_exit"] = {

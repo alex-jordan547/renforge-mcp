@@ -25,7 +25,9 @@ def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None
     client = MagicMock()
     client.request.side_effect = [
         {"ok": False, "lock_reason": LOCK_SYNTHETIC_WIDGET_ID},  # select reply
-        {"ok": False, "error": LOCK_SYNTHETIC_WIDGET_ID},        # drag reply
+        {"ok": True, "preview_position": [100, 100]},  # status before
+        {"ok": False, "error": LOCK_SYNTHETIC_WIDGET_ID},  # drag reply
+        {"ok": True, "preview_position": [100, 100]},  # status after
     ]
     client.eval_expr.side_effect = [
         "id=none x=100 y=100 [SYNTHETIC_WIDGET_ID]",  # label_text
@@ -36,12 +38,16 @@ def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None
     Image.new("RGB", (10, 10), color=(255, 0, 0)).save(buf, format="PNG")
     client.screenshot.return_value = buf.getvalue()
 
+    fixture = tmp_path / "screens.rpy"
+    fixture.touch()
+
     res = probe_locked_target(
         client,
         click_x=140,
         click_y=115,
         expected_lock_reason=LOCK_SYNTHETIC_WIDGET_ID,
         target_name="identity",
+        fixture_path=fixture,
         output_dir=tmp_path,
     )
 

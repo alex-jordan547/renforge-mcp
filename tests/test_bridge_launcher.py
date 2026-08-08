@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import signal
+import stat
 import threading
 import time
 from pathlib import Path
@@ -84,10 +85,56 @@ def _make_project(
     return RenpyProject(project_root), RenpySdk(version="8.3.7", root=sdk_root), project_root
 
 
-def _write_bridge_info(project_root: Path, token: str) -> None:
-    info_path = project_root / ".renforge" / "bridge.json"
+def _valid_token(label: str = "token") -> str:
+    digest = hashlib.sha256(label.encode("utf-8")).hexdigest()
+    assert len(digest) == 64
+    return digest
+
+
+def _bridge_info_path(project_root: Path) -> Path:
+    return project_root / ".renforge" / "control" / "bridge.json"
+
+
+def _write_bridge_info(
+    project_root: Path,
+    env: dict[str, str] | None = None,
+    *,
+    token: str | None = None,
+    session_id: str | None = None,
+    state: str = "ready",
+    port: int = 40123,
+) -> None:
+    """Publish validated control-dir bridge metadata for fake subprocesses."""
+    if env is not None:
+        token = env["RENFORGE_BRIDGE_TOKEN"]
+        session_id = env["RENFORGE_BRIDGE_SESSION_ID"]
+        root = Path(env["RENFORGE_BRIDGE_PROJECT_ROOT"])
+    else:
+        if token is None or session_id is None:
+            raise ValueError("token and session_id are required without env")
+        root = Path(project_root).resolve()
+    if state == "starting":
+        port = 0
+    payload = {
+        "schema_version": 1,
+        "protocol_version": 1,
+        "state": state,
+        "session_id": session_id,
+        "project_root": str(root.resolve()),
+        "host": "127.0.0.1",
+        "port": port,
+        "token": token,
+    }
+    info_path = _bridge_info_path(root)
     info_path.parent.mkdir(parents=True, exist_ok=True)
-    info_path.write_text(json.dumps({"token": token}), encoding="utf-8")
+    if os.name != "nt":
+        try:
+            os.chmod(info_path.parent, 0o700)
+        except OSError:
+            pass
+    info_path.write_text(json.dumps(payload), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(info_path, 0o600)
 
 
 @pytest.mark.parametrize("warp", [None, "game/script.rpy:123"])
@@ -98,11 +145,12 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         captured["command"] = command
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, warp=warp)
     assert session is not None
@@ -114,6 +162,16 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
         assert command[2:] == ["run"]
     else:
         assert command[2:5] == ["run", "--warp", warp]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert len(env["RENFORGE_BRIDGE_SESSION_ID"]) == 32
+    assert all(ch in "0123456789abcdef" for ch in env["RENFORGE_BRIDGE_SESSION_ID"])
+    assert len(env["RENFORGE_BRIDGE_TOKEN"]) == 64
+    assert all(ch in "0123456789abcdef" for ch in env["RENFORGE_BRIDGE_TOKEN"])
+    assert env["RENFORGE_BRIDGE_PROJECT_ROOT"] == str(project_root.resolve())
+    starting = project_root / ".renforge" / "control" / "bridge.json"
+    # reserved before spawn; fake popen overwrote it to ready for the ping path
+    assert starting.exists()
     session.close(timeout=0.1)
 
 
@@ -151,11 +209,11 @@ def test_launch_without_display_falls_back_to_xvfb(monkeypatch, tmp_path: Path) 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         captured["command"] = command
         captured["start_new_session"] = start_new_session
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project)
     command = list(captured["command"])  # type: ignore[arg-type]
@@ -193,11 +251,11 @@ def test_launch_accepts_display_provided_via_extra_env(monkeypatch, tmp_path: Pa
     project, sdk, project_root = _make_project(tmp_path)
 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, extra_env={"DISPLAY": ":99"})
     assert session is not None
@@ -212,8 +270,14 @@ def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Pa
     (game / "renforge_bridge.rpyc").write_bytes(b"\x00")
     (game / "renforge_bridge.rpyc.bak").write_bytes(b"\x00")
     renforge = tmp_path / ".renforge"
-    renforge.mkdir()
-    (renforge / "bridge.json").write_text("{}", encoding="utf-8")
+    _write_bridge_info(
+        tmp_path,
+        token=_valid_token("cleanup"),
+        session_id="01" * 16,
+    )
+    owned = _bridge_info_path(tmp_path)
+    legacy = renforge / "bridge.json"
+    legacy.write_text('{"legacy":true}', encoding="utf-8")
     (tmp_path / "traceback.txt").write_text("boom", encoding="utf-8")
 
     remove_bridge_artifacts(tmp_path)
@@ -221,7 +285,8 @@ def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Pa
     assert not injected.exists()
     assert not (game / "renforge_bridge.rpyc").exists()
     assert not (game / "renforge_bridge.rpyc.bak").exists()
-    assert not (renforge / "bridge.json").exists()
+    assert not owned.exists()
+    assert legacy.read_text(encoding="utf-8") == '{"legacy":true}'
     assert not (tmp_path / "traceback.txt").exists()
 
     # Idempotent: a second call on an already-clean tree does not raise.
@@ -253,8 +318,7 @@ def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_
         process = _FakeProcess()
         process.returncode = 1
         (root / "game" / "renforge_bridge.rpyc").write_bytes(b"compiled")
-        (root / ".renforge").mkdir(exist_ok=True)
-        (root / ".renforge" / "bridge.json").write_text("{}", encoding="utf-8")
+        _write_bridge_info(root, _kwargs["env"])
         (root / "traceback.txt").write_text("no display", encoding="utf-8")
         return process
 
@@ -265,7 +329,7 @@ def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_
 
     assert not (root / "game" / "renforge_bridge.rpy").exists()
     assert not (root / "game" / "renforge_bridge.rpyc").exists()
-    assert not (root / ".renforge" / "bridge.json").exists()
+    assert not (root / ".renforge" / "control" / "bridge.json").exists()
     assert not (root / "traceback.txt").exists()
 
 
@@ -284,11 +348,11 @@ def test_launch_retries_until_ping_returns_pong(monkeypatch, tmp_path: Path) -> 
             return {"ok": True, "pong": True}
 
     def fake_popen(*_args, **_kwargs):
-        _write_bridge_info(project_root, _kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, _kwargs["env"])
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _LaggyClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _LaggyClient())
 
     session = launch_with_bridge(sdk, project, startup_timeout=5.0)
     assert session is not None
@@ -308,14 +372,11 @@ def test_launch_cancellation_stops_process_and_cleans_artifacts(monkeypatch, tmp
             return {"error": "timeout_waiting_for_main_thread"}
 
     def fake_popen(*_args, **_kwargs):
-        _write_bridge_info(project_root, _kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, _kwargs["env"])
         return process
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _WaitingClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _WaitingClient())
 
     with pytest.raises(Exception) as excinfo:
         launch_with_bridge(
@@ -328,7 +389,7 @@ def test_launch_cancellation_stops_process_and_cleans_artifacts(monkeypatch, tmp
     assert getattr(excinfo.value, "code", None) == "LAUNCH_CANCELLED"
     assert process.terminated is True
     assert not (project_root / "game" / "renforge_bridge.rpy").exists()
-    assert not (project_root / ".renforge" / "bridge.json").exists()
+    assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
 
 
 def test_second_launch_same_project_fails_without_touching_first_session(
@@ -340,30 +401,28 @@ def test_second_launch_same_project_fails_without_touching_first_session(
 
     def fake_popen(*_args, **kwargs):
         popen_calls["count"] += 1
-        _write_bridge_info(project_root, kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, kwargs["env"])
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
-    first = launch_with_bridge(sdk, project, token="first-token")
+    first = launch_with_bridge(sdk, project, token=_valid_token("first-token"))
     injected_before = (project_root / "game" / "renforge_bridge.rpy").read_bytes()
-    manifest_before = (project_root / ".renforge" / "bridge.json").read_bytes()
+    manifest_before = (project_root / ".renforge" / "control" / "bridge.json").read_bytes()
 
     with pytest.raises(LaunchError) as excinfo:
-        launch_with_bridge(sdk, project, token="second-token")
+        launch_with_bridge(sdk, project, token=_valid_token("second-token"))
 
     assert getattr(excinfo.value, "code", None) == "BRIDGE_PROJECT_LOCKED"
     assert getattr(excinfo.value, "phase", None) == "acquiring_project_lock"
     assert popen_calls["count"] == 1
     assert (project_root / "game" / "renforge_bridge.rpy").read_bytes() == injected_before
-    assert (project_root / ".renforge" / "bridge.json").read_bytes() == manifest_before
+    assert (project_root / ".renforge" / "control" / "bridge.json").read_bytes() == manifest_before
 
     first.close(timeout=0.1)
-    assert (project_root / ".renforge" / "bridge.lock").exists()
+    assert (project_root / ".renforge" / "control" / "bridge.lock").exists()
+    assert not (project_root / ".renforge" / "bridge.lock").exists()
 
 
 def test_sessions_for_different_projects_are_isolated(monkeypatch, tmp_path: Path) -> None:
@@ -372,23 +431,20 @@ def test_sessions_for_different_projects_are_isolated(monkeypatch, tmp_path: Pat
     project_b, _, root_b = _make_project(tmp_path, "project-b")
 
     def fake_popen(command, env=None, **_kwargs):
-        _write_bridge_info(Path(command[1]), env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(Path(command[1]), env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
-    session_a = launch_with_bridge(sdk, project_a, token="token-a")
-    session_b = launch_with_bridge(sdk, project_b, token="token-b")
+    session_a = launch_with_bridge(sdk, project_a, token=_valid_token("token-a"))
+    session_b = launch_with_bridge(sdk, project_b, token=_valid_token("token-b"))
     session_a.close(timeout=0.1)
 
     assert not (root_a / "game" / "renforge_bridge.rpy").exists()
-    assert not (root_a / ".renforge" / "bridge.json").exists()
+    assert not (root_a / ".renforge" / "control" / "bridge.json").exists()
     assert (root_b / "game" / "renforge_bridge.rpy").exists()
-    assert json.loads((root_b / ".renforge" / "bridge.json").read_text())["token"] == "token-b"
+    assert json.loads((root_b / ".renforge" / "control" / "bridge.json").read_text())["token"] == _valid_token("token-b")
 
     session_b.close(timeout=0.1)
 
@@ -406,24 +462,18 @@ def test_project_lock_is_released_after_cancelled_launch(monkeypatch, tmp_path: 
 
     def fake_popen(*_args, **kwargs):
         launches["count"] += 1
-        _write_bridge_info(project_root, kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, kwargs["env"])
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _CancellingClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _CancellingClient())
 
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, cancel_event=cancel_event)
     assert getattr(excinfo.value, "code", None) == "LAUNCH_CANCELLED"
 
     cancel_event.clear()
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
     session = launch_with_bridge(sdk, project)
     assert launches["count"] == 2
     session.close(timeout=0.1)
@@ -435,22 +485,73 @@ def test_bridge_manifest_with_wrong_token_is_never_accepted(monkeypatch, tmp_pat
     clock = iter((0.0, 0.0, 2.0))
 
     def fake_popen(*_args, **_kwargs):
-        _write_bridge_info(project_root, "another-session-token")
+        env = _kwargs["env"]
+        # Same control path, foreign session id — readiness must reject it.
+        _write_bridge_info(
+            project_root,
+            token=_valid_token("another-session-token"),
+            session_id="ff" * 16,
+        )
+        assert env["RENFORGE_BRIDGE_SESSION_ID"] != "ff" * 16
         return _FakeProcess()
 
-    def fail_from_project(_project_root):
+    def fail_client(_config):
         raise AssertionError("A manifest for another session must not create a client")
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", fail_from_project)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", fail_client)
     monkeypatch.setattr("renforge.bridge.launcher.time.time", lambda: next(clock))
     monkeypatch.setattr("renforge.bridge.launcher.time.sleep", lambda _seconds: None)
 
     with pytest.raises(LaunchError) as excinfo:
-        launch_with_bridge(sdk, project, token="expected-token", startup_timeout=1.0)
+        launch_with_bridge(sdk, project, token=_valid_token("expected-token"), startup_timeout=1.0)
 
     assert getattr(excinfo.value, "code", None) == "BRIDGE_CONNECTION_TIMEOUT"
-    assert not (project_root / ".renforge" / "bridge.json").exists()
+    foreign = json.loads(_bridge_info_path(project_root).read_text(encoding="utf-8"))
+    assert foreign["session_id"] == "ff" * 16
+
+
+def test_allowlisted_bridge_startup_error_fails_before_timeout(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+
+    class _MarkerStream:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._read = False
+
+        def read(self, _size: int = -1):
+            if self._read:
+                return b""
+            self._read = True
+            return self._payload
+
+    class _MarkerProcess(_FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.stdout = _MarkerStream(b"")
+            self.stderr = _MarkerStream(
+                b"noise\nRENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n"
+            )
+
+    def fake_popen(*_args, **_kwargs):
+        return _MarkerProcess()
+
+    def fail_client(_config):
+        raise AssertionError("startup marker must fail before client construction")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", fail_client)
+    monkeypatch.setattr("renforge.bridge.launcher.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project, startup_timeout=5.0)
+
+    assert excinfo.value.code == "BRIDGE_INFO_CONFLICT"
+    assert excinfo.value.phase == "waiting_for_bridge"
+    assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
+
+
 
 
 def test_close_keeps_lock_and_artifacts_until_process_exit(
@@ -463,24 +564,21 @@ def test_close_keeps_lock_and_artifacts_until_process_exit(
 
     def fake_popen(*_args, **kwargs):
         launches["count"] += 1
-        _write_bridge_info(project_root, kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, kwargs["env"])
         return resistant if launches["count"] == 1 else _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
-    first = launch_with_bridge(sdk, project, token="first-token")
+    first = launch_with_bridge(sdk, project, token=_valid_token("first-token"))
     first_close = first.close(timeout=0.01)
 
     assert "process_alive" in first_close["failed"]
     assert first.closed is False
     assert (project_root / "game" / "renforge_bridge.rpy").exists()
-    assert (project_root / ".renforge" / "bridge.json").exists()
+    assert (project_root / ".renforge" / "control" / "bridge.json").exists()
     with pytest.raises(LaunchError) as excinfo:
-        launch_with_bridge(sdk, project, token="blocked-token")
+        launch_with_bridge(sdk, project, token=_valid_token("blocked-token"))
     assert excinfo.value.code == "BRIDGE_PROJECT_LOCKED"
     assert launches["count"] == 1
 
@@ -489,9 +587,9 @@ def test_close_keeps_lock_and_artifacts_until_process_exit(
     assert retry_close.get("failed") is None
     assert first.closed is True
     assert not (project_root / "game" / "renforge_bridge.rpy").exists()
-    assert not (project_root / ".renforge" / "bridge.json").exists()
+    assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
 
-    second = launch_with_bridge(sdk, project, token="second-token")
+    second = launch_with_bridge(sdk, project, token=_valid_token("second-token"))
     assert launches["count"] == 2
     second.close(timeout=0.01)
 
@@ -518,14 +616,11 @@ def test_failed_launch_escalates_to_kill_before_releasing_lock(
 
     def fake_popen(*_args, **kwargs):
         launches["count"] += 1
-        _write_bridge_info(project_root, kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, kwargs["env"])
         return process if launches["count"] == 1 else _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _CancellingClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _CancellingClient())
 
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, cancel_event=cancel_event)
@@ -537,10 +632,7 @@ def test_failed_launch_escalates_to_kill_before_releasing_lock(
     assert not (project_root / "game" / "renforge_bridge.rpy").exists()
 
     cancel_event.clear()
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
     session = launch_with_bridge(sdk, project)
     session.close(timeout=0.01)
 
@@ -548,20 +640,91 @@ def test_failed_launch_escalates_to_kill_before_releasing_lock(
 def test_lock_file_open_permission_error_is_not_reported_as_contention(
     monkeypatch, tmp_path: Path
 ) -> None:
-    original_open = Path.open
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    original_open = os.open
 
-    def denied_open(path, *args, **kwargs):
-        if path.name == "bridge.lock":
+    def denied_open(path, flags, mode=0o777, *args, **kwargs):
+        if Path(path).name == "bridge.lock":
             raise PermissionError(errno.EACCES, "permission denied", str(path))
-        return original_open(path, *args, **kwargs)
+        return original_open(path, flags, mode, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", denied_open)
+    monkeypatch.setattr(os, "open", denied_open)
 
     with pytest.raises(LaunchError) as excinfo:
-        ProjectBridgeLock(tmp_path / ".renforge" / "bridge.lock").acquire()
+        ProjectBridgeLock(project_root).acquire()
 
     assert excinfo.value.code == "BRIDGE_PROJECT_LOCK_FAILED"
     assert excinfo.value.phase == "acquiring_project_lock"
+
+
+def test_lock_rejects_symlink_without_repair(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    control = project_root / ".renforge" / "control"
+    control.mkdir(parents=True)
+    os.chmod(control, 0o700)
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"secret-bytes")
+    lock_path = control / "bridge.lock"
+    lock_path.symlink_to(victim)
+
+    with pytest.raises(LaunchError) as excinfo:
+        ProjectBridgeLock(project_root).acquire()
+
+    assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert excinfo.value.phase == "preparing_control_directory"
+    assert victim.read_bytes() == b"secret-bytes"
+    assert lock_path.is_symlink()
+    assert not (project_root / ".renforge" / "bridge.lock").exists()
+
+
+def test_preplanted_unsafe_bridge_info_fails_closed_without_unlink(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    control = project_root / ".renforge" / "control"
+    control.mkdir(parents=True)
+    if os.name != "nt":
+        os.chmod(control, 0o700)
+    victim = tmp_path / "victim-bridge.json"
+    victim.write_bytes(b"secret-bridge-bytes")
+    unsafe = control / "bridge.json"
+    unsafe.symlink_to(victim)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("Popen must not run when bridge metadata is unsafe")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project)
+
+    assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert unsafe.is_symlink()
+    assert victim.read_bytes() == b"secret-bridge-bytes"
+    assert not (project_root / "game" / "renforge_bridge.rpy").exists()
+
+    with pytest.raises(LaunchError) as cleanup_exc:
+        remove_bridge_artifacts(project_root)
+    assert cleanup_exc.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert unsafe.is_symlink()
+    assert victim.read_bytes() == b"secret-bridge-bytes"
+
+
+
+def test_lock_rejects_world_writable_control_dir(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    control = project_root / ".renforge" / "control"
+    control.mkdir(parents=True)
+    os.chmod(control, 0o777)
+
+    with pytest.raises(LaunchError) as excinfo:
+        ProjectBridgeLock(project_root).acquire()
+
+    assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert excinfo.value.phase == "preparing_control_directory"
+    assert not (control / "bridge.lock").exists()
 
 
 def test_failed_launch_defers_cleanup_and_unlock_until_process_exits(
@@ -580,14 +743,11 @@ def test_failed_launch_defers_cleanup_and_unlock_until_process_exits(
 
     def fake_popen(*_args, **kwargs):
         launches["count"] += 1
-        _write_bridge_info(project_root, kwargs["env"]["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, kwargs["env"])
         return process if launches["count"] == 1 else _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _CancellingClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _CancellingClient())
 
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, cancel_event=cancel_event)
@@ -601,10 +761,7 @@ def test_failed_launch_defers_cleanup_and_unlock_until_process_exits(
 
     process.exit()
     cancel_event.clear()
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.BridgeClient.from_project",
-        lambda _project_root: _FakeClient(),
-    )
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
     deadline = time.monotonic() + 1.0
     while True:
         try:
@@ -630,11 +787,11 @@ def test_launch_without_editor_does_not_start_editor_flow(monkeypatch, tmp_path:
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         captured["env"] = env
         assert env is not None
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
     monkeypatch.setattr(
         "renforge.bridge.launcher.EditorCoordinator",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("editor flow started")),
@@ -679,13 +836,13 @@ def test_launch_with_editor_passes_exact_editor_environment_and_owned_manifest(m
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         captured["env"] = env
         assert env is not None
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
     monkeypatch.setattr("renforge.bridge.launcher.BridgeRuntimeProbe", _Probe)
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
     assert coordinator.get("init") is True
@@ -742,11 +899,14 @@ def test_launch_with_editor_retries_collision_free_random_basename(monkeypatch, 
 
     monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, project_root = _make_project(tmp_path)
-    launch_tokens = iter(["deadbeef", "cafebabe", "00"])
-    monkeypatch.setattr(
-        "renforge.bridge.launcher.secrets.token_hex",
-        lambda _size=8: next(launch_tokens),
-    )
+    editor_tokens = iter(["deadbeef", "cafebabe", "00"])
+
+    def _token_hex(size: int = 32) -> str:
+        if size == 8:
+            return next(editor_tokens)
+        return "ab" * size
+
+    monkeypatch.setattr("renforge.bridge.launcher.secrets.token_hex", _token_hex)
     manifest_collision = f"{launcher._EDITOR_INJECTED_PREFIX}deadbeef.rpy"
     (project.game_dir / manifest_collision).write_text("occupied", encoding="utf-8")
     (project.game_dir / f"{manifest_collision}c").write_bytes(b"compiled")
@@ -767,12 +927,12 @@ def test_launch_with_editor_retries_collision_free_random_basename(monkeypatch, 
 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
         assert env is not None
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
     manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
@@ -802,12 +962,12 @@ def test_editor_close_preserves_modified_injected_artifact(monkeypatch, tmp_path
             return {"closed": True}
 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
     manifest = json.loads((project_root / ".renforge" / "editor-session.json").read_text(encoding="utf-8"))
@@ -868,7 +1028,7 @@ def test_editor_launch_failure_cleans_resources_and_closes_coordinator(
 
     monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _Coordinator)
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project, editor=True, startup_timeout=0.0)
@@ -1036,12 +1196,12 @@ def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
             return {"closed": True}
 
     def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
-        _write_bridge_info(project_root, env["RENFORGE_BRIDGE_TOKEN"])
+        _write_bridge_info(project_root, env)
         return _FakeProcess()
 
     monkeypatch.setattr("renforge.bridge.launcher.EditorCoordinator", _StalledCoordinator)
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient.from_project", lambda _project_root: _FakeClient())
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
 
     session = launch_with_bridge(sdk, project, editor=True)
 
@@ -1051,7 +1211,7 @@ def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
 
     # The project lock is the real safeguard: a second session must not launch.
     with pytest.raises(LaunchError) as excinfo:
-        ProjectBridgeLock(project_root / ".renforge" / "bridge.lock").acquire()
+        ProjectBridgeLock(project_root).acquire()
     assert excinfo.value.code == "BRIDGE_PROJECT_LOCKED"
 
     # The retry joins the now-finished handler and releases everything.
@@ -1060,7 +1220,7 @@ def test_shutdown_incomplete_keeps_session_lock_until_coordinator_close_retries(
     assert session.closed is True
 
     # With the lock released, a fresh session can take ownership again.
-    reacquired = ProjectBridgeLock(project_root / ".renforge" / "bridge.lock")
+    reacquired = ProjectBridgeLock(project_root)
     reacquired.acquire()
     try:
         pass
@@ -1316,3 +1476,440 @@ def test_no_widget_id_is_claimed_by_two_region_screens() -> None:
 
     duplicated = sorted(name for name, count in owners.items() if count > 1)
     assert not duplicated, f"widget ids claimed by more than one file: {duplicated}"
+
+
+def test_private_directory_create_and_validate(tmp_path: Path) -> None:
+    from renforge.util.files import ensure_private_directory
+
+    control = tmp_path / ".renforge" / "control"
+    created = ensure_private_directory(control)
+    assert created == (control if control.is_absolute() else control.absolute())
+    assert created.is_dir()
+    st = created.lstat()
+    assert not stat.S_ISLNK(st.st_mode)
+    assert stat.S_ISDIR(st.st_mode)
+    if os.name != "nt":
+        assert st.st_uid == os.geteuid()
+        assert (st.st_mode & 0o777) == 0o700
+    # Idempotent on an already-private directory.
+    assert ensure_private_directory(created) == created
+
+
+def test_private_directory_rejects_symlink_without_touching_victim(tmp_path: Path) -> None:
+    from renforge.util.files import PrivatePathError, ensure_private_directory
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    marker = victim / "secret.txt"
+    marker.write_text("keep-me", encoding="utf-8")
+    link = tmp_path / "control-link"
+    link.symlink_to(victim, target_is_directory=True)
+
+    with pytest.raises(PrivatePathError) as exc_info:
+        ensure_private_directory(link)
+    assert exc_info.value.code == "PRIVATE_DIRECTORY_UNSAFE"
+    assert marker.read_text(encoding="utf-8") == "keep-me"
+    assert victim.is_dir()
+
+
+def test_private_directory_rejects_ancestor_symlink_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    from renforge.util.files import PrivatePathError, ensure_private_directory
+
+    # project/.renforge is a symlink outside the project; control under it must fail closed.
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "secret.txt"
+    marker.write_text("keep-me", encoding="utf-8")
+    renforge_link = project / ".renforge"
+    renforge_link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(PrivatePathError) as exc_info:
+        ensure_private_directory(project / ".renforge" / "control")
+    assert exc_info.value.code == "PRIVATE_DIRECTORY_UNSAFE"
+    assert marker.read_text(encoding="utf-8") == "keep-me"
+    assert not (outside / "control").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_private_directory_rejects_wrong_mode_without_repair(tmp_path: Path) -> None:
+    from renforge.util.files import PrivatePathError, ensure_private_directory
+
+    bad = tmp_path / "control"
+    bad.mkdir()
+    os.chmod(bad, 0o755)
+    with pytest.raises(PrivatePathError) as exc_info:
+        ensure_private_directory(bad)
+    assert exc_info.value.code == "PRIVATE_DIRECTORY_UNSAFE"
+    assert (bad.lstat().st_mode & 0o777) == 0o755
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_private_directory_rejects_non_directory(tmp_path: Path) -> None:
+    from renforge.util.files import PrivatePathError, ensure_private_directory
+
+    path = tmp_path / "not-a-dir"
+    path.write_text("x", encoding="utf-8")
+    os.chmod(path, 0o600)
+    with pytest.raises(PrivatePathError) as exc_info:
+        ensure_private_directory(path)
+    assert exc_info.value.code == "PRIVATE_DIRECTORY_UNSAFE"
+    assert path.read_text(encoding="utf-8") == "x"
+
+
+def test_atomic_write_private_json_and_nofollow_read(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        atomic_write_private_json,
+        ensure_private_directory,
+        read_regular_file_nofollow,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    path = control / "bridge.json"
+    payload = {"schema_version": 1, "state": "starting", "host": "127.0.0.1"}
+    atomic_write_private_json(path, payload, max_bytes=16 * 1024)
+
+    st = path.lstat()
+    assert stat.S_ISREG(st.st_mode)
+    if os.name != "nt":
+        assert st.st_uid == os.geteuid()
+        assert (st.st_mode & 0o777) == 0o600
+
+    raw = read_regular_file_nofollow(path, max_bytes=16 * 1024)
+    assert json.loads(raw.decode("utf-8")) == payload
+
+    # Overwrite stays private and replaces contents atomically.
+    payload2 = {"schema_version": 1, "state": "ready", "port": 9}
+    atomic_write_private_json(path, payload2, max_bytes=16 * 1024)
+    assert json.loads(read_regular_file_nofollow(path, max_bytes=16 * 1024)) == payload2
+
+
+def test_atomic_write_private_json_rejects_symlink_preserves_victim(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        atomic_write_private_json,
+        ensure_private_directory,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    victim = tmp_path / "victim.json"
+    victim.write_text('{"keep":true}', encoding="utf-8")
+    link = control / "bridge.json"
+    link.symlink_to(victim)
+
+    with pytest.raises(PrivatePathError) as exc_info:
+        atomic_write_private_json(link, {"state": "ready"}, max_bytes=1024)
+    assert exc_info.value.code == "PRIVATE_FILE_UNSAFE"
+    assert victim.read_text(encoding="utf-8") == '{"keep":true}'
+    assert link.is_symlink()
+
+
+def test_read_regular_file_nofollow_rejects_symlink_preserves_victim(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        ensure_private_directory,
+        read_regular_file_nofollow,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"secret-bytes")
+    link = control / "bridge.json"
+    link.symlink_to(victim)
+
+    with pytest.raises(PrivatePathError) as exc_info:
+        read_regular_file_nofollow(link, max_bytes=1024)
+    assert exc_info.value.code == "PRIVATE_FILE_UNSAFE"
+    assert victim.read_bytes() == b"secret-bytes"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_read_regular_file_nofollow_rejects_wrong_mode_without_repair(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        atomic_write_private_json,
+        ensure_private_directory,
+        read_regular_file_nofollow,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    path = control / "bridge.json"
+    atomic_write_private_json(path, {"ok": True}, max_bytes=1024)
+    os.chmod(path, 0o644)
+    with pytest.raises(PrivatePathError) as exc_info:
+        read_regular_file_nofollow(path, max_bytes=1024)
+    assert exc_info.value.code == "PRIVATE_FILE_UNSAFE"
+    assert (path.lstat().st_mode & 0o777) == 0o644
+    assert json.loads(path.read_text(encoding="utf-8")) == {"ok": True}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits only")
+def test_atomic_write_private_json_rejects_wrong_existing_mode(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        atomic_write_private_json,
+        ensure_private_directory,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    path = control / "bridge.json"
+    path.write_text('{"old":1}', encoding="utf-8")
+    os.chmod(path, 0o644)
+    with pytest.raises(PrivatePathError) as exc_info:
+        atomic_write_private_json(path, {"new": 2}, max_bytes=1024)
+    assert exc_info.value.code == "PRIVATE_FILE_UNSAFE"
+    assert path.read_text(encoding="utf-8") == '{"old":1}'
+    assert (path.lstat().st_mode & 0o777) == 0o644
+
+
+def test_private_json_and_read_enforce_max_bytes(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        atomic_write_private_json,
+        ensure_private_directory,
+        read_regular_file_nofollow,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    path = control / "bridge.json"
+    atomic_write_private_json(path, {"v": 1}, max_bytes=1024)
+    original = path.read_bytes()
+
+    with pytest.raises(PrivatePathError) as write_exc:
+        atomic_write_private_json(path, {"blob": "x" * 200}, max_bytes=32)
+    assert write_exc.value.code == "PRIVATE_FILE_UNSAFE"
+    assert path.read_bytes() == original
+
+    # Force a too-large private file and ensure read rejects without truncating.
+    huge = b"{" + b"a" * 200 + b"}"
+    if os.name != "nt":
+        fd = os.open(str(path), os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, huge)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    else:
+        path.write_bytes(huge)
+
+    with pytest.raises(PrivatePathError) as read_exc:
+        read_regular_file_nofollow(path, max_bytes=64)
+    assert read_exc.value.code == "PRIVATE_FILE_UNSAFE"
+    assert path.read_bytes() == huge
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file type check")
+def test_read_regular_file_nofollow_rejects_directory(tmp_path: Path) -> None:
+    from renforge.util.files import (
+        PrivatePathError,
+        ensure_private_directory,
+        read_regular_file_nofollow,
+    )
+
+    control = ensure_private_directory(tmp_path / "control")
+    with pytest.raises(PrivatePathError) as exc_info:
+        read_regular_file_nofollow(control, max_bytes=16)
+    assert exc_info.value.code == "PRIVATE_FILE_UNSAFE"
+
+
+def test_existing_public_atomic_writers_remain_compatible(tmp_path: Path) -> None:
+    from renforge.util.files import write_atomic, write_json_atomic
+
+    text_path = tmp_path / "note.txt"
+    write_atomic(text_path, "hello")
+    assert text_path.read_text(encoding="utf-8") == "hello"
+
+    json_path = tmp_path / "data.json"
+    write_json_atomic(json_path, {"ok": True}, follow_symlinks=False, max_bytes=1024)
+    assert json.loads(json_path.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_windows_project_bridge_lock_helper_wiring_and_cleanup(tmp_path: Path, monkeypatch) -> None:
+    import io
+    import sys
+    import types
+    from renforge.bridge.launcher import ProjectBridgeLock, _LockPathUnsafe
+    from renforge.util import files as private_files
+
+    called = {"is_reparse": False, "set_dacl": False, "val_dacl": False, "closed_file": False}
+
+    def fake_win_is_reparse(path):
+        called["is_reparse"] = True
+        return False
+
+    def fake_win_set_dacl(path):
+        called["set_dacl"] = True
+
+    def fake_win_val_dacl(path):
+        called["val_dacl"] = True
+        raise RuntimeError("DACL check failed")
+
+    monkeypatch.setattr("renforge.util.files._win_is_reparse", fake_win_is_reparse)
+    monkeypatch.setattr("renforge.util.files._win_set_protected_dacl", fake_win_set_dacl)
+    monkeypatch.setattr("renforge.util.files._win_validate_protected_dacl", fake_win_val_dacl)
+
+    fake_h = 100
+
+    class FakeCreateFileW:
+        restype = None
+        argtypes = None
+
+        def __call__(self, *args):
+            return fake_h
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFileW()
+
+        def GetFileType(self, handle):
+            return 0x0001
+
+        def GetFileInformationByHandle(self, handle, info_ref):
+            info_ref._obj.dwFileAttributes = 0x80
+            return True
+
+        def CloseHandle(self, handle):
+            pass
+
+    class FakeLockFile(io.BytesIO):
+        def close(self):
+            called["closed_file"] = True
+            super().close()
+
+    fake_lock_file = FakeLockFile()
+
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.open_osfhandle = lambda h, f: 55
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    import ctypes
+    monkeypatch.setattr(ctypes, "GetLastError", lambda: 0, raising=False)
+    monkeypatch.setattr(ctypes, "windll", type("FakeWindll", (), {"kernel32": FakeKernel32()})(), raising=False)
+    monkeypatch.setattr("os.fdopen", lambda fd, mode, closefd=True: fake_lock_file)
+
+    lock = ProjectBridgeLock(tmp_path)
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    lock.path.touch()
+    with pytest.raises(_LockPathUnsafe, match="bridge lock DACL is unsafe"):
+        lock._open_lock_file_windows()
+
+    assert called["is_reparse"] is True
+    assert called["set_dacl"] is True
+    assert called["val_dacl"] is True
+    assert called["closed_file"] is True
+
+
+def test_pipe_reader_immediate_unbuffered_stderr_reading() -> None:
+    import io
+    import os
+    import threading
+    from renforge.bridge.launcher import _BoundedPipeReader
+
+    r_fd, w_fd = os.pipe()
+    try:
+        r_file = io.open(r_fd, "rb", buffering=0)
+        event = threading.Event()
+        code = [None]
+        reader = _BoundedPipeReader(
+            stream=r_file,
+            watch_startup=True,
+            startup_event=event,
+            startup_code=code,
+        )
+        os.write(w_fd, b"RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n")
+        assert event.wait(timeout=2.0) is True
+        assert code[0] == "BRIDGE_INFO_CONFLICT"
+    finally:
+        try:
+            os.close(w_fd)
+        except OSError:
+            pass
+        try:
+            r_file.close()
+        except OSError:
+            pass
+
+
+def test_pipe_reader_ignores_stdout_spoof() -> None:
+    import io
+    import os
+    import threading
+    from renforge.bridge.launcher import _BoundedPipeReader
+
+    r_fd, w_fd = os.pipe()
+    try:
+        r_file = io.open(r_fd, "rb", buffering=0)
+        event = threading.Event()
+        code = [None]
+        reader = _BoundedPipeReader(
+            stream=r_file,
+            watch_startup=False,
+            startup_event=event,
+            startup_code=code,
+        )
+        os.write(w_fd, b"RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n")
+        time.sleep(0.1)
+        assert event.is_set() is False
+    finally:
+        os.close(w_fd)
+        r_file.close()
+
+
+def test_pipe_reader_rejects_trailing_whitespace_and_junk() -> None:
+    import io
+    import os
+    import threading
+    from renforge.bridge.launcher import _BoundedPipeReader
+
+    r_fd, w_fd = os.pipe()
+    try:
+        r_file = io.open(r_fd, "rb", buffering=0)
+        event = threading.Event()
+        code = [None]
+        reader = _BoundedPipeReader(
+            stream=r_file,
+            watch_startup=True,
+            startup_event=event,
+            startup_code=code,
+        )
+        os.write(w_fd, b"RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT \n")
+        os.write(w_fd, b"RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT extra\n")
+        time.sleep(0.1)
+        assert event.is_set() is False
+    finally:
+        os.close(w_fd)
+        r_file.close()
+
+
+def test_pipe_reader_handles_split_chunk_stream() -> None:
+    import io
+    import os
+    import threading
+    from renforge.bridge.launcher import _BoundedPipeReader
+
+    r_fd, w_fd = os.pipe()
+    try:
+        r_file = io.open(r_fd, "rb", buffering=0)
+        event = threading.Event()
+        code = [None]
+        reader = _BoundedPipeReader(
+            stream=r_file,
+            watch_startup=True,
+            startup_event=event,
+            startup_code=code,
+        )
+        os.write(w_fd, b"RENFORGE_BRIDGE_STARTUP_ERR")
+        time.sleep(0.05)
+        assert event.is_set() is False
+
+        os.write(w_fd, b"OR=BRIDGE_MANIFEST_IDENTITY_MISMATCH\n")
+        assert event.wait(timeout=2.0) is True
+        assert code[0] == "BRIDGE_MANIFEST_IDENTITY_MISMATCH"
+    finally:
+        os.close(w_fd)
+        r_file.close()
+

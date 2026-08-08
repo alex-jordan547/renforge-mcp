@@ -12,12 +12,13 @@ init python:
     # per-request Event until the result is ready, then writes the reply.
     #
     # Configuration comes from the environment:
-    #   RENFORGE_BRIDGE_TOKEN  required; the bridge stays off if unset
-    #   RENFORGE_BRIDGE_HOST   default 127.0.0.1
-    #   RENFORGE_BRIDGE_PORT   default 0 (an ephemeral port is chosen)
-    # On startup the chosen host/port/token are published to
-    #   <project>/.renforge/bridge.json
-    # so the client can discover them.
+    #   RENFORGE_BRIDGE_TOKEN        required 64-lowercase-hex auth token
+    #   RENFORGE_BRIDGE_SESSION_ID   required 32-lowercase-hex session id
+    #   RENFORGE_BRIDGE_PROJECT_ROOT required canonical absolute project root
+    #   RENFORGE_BRIDGE_PORT         default 0 (an ephemeral port is chosen)
+    # The launcher reserves starting metadata at
+    #   <project>/.renforge/control/bridge.json
+    # Before serving, the bridge validates that record and publishes ready.
 
     import base64
     import builtins
@@ -62,11 +63,12 @@ init python:
             self.error = None
 
     class _RenforgeBridge(object):
-        def __init__(self, host, port, token, basedir):
+        def __init__(self, host, port, token, project_root, session_id):
             self.host = host
             self.port = port
             self.token = token
-            self.basedir = basedir
+            self.project_root = project_root
+            self.session_id = session_id
             self.requests = queue.Queue()
             self.stop = threading.Event()
             self.thread = None
@@ -3183,22 +3185,722 @@ init python:
         import json as _json
         conn.sendall((_json.dumps(obj) + "\n").encode("utf-8"))
 
-    def _renforge_publish(bridge, port):
-        import json as _json
-        import os as _os
+    _RENFORGE_BRIDGE_INFO_MAX_BYTES = 16 * 1024
+    _RENFORGE_BRIDGE_STARTUP_ERROR_PREFIX = "RENFORGE_BRIDGE_STARTUP_ERROR="
+    _RENFORGE_BRIDGE_STARTUP_PUBLICATION_FAILED = "BRIDGE_MANIFEST_PUBLICATION_FAILED"
+    _RENFORGE_BRIDGE_STARTUP_INFO_CONFLICT = "BRIDGE_INFO_CONFLICT"
+    _RENFORGE_BRIDGE_STARTUP_IDENTITY_MISMATCH = "BRIDGE_MANIFEST_IDENTITY_MISMATCH"
+    _RENFORGE_BRIDGE_INFO_KEYS = (
+        "schema_version",
+        "protocol_version",
+        "state",
+        "session_id",
+        "project_root",
+        "host",
+        "port",
+        "token",
+    )
+
+    def _renforge_bridge_startup_error(code):
+        import sys as _sys
         try:
-            out_dir = _os.path.join(bridge.basedir, ".renforge")
-            _os.makedirs(out_dir, exist_ok=True)
-            tmp = _os.path.join(out_dir, "bridge.json.tmp")
-            final = _os.path.join(out_dir, "bridge.json")
-            with open(tmp, "w") as fp:
-                _json.dump(
-                    {"host": bridge.host, "port": port, "token": bridge.token, "pid": _os.getpid()},
-                    fp,
-                )
-            _os.replace(tmp, final)
+            _sys.stderr.write("%s%s\n" % (_RENFORGE_BRIDGE_STARTUP_ERROR_PREFIX, code))
+            _sys.stderr.flush()
         except Exception:
             pass
+
+    def _renforge_bridge_is_session_id(value):
+        if not isinstance(value, str) or len(value) != 32:
+            return False
+        for ch in value:
+            if ch not in "0123456789abcdef":
+                return False
+        return True
+
+    def _renforge_bridge_is_token(value):
+        if not isinstance(value, str) or len(value) != 64:
+            return False
+        for ch in value:
+            if ch not in "0123456789abcdef":
+                return False
+        return True
+
+    def _renforge_bridge_info_path(project_root):
+        import os as _os
+        return _os.path.join(project_root, ".renforge", "control", "bridge.json")
+
+    def _renforge_bridge_control_dir(project_root):
+        import os as _os
+        return _os.path.join(project_root, ".renforge", "control")
+
+    def _renforge_bridge_win_create_file(path, access, share_mode, creation_disposition, flags_and_attrs):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        create_file = _ctypes.windll.kernel32.CreateFileW
+        create_file.argtypes = [
+            _wintypes.LPCWSTR,
+            _wintypes.DWORD,
+            _wintypes.DWORD,
+            _ctypes.c_void_p,
+            _wintypes.DWORD,
+            _wintypes.DWORD,
+            _wintypes.HANDLE,
+        ]
+        create_file.restype = _wintypes.HANDLE
+        handle = create_file(
+            str(path),
+            access,
+            share_mode,
+            None,
+            creation_disposition,
+            flags_and_attrs,
+            None,
+        )
+        invalid_val = getattr(_wintypes, "HANDLE", _ctypes.c_void_p)(-1).value
+        if handle == invalid_val or handle is None or handle == 0 or handle == 0xFFFFFFFF or handle == 0xFFFFFFFFFFFFFFFF:
+            err = _ctypes.GetLastError()
+            raise OSError(err, "CreateFileW failed for %s" % path)
+        return handle
+
+    def _renforge_bridge_win_close_handle(handle):
+        import ctypes as _ctypes
+        if handle is None:
+            return
+        try:
+            _ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+    def _renforge_bridge_win_get_file_type(handle):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        get_type = _ctypes.windll.kernel32.GetFileType
+        get_type.argtypes = [_wintypes.HANDLE]
+        get_type.restype = _wintypes.DWORD
+        return int(get_type(handle))
+
+    def _renforge_bridge_win_get_handle_attributes(handle):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        class _BY_HANDLE_FILE_INFORMATION(_ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", _wintypes.DWORD),
+                ("ftCreationTime", _wintypes.FILETIME),
+                ("ftLastAccessTime", _wintypes.FILETIME),
+                ("ftLastWriteTime", _wintypes.FILETIME),
+                ("dwVolumeSerialNumber", _wintypes.DWORD),
+                ("nFileSizeHigh", _wintypes.DWORD),
+                ("nFileSizeLow", _wintypes.DWORD),
+                ("nNumberOfLinks", _wintypes.DWORD),
+                ("nFileIndexHigh", _wintypes.DWORD),
+                ("nFileIndexLow", _wintypes.DWORD),
+            ]
+
+        info = _BY_HANDLE_FILE_INFORMATION()
+        get_info = _ctypes.windll.kernel32.GetFileInformationByHandle
+        get_info.argtypes = [_wintypes.HANDLE, _ctypes.POINTER(_BY_HANDLE_FILE_INFORMATION)]
+        get_info.restype = _wintypes.BOOL
+        if not get_info(handle, _ctypes.byref(info)):
+            raise OSError(_ctypes.GetLastError(), "GetFileInformationByHandle failed")
+        return int(info.dwFileAttributes)
+
+    def _renforge_bridge_win_read_handle(handle, max_bytes):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        read_file = _ctypes.windll.kernel32.ReadFile
+        read_file.argtypes = [
+            _wintypes.HANDLE,
+            _ctypes.c_void_p,
+            _wintypes.DWORD,
+            _ctypes.POINTER(_wintypes.DWORD),
+            _ctypes.c_void_p,
+        ]
+        read_file.restype = _wintypes.BOOL
+
+        chunks = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            size = min(65536, remaining)
+            buf = _ctypes.create_string_buffer(size)
+            read_bytes = _wintypes.DWORD(0)
+            if not read_file(handle, buf, size, _ctypes.byref(read_bytes), None):
+                raise OSError(_ctypes.GetLastError(), "ReadFile failed")
+            if read_bytes.value == 0:
+                break
+            chunks.append(buf.raw[: read_bytes.value])
+            remaining -= read_bytes.value
+        return b"".join(chunks)
+
+    def _renforge_bridge_win_write_handle(handle, data):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        write_file = _ctypes.windll.kernel32.WriteFile
+        write_file.argtypes = [
+            _wintypes.HANDLE,
+            _ctypes.c_void_p,
+            _wintypes.DWORD,
+            _ctypes.POINTER(_wintypes.DWORD),
+            _ctypes.c_void_p,
+        ]
+        write_file.restype = _wintypes.BOOL
+
+        written = 0
+        while written < len(data):
+            to_write = min(65536, len(data) - written)
+            buf = _ctypes.create_string_buffer(data[written : written + to_write])
+            chunk_written = _wintypes.DWORD(0)
+            if not write_file(handle, buf, to_write, _ctypes.byref(chunk_written), None):
+                raise OSError(_ctypes.GetLastError(), "WriteFile failed")
+            if chunk_written.value == 0:
+                raise OSError("short write on Win32 handle")
+            written += chunk_written.value
+
+    def _renforge_bridge_win_flush_handle(handle):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        flush = _ctypes.windll.kernel32.FlushFileBuffers
+        flush.argtypes = [_wintypes.HANDLE]
+        flush.restype = _wintypes.BOOL
+        if not flush(handle):
+            raise OSError(_ctypes.GetLastError(), "FlushFileBuffers failed")
+
+    def _renforge_bridge_win_replace_file(replaced_path, replacement_path, flags=1):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        replace_file = _ctypes.windll.kernel32.ReplaceFileW
+        replace_file.argtypes = [
+            _wintypes.LPCWSTR,
+            _wintypes.LPCWSTR,
+            _wintypes.LPCWSTR,
+            _wintypes.DWORD,
+            _ctypes.c_void_p,
+            _ctypes.c_void_p,
+        ]
+        replace_file.restype = _wintypes.BOOL
+
+        if replace_file(str(replaced_path), str(replacement_path), None, flags, None, None):
+            return True
+
+        err = _ctypes.GetLastError()
+        # ERROR_FILE_NOT_FOUND = 2
+        if err == 2:
+            move_file = _ctypes.windll.kernel32.MoveFileExW
+            move_file.argtypes = [_wintypes.LPCWSTR, _wintypes.LPCWSTR, _wintypes.DWORD]
+            move_file.restype = _wintypes.BOOL
+            # MOVEFILE_REPLACE_EXISTING (0x1) | MOVEFILE_WRITE_THROUGH (0x8) = 0x9
+            if move_file(str(replacement_path), str(replaced_path), 0x9):
+                return True
+            err = _ctypes.GetLastError()
+            raise OSError(err, "MoveFileExW failed for %s -> %s" % (replacement_path, replaced_path))
+        raise OSError(err, "ReplaceFileW failed for %s -> %s" % (replacement_path, replaced_path))
+
+    def _renforge_bridge_win_is_reparse(path):
+        import os as _os
+        try:
+            st = _os.lstat(path)
+            attrs = getattr(st, "st_file_attributes", None)
+            if attrs is not None:
+                return bool(attrs & 0x400)
+        except OSError:
+            pass
+        try:
+            import ctypes as _ctypes
+            from ctypes import wintypes as _wintypes
+            get_attrs = _ctypes.windll.kernel32.GetFileAttributesW
+            get_attrs.argtypes = [_wintypes.LPCWSTR]
+            get_attrs.restype = _wintypes.DWORD
+            val = int(get_attrs(str(path)))
+            if val != 0xFFFFFFFF:
+                return bool(val & 0x400)
+        except Exception:
+            pass
+        return False
+
+    def _renforge_bridge_win_current_sid():
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        token = _wintypes.HANDLE()
+        if not _ctypes.windll.advapi32.OpenProcessToken(
+            _ctypes.windll.kernel32.GetCurrentProcess(),
+            0x0008,
+            _ctypes.byref(token),
+        ):
+            raise OSError(_ctypes.GetLastError(), "OpenProcessToken failed")
+        try:
+            size = _wintypes.DWORD(0)
+            _ctypes.windll.advapi32.GetTokenInformation(token, 1, None, 0, _ctypes.byref(size))
+            buf = _ctypes.create_string_buffer(size.value)
+            if not _ctypes.windll.advapi32.GetTokenInformation(token, 1, buf, size, _ctypes.byref(size)):
+                raise OSError(_ctypes.GetLastError(), "GetTokenInformation failed")
+
+            class _SID_AND_ATTRIBUTES(_ctypes.Structure):
+                _fields_ = [("Sid", _ctypes.c_void_p), ("Attributes", _wintypes.DWORD)]
+
+            class _TOKEN_USER(_ctypes.Structure):
+                _fields_ = [("User", _SID_AND_ATTRIBUTES)]
+
+            user = _ctypes.cast(buf, _ctypes.POINTER(_TOKEN_USER)).contents
+            sid = _wintypes.LPWSTR()
+            if not _ctypes.windll.advapi32.ConvertSidToStringSidW(user.User.Sid, _ctypes.byref(sid)):
+                raise OSError(_ctypes.GetLastError(), "ConvertSidToStringSidW failed")
+            try:
+                return str(sid.value)
+            finally:
+                _ctypes.windll.kernel32.LocalFree(sid)
+        finally:
+            _ctypes.windll.kernel32.CloseHandle(token)
+
+    def _renforge_bridge_win_set_protected_dacl(path):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        sddl = "D:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)" % _renforge_bridge_win_current_sid()
+        sd = _ctypes.c_void_p()
+        size = _wintypes.ULONG()
+        if not _ctypes.windll.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, _ctypes.byref(sd), _ctypes.byref(size)
+        ):
+            raise OSError(_ctypes.GetLastError(), "ConvertStringSecurityDescriptorToSecurityDescriptorW failed")
+        try:
+            if not _ctypes.windll.advapi32.SetFileSecurityW(str(path), 0x00000004 | 0x80000000, sd):
+                raise OSError(_ctypes.GetLastError(), "SetFileSecurityW failed for %s" % path)
+        finally:
+            _ctypes.windll.kernel32.LocalFree(sd)
+
+    def _renforge_bridge_win_validate_protected_dacl(path):
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        class _ACL(_ctypes.Structure):
+            _fields_ = [
+                ("AclRevision", _wintypes.BYTE),
+                ("Sbz1", _wintypes.BYTE),
+                ("AclSize", _wintypes.WORD),
+                ("AceCount", _wintypes.WORD),
+                ("Sbz2", _wintypes.WORD),
+            ]
+
+        class _ACE_HEADER(_ctypes.Structure):
+            _fields_ = [("AceType", _wintypes.BYTE), ("AceFlags", _wintypes.BYTE), ("AceSize", _wintypes.WORD)]
+
+        sd = _ctypes.c_void_p()
+        dacl = _ctypes.POINTER(_ACL)()
+        status = _ctypes.windll.advapi32.GetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x00000004,
+            None,
+            None,
+            _ctypes.byref(dacl),
+            None,
+            _ctypes.byref(sd),
+        )
+        if status != 0:
+            raise OSError(status, "GetNamedSecurityInfoW failed for %s" % path)
+        try:
+            if not dacl:
+                raise OSError("missing DACL on %s" % path)
+            control = _wintypes.DWORD()
+            revision = _wintypes.DWORD()
+            if not _ctypes.windll.advapi32.GetSecurityDescriptorControl(
+                sd, _ctypes.byref(control), _ctypes.byref(revision)
+            ):
+                raise OSError(_ctypes.GetLastError(), "GetSecurityDescriptorControl failed")
+            if not (control.value & 0x1000):
+                raise OSError("DACL is not protected on %s" % path)
+
+            allowed = {_renforge_bridge_win_current_sid(), "S-1-5-18", "S-1-5-32-544"}
+            for index in range(dacl.contents.AceCount):
+                ace = _ctypes.c_void_p()
+                if not _ctypes.windll.advapi32.GetAce(dacl, index, _ctypes.byref(ace)):
+                    raise OSError(_ctypes.GetLastError(), "GetAce failed")
+                header = _ctypes.cast(ace, _ctypes.POINTER(_ACE_HEADER)).contents
+                if header.AceType != 0:
+                    raise OSError("unexpected ACE type on %s" % path)
+                sid_ptr = _ctypes.c_void_p(ace.value + 8)
+                sid = _wintypes.LPWSTR()
+                if not _ctypes.windll.advapi32.ConvertSidToStringSidW(sid_ptr, _ctypes.byref(sid)):
+                    raise OSError(_ctypes.GetLastError(), "ConvertSidToStringSidW failed")
+                try:
+                    if str(sid.value) not in allowed:
+                        raise OSError("unexpected trustee on private path %s" % path)
+                finally:
+                    _ctypes.windll.kernel32.LocalFree(sid)
+        finally:
+            if sd:
+                _ctypes.windll.kernel32.LocalFree(sd)
+
+    def _renforge_bridge_path_is_symlink(path):
+        import os as _os
+        import stat as _stat
+
+        try:
+            st = _os.lstat(path)
+            if _stat.S_ISLNK(st.st_mode):
+                return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            pass
+        if _os.name == "nt":
+            return _renforge_bridge_win_is_reparse(path)
+        return False
+
+    def _renforge_bridge_validate_control_dir(project_root):
+        """Validate existing private control path without creating or repairing it."""
+        import os as _os
+        import stat as _stat
+
+        renforge_dir = _os.path.join(project_root, ".renforge")
+        control_dir = _os.path.join(renforge_dir, "control")
+        # Reject symlink/reparse ancestors before accepting control contents.
+        if _renforge_bridge_path_is_symlink(renforge_dir):
+            raise OSError("renforge directory must not be a symlink")
+        if _renforge_bridge_path_is_symlink(control_dir):
+            raise OSError("control directory must not be a symlink")
+        try:
+            st = _os.lstat(control_dir)
+        except OSError:
+            raise
+        if not _stat.S_ISDIR(st.st_mode):
+            raise OSError("control directory is not a directory")
+        if _os.name == "nt":
+            _renforge_bridge_win_validate_protected_dacl(control_dir)
+        else:
+            if hasattr(_os, "geteuid") and st.st_uid != _os.geteuid():
+                raise OSError("control directory is not owned by the current user")
+            if (st.st_mode & 0o777) != 0o700:
+                raise OSError("control directory mode must be 0700")
+        return control_dir
+
+    def _renforge_bridge_validate_private_file_stat(st, path):
+        import os as _os
+        import stat as _stat
+
+        if not _stat.S_ISREG(st.st_mode):
+            raise OSError("bridge info is not a regular file: %s" % path)
+        if _os.name == "nt":
+            _renforge_bridge_win_validate_protected_dacl(path)
+        else:
+            if hasattr(_os, "geteuid") and st.st_uid != _os.geteuid():
+                raise OSError("bridge info is not owned by the current user: %s" % path)
+            if (st.st_mode & 0o777) != 0o600:
+                raise OSError("bridge info mode must be 0600: %s" % path)
+
+    def _renforge_bridge_read_starting_info(project_root):
+        """Read and validate the reserved starting bridge.json without following links."""
+        import json as _json
+        import os as _os
+        import stat as _stat
+
+        control_dir = _renforge_bridge_validate_control_dir(project_root)
+        path = _renforge_bridge_info_path(project_root)
+        if _renforge_bridge_path_is_symlink(path):
+            raise OSError("bridge info must not be a symlink")
+
+        if _os.name == "nt":
+            handle = None
+            try:
+                handle = _renforge_bridge_win_create_file(
+                    path,
+                    0x80000000,
+                    0x00000001,
+                    3,
+                    0x00200000,
+                )
+                if _renforge_bridge_win_get_file_type(handle) != 1:
+                    raise OSError("bridge info is not a regular disk file: %s" % path)
+                attrs = _renforge_bridge_win_get_handle_attributes(handle)
+                if attrs & 0x400:
+                    raise OSError("bridge info is a reparse point: %s" % path)
+                _renforge_bridge_win_validate_protected_dacl(path)
+                payload = _renforge_bridge_win_read_handle(handle, _RENFORGE_BRIDGE_INFO_MAX_BYTES + 1)
+            finally:
+                if handle is not None:
+                    _renforge_bridge_win_close_handle(handle)
+        else:
+            try:
+                st = _os.lstat(path)
+            except OSError:
+                raise
+            _renforge_bridge_validate_private_file_stat(st, path)
+            if st.st_size > _RENFORGE_BRIDGE_INFO_MAX_BYTES:
+                raise OSError("bridge info exceeds size limit")
+
+            flags = _os.O_RDONLY
+            if hasattr(_os, "O_NOFOLLOW"):
+                flags |= _os.O_NOFOLLOW
+            if hasattr(_os, "O_CLOEXEC"):
+                flags |= _os.O_CLOEXEC
+            fd = _os.open(path, flags)
+            try:
+                opened = _os.fstat(fd)
+                _renforge_bridge_validate_private_file_stat(opened, path)
+                if opened.st_dev != st.st_dev or opened.st_ino != st.st_ino:
+                    raise OSError("bridge info identity changed during open")
+                payload = _os.read(fd, _RENFORGE_BRIDGE_INFO_MAX_BYTES + 1)
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
+        if len(payload) > _RENFORGE_BRIDGE_INFO_MAX_BYTES:
+            raise OSError("bridge info exceeds size limit")
+        try:
+            data = _json.loads(payload.decode("utf-8"))
+        except Exception:
+            raise OSError("bridge info is not valid JSON")
+        if not isinstance(data, builtins.dict):
+            raise OSError("bridge info must be an object")
+        if set(data.keys()) != set(_RENFORGE_BRIDGE_INFO_KEYS):
+            raise OSError("bridge info keys are invalid")
+        sv = data.get("schema_version")
+        pv = data.get("protocol_version")
+        if type(sv) is not int or isinstance(sv, bool) or sv != 1 or type(pv) is not int or isinstance(pv, bool) or pv != 1:
+            raise OSError("bridge info version is invalid")
+        if data.get("state") != "starting":
+            raise OSError("bridge info is not in starting state")
+        if data.get("host") != "127.0.0.1":
+            raise OSError("bridge info host is invalid")
+        port = data.get("port")
+        if type(port) is not int or isinstance(port, bool) or port != 0:
+            raise OSError("bridge info starting port must be 0")
+        session_id = data.get("session_id")
+        token = data.get("token")
+        recorded_root = data.get("project_root")
+        if not _renforge_bridge_is_session_id(session_id):
+            raise OSError("bridge info session_id is invalid")
+        if not _renforge_bridge_is_token(token):
+            raise OSError("bridge info token is invalid")
+        if not isinstance(recorded_root, str) or not recorded_root:
+            raise OSError("bridge info project_root is invalid")
+        if recorded_root != project_root:
+            raise OSError("bridge info project_root mismatch")
+        return {
+            "schema_version": 1,
+            "protocol_version": 1,
+            "state": "starting",
+            "session_id": session_id,
+            "project_root": recorded_root,
+            "host": "127.0.0.1",
+            "port": 0,
+            "token": token,
+        }
+
+    def _renforge_bridge_fsync_directory(directory):
+        import os as _os
+
+        if not hasattr(_os, "O_RDONLY"):
+            return
+        flags = _os.O_RDONLY
+        if hasattr(_os, "O_DIRECTORY"):
+            flags |= _os.O_DIRECTORY
+        try:
+            fd = _os.open(directory, flags)
+        except OSError:
+            return
+        try:
+            try:
+                _os.fsync(fd)
+            except OSError:
+                pass
+        finally:
+            try:
+                _os.close(fd)
+            except OSError:
+                pass
+
+    def _renforge_bridge_write_ready_info(project_root, payload):
+        """Atomically publish ready bridge.json into an existing private control dir."""
+        import json as _json
+        import os as _os
+        import secrets as _secrets
+        import stat as _stat
+
+        control_dir = _renforge_bridge_validate_control_dir(project_root)
+        path = _renforge_bridge_info_path(project_root)
+        encoded = _json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > _RENFORGE_BRIDGE_INFO_MAX_BYTES:
+            raise OSError("ready bridge info exceeds size limit")
+
+        if _renforge_bridge_path_is_symlink(path):
+            raise OSError("bridge info destination must not be a symlink")
+        if _os.path.lexists(path):
+            try:
+                st = _os.lstat(path)
+            except OSError:
+                raise
+            _renforge_bridge_validate_private_file_stat(st, path)
+
+        if _os.name == "nt":
+            temp_path = None
+            handle = None
+            last_error = None
+            for _ in range(32):
+                candidate = _os.path.join(
+                    control_dir,
+                    ".bridge.json.%s.tmp" % _secrets.token_hex(8),
+                )
+                try:
+                    handle = _renforge_bridge_win_create_file(
+                        candidate,
+                        0xC0000000,
+                        0,
+                        1,
+                        0x00200000,
+                    )
+                except OSError as exc:
+                    win_err = getattr(exc, "winerror", None) or (exc.args[0] if exc.args and isinstance(exc.args[0], int) else None)
+                    if win_err in (8, 183):
+                        last_error = exc
+                        continue
+                    raise OSError("failed to create private temporary bridge info") from exc
+                temp_path = candidate
+                break
+
+            if handle is None or temp_path is None:
+                raise OSError("failed to allocate private temporary bridge info") from last_error
+
+            try:
+                if _renforge_bridge_win_get_file_type(handle) != 1:
+                    raise OSError("temporary bridge info is not a regular disk file")
+                attrs = _renforge_bridge_win_get_handle_attributes(handle)
+                if attrs & 0x400:
+                    raise OSError("temporary bridge info is a reparse point")
+                _renforge_bridge_win_set_protected_dacl(temp_path)
+                _renforge_bridge_win_validate_protected_dacl(temp_path)
+
+                _renforge_bridge_win_write_handle(handle, encoded)
+                _renforge_bridge_win_flush_handle(handle)
+                _renforge_bridge_win_close_handle(handle)
+                handle = None
+
+                if _renforge_bridge_path_is_symlink(path):
+                    raise OSError("bridge info destination must not be a symlink")
+                if _os.path.lexists(path):
+                    _renforge_bridge_win_validate_protected_dacl(path)
+
+                _renforge_bridge_win_replace_file(path, temp_path, flags=1)
+                temp_path = None
+
+                _renforge_bridge_win_set_protected_dacl(path)
+                _renforge_bridge_win_validate_protected_dacl(path)
+                if _renforge_bridge_win_is_reparse(path):
+                    raise OSError("published bridge info must not be a reparse point")
+            finally:
+                if handle is not None:
+                    _renforge_bridge_win_close_handle(handle)
+                if temp_path is not None:
+                    try:
+                        if _os.path.lexists(temp_path) or _renforge_bridge_path_is_symlink(temp_path):
+                            _os.unlink(temp_path)
+                    except OSError:
+                        pass
+        else:
+            flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL
+            if hasattr(_os, "O_NOFOLLOW"):
+                flags |= _os.O_NOFOLLOW
+            if hasattr(_os, "O_CLOEXEC"):
+                flags |= _os.O_CLOEXEC
+
+            temp_path = None
+            fd = None
+            last_error = None
+            for _ in range(32):
+                candidate = _os.path.join(
+                    control_dir,
+                    ".bridge.json.%s.tmp" % _secrets.token_hex(8),
+                )
+                try:
+                    fd = _os.open(candidate, flags, 0o600)
+                except FileExistsError as exc:
+                    last_error = exc
+                    continue
+                except OSError as exc:
+                    raise OSError("failed to create private temporary bridge info") from exc
+                temp_path = candidate
+                break
+            if fd is None or temp_path is None:
+                raise OSError("failed to allocate private temporary bridge info") from last_error
+
+            try:
+                opened = _os.fstat(fd)
+                _renforge_bridge_validate_private_file_stat(opened, temp_path)
+                written = 0
+                while written < len(encoded):
+                    chunk = _os.write(fd, encoded[written:])
+                    if chunk <= 0:
+                        raise OSError("short write while publishing bridge info")
+                    written += chunk
+                _os.fsync(fd)
+                opened = _os.fstat(fd)
+                _renforge_bridge_validate_private_file_stat(opened, temp_path)
+                _os.close(fd)
+                fd = None
+                if _renforge_bridge_path_is_symlink(path):
+                    raise OSError("bridge info destination must not be a symlink")
+                _os.replace(temp_path, path)
+                temp_path = None
+                _renforge_bridge_fsync_directory(control_dir)
+            finally:
+                if fd is not None:
+                    try:
+                        _os.close(fd)
+                    except OSError:
+                        pass
+                if temp_path is not None:
+                    try:
+                        if _os.path.lexists(temp_path) or _renforge_bridge_path_is_symlink(temp_path):
+                            _os.unlink(temp_path)
+                    except OSError:
+                        pass
+
+    def _renforge_publish_ready(bridge, port):
+        """Validate reserved starting metadata and publish ready, or fail closed."""
+        try:
+            starting = _renforge_bridge_read_starting_info(bridge.project_root)
+        except Exception:
+            _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_INFO_CONFLICT)
+            return False
+
+        if (
+            starting["session_id"] != bridge.session_id
+            or starting["token"] != bridge.token
+            or starting["project_root"] != bridge.project_root
+            or starting["host"] != bridge.host
+        ):
+            _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_IDENTITY_MISMATCH)
+            return False
+
+        if type(port) is not int or isinstance(port, bool) or port < 1 or port > 65535:
+            _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_PUBLICATION_FAILED)
+            return False
+
+        ready = {
+            "schema_version": 1,
+            "protocol_version": 1,
+            "state": "ready",
+            "session_id": bridge.session_id,
+            "project_root": bridge.project_root,
+            "host": "127.0.0.1",
+            "port": port,
+            "token": bridge.token,
+        }
+        try:
+            _renforge_bridge_write_ready_info(bridge.project_root, ready)
+        except Exception:
+            _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_PUBLICATION_FAILED)
+            return False
+        return True
 
     def _renforge_listener(bridge):
         # The listener thread survives renpy.reload_script(), which restores
@@ -3208,7 +3910,7 @@ init python:
         # fires ``except socket.timeout:``, silently killing the thread and
         # leaving the game running with a dead bridge. Local imports read
         # from sys.modules, which reload never touches, so the loop stays
-        # alive across reloads. The helpers (_renforge_reply / _publish /
+        # alive across reloads. The helpers (_renforge_reply / publish /
         # _RenforgeRequest) are called inside the inner try/except, so a
         # transient NameError there is caught and only drops one connection;
         # they too use local imports for their stdlib references.
@@ -3216,12 +3918,16 @@ init python:
         import json as _json
         server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         server.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        published = False
         try:
             server.bind((bridge.host, bridge.port))
             bridge.port = server.getsockname()[1]
             # Plain int only — never hang the bridge object off the store.
             setattr(renpy.store, "renforge_bridge_port", bridge.port)
-            _renforge_publish(bridge, bridge.port)
+            if not _renforge_publish_ready(bridge, bridge.port):
+                bridge.stop.set()
+                return
+            published = True
             server.listen(5)
 
             while not bridge.stop.is_set():
@@ -3266,8 +3972,15 @@ init python:
                     # reload_script blocks the main thread) — must never kill
                     # the accept loop and close the server socket with it.
                     continue
+        except Exception:
+            if not published:
+                _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_PUBLICATION_FAILED)
+                bridge.stop.set()
         finally:
-            server.close()
+            try:
+                server.close()
+            except Exception:
+                pass
 
     def _renforge_install_callbacks(bridge):
         def _renforge_on_label(name, abnormal):
@@ -3329,19 +4042,52 @@ init python:
                 setattr(renpy.store, "renforge_bridge_port", existing.port)
             return
 
-        token = os.environ.get("RENFORGE_BRIDGE_TOKEN", "")
-        token = "" if token is None else str(token).strip()
-        if not token:
+        # Absent token means the launcher did not request a bridge — stay off.
+        raw_token = os.environ.get("RENFORGE_BRIDGE_TOKEN")
+        if raw_token is None:
             return
 
-        host = os.environ.get("RENFORGE_BRIDGE_HOST", "127.0.0.1")
+        token = "" if raw_token is None else str(raw_token).strip()
+        session_id = os.environ.get("RENFORGE_BRIDGE_SESSION_ID", "")
+        session_id = "" if session_id is None else str(session_id).strip()
+        project_root = os.environ.get("RENFORGE_BRIDGE_PROJECT_ROOT", "")
+        project_root = "" if project_root is None else str(project_root).strip()
+
+        identity_ok = True
+        if not _renforge_bridge_is_token(token) or not _renforge_bridge_is_session_id(session_id):
+            identity_ok = False
+        elif not project_root or not os.path.isabs(project_root):
+            identity_ok = False
+        else:
+            try:
+                if _renforge_bridge_path_is_symlink(project_root):
+                    identity_ok = False
+                elif not os.path.isdir(project_root):
+                    identity_ok = False
+                else:
+                    canonical = os.path.realpath(project_root)
+                    if canonical != project_root:
+                        # Env must already be the canonical absolute root.
+                        identity_ok = False
+                    else:
+                        project_root = canonical
+            except OSError:
+                identity_ok = False
+
+        if not identity_ok:
+            _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_IDENTITY_MISMATCH)
+            return
+
+        # Host is fixed to loopback; ignore any alternate host env.
+        host = "127.0.0.1"
         try:
             port = int(os.environ.get("RENFORGE_BRIDGE_PORT", "0") or "0")
         except (TypeError, ValueError):
             port = 0
+        if port < 0 or port > 65535:
+            port = 0
 
-        basedir = getattr(renpy.config, "basedir", "") or os.getcwd()
-        bridge = _RenforgeBridge(host, port, token, basedir)
+        bridge = _RenforgeBridge(host, port, token, project_root, session_id)
         _renforge_runtime.bridge = bridge
 
         _renforge_install_callbacks(bridge)

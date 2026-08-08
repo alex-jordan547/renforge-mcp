@@ -35,17 +35,20 @@ class BridgeClient:
 
     @classmethod
     def from_project(cls, project_root: str | Path, *, timeout: float = 5.0) -> "BridgeClient":
-        """Build a client from ``<project_root>/.renforge/bridge.json``.
+        """Build a client from private control-directory bridge metadata.
 
-        The running bridge publishes its host/port/token there on startup.
+        The running bridge publishes host/port/token under
+        ``<project_root>/.renforge/control/bridge.json`` on startup.
         """
-        info_path = Path(project_root) / ".renforge" / "bridge.json"
-        data = json.loads(info_path.read_text(encoding="utf-8"))
+        # Local import avoids the cycle: control.py imports BridgeProtocolError.
+        from renforge.bridge.control import read_bridge_info
+
+        info = read_bridge_info(Path(project_root), require_ready=True)
         return cls(
             BridgeConfig(
-                host=str(data.get("host", "127.0.0.1")),
-                port=int(data["port"]),
-                token=str(data.get("token", "")),
+                host=info.host,
+                port=info.port,
+                token=info.token,
                 timeout=timeout,
             )
         )

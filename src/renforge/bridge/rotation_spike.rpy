@@ -3,19 +3,9 @@
 
 init 1600 python hide:
     import math
-    import sys
-    import types
-
-    if "_renforge_runtime" not in sys.modules:
-        sys.modules["_renforge_runtime"] = types.ModuleType("_renforge_runtime")
-    _rt = sys.modules["_renforge_runtime"]
-    if not hasattr(_rt, "rotation_spike"):
-        _rt.rotation_spike = types.SimpleNamespace()
-    _state = _rt.rotation_spike
 
     SCREEN = "renforge_editor_rotation_fixture"
     TARGET_IDS = ("rotation_target", "rotation_reference", "rotation_other")
-    BACKUP_STYLE = {}
 
 
     def _walk_find_id(displayable, widget_id, seen=None):
@@ -367,62 +357,6 @@ init 1600 python hide:
                 pass
         return record
 
-    def _backup_style(widget):
-        style = getattr(widget, "style", None)
-        if style is None:
-            return None
-        try:
-            return {
-                "xpos": getattr(style, "xpos", 0),
-                "ypos": getattr(style, "ypos", 0),
-                "alpha": getattr(style, "alpha", 1.0),
-                "visible": getattr(style, "visible", True),
-            }
-        except Exception:
-            return None
-
-    def _apply_hidden(widget):
-        style = getattr(widget, "style", None)
-        if style is None:
-            return False
-        try:
-            style.xpos = -4000
-            style.ypos = -4000
-            try:
-                style.alpha = 0.0
-            except Exception:
-                pass
-            try:
-                style.visible = False
-            except Exception:
-                pass
-            return True
-        except Exception:
-            return False
-
-    def _apply_backup(widget, backup):
-        style = getattr(widget, "style", None)
-        if style is None or not isinstance(backup, dict):
-            return False
-        try:
-            if "xpos" in backup:
-                style.xpos = backup["xpos"]
-            if "ypos" in backup:
-                style.ypos = backup["ypos"]
-            if "alpha" in backup:
-                try:
-                    style.alpha = backup["alpha"]
-                except Exception:
-                    pass
-            if "visible" in backup:
-                try:
-                    style.visible = backup["visible"]
-                except Exception:
-                    pass
-            return True
-        except Exception:
-            return False
-
     def _handle_measure(payload):
         request_ids = payload.get("target_ids") if isinstance(payload, dict) else None
         if not isinstance(request_ids, list) or not request_ids:
@@ -432,77 +366,6 @@ init 1600 python hide:
             geometry[str(item)] = _measure_widget(str(item))
         return {"ok": True, "geometry": geometry}
 
-    def _handle_set_isolation(payload):
-        target_id = None
-        if isinstance(payload, dict):
-            target_id = payload.get("target_id", payload.get("widget_id"))
-        elif isinstance(payload, str):
-            target_id = payload
-        if target_id is None:
-            target_id = "all"
-        if target_id == "all":
-            _state.selected = "all"
-            for wid in TARGET_IDS:
-                widget = _get_widget(wid)
-                if widget is None:
-                    continue
-                _apply_backup(widget, BACKUP_STYLE.get(wid) or {})
-                try:
-                    renpy.display.render.invalidate(widget)
-                except Exception:
-                    pass
-            renpy.restart_interaction()
-            return {"ok": True, "target_id": "all"}
-
-        if target_id not in TARGET_IDS:
-            return {"ok": False, "error": "unknown_target_id", "target_id": target_id}
-        _state.selected = str(target_id)
-        if not BACKUP_STYLE:
-            for wid in TARGET_IDS:
-                candidate = _get_widget(wid)
-                BACKUP_STYLE[wid] = _backup_style(candidate)
-
-        failed = []
-        for wid in TARGET_IDS:
-            candidate = _get_widget(wid)
-            if candidate is None:
-                failed.append(wid)
-                continue
-            if wid == target_id:
-                if not _apply_backup(candidate, BACKUP_STYLE.get(wid) or {}):
-                    failed.append(wid)
-            else:
-                if not _apply_hidden(candidate):
-                    failed.append(wid)
-            try:
-                renpy.display.render.invalidate(candidate)
-            except Exception:
-                pass
-
-        renpy.restart_interaction()
-        return {"ok": len(failed) == 0, "target_id": target_id, "failed": failed}
-
-    def _handle_restore(payload):
-        if not BACKUP_STYLE:
-            for wid in TARGET_IDS:
-                widget = _get_widget(wid)
-                BACKUP_STYLE[wid] = _backup_style(widget)
-        restored = []
-        for wid in TARGET_IDS:
-            widget = _get_widget(wid)
-            if widget is None:
-                continue
-            if _apply_backup(widget, BACKUP_STYLE.get(wid) or {}):
-                restored.append(wid)
-                try:
-                    renpy.display.render.invalidate(widget)
-                except Exception:
-                    pass
-        renpy.restart_interaction()
-        return {"ok": True, "restored": restored}
-
     handlers = globals().get("_RENFORGE_HANDLERS")
     if isinstance(handlers, dict):
         handlers["rotation_spike_measure"] = _handle_measure
-        handlers["rotation_spike_set_isolation"] = _handle_set_isolation
-        handlers["rotation_spike_restore"] = _handle_restore

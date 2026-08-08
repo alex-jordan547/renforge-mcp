@@ -127,6 +127,8 @@ screen _rf_editor_toolbar(tools_visible):
                 frame:
                     id "rf_toolbar_screen_badge"
                     ysize _renforge_editor_ui_px(52)
+                    xmaximum _renforge_editor_ui_px(_RF_BADGE_MAX_W)
+                    xfill False
                     background Frame(_renforge_editor_ui_frame("chip"), _RF_FRAME_CHIP, _RF_FRAME_CHIP)
                     padding (_renforge_editor_ui_px(_RF_S3), 0)
                     yalign 0.5
@@ -135,6 +137,7 @@ screen _rf_editor_toolbar(tools_visible):
                         color _renforge_editor_ui_color("meta")
                         font _renforge_editor_ui_font()
                         size _renforge_editor_ui_px(_RF_T_XS)
+                        xmaximum _renforge_editor_ui_px(_RF_BADGE_TEXT_MAX_W)
                         yalign 0.5
 
             use _rf_vrule()
@@ -176,6 +179,7 @@ screen _rf_editor_toolbar(tools_visible):
                     color _renforge_editor_ui_color("meta")
                     font _renforge_editor_ui_font()
                     size _renforge_editor_ui_px(_RF_T_MICRO)
+                    xmaximum _renforge_editor_ui_px(_RF_STATUS_MAX_W)
                     yalign 0.5
             else:
                 text "":
@@ -231,6 +235,7 @@ screen _rf_editor_toolbar(tools_visible):
                         )
                         yalign 0.5
                     text _renforge_editor_save_label():
+                        id "rf_save_text"
                         color _renforge_editor_ui_color("accent_on")
                         font _renforge_editor_ui_font()
                         size _renforge_editor_ui_px(_RF_T_XS, minimum=14)

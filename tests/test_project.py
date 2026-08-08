@@ -18,6 +18,31 @@ def test_renpy_project_with_game_dir(tmp_path: Path) -> None:
     assert project.cache_dir.is_dir()
 
 
+def test_project_identity_survives_symlink_retarget(tmp_path: Path) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    (project_a / "game").mkdir(parents=True)
+    (project_b / "game").mkdir(parents=True)
+    (project_a / "marker").write_text("a", encoding="utf-8")
+    (project_b / "marker").write_text("b", encoding="utf-8")
+    alias = tmp_path / "project-link"
+    try:
+        alias.symlink_to(project_a, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    project = RenpyProject(alias)
+    alias.unlink()
+    alias.symlink_to(project_b, target_is_directory=True)
+
+    assert project.root == project_a.resolve()
+    assert project.abs_root == project_a.resolve()
+    assert project.game_dir == project_a.resolve() / "game"
+    assert project.cache_dir == project_a.resolve() / ".renforge"
+    assert project.files(["marker"]) == [project_a.resolve() / "marker"]
+    assert project.has_config("marker")
+
+
 def test_renpy_project_without_game_dir_raises(tmp_path: Path) -> None:
     project_root = tmp_path / "invalid_project"
     project_root.mkdir()

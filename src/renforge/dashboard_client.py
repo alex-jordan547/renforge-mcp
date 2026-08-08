@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -21,7 +22,9 @@ def _post(project_path: str, route: str, body: dict[str, Any]) -> dict[str, Any]
     selected_project = connection.get("project")
     if not all(isinstance(value, str) and value for value in (url, token, selected_project)):
         return None
-    if Path(selected_project).expanduser().resolve() != Path(project_path).expanduser().resolve():
+    selected_key = os.path.normcase(str(Path(selected_project).expanduser().resolve()))
+    requested_key = os.path.normcase(str(Path(project_path).expanduser().resolve()))
+    if selected_key != requested_key:
         return None
 
     endpoint = urljoin(url.rstrip("/") + "/", route)

@@ -3,8 +3,8 @@
 These back the MCP tools that let an agent launch a game, look at it
 (screenshots, state), advance dialogue, and pick menu choices. A module-level
 registry keeps launched sessions alive across stateless tool calls; per-command
-tools connect through ``<project>/.renforge/bridge.json`` so they also work
-against a game launched elsewhere.
+tools connect through private control-directory bridge metadata so they also
+work against a game launched elsewhere.
 
 This module stays backend-agnostic (no MCP import); the server wraps the raw
 PNG from :func:`screenshot_png` into an MCP image.
@@ -16,7 +16,6 @@ import json
 import inspect
 import math
 import os
-import signal
 import threading
 import time
 from collections import deque
@@ -27,9 +26,7 @@ from ..autopilot import autopilot as _autopilot
 from ..bridge.client import BridgeClient, BridgeError
 from ..bridge.launcher import (
     BridgeSession,
-    ProjectBridgeLock,
     launch_with_bridge,
-    remove_bridge_artifacts,
 )
 from ..effect_wait import expected_events_for_action
 from ..effect_wait import wait_for_effect as _wait_for_business_effect
@@ -56,7 +53,8 @@ _LAUNCH_LOCK = threading.Lock()
 
 
 class _LaunchTask:
-    def __init__(self, *, requested_editor: bool = False) -> None:
+    def __init__(self, project_root: Path, *, requested_editor: bool = False) -> None:
+        self.project_root = project_root
         self.started = time.monotonic()
         self.requested_editor = requested_editor
         self.finished: float | None = None
@@ -87,9 +85,14 @@ def cancelled_launch_result(*, phase: str = "waiting_for_bridge") -> dict[str, A
     }
 
 
-def _run_launch(task: _LaunchTask, launch: Callable[[threading.Event], dict], *, editor: bool = False) -> None:
+def _run_launch(
+    task: _LaunchTask,
+    launch: Callable[[Path, threading.Event], dict[str, Any]],
+    *,
+    editor: bool = False,
+) -> None:
     try:
-        task.result = launch(task.cancel_event)
+        task.result = launch(task.project_root, task.cancel_event)
         if isinstance(task.result, dict):
             task.result.setdefault("editor", editor)
     except Exception as exc:
@@ -140,19 +143,20 @@ def _launch_task_status(task: _LaunchTask) -> dict[str, Any]:
 
 
 def start_launch(
-    project_path: str,
-    launch: Callable[[threading.Event], dict],
+    project_path: str | Path,
+    launch: Callable[[Path, threading.Event], dict[str, Any]],
     *,
     wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
     editor: bool = False,
 ) -> dict[str, Any]:
-    key = _key(project_path)
+    project = RenpyProject(Path(project_path))
+    key = _key(project.root)
     should_start = False
     with _LAUNCH_LOCK:
         _prune_launches(time.monotonic())
         task = _LAUNCHES.get(key)
         if task is None or task.done_event.is_set():
-            task = _LaunchTask(requested_editor=editor)
+            task = _LaunchTask(project.root, requested_editor=editor)
             _LAUNCHES[key] = task
             should_start = True
 
@@ -221,7 +225,8 @@ def launch_status(project_path: str) -> dict[str, Any]:
 
 
 def _key(project_path: str | Path) -> str:
-    return str(Path(project_path).expanduser().resolve())
+    canonical = Path(project_path).expanduser().resolve()
+    return os.path.normcase(str(canonical))
 
 
 def _client(project_path: str | Path) -> BridgeClient:
@@ -514,69 +519,48 @@ def stop_game(project_path: str) -> dict:
             "launch_cancelled": True,
         }
     # No in-process session: the game may have been launched elsewhere (e.g. the
-    # dashboard server). Stop it through the published bridge.json instead.
+    # dashboard server). Stop it through authenticated bridge control instead.
     return stop_external_game(project_path)
 
 
-def stop_external_game(project_path: str) -> dict:
-    """Stop a game launched by another process, using ``bridge.json``.
+def stop_external_game(project_path: str, *, timeout: float = 5.0) -> dict:
+    """Stop a game launched by another process via authenticated bridge control.
 
-    Kills the game only after the bridge answers a ``ping`` with the token from
-    ``bridge.json`` — that proves the recorded PID is really our game and not a
-    recycled/unrelated process. A stale ``bridge.json`` (no live bridge) is just
-    cleaned up.
+    Discovers the live bridge through private control-directory metadata and
+    issues ``control("quit")`` without acquiring the owner-held project lock.
+    Missing or unreachable metadata is a no-op; pre-migration metadata is
+    ignored.
     """
     try:
         project = RenpyProject(Path(project_path))
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    project_lock = ProjectBridgeLock(project.root / ".renforge" / "bridge.lock")
     try:
-        project_lock.acquire()
-    except LaunchError as exc:
-        return {**exc.to_dict(), "ready": False}
+        client = BridgeClient.from_project(project.root, timeout=timeout)
+    except Exception:
+        return {"ok": True, "was_running": False}
 
     try:
-        info_path = project.root / ".renforge" / "bridge.json"
-        if not info_path.exists():
-            return {"ok": True, "was_running": False}
+        reply = client.control("quit")
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "was_running": False}
 
-        try:
-            info = json.loads(info_path.read_text(encoding="utf-8"))
-        except Exception:
-            info = {}
+    if (
+        isinstance(reply, dict)
+        and reply.get("ok") is True
+        and reply.get("action") == "quit"
+    ):
+        return {"ok": True, "was_running": True}
 
-        alive = False
-        try:
-            reply = BridgeClient.from_project(project.root, timeout=1.0).ping()
-            alive = isinstance(reply, dict) and reply.get("pong") is True
-        except Exception:
-            alive = False
-
-        was_running = False
-        pid = info.get("pid")
-        if alive and isinstance(pid, int):
-            was_running = _terminate_pid(pid)
-
-        remove_bridge_artifacts(project.root)
-        return {"ok": True, "was_running": was_running}
-    finally:
-        project_lock.release()
-
-
-def _terminate_pid(pid: int) -> bool:
-    """Force-kill ``pid``. Returns whether it existed."""
-    # SIGKILL does not exist on Windows; there os.kill with SIGTERM calls
-    # TerminateProcess, which is already an unconditional kill.
-    sig = getattr(signal, "SIGKILL", signal.SIGTERM)
-    try:
-        os.kill(pid, sig)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return False
-    return True
+    error_msg = "bridge quit failed"
+    if isinstance(reply, dict) and reply.get("error"):
+        error_msg = str(reply.get("error"))
+    return {
+        "ok": False,
+        "error": error_msg,
+        "was_running": False,
+    }
 
 
 def stop_all() -> None:

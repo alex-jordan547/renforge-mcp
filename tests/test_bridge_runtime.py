@@ -9,6 +9,7 @@ Ren'Py's main-thread ``periodic_callbacks``) executes it and returns the reply.
 from __future__ import annotations
 
 import base64
+import contextlib
 import threading
 import time
 import types
@@ -208,7 +209,20 @@ def _fake_renpy(store):
 
 @pytest.fixture
 def running_bridge(tmp_path, monkeypatch):
-    monkeypatch.setenv("RENFORGE_BRIDGE_TOKEN", "runtime-token")
+    import json
+    import stat
+
+    from renforge.bridge.control import write_starting_bridge_info
+
+    project_root = tmp_path.resolve(strict=True)
+    session_id = "a" * 32
+    token = "b" * 64
+
+    write_starting_bridge_info(project_root, session_id=session_id, token=token)
+
+    monkeypatch.setenv("RENFORGE_BRIDGE_TOKEN", token)
+    monkeypatch.setenv("RENFORGE_BRIDGE_SESSION_ID", session_id)
+    monkeypatch.setenv("RENFORGE_BRIDGE_PROJECT_ROOT", str(project_root))
     monkeypatch.setenv("RENFORGE_BRIDGE_PORT", "0")
 
     store = types.SimpleNamespace(score=7, player_name="Rin", _hidden="x")
@@ -225,7 +239,7 @@ def running_bridge(tmp_path, monkeypatch):
     store.QuickLoad = _QuickLoad()
 
     renpy = _fake_renpy(store)
-    renpy.config.basedir = str(tmp_path)
+    renpy.config.basedir = str(project_root)
 
     class _FakeEvent:
         def __init__(self, event_type, attributes=None):
@@ -282,20 +296,264 @@ def running_bridge(tmp_path, monkeypatch):
     pump_thread = threading.Thread(target=pump, daemon=True)
     pump_thread.start()
 
-    # Wait for the listener to publish bridge.json (as the real launcher does).
-    info_path = tmp_path / ".renforge" / "bridge.json"
+    # Wait for the listener to publish ready metadata under the private control path.
+    info_path = project_root / ".renforge" / "control" / "bridge.json"
+    ready_payload = None
     for _ in range(300):
         if info_path.exists():
-            break
+            try:
+                payload = json.loads(info_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("state") == "ready":
+                ready_payload = payload
+                break
         time.sleep(0.01)
+    assert ready_payload is not None, "bridge did not publish ready metadata"
+    assert ready_payload["session_id"] == session_id
+    assert ready_payload["token"] == token
+    assert ready_payload["project_root"] == str(project_root)
+    assert ready_payload["host"] == "127.0.0.1"
+    assert isinstance(ready_payload["port"], int) and 1 <= ready_payload["port"] <= 65535
+    mode = stat.S_IMODE(info_path.lstat().st_mode)
+    assert mode == 0o600
+    assert not info_path.is_symlink()
+    assert not (project_root / ".renforge" / "bridge.json").exists()
 
-    client = BridgeClient.from_project(tmp_path)
-    env = types.SimpleNamespace(client=client, store=store, renpy=renpy, globs=globs)
+    client = BridgeClient.from_project(project_root)
+    env = types.SimpleNamespace(
+        client=client,
+        store=store,
+        renpy=renpy,
+        globs=globs,
+        project_root=project_root,
+        session_id=session_id,
+        token=token,
+    )
     yield env
 
     stop.set()
     bridge.stop.set()
 
+
+def _seed_starting_bridge(project_root: Path, *, session_id: str, token: str) -> None:
+    from renforge.bridge.control import write_starting_bridge_info
+
+    write_starting_bridge_info(project_root, session_id=session_id, token=token)
+
+
+def _exec_bridge_with_env(tmp_path, monkeypatch, *, env: dict[str, str], seed_starting=True):
+    import io
+    import sys
+
+    project_root = tmp_path.resolve(strict=True)
+    session_id = env.get("RENFORGE_BRIDGE_SESSION_ID", "a" * 32)
+    token = env.get("RENFORGE_BRIDGE_TOKEN", "b" * 64)
+    if seed_starting:
+        _seed_starting_bridge(project_root, session_id=session_id if len(session_id) == 32 else "a" * 32, token=token if len(token) == 64 else "b" * 64)
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    if "RENFORGE_BRIDGE_PROJECT_ROOT" not in env:
+        monkeypatch.setenv("RENFORGE_BRIDGE_PROJECT_ROOT", str(project_root))
+    if "RENFORGE_BRIDGE_PORT" not in env:
+        monkeypatch.setenv("RENFORGE_BRIDGE_PORT", "0")
+
+    store = types.SimpleNamespace()
+    renpy = _fake_renpy(store)
+    renpy.config.basedir = str(project_root)
+
+    pygame = types.ModuleType("pygame_sdl2")
+    pygame.event = types.SimpleNamespace(Event=object, post=lambda *_a, **_k: None)
+    monkeypatch.setitem(sys.modules, "pygame_sdl2", pygame)
+    sys.modules.pop("_renforge_runtime", None)
+
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    globs = {"__name__": "bridge_rpy", "renpy": renpy}
+    exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), globs)
+    runtime = sys.modules.get("_renforge_runtime")
+    bridge = getattr(runtime, "bridge", None)
+    return project_root, bridge, stderr
+
+
+def test_bridge_publishes_ready_under_private_control_path(running_bridge):
+    info_path = running_bridge.project_root / ".renforge" / "control" / "bridge.json"
+    assert info_path.exists()
+    assert not (running_bridge.project_root / ".renforge" / "bridge.json").exists()
+    assert running_bridge.client.ping().get("pong") is True
+
+
+def test_bridge_startup_emits_info_conflict_when_starting_record_missing(tmp_path, monkeypatch):
+    project_root, bridge, stderr = _exec_bridge_with_env(
+        tmp_path,
+        monkeypatch,
+        env={
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(tmp_path.resolve(strict=True)),
+        },
+        seed_starting=False,
+    )
+    assert bridge is not None
+    for _ in range(300):
+        if bridge.stop.is_set():
+            break
+        time.sleep(0.01)
+    assert bridge.stop.is_set()
+    assert "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n" in stderr.getvalue()
+    assert not (project_root / ".renforge" / "control" / "bridge.json").exists()
+    assert not (project_root / ".renforge" / "bridge.json").exists()
+
+
+def test_bridge_startup_emits_identity_mismatch_when_session_differs(tmp_path, monkeypatch):
+    project_root = tmp_path.resolve(strict=True)
+    _seed_starting_bridge(project_root, session_id="a" * 32, token="b" * 64)
+    _, bridge, stderr = _exec_bridge_with_env(
+        tmp_path,
+        monkeypatch,
+        env={
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "c" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(project_root),
+        },
+        seed_starting=False,
+    )
+    assert bridge is not None
+    for _ in range(300):
+        if bridge.stop.is_set():
+            break
+        time.sleep(0.01)
+    assert bridge.stop.is_set()
+    assert stderr.getvalue() == "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_MANIFEST_IDENTITY_MISMATCH\n"
+    # Reserved starting record remains untouched on identity failure.
+    payload = (project_root / ".renforge" / "control" / "bridge.json").read_text(encoding="utf-8")
+    assert '"state":"starting"' in payload or '"state": "starting"' in payload
+
+
+def test_bridge_startup_emits_identity_mismatch_for_invalid_env_identity(tmp_path, monkeypatch):
+    project_root = tmp_path.resolve(strict=True)
+    cases = [
+        {
+            "RENFORGE_BRIDGE_TOKEN": "not-a-token",
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(project_root),
+        },
+        {
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "short",
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(project_root),
+        },
+        {
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": "",
+        },
+        {
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": "relative/path",
+        },
+    ]
+    for env in cases:
+        _, bridge, stderr = _exec_bridge_with_env(
+            tmp_path,
+            monkeypatch,
+            env=env,
+            seed_starting=False,
+        )
+        assert bridge is None
+        assert stderr.getvalue() == "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_MANIFEST_IDENTITY_MISMATCH\n"
+
+
+def test_bridge_startup_rejects_non_canonical_project_root(tmp_path, monkeypatch):
+    project_root = tmp_path.resolve(strict=True)
+    _seed_starting_bridge(project_root, session_id="a" * 32, token="b" * 64)
+    alias = tmp_path.parent / (tmp_path.name + "-alias")
+    if alias.exists() or alias.is_symlink():
+        alias.unlink()
+    alias.symlink_to(project_root, target_is_directory=True)
+    _, bridge, stderr = _exec_bridge_with_env(
+        tmp_path,
+        monkeypatch,
+        env={
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(alias),
+        },
+        seed_starting=False,
+    )
+    assert bridge is None
+    assert stderr.getvalue() == "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_MANIFEST_IDENTITY_MISMATCH\n"
+
+
+def test_bridge_startup_emits_info_conflict_when_bridge_info_is_symlink(tmp_path, monkeypatch):
+    project_root = tmp_path.resolve(strict=True)
+    control = project_root / ".renforge" / "control"
+    control.mkdir(parents=True)
+    import os
+
+    os.chmod(control, 0o700)
+    victim = project_root / "victim.json"
+    victim.write_text("{}", encoding="utf-8")
+    _seed_starting_bridge(project_root, session_id="a" * 32, token="b" * 64)
+    info_path = control / "bridge.json"
+    info_path.unlink()
+    info_path.symlink_to(victim)
+
+    _, bridge, stderr = _exec_bridge_with_env(
+        tmp_path,
+        monkeypatch,
+        env={
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(project_root),
+        },
+        seed_starting=False,
+    )
+    assert bridge is not None
+    for _ in range(300):
+        if bridge.stop.is_set():
+            break
+        time.sleep(0.01)
+    assert bridge.stop.is_set()
+    assert stderr.getvalue() == "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n"
+    assert victim.read_text(encoding="utf-8") == "{}"
+
+
+def test_bridge_startup_emits_info_conflict_when_renforge_ancestor_is_symlink(tmp_path, monkeypatch):
+    project_root = tmp_path.resolve(strict=True)
+    real_control_parent = project_root / "real-renforge"
+    real_control_parent.mkdir()
+    import os
+
+    os.chmod(real_control_parent, 0o700)
+    (project_root / ".renforge").symlink_to(real_control_parent, target_is_directory=True)
+    # Place a control dir under the linked tree so only the .renforge ancestor is the link.
+    control = real_control_parent / "control"
+    control.mkdir()
+    os.chmod(control, 0o700)
+    (control / "bridge.json").write_text("{}", encoding="utf-8")
+    os.chmod(control / "bridge.json", 0o600)
+
+    _, bridge, stderr = _exec_bridge_with_env(
+        tmp_path,
+        monkeypatch,
+        env={
+            "RENFORGE_BRIDGE_TOKEN": "b" * 64,
+            "RENFORGE_BRIDGE_SESSION_ID": "a" * 32,
+            "RENFORGE_BRIDGE_PROJECT_ROOT": str(project_root),
+        },
+        seed_starting=False,
+    )
+    assert bridge is not None
+    for _ in range(300):
+        if bridge.stop.is_set():
+            break
+        time.sleep(0.01)
+    assert bridge.stop.is_set()
+    assert stderr.getvalue() == "RENFORGE_BRIDGE_STARTUP_ERROR=BRIDGE_INFO_CONFLICT\n"
 
 def test_ping_roundtrips_through_main_thread(running_bridge):
     assert running_bridge.client.ping().get("pong") is True
@@ -2635,3 +2893,207 @@ def test_editor_locked_selection_clears_current_host_capabilities(
         assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
     finally:
         globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import os
+
+    store = types.SimpleNamespace()
+    renpy = _fake_renpy(store)
+    renpy.config.basedir = str(tmp_path)
+    globs = {"__name__": "bridge_rpy", "renpy": renpy}
+    globs["builtins"] = __builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__
+    exec(compile(_load_bridge_body(), "bridge.rpy", "exec"), globs)
+
+    project_root = str(tmp_path)
+    control_dir = tmp_path / ".renforge" / "control"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    if hasattr(os, "chmod") and os.name != "nt":
+        os.chmod(control_dir, 0o700)
+
+    bridge_info_file = control_dir / "bridge.json"
+
+    # Test reading starting info with invalid version types (bool, float, str, None)
+    for bad_ver in [True, 1.0, "1", None]:
+        payload = {
+            "schema_version": bad_ver,
+            "protocol_version": 1,
+            "state": "starting",
+            "session_id": "0" * 32,
+            "project_root": project_root,
+            "host": "127.0.0.1",
+            "port": 0,
+            "token": "0" * 64,
+        }
+        bridge_info_file.write_text(json.dumps(payload), encoding="utf-8")
+        if hasattr(os, "chmod") and os.name != "nt":
+            os.chmod(bridge_info_file, 0o600)
+
+        with pytest.raises(OSError, match="bridge info version is invalid"):
+            globs["_renforge_bridge_read_starting_info"](project_root)
+
+    # Test Windows adapter execution path via seam mocking of Win32 wrappers
+    calls = {
+        "create_file": [],
+        "close_handle": [],
+        "get_file_type": [],
+        "get_handle_attrs": [],
+        "read_handle": [],
+        "write_handle": [],
+        "flush_handle": [],
+        "replace_file": [],
+        "set_dacl": [],
+        "val_dacl": [],
+    }
+
+    dummy_handle = 1001
+    file_contents = {}
+
+    def fake_create_file(path, access, share_mode, creation_disposition, flags_and_attrs):
+        calls["create_file"].append({
+            "path": str(path),
+            "access": access,
+            "share_mode": share_mode,
+            "creation_disposition": creation_disposition,
+            "flags_and_attrs": flags_and_attrs,
+        })
+        return dummy_handle
+
+    def fake_close_handle(handle):
+        calls["close_handle"].append(handle)
+
+    def fake_get_file_type(handle):
+        calls["get_file_type"].append(handle)
+        return 1  # FILE_TYPE_DISK
+
+    def fake_get_handle_attrs(handle):
+        calls["get_handle_attrs"].append(handle)
+        return 0o20  # FILE_ATTRIBUTE_ARCHIVE (not a reparse point)
+
+    def fake_read_handle(handle, max_bytes):
+        calls["read_handle"].append((handle, max_bytes))
+        path = calls["create_file"][-1]["path"]
+        with open(path, "rb") as f:
+            return f.read()
+
+    def fake_write_handle(handle, data):
+        calls["write_handle"].append((handle, data))
+        path = calls["create_file"][-1]["path"]
+        file_contents[path] = data
+
+    def fake_flush_handle(handle):
+        calls["flush_handle"].append(handle)
+
+    def fake_replace_file(replaced_path, replacement_path, flags=1):
+        calls["replace_file"].append({
+            "replaced": str(replaced_path),
+            "replacement": str(replacement_path),
+            "flags": flags,
+        })
+        if str(replacement_path) in file_contents:
+            content = file_contents[str(replacement_path)]
+        elif os.path.exists(replacement_path):
+            with open(replacement_path, "rb") as f:
+                content = f.read()
+        else:
+            content = b""
+        with open(replaced_path, "wb") as f:
+            f.write(content)
+        if os.path.exists(replacement_path):
+            os.unlink(replacement_path)
+
+    def fake_win_set_dacl(p):
+        calls["set_dacl"].append(str(p))
+
+    def fake_win_val_dacl(p):
+        calls["val_dacl"].append(str(p))
+
+    @contextlib.contextmanager
+    def simulate_nt():
+        old_name = os.name
+        os.name = "nt"
+        try:
+            yield
+        finally:
+            os.name = old_name
+
+    globs["_renforge_bridge_win_create_file"] = fake_create_file
+    globs["_renforge_bridge_win_close_handle"] = fake_close_handle
+    globs["_renforge_bridge_win_get_file_type"] = fake_get_file_type
+    globs["_renforge_bridge_win_get_handle_attributes"] = fake_get_handle_attrs
+    globs["_renforge_bridge_win_read_handle"] = fake_read_handle
+    globs["_renforge_bridge_win_write_handle"] = fake_write_handle
+    globs["_renforge_bridge_win_flush_handle"] = fake_flush_handle
+    globs["_renforge_bridge_win_replace_file"] = fake_replace_file
+    globs["_renforge_bridge_win_set_protected_dacl"] = fake_win_set_dacl
+    globs["_renforge_bridge_win_validate_protected_dacl"] = fake_win_val_dacl
+    globs["_renforge_bridge_win_is_reparse"] = lambda p: False
+
+    # Write valid starting info
+    starting_payload = {
+        "schema_version": 1,
+        "protocol_version": 1,
+        "state": "starting",
+        "session_id": "a" * 32,
+        "project_root": project_root,
+        "host": "127.0.0.1",
+        "port": 0,
+        "token": "b" * 64,
+    }
+    bridge_info_file.write_text(json.dumps(starting_payload), encoding="utf-8")
+    if hasattr(os, "chmod") and os.name != "nt":
+        os.chmod(bridge_info_file, 0o600)
+
+    # Validate read_starting_info under simulated Windows
+    with simulate_nt():
+        read_data = globs["_renforge_bridge_read_starting_info"](project_root)
+    assert read_data["state"] == "starting"
+    assert len(calls["create_file"]) == 1
+    assert calls["create_file"][0]["access"] == 0x80000000
+    assert calls["create_file"][0]["share_mode"] == 1
+    assert calls["create_file"][0]["creation_disposition"] == 3
+    assert calls["create_file"][0]["flags_and_attrs"] == 0x00200000
+    assert dummy_handle in calls["close_handle"]
+
+    # Write ready info under simulated Windows
+    ready_payload = dict(starting_payload)
+    ready_payload["state"] = "ready"
+    ready_payload["port"] = 65000
+
+    with simulate_nt():
+        globs["_renforge_bridge_write_ready_info"](project_root, ready_payload)
+    assert len(calls["create_file"]) == 2
+    assert calls["create_file"][1]["access"] == 0xC0000000
+    assert calls["create_file"][1]["share_mode"] == 0
+    assert calls["create_file"][1]["creation_disposition"] == 1
+    assert calls["create_file"][1]["flags_and_attrs"] == 0x00200000
+    assert len(calls["flush_handle"]) == 1
+    assert len(calls["replace_file"]) == 1
+    assert calls["replace_file"][0]["replaced"] == str(bridge_info_file)
+    assert calls["replace_file"][0]["flags"] == 1
+    assert json.loads(bridge_info_file.read_text(encoding="utf-8"))["port"] == 65000
+
+    # Additional Win32 edge cases testing: reparse point rejection and cleanup on BaseException
+    # 1. Reparse point rejection on starting handle
+    def fake_reparse_handle_attrs(handle):
+        return 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
+    globs["_renforge_bridge_win_get_handle_attributes"] = fake_reparse_handle_attrs
+    calls["close_handle"].clear()
+    with pytest.raises(OSError, match="reparse point"):
+        with simulate_nt():
+            globs["_renforge_bridge_read_starting_info"](project_root)
+    assert len(calls["close_handle"]) == 1
+
+    # 2. Cleanup on BaseException during handle read
+    globs["_renforge_bridge_win_get_handle_attributes"] = fake_get_handle_attrs
+    def failing_read(handle, max_bytes):
+        raise KeyboardInterrupt("Simulated interrupt during read")
+    globs["_renforge_bridge_win_read_handle"] = failing_read
+    calls["close_handle"].clear()
+    with pytest.raises(KeyboardInterrupt):
+        with simulate_nt():
+            globs["_renforge_bridge_read_starting_info"](project_root)
+    assert len(calls["close_handle"]) == 1
+
+

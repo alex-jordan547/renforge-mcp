@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import stat
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, NoReturn, Union
 
 DATA_ENCODING: str = "utf-8"
 FILE_MODE: int = 0o644
+_PRIVATE_DIR_MODE: int = 0o700
+_PRIVATE_FILE_MODE: int = 0o600
+_MODE_MASK: int = 0o777
+_TEMP_ATTEMPTS: int = 32
+_REPARSE_POINT: int = 0x400
+
+
+class PrivatePathError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def _write_atomic_chunks(
@@ -86,3 +101,616 @@ def write_json_atomic(
         follow_symlinks=follow_symlinks,
         max_bytes=max_bytes,
     )
+
+
+def ensure_private_directory(path: Path) -> Path:
+    """Create or validate a private directory. Never repairs unsafe paths."""
+    target = Path(path).expanduser()
+    if os.name == "nt":
+        return _ensure_private_directory_windows(target)
+    return _ensure_private_directory_posix(target)
+
+
+def read_regular_file_nofollow(path: Path, *, max_bytes: int) -> bytes:
+    """Read a private regular file without following links."""
+    if not isinstance(max_bytes, int) or max_bytes < 0:
+        raise PrivatePathError("PRIVATE_FILE_UNSAFE", "max_bytes must be a non-negative integer")
+    target = Path(path).expanduser()
+    if os.name == "nt":
+        return _read_regular_file_windows(target, max_bytes=max_bytes)
+    return _read_regular_file_posix(target, max_bytes=max_bytes)
+
+
+def atomic_write_private_json(path: Path, payload: Mapping[str, Any], *, max_bytes: int) -> None:
+    """Atomically publish private JSON with exclusive no-follow temporaries."""
+    if not isinstance(payload, Mapping):
+        raise PrivatePathError("PRIVATE_FILE_UNSAFE", "payload must be a mapping")
+    if not isinstance(max_bytes, int) or max_bytes < 0:
+        raise PrivatePathError("PRIVATE_FILE_UNSAFE", "max_bytes must be a non-negative integer")
+    target = Path(path).expanduser()
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(DATA_ENCODING)
+    if len(encoded) > max_bytes:
+        raise PrivatePathError(
+            "PRIVATE_FILE_UNSAFE",
+            "private JSON payload exceeds %d bytes" % max_bytes,
+        )
+    if os.name == "nt":
+        _atomic_write_private_bytes_windows(target, encoded)
+    else:
+        _atomic_write_private_bytes_posix(target, encoded)
+
+
+def _private_error(code: str, message: str, cause: BaseException | None = None) -> NoReturn:
+    err = PrivatePathError(code, message)
+    if cause is not None:
+        raise err from cause
+    raise err
+
+
+def _dir_unsafe(message: str, cause: BaseException | None = None) -> NoReturn:
+    _private_error("PRIVATE_DIRECTORY_UNSAFE", message, cause)
+
+
+def _file_unsafe(message: str, cause: BaseException | None = None) -> NoReturn:
+    _private_error("PRIVATE_FILE_UNSAFE", message, cause)
+
+
+def _is_symlink(path: Path) -> bool:
+    try:
+        return stat.S_ISLNK(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _open_flags(*bits: int) -> int:
+    flags = 0
+    for bit in bits:
+        flags |= bit
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _absolute_path(path: Path) -> Path:
+    target = Path(path).expanduser()
+    return target if target.is_absolute() else (Path.cwd() / target)
+
+
+def _path_components(path: Path) -> list[Path]:
+    """Root-to-leaf components without resolving symlinks."""
+    target = _absolute_path(path)
+    current = Path(target.anchor)
+    components = [current] if target.anchor else []
+    for part in target.parts[1:]:
+        current = current / part
+        components.append(current)
+    return components
+
+
+def _component_is_link(path: Path) -> bool:
+    if os.name == "nt":
+        return path.is_symlink() or _win_is_reparse(path)
+    return _is_symlink(path)
+
+
+def _reject_link_components(path: Path, *, code: str, include_leaf: bool) -> Path:
+    """Fail closed when any existing component is a symlink/reparse point.
+
+    Callers should pass canonical absolute project paths so host aliases such as
+    macOS ``/var`` → ``/private/var`` are already resolved. The project root is
+    not required to be mode-private — only free of intermediate link components.
+    """
+    target = _absolute_path(path)
+    components = _path_components(target)
+    if not include_leaf and components:
+        components = components[:-1]
+    for component in components:
+        try:
+            if os.name == "nt":
+                exists = component.exists() or component.is_symlink() or _win_is_reparse(component)
+            else:
+                component.lstat()
+                exists = True
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _private_error(code, "failed to inspect path component: %s" % component, exc)
+        if not exists:
+            continue
+        if _component_is_link(component):
+            _private_error(
+                code,
+                "path component must not be a symlink or reparse point: %s" % component,
+            )
+    return target
+
+
+def _materialize_ancestor_dirs(path: Path, *, code: str) -> None:
+    """Create missing non-leaf ancestors as real directories; never through links."""
+    for component in _path_components(path)[:-1]:
+        try:
+            st = component.lstat()
+        except FileNotFoundError:
+            try:
+                os.mkdir(str(component))
+            except FileExistsError:
+                if _component_is_link(component):
+                    _private_error(
+                        code,
+                        "path component must not be a symlink or reparse point: %s" % component,
+                    )
+                continue
+            except OSError as exc:
+                _private_error(code, "failed to create path component: %s" % component, exc)
+            continue
+        except OSError as exc:
+            _private_error(code, "failed to inspect path component: %s" % component, exc)
+        if _component_is_link(component):
+            _private_error(
+                code,
+                "path component must not be a symlink or reparse point: %s" % component,
+            )
+        if not stat.S_ISDIR(st.st_mode):
+            _private_error(code, "path component is not a directory: %s" % component)
+
+
+def _lstat_or(path: Path, *, code: str) -> os.stat_result:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        _private_error(code, "path does not exist: %s" % path)
+    except OSError as exc:
+        _private_error(code, "failed to stat path: %s" % path, exc)
+
+
+def _validate_posix_dir(path: Path) -> Path:
+    st = _lstat_or(path, code="PRIVATE_DIRECTORY_UNSAFE")
+    if stat.S_ISLNK(st.st_mode):
+        _dir_unsafe("private directory must not be a symlink: %s" % path)
+    if not stat.S_ISDIR(st.st_mode):
+        _dir_unsafe("private path is not a directory: %s" % path)
+    if st.st_uid != os.geteuid():
+        _dir_unsafe("private directory is not owned by the current user: %s" % path)
+    if (st.st_mode & _MODE_MASK) != _PRIVATE_DIR_MODE:
+        _dir_unsafe("private directory mode must be 0700: %s" % path)
+    return path
+
+
+def _validate_posix_file_stat(st: os.stat_result, path: Path) -> None:
+    if not stat.S_ISREG(st.st_mode):
+        _file_unsafe("private path is not a regular file: %s" % path)
+    if st.st_uid != os.geteuid():
+        _file_unsafe("private file is not owned by the current user: %s" % path)
+    if (st.st_mode & _MODE_MASK) != _PRIVATE_FILE_MODE:
+        _file_unsafe("private file mode must be 0600: %s" % path)
+
+
+def _validate_posix_fd(fd: int, path: Path, expected: os.stat_result | None = None) -> os.stat_result:
+    try:
+        st = os.fstat(fd)
+    except OSError as exc:
+        _file_unsafe("failed to fstat private file: %s" % path, exc)
+    _validate_posix_file_stat(st, path)
+    if expected is not None and (st.st_dev != expected.st_dev or st.st_ino != expected.st_ino):
+        _file_unsafe("private file identity changed during open: %s" % path)
+    return st
+
+
+def _ensure_private_directory_posix(path: Path) -> Path:
+    target = _reject_link_components(path, code="PRIVATE_DIRECTORY_UNSAFE", include_leaf=True)
+    if _is_symlink(target) or target.exists():
+        return _validate_posix_dir(target)
+
+    _materialize_ancestor_dirs(target, code="PRIVATE_DIRECTORY_UNSAFE")
+    try:
+        os.mkdir(str(target), _PRIVATE_DIR_MODE)
+    except FileExistsError:
+        _reject_link_components(target, code="PRIVATE_DIRECTORY_UNSAFE", include_leaf=True)
+        return _validate_posix_dir(target)
+    except OSError as exc:
+        _dir_unsafe("failed to create private directory: %s" % target, exc)
+
+    validated = _validate_posix_dir(target)
+    parent = target.parent
+    _fsync_directory(parent if parent != target else validated)
+    return validated
+
+
+def _read_regular_file_posix(path: Path, *, max_bytes: int) -> bytes:
+    target = _reject_link_components(path, code="PRIVATE_FILE_UNSAFE", include_leaf=True)
+    st = _lstat_or(target, code="PRIVATE_FILE_UNSAFE")
+    _validate_posix_file_stat(st, target)
+    if st.st_size > max_bytes:
+        _file_unsafe("private file exceeds %d bytes: %s" % (max_bytes, target))
+
+    flags = _open_flags(os.O_RDONLY, getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(str(target), flags)
+    except OSError as exc:
+        _file_unsafe("failed to open private file: %s" % target, exc)
+    try:
+        _validate_posix_fd(fd, target, expected=st)
+        payload = os.read(fd, max_bytes + 1)
+    except PrivatePathError:
+        raise
+    except OSError as exc:
+        _file_unsafe("failed to read private file: %s" % target, exc)
+    finally:
+        os.close(fd)
+
+    if len(payload) > max_bytes:
+        _file_unsafe("private file exceeds %d bytes: %s" % (max_bytes, target))
+    return payload
+
+
+def _open_private_temp_posix(directory: Path, *, prefix: str) -> tuple[int, Path]:
+    flags = _open_flags(os.O_WRONLY, os.O_CREAT, os.O_EXCL, getattr(os, "O_NOFOLLOW", 0))
+    last_error: BaseException | None = None
+    for _ in range(_TEMP_ATTEMPTS):
+        temp_path = directory / ("%s.%s.tmp" % (prefix, secrets.token_hex(8)))
+        try:
+            fd = os.open(str(temp_path), flags, _PRIVATE_FILE_MODE)
+        except FileExistsError as exc:
+            last_error = exc
+            continue
+        except OSError as exc:
+            _file_unsafe("failed to create private temporary file in %s" % directory, exc)
+        try:
+            _validate_posix_fd(fd, temp_path)
+        except PrivatePathError:
+            try:
+                os.close(fd)
+            finally:
+                try:
+                    os.unlink(str(temp_path))
+                except OSError:
+                    pass
+            raise
+        return fd, temp_path
+    _file_unsafe("failed to allocate a private temporary file in %s" % directory, last_error)
+
+
+def _require_private_parent(path: Path) -> Path:
+    try:
+        return ensure_private_directory(path.parent)
+    except PrivatePathError as exc:
+        if exc.code == "PRIVATE_DIRECTORY_UNSAFE":
+            _file_unsafe(exc.message, exc)
+        raise
+
+
+def _require_existing_private_file_posix(path: Path) -> None:
+    if not (path.exists() or _is_symlink(path)):
+        return
+    if _is_symlink(path):
+        _file_unsafe("private file destination must not be a symlink: %s" % path)
+    st = _lstat_or(path, code="PRIVATE_FILE_UNSAFE")
+    _validate_posix_file_stat(st, path)
+
+
+def _atomic_write_private_bytes_posix(path: Path, data: bytes) -> None:
+    target = _reject_link_components(path, code="PRIVATE_FILE_UNSAFE", include_leaf=True)
+    parent = _require_private_parent(target)
+    _require_existing_private_file_posix(target)
+
+    fd, temp_path = _open_private_temp_posix(parent, prefix=".%s" % target.name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            _validate_posix_fd(handle.fileno(), temp_path)
+        if _is_symlink(target):
+            _file_unsafe("private file destination must not be a symlink: %s" % target)
+        os.replace(str(temp_path), str(target))
+        _fsync_directory(parent)
+    except PrivatePathError:
+        raise
+    except OSError as exc:
+        _file_unsafe("failed to publish private file: %s" % target, exc)
+    finally:
+        try:
+            if temp_path.exists() or _is_symlink(temp_path):
+                os.unlink(str(temp_path))
+        except OSError:
+            pass
+
+
+# --- Windows: reject reparse points; protected current-user DACL ---
+
+
+def _win_attrs(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    get_attrs = ctypes.windll.kernel32.GetFileAttributesW  # type: ignore[attr-defined]
+    get_attrs.argtypes = [wintypes.LPCWSTR]
+    get_attrs.restype = wintypes.DWORD
+    value = int(get_attrs(str(path)))
+    if value == 0xFFFFFFFF:
+        err = ctypes.GetLastError()
+        if err in {2, 3}:
+            raise FileNotFoundError(str(path))
+        raise OSError(err, "GetFileAttributesW failed for %s" % path)
+    return value
+
+
+def _win_is_reparse(path: Path) -> bool:
+    try:
+        st = os.stat(str(path), follow_symlinks=False)
+        attrs = getattr(st, "st_file_attributes", None)
+        if attrs is not None:
+            return bool(attrs & _REPARSE_POINT)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        _file_unsafe("failed to inspect path attributes: %s" % path, exc)
+    try:
+        return bool(_win_attrs(path) & _REPARSE_POINT)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        _file_unsafe("failed to inspect path attributes: %s" % path, exc)
+
+
+def _win_current_sid() -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    token = wintypes.HANDLE()
+    if not ctypes.windll.advapi32.OpenProcessToken(  # type: ignore[attr-defined]
+        ctypes.windll.kernel32.GetCurrentProcess(),  # type: ignore[attr-defined]
+        0x0008,
+        ctypes.byref(token),
+    ):
+        raise OSError(ctypes.GetLastError(), "OpenProcessToken failed")
+    try:
+        size = wintypes.DWORD(0)
+        ctypes.windll.advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # type: ignore[attr-defined]
+        buf = ctypes.create_string_buffer(size.value)
+        if not ctypes.windll.advapi32.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):  # type: ignore[attr-defined]
+            raise OSError(ctypes.GetLastError(), "GetTokenInformation failed")
+
+        class _SID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+        class _TOKEN_USER(ctypes.Structure):
+            _fields_ = [("User", _SID_AND_ATTRIBUTES)]
+
+        user = ctypes.cast(buf, ctypes.POINTER(_TOKEN_USER)).contents
+        sid = wintypes.LPWSTR()
+        if not ctypes.windll.advapi32.ConvertSidToStringSidW(user.User.Sid, ctypes.byref(sid)):  # type: ignore[attr-defined]
+            raise OSError(ctypes.GetLastError(), "ConvertSidToStringSidW failed")
+        try:
+            return str(sid.value)
+        finally:
+            ctypes.windll.kernel32.LocalFree(sid)  # type: ignore[attr-defined]
+    finally:
+        ctypes.windll.kernel32.CloseHandle(token)  # type: ignore[attr-defined]
+
+
+def _win_set_protected_dacl(path: Path) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    sddl = "D:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)" % _win_current_sid()
+    sd = ctypes.c_void_p()
+    size = wintypes.ULONG()
+    if not ctypes.windll.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(  # type: ignore[attr-defined]
+        sddl, 1, ctypes.byref(sd), ctypes.byref(size)
+    ):
+        raise OSError(ctypes.GetLastError(), "ConvertStringSecurityDescriptorToSecurityDescriptorW failed")
+    try:
+        if not ctypes.windll.advapi32.SetFileSecurityW(str(path), 0x00000004 | 0x80000000, sd):  # type: ignore[attr-defined]
+            raise OSError(ctypes.GetLastError(), "SetFileSecurityW failed for %s" % path)
+    finally:
+        ctypes.windll.kernel32.LocalFree(sd)  # type: ignore[attr-defined]
+
+
+def _win_validate_protected_dacl(path: Path) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    class _ACL(ctypes.Structure):
+        _fields_ = [
+            ("AclRevision", wintypes.BYTE),
+            ("Sbz1", wintypes.BYTE),
+            ("AclSize", wintypes.WORD),
+            ("AceCount", wintypes.WORD),
+            ("Sbz2", wintypes.WORD),
+        ]
+
+    class _ACE_HEADER(ctypes.Structure):
+        _fields_ = [("AceType", wintypes.BYTE), ("AceFlags", wintypes.BYTE), ("AceSize", wintypes.WORD)]
+
+    sd = ctypes.c_void_p()
+    dacl = ctypes.POINTER(_ACL)()
+    status = ctypes.windll.advapi32.GetNamedSecurityInfoW(  # type: ignore[attr-defined]
+        str(path),
+        1,
+        0x00000004,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(sd),
+    )
+    if status != 0:
+        raise OSError(status, "GetNamedSecurityInfoW failed for %s" % path)
+    try:
+        if not dacl:
+            raise OSError("missing DACL on %s" % path)
+        control = wintypes.DWORD()
+        revision = wintypes.DWORD()
+        if not ctypes.windll.advapi32.GetSecurityDescriptorControl(  # type: ignore[attr-defined]
+            sd, ctypes.byref(control), ctypes.byref(revision)
+        ):
+            raise OSError(ctypes.GetLastError(), "GetSecurityDescriptorControl failed")
+        if not (control.value & 0x1000):
+            raise OSError("DACL is not protected on %s" % path)
+
+        allowed = {_win_current_sid(), "S-1-5-18", "S-1-5-32-544"}
+        for index in range(dacl.contents.AceCount):
+            ace = ctypes.c_void_p()
+            if not ctypes.windll.advapi32.GetAce(dacl, index, ctypes.byref(ace)):  # type: ignore[attr-defined]
+                raise OSError(ctypes.GetLastError(), "GetAce failed")
+            header = ctypes.cast(ace, ctypes.POINTER(_ACE_HEADER)).contents
+            if header.AceType != 0:
+                raise OSError("unexpected ACE type on %s" % path)
+            sid_ptr = ctypes.c_void_p(ace.value + 8)  # type: ignore[operator]
+            sid = wintypes.LPWSTR()
+            if not ctypes.windll.advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid)):  # type: ignore[attr-defined]
+                raise OSError(ctypes.GetLastError(), "ConvertSidToStringSidW failed")
+            try:
+                if str(sid.value) not in allowed:
+                    raise OSError("unexpected trustee on private path %s" % path)
+            finally:
+                ctypes.windll.kernel32.LocalFree(sid)  # type: ignore[attr-defined]
+    finally:
+        if sd:
+            ctypes.windll.kernel32.LocalFree(sd)  # type: ignore[attr-defined]
+
+
+def _ensure_private_directory_windows(path: Path) -> Path:
+    target = _reject_link_components(path, code="PRIVATE_DIRECTORY_UNSAFE", include_leaf=True)
+    exists = target.exists() or target.is_symlink() or _win_is_reparse(target)
+    if exists:
+        if target.is_symlink() or _win_is_reparse(target):
+            _dir_unsafe("private directory must not be a reparse point: %s" % target)
+        if not target.is_dir():
+            _dir_unsafe("private path is not a directory: %s" % target)
+        try:
+            _win_validate_protected_dacl(target)
+        except OSError as exc:
+            _dir_unsafe("private directory DACL is unsafe: %s" % target, exc)
+        return target
+
+    _materialize_ancestor_dirs(target, code="PRIVATE_DIRECTORY_UNSAFE")
+    try:
+        target.mkdir(exist_ok=False)
+    except FileExistsError:
+        return _ensure_private_directory_windows(target)
+    except OSError as exc:
+        _dir_unsafe("failed to create private directory: %s" % target, exc)
+    try:
+        _win_set_protected_dacl(target)
+        _win_validate_protected_dacl(target)
+    except OSError as exc:
+        _dir_unsafe("failed to protect private directory: %s" % target, exc)
+    return target
+
+
+def _read_regular_file_windows(path: Path, *, max_bytes: int) -> bytes:
+    import ctypes
+    from ctypes import wintypes
+
+    target = _reject_link_components(path, code="PRIVATE_FILE_UNSAFE", include_leaf=True)
+    if target.is_symlink() or _win_is_reparse(target):
+        _file_unsafe("private file must not be a reparse point: %s" % target)
+    if not target.is_file():
+        _file_unsafe("private path is not a regular file: %s" % target)
+    try:
+        _win_validate_protected_dacl(target)
+    except OSError as exc:
+        _file_unsafe("private file DACL is unsafe: %s" % target, exc)
+
+    create_file = ctypes.windll.kernel32.CreateFileW  # type: ignore[attr-defined]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(target),
+        0x80000000,
+        0x00000001,
+        None,
+        3,
+        0x00200000 | 0x02000000,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        _file_unsafe("failed to open private file: %s" % target, OSError(ctypes.GetLastError(), "CreateFileW"))
+    try:
+        if ctypes.windll.kernel32.GetFileType(handle) != 1:  # type: ignore[attr-defined]
+            _file_unsafe("private path is not a regular file: %s" % target)
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            size = min(65536, remaining)
+            buf = ctypes.create_string_buffer(size)
+            read = wintypes.DWORD(0)
+            if not ctypes.windll.kernel32.ReadFile(handle, buf, size, ctypes.byref(read), None):  # type: ignore[attr-defined]
+                _file_unsafe("failed to read private file: %s" % target, OSError(ctypes.GetLastError(), "ReadFile"))
+            if read.value == 0:
+                break
+            chunks.append(buf.raw[: read.value])
+            remaining -= read.value
+        payload = b"".join(chunks)
+        if len(payload) > max_bytes:
+            _file_unsafe("private file exceeds %d bytes: %s" % (max_bytes, target))
+        return payload
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+
+
+def _atomic_write_private_bytes_windows(path: Path, data: bytes) -> None:
+    target = _reject_link_components(path, code="PRIVATE_FILE_UNSAFE", include_leaf=True)
+    if target.is_symlink() or (target.exists() and _win_is_reparse(target)):
+        _file_unsafe("private file destination must not be a reparse point: %s" % target)
+    parent = _require_private_parent(target)
+    if target.exists():
+        if target.is_symlink() or _win_is_reparse(target) or not target.is_file():
+            _file_unsafe("private file destination is unsafe: %s" % target)
+        try:
+            _win_validate_protected_dacl(target)
+        except OSError as exc:
+            _file_unsafe("private file destination DACL is unsafe: %s" % target, exc)
+
+    last_error: BaseException | None = None
+    for _ in range(_TEMP_ATTEMPTS):
+        temp_path = parent / (".%s.%s.tmp" % (target.name, secrets.token_hex(8)))
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            fd = os.open(str(temp_path), flags, _PRIVATE_FILE_MODE)
+        except FileExistsError as exc:
+            last_error = exc
+            continue
+        except OSError as exc:
+            _file_unsafe("failed to create private temporary file in %s" % parent, exc)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _win_set_protected_dacl(temp_path)
+            _win_validate_protected_dacl(temp_path)
+            if target.exists() and (target.is_symlink() or _win_is_reparse(target)):
+                _file_unsafe("private file destination must not be a reparse point: %s" % target)
+            os.replace(str(temp_path), str(target))
+            _win_set_protected_dacl(target)
+            _win_validate_protected_dacl(target)
+            return
+        except PrivatePathError:
+            raise
+        except OSError as exc:
+            _file_unsafe("failed to publish private file: %s" % target, exc)
+        finally:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+    _file_unsafe("failed to allocate a private temporary file in %s" % parent, last_error)

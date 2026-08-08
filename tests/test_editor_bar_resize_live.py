@@ -125,3 +125,11 @@ def test_bar_resize_seven_step_live_proof(demo_copy: Path) -> None:
     undo = report["byte_identical_undo"]
     assert undo["matches_baseline"] is True
     assert undo["patched_differed"] is True
+
+    handle = report["visible_handle_drag"]
+    assert handle["ok"] is True, handle
+    rect = handle["rect_before"]
+    assert handle["preview_size_after"] == [rect[2] + 36, rect[3]]
+    assert handle["preview_position_after"][:2] == [rect[0], rect[1]]
+    assert handle["committed_source_size"] == {"w": rect[2] + 36, "h": rect[3]}
+    assert handle["matches_independent_expected"] is True

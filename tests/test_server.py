@@ -239,6 +239,7 @@ def test_scan_tool_defaults_to_summary_only(tmp_path) -> None:
 
 
 def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
     pytest.importorskip("fastmcp", reason="fastmcp not installed")
     from fastmcp import Client
 
@@ -269,6 +270,7 @@ def test_launch_tool_forwards_a_warp_target(tmp_path, monkeypatch) -> None:
 
 
 def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
     from renforge import dashboard_client
     from renforge.tools import live
 
@@ -294,6 +296,7 @@ def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
 
 
 def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
     from renforge import dashboard_client
     from renforge.tools import live
 
@@ -319,6 +322,7 @@ def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch
 
 
 def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
     pytest.importorskip("fastmcp", reason="fastmcp not installed")
     from fastmcp import Client
 
@@ -430,7 +434,7 @@ def test_cancelled_dashboard_launch_stops_through_its_owner(tmp_path, monkeypatc
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch, **_kwargs: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(tmp_path.resolve(), cancel_event),
     )
     monkeypatch.setattr(
         live,
@@ -485,7 +489,7 @@ def test_cancelled_dashboard_launch_reports_owner_stop_failure(
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch, **_kwargs: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(tmp_path.resolve(), cancel_event),
     )
     monkeypatch.setattr(
         live,
@@ -525,7 +529,7 @@ def test_cancelled_launch_propagates_external_lock_conflict(tmp_path, monkeypatc
     monkeypatch.setattr(
         live,
         "start_launch",
-        lambda _project_path, launch, **_kwargs: launch(cancel_event),
+        lambda _project_path, launch, **_kwargs: launch(tmp_path.resolve(), cancel_event),
     )
     monkeypatch.setattr(
         live,

@@ -329,3 +329,270 @@ def test_bridge_client_invalid_json_response():
 
     thread.join(timeout=1.0)
     assert sock.fileno() == -1
+
+
+
+def _control_project(tmp_path: Path, name: str = "project") -> Path:
+    root = (tmp_path / name).resolve()
+    (root / "game").mkdir(parents=True)
+    return root
+
+
+def _session_id(seed: str = "11") -> str:
+    return (seed * 32)[:32]
+
+
+def _token(seed: str = "aa") -> str:
+    return (seed * 64)[:64]
+
+
+def _write_ready_bridge_info(
+    project_root: Path,
+    *,
+    session_id: str | None = None,
+    token: str | None = None,
+    port: int = 40123,
+    **overrides: object,
+) -> dict:
+    from renforge.bridge.control import ensure_control_dir
+    from renforge.util.files import atomic_write_private_json
+
+    ensure_control_dir(project_root)
+    payload = {
+        "schema_version": 1,
+        "protocol_version": 1,
+        "state": "ready",
+        "session_id": session_id or _session_id(),
+        "project_root": str(project_root.resolve()),
+        "host": "127.0.0.1",
+        "port": port,
+        "token": token or _token(),
+    }
+    payload.update(overrides)
+    path = project_root / ".renforge" / "control" / "bridge.json"
+    atomic_write_private_json(path, payload, max_bytes=16 * 1024)
+    return payload
+
+
+def test_bridge_info_starting_round_trip(tmp_path: Path) -> None:
+    from renforge.bridge.control import BridgeInfo, read_bridge_info, write_starting_bridge_info
+
+    root = _control_project(tmp_path)
+    session_id = _session_id("ab")
+    token = _token("cd")
+
+    written = write_starting_bridge_info(root, session_id=session_id, token=token)
+    assert isinstance(written, BridgeInfo)
+    assert written.state == "starting"
+    assert written.port == 0
+    assert written.session_id == session_id
+    assert written.token == token
+    assert written.project_root == str(root.resolve())
+    assert written.host == "127.0.0.1"
+    assert written.schema_version == 1
+    assert written.protocol_version == 1
+    assert "token" not in repr(written)
+    assert token not in repr(written)
+
+    loaded = read_bridge_info(root, require_ready=False, expected_session_id=session_id)
+    assert loaded == written
+
+
+def test_bridge_info_ready_round_trip(tmp_path: Path) -> None:
+    from renforge.bridge.control import read_bridge_info
+
+    root = _control_project(tmp_path)
+    payload = _write_ready_bridge_info(root, session_id=_session_id("ef"), token=_token("12"), port=45555)
+
+    loaded = read_bridge_info(root, require_ready=True, expected_session_id=payload["session_id"])
+    assert loaded.state == "ready"
+    assert loaded.port == 45555
+    assert loaded.session_id == payload["session_id"]
+    assert loaded.token == payload["token"]
+    assert loaded.project_root == str(root.resolve())
+    assert payload["token"] not in repr(loaded)
+
+
+def test_bridge_info_rejects_require_ready_on_starting(tmp_path: Path) -> None:
+    from renforge.bridge.control import read_bridge_info, write_starting_bridge_info
+
+    root = _control_project(tmp_path)
+    write_starting_bridge_info(root, session_id=_session_id(), token=_token())
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        read_bridge_info(root, require_ready=True)
+    assert "token" not in str(excinfo.value)
+
+
+def test_bridge_info_rejects_expected_session_mismatch(tmp_path: Path) -> None:
+    from renforge.bridge.control import read_bridge_info
+
+    root = _control_project(tmp_path)
+    _write_ready_bridge_info(root, session_id=_session_id("aa"))
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
+        read_bridge_info(root, expected_session_id=_session_id("bb"))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.pop("token"),
+        lambda p: p.update({"extra": "nope"}),
+        lambda p: p.update({"schema_version": 2}),
+        lambda p: p.update({"protocol_version": 0}),
+        lambda p: p.update({"state": "running"}),
+        lambda p: p.update({"session_id": "not-hex"}),
+        lambda p: p.update({"token": "short"}),
+        lambda p: p.update({"host": "0.0.0.0"}),
+        lambda p: p.update({"port": 0}),
+        lambda p: p.update({"port": 70000}),
+        lambda p: p.update({"port": True}),
+        lambda p: p.update({"project_root": "/tmp/other-project"}),
+    ],
+)
+def test_bridge_info_rejects_invalid_ready_payload(tmp_path: Path, mutate) -> None:
+    from renforge.bridge.control import ensure_control_dir, read_bridge_info
+    from renforge.util.files import atomic_write_private_json
+
+    root = _control_project(tmp_path)
+    ensure_control_dir(root)
+    payload = {
+        "schema_version": 1,
+        "protocol_version": 1,
+        "state": "ready",
+        "session_id": _session_id(),
+        "project_root": str(root.resolve()),
+        "host": "127.0.0.1",
+        "port": 12345,
+        "token": _token(),
+    }
+    mutate(payload)
+    path = root / ".renforge" / "control" / "bridge.json"
+    atomic_write_private_json(path, payload, max_bytes=16 * 1024)
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        read_bridge_info(root, require_ready=True)
+    assert str(excinfo.value) == "bridge metadata failed validation"
+
+
+def test_bridge_info_rejects_symlink_metadata_file(tmp_path: Path) -> None:
+    from renforge.bridge.control import ensure_control_dir, read_bridge_info
+
+    root = _control_project(tmp_path)
+    control = ensure_control_dir(root)
+    victim = tmp_path / "victim.json"
+    victim.write_text('{"token":"leak-me"}', encoding="utf-8")
+    target = control / "bridge.json"
+    target.symlink_to(victim)
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        read_bridge_info(root, require_ready=False)
+    assert "leak-me" not in str(excinfo.value)
+    assert victim.read_text(encoding="utf-8") == '{"token":"leak-me"}'
+
+
+def test_ensure_control_dir_rejects_symlink_control_path(tmp_path: Path) -> None:
+    from renforge.bridge.control import ensure_control_dir
+    from renforge.launch_env import LaunchError
+
+    root = _control_project(tmp_path)
+    renforge = root / ".renforge"
+    renforge.mkdir()
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (renforge / "control").symlink_to(real)
+
+    with pytest.raises(LaunchError) as excinfo:
+        ensure_control_dir(root)
+    assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert excinfo.value.phase == "preparing_control_directory"
+
+
+def test_write_starting_bridge_info_rejects_bad_identity(tmp_path: Path) -> None:
+    from renforge.bridge.control import write_starting_bridge_info
+
+    root = _control_project(tmp_path)
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
+        write_starting_bridge_info(root, session_id="bad", token=_token())
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
+        write_starting_bridge_info(root, session_id=_session_id(), token="bad")
+
+
+def test_from_project_builds_client_from_ready_bridge_info(tmp_path: Path) -> None:
+    root = _control_project(tmp_path)
+    token = _token("f0")
+    payload = _write_ready_bridge_info(
+        root,
+        session_id=_session_id("c0"),
+        token=token,
+        port=45678,
+    )
+
+    client = BridgeClient.from_project(root, timeout=2.5)
+
+    assert client._config.host == "127.0.0.1"
+    assert client._config.port == payload["port"]
+    assert client._config.token == token
+    assert client._config.timeout == 2.5
+
+
+def test_from_project_rejects_starting_bridge_info(tmp_path: Path) -> None:
+    from renforge.bridge.control import write_starting_bridge_info
+
+    root = _control_project(tmp_path)
+    write_starting_bridge_info(root, session_id=_session_id(), token=_token())
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        BridgeClient.from_project(root)
+    assert "token" not in str(excinfo.value)
+
+
+def test_from_project_ignores_legacy_bridge_json(tmp_path: Path) -> None:
+    from renforge.bridge.control import ensure_control_dir
+
+    root = _control_project(tmp_path)
+    ensure_control_dir(root)
+    legacy = root / ".renforge" / "bridge.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "host": "127.0.0.1",
+                "port": 9999,
+                "token": "legacy-token-must-not-be-used",
+                "pid": 12345,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        BridgeClient.from_project(root)
+    assert "legacy-token" not in str(excinfo.value)
+    assert "12345" not in str(excinfo.value)
+    assert json.loads(legacy.read_text(encoding="utf-8"))["token"] == "legacy-token-must-not-be-used"
+
+
+def test_from_project_rejects_invalid_ready_payload_without_credentials(tmp_path: Path) -> None:
+    root = _control_project(tmp_path)
+    secret = _token("99")
+    _write_ready_bridge_info(root, token=secret, host="0.0.0.0")
+
+    with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$") as excinfo:
+        BridgeClient.from_project(root)
+    message = str(excinfo.value)
+    assert message == "bridge metadata failed validation"
+    assert secret not in message
+
+
+def test_from_project_rejects_non_int_version_types(tmp_path: Path) -> None:
+    root = _control_project(tmp_path)
+    for bad_version in [True, 1.0, "1", None]:
+        _write_ready_bridge_info(root, schema_version=bad_version)
+        with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
+            BridgeClient.from_project(root)
+
+        _write_ready_bridge_info(root, protocol_version=bad_version)
+        with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
+            BridgeClient.from_project(root)
+

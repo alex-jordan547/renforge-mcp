@@ -60,24 +60,30 @@ class RenpyProject:
     cache_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        if not self.root.exists():
-            raise FileNotFoundError(f"Project root does not exist: {self.root}")
+        original = self.root
+        try:
+            canonical = original.expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Project root does not exist: {original}") from None
 
-        if not self.root.is_dir():
-            raise NotADirectoryError(f"Project root is not a directory: {self.root}")
+        if not canonical.is_dir():
+            raise NotADirectoryError(f"Project root is not a directory: {canonical}")
 
-        game_dir = self.root / RENPY_GAME_DIR
+        game_dir = canonical / RENPY_GAME_DIR
         if not game_dir.is_dir():
-            raise FileNotFoundError(f"Invalid Ren'Py project: missing '{RENPY_GAME_DIR}/' in {self.root}")
+            raise FileNotFoundError(
+                f"Invalid Ren'Py project: missing '{RENPY_GAME_DIR}/' in {canonical}"
+            )
 
-        cache_dir = self.root / RENFORGE_CACHE_DIR
+        cache_dir = canonical / RENFORGE_CACHE_DIR
         cache_dir.mkdir(parents=True, exist_ok=True)
+        object.__setattr__(self, "root", canonical)
         object.__setattr__(self, "game_dir", game_dir)
         object.__setattr__(self, "cache_dir", cache_dir)
 
     @property
     def abs_root(self) -> Path:
-        return self.root.resolve()
+        return self.root
 
     def has_config(self, filename: str) -> bool:
         return (self.root / filename).is_file()

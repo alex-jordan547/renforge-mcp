@@ -800,6 +800,48 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         and int(pixel_after.get("paint_count") or 0) > 20
     )
 
+    # Step 1 visible-control proof: the user-facing colour buttons must drive
+    # preview colour changes without any source write. Deliberately red while
+    # `_renforge_editor_cycle_style_color_preview()` is a no-op; step 7 wires
+    # the cycle to the preview setter.
+    _require_ok(
+        client.click_element(id="rf_style_color", screen="_renforge_editor_overlay"),
+        "rf_style_color click",
+    )
+    _, style_button_paint = _wait_paint(client, expected_dominant="blue", timeout=10.0)
+    style_button_status = client.request("editor_task0_status")
+    _require_ok(
+        client.click_element(id="rf_style_cycle", screen="_renforge_editor_overlay"),
+        "rf_style_cycle click",
+    )
+    _, style_cycle_paint = _wait_paint(client, expected_dominant="red", timeout=10.0)
+    style_cycle_status = client.request("editor_task0_status")
+    style_source_untouched = fixture_path.read_bytes() == baseline
+    report["style_button_clicks"] = {
+        "ok": (
+            style_button_paint.get("dominant") == "blue"
+            and style_button_status.get("style_color_input") == REQUESTED_COLOR
+            and bool(style_button_status.get("save_enabled")) is True
+            and style_cycle_paint.get("dominant") == "red"
+            and style_cycle_status.get("style_color_input") == BASELINE_COLOR
+            and bool(style_cycle_status.get("save_enabled")) is False
+            and style_source_untouched
+        ),
+        "rf_style_color": {
+            "pixel": style_button_paint,
+            "style_color_input": style_button_status.get("style_color_input"),
+            "save_enabled": style_button_status.get("save_enabled"),
+            "dirty_target_count": style_button_status.get("dirty_target_count"),
+        },
+        "rf_style_cycle": {
+            "pixel": style_cycle_paint,
+            "style_color_input": style_cycle_status.get("style_color_input"),
+            "save_enabled": style_cycle_status.get("save_enabled"),
+            "dirty_target_count": style_cycle_status.get("dirty_target_count"),
+        },
+        "source_byte_identical": style_source_untouched,
+    }
+
     required = [
         report["product_select_unlocked_style"],
         report["product_preview"]["ok"] and report["product_preview"]["source_byte_identical"],
@@ -815,6 +857,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         report["runtime_alpha"]["ok"],
         report["runtime_repeated_lock"]["ok"],
         report["restore"]["byte_identical"],
+        report["style_button_clicks"]["ok"],
     ]
     if all(required):
         report["verdict"] = "pass"
@@ -834,6 +877,9 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     elif not report["runtime_color_change_proven"]:
         report["verdict"] = "inconclusive"
         report["verdict_reason"] = "pixel_color_change_unproven"
+    elif not report["style_button_clicks"]["ok"]:
+        report["verdict"] = "blocked"
+        report["verdict_reason"] = "style_color_visible_controls_unwired"
     else:
         report["verdict"] = "blocked"
         report["verdict_reason"] = "style_color_product_evidence_incomplete"
