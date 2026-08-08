@@ -224,10 +224,13 @@ def test_lot1_panels_cover_the_portage_seams():
     assert 'use _rf_editor_field("xanchor"' in inspector
     assert "rf_inspector_lock" in inspector
 
-    # 1.D — colour allowlist surface + lock reason
+    # 1.D — colour allowlist surface + lock reason + visible colour controls
     assert "rf_style_color_value" in style
+    assert 'id "rf_style_color"' in style
+    assert 'id "rf_style_cycle"' in style
     assert "rf_style_lock" in style or "style.locked" in style
     assert "_renforge_editor_style_color_capable" in style
+    assert "_renforge_editor_cycle_style_color_preview" in style
 
     # 1.E — session status lives on the band
     assert "rf_hud_band" in hud

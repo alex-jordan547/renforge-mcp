@@ -511,6 +511,12 @@ init 1100 python:
             state.drag_active = False
             state.drag_offset = [0, 0]
             state.drag_start_position = None
+            state.resize_active = False
+            state.resize_handle = None
+            state.resize_start_pointer = None
+            state.resize_start_position = None
+            state.resize_start_size = None
+            state.resize_start_rect = None
             state.snap_anchor_x = None
             state.snap_anchor_y = None
             state.snap_offset_x = None
@@ -620,6 +626,18 @@ init 1100 python:
             state.pending_commit_is_zorder = False
         if not hasattr(state, "refuse_next_style_attestation"):
             state.refuse_next_style_attestation = False
+        if not hasattr(state, "resize_active"):
+            state.resize_active = False
+        if not hasattr(state, "resize_handle"):
+            state.resize_handle = None
+        if not hasattr(state, "resize_start_pointer"):
+            state.resize_start_pointer = None
+        if not hasattr(state, "resize_start_position"):
+            state.resize_start_position = None
+        if not hasattr(state, "resize_start_size"):
+            state.resize_start_size = None
+        if not hasattr(state, "resize_start_rect"):
+            state.resize_start_rect = None
         return state
 
 
@@ -1132,6 +1150,15 @@ init 1100 python:
 
     # ── Canvas decorations (Lot 1.F) ────────────────────────────────────────
 
+    # TL T TR / L R / BL B BR — same order as drawn handles.
+    _RF_RESIZE_HANDLE_NAMES = ("TL", "T", "TR", "L", "R", "BL", "B", "BR")
+    # Left/top edges also move the origin; resize-only targets keep right/bottom.
+    _RF_RESIZE_MOVE_HANDLES = frozenset(("TL", "T", "TR", "L", "BL"))
+    _RF_RESIZE_RIGHT_HANDLES = frozenset(("TR", "R", "BR"))
+    _RF_RESIZE_LEFT_HANDLES = frozenset(("TL", "L", "BL"))
+    _RF_RESIZE_BOTTOM_HANDLES = frozenset(("BL", "B", "BR"))
+    _RF_RESIZE_TOP_HANDLES = frozenset(("TL", "T", "TR"))
+
     def _renforge_editor_handle_points(x, y, w, h, size):
         """Top-left corner of each of the eight resize handles.
 
@@ -1151,6 +1178,175 @@ init 1100 python:
             (left, mid_y), (right, mid_y),
             (left, bottom), (mid_x, bottom), (right, bottom),
         ]
+
+    def _renforge_editor_hit_resize_handle(pointer_x, pointer_y):
+        """Return handle name under canvas pointer, or None."""
+        state = _renforge_editor_state()
+        if state.selected_lock_reason not in (None, ""):
+            return None
+        caps = state.current_capabilities or {}
+        if caps.get("resize") is not True:
+            return None
+        rect = state.selected_rect
+        if not (isinstance(rect, (builtins.list, tuple)) and len(rect) == 4):
+            return None
+        x, y, w, h = (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        if w < 1 or h < 1:
+            return None
+        handle_size = _renforge_editor_canvas_handle_px()
+        # Slightly larger hit target than the drawn square so edge-centre
+        # pointers from the protocol land on the handle, not the move path.
+        hit_pad = max(2, handle_size // 4)
+        points = _renforge_editor_handle_points(x, y, w, h, handle_size)
+        can_move = caps.get("move") is True
+        px, py = int(pointer_x), int(pointer_y)
+        for index, (hx, hy) in enumerate(points):
+            name = _RF_RESIZE_HANDLE_NAMES[index]
+            if name in _RF_RESIZE_MOVE_HANDLES and not can_move:
+                continue
+            if (
+                px >= hx - hit_pad
+                and px < hx + handle_size + hit_pad
+                and py >= hy - hit_pad
+                and py < hy + handle_size + hit_pad
+            ):
+                return name
+        return None
+
+    def _renforge_editor_begin_resize(handle, pointer_x, pointer_y):
+        state = _renforge_editor_state()
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key) if target_key else None
+        if not isinstance(target, builtins.dict):
+            return {"ok": False, "error": "NO_SELECTION"}
+        rect = state.selected_rect
+        if not (isinstance(rect, (builtins.list, tuple)) and len(rect) == 4):
+            return {"ok": False, "error": "UNMEASURED"}
+        size = (
+            target.get("size")
+            or target.get("runtime_size")
+            or state.preview_size
+            or state.selected_original_size
+            or [int(rect[2]), int(rect[3])]
+        )
+        position = (
+            target.get("position")
+            or state.preview_position
+            or state.selected_original_position
+            or [int(rect[0]), int(rect[1])]
+        )
+        if not (isinstance(size, (builtins.list, tuple)) and len(size) == 2):
+            return {"ok": False, "error": "NO_SIZE"}
+        if not (isinstance(position, (builtins.list, tuple)) and len(position) == 2):
+            return {"ok": False, "error": "NO_POSITION"}
+        state.drag_active = False
+        state.resize_active = True
+        state.resize_handle = handle
+        state.resize_start_pointer = [int(pointer_x), int(pointer_y)]
+        state.resize_start_position = [int(position[0]), int(position[1])]
+        state.resize_start_size = [max(1, int(size[0])), max(1, int(size[1]))]
+        state.resize_start_rect = [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
+        state.last_preview_method = "resize_handle"
+        return {"ok": True, "handle": handle}
+
+    def _renforge_editor_apply_resize_from_pointer(pointer_x, pointer_y):
+        state = _renforge_editor_state()
+        if not state.resize_active or state.resize_handle is None:
+            return {"ok": False, "error": "RESIZE_INACTIVE"}
+        target_key = state.selected_target_key
+        if target_key is None:
+            return {"ok": False, "error": "NO_SELECTION"}
+        handle = state.resize_handle
+        start_ptr = state.resize_start_pointer or [0, 0]
+        start_pos = state.resize_start_position or [0, 0]
+        start_size = state.resize_start_size or [1, 1]
+        dx = int(pointer_x) - int(start_ptr[0])
+        dy = int(pointer_y) - int(start_ptr[1])
+        x = int(start_pos[0])
+        y = int(start_pos[1])
+        w = max(1, int(start_size[0]))
+        h = max(1, int(start_size[1]))
+        if handle in _RF_RESIZE_RIGHT_HANDLES:
+            w = max(1, int(start_size[0]) + dx)
+        if handle in _RF_RESIZE_LEFT_HANDLES:
+            w = max(1, int(start_size[0]) - dx)
+            x = int(start_pos[0]) + (int(start_size[0]) - w)
+        if handle in _RF_RESIZE_BOTTOM_HANDLES:
+            h = max(1, int(start_size[1]) + dy)
+        if handle in _RF_RESIZE_TOP_HANDLES:
+            h = max(1, int(start_size[1]) - dy)
+            y = int(start_pos[1]) + (int(start_size[1]) - h)
+        pos_result = _renforge_editor_set_target_position(target_key, [x, y])
+        if not pos_result.get("ok", False):
+            return pos_result
+        size_result = _renforge_editor_set_target_size(target_key, [w, h])
+        if not size_result.get("ok", False):
+            return size_result
+        state.preview_position = [x, y]
+        state.preview_size = [w, h]
+        state.pointer = [int(pointer_x), int(pointer_y)]
+        _renforge_editor_set_label(pointer_x, pointer_y)
+        return {"ok": True, "x": x, "y": y, "w": w, "h": h}
+
+    def _renforge_editor_end_resize():
+        state = _renforge_editor_state()
+        if not state.resize_active:
+            return {"ok": True, "changed": False}
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key) if target_key else None
+        before_pos = list(state.resize_start_position or [])
+        before_size = list(state.resize_start_size or [])
+        after_pos = list(
+            (target.get("position") if isinstance(target, builtins.dict) else None)
+            or state.preview_position
+            or before_pos
+        )
+        after_size = list(
+            (target.get("size") if isinstance(target, builtins.dict) else None)
+            or state.preview_size
+            or before_size
+        )
+        changed = (
+            len(before_pos) == 2
+            and len(after_pos) == 2
+            and len(before_size) == 2
+            and len(after_size) == 2
+            and (
+                [int(v) for v in before_pos] != [int(v) for v in after_pos]
+                or [int(v) for v in before_size] != [int(v) for v in after_size]
+            )
+        )
+        if changed and isinstance(target, builtins.dict):
+            if state.history_index + 1 < len(state.history_entries):
+                state.history_entries = state.history_entries[: state.history_index + 1]
+            if [int(v) for v in before_pos] == [int(v) for v in after_pos]:
+                command = {
+                    "target_key": target_key,
+                    "kind": "size",
+                    "before": [int(before_size[0]), int(before_size[1])],
+                    "after": [int(after_size[0]), int(after_size[1])],
+                }
+            else:
+                command = {
+                    "target_key": target_key,
+                    "kind": "geometry",
+                    "before": [int(before_pos[0]), int(before_pos[1])],
+                    "after": [int(after_pos[0]), int(after_pos[1])],
+                    "before_size": [int(before_size[0]), int(before_size[1])],
+                    "after_size": [int(after_size[0]), int(after_size[1])],
+                }
+            state.history_entries.append(command)
+            state.history = list(state.history_entries)
+            state.history_index = len(state.history_entries) - 1
+        state.resize_active = False
+        state.resize_handle = None
+        state.resize_start_pointer = None
+        state.resize_start_position = None
+        state.resize_start_size = None
+        state.resize_start_rect = None
+        _renforge_editor_refresh_save_enabled()
+        renpy.restart_interaction()
+        return {"ok": True, "changed": bool(changed)}
 
 
     # ── Inspector (Lot 1.C) ─────────────────────────────────────────────────
@@ -2939,7 +3135,7 @@ init 1100 python:
             state.selected_target_key = previous_key
         elif command.get("kind") == "size":
             result = _renforge_editor_set_target_size(command.get("target_key"), value)
-        elif command.get("kind") == "reset":
+        elif command.get("kind") in ("reset", "geometry"):
             result = _renforge_editor_set_target_position(command.get("target_key"), value)
             size_key = "before_size" if use_before else "after_size"
             size_value = command.get(size_key)
@@ -2950,15 +3146,16 @@ init 1100 python:
                 )
                 if not size_result.get("ok", False):
                     result = size_result
-            color_key = "before_color" if use_before else "after_color"
-            color_value = command.get(color_key)
-            if color_value is not None:
-                previous_key = _renforge_editor_state().selected_target_key
-                _renforge_editor_state().selected_target_key = command.get("target_key")
-                color_result = _renforge_editor_set_style_color(color_value, record=False)
-                _renforge_editor_state().selected_target_key = previous_key
-                if not color_result.get("ok", False):
-                    result = color_result
+            if command.get("kind") == "reset":
+                color_key = "before_color" if use_before else "after_color"
+                color_value = command.get(color_key)
+                if color_value is not None:
+                    previous_key = _renforge_editor_state().selected_target_key
+                    _renforge_editor_state().selected_target_key = command.get("target_key")
+                    color_result = _renforge_editor_set_style_color(color_value, record=False)
+                    _renforge_editor_state().selected_target_key = previous_key
+                    if not color_result.get("ok", False):
+                        result = color_result
         else:
             result = _renforge_editor_set_target_position(command.get("target_key"), value)
         _renforge_editor_refresh_save_enabled()
@@ -3025,7 +3222,7 @@ init 1100 python:
 
 
     def _renforge_editor_cycle_style_color_preview():
-        """Minimal in-game control: toggle between baseline and a fixed blue proof colour."""
+        """Toggle between the authored baseline colour and the fixed proof blue."""
         state = _renforge_editor_state()
         target = state.targets.get(state.selected_target_key)
         if not isinstance(target, builtins.dict):
@@ -3038,6 +3235,11 @@ init 1100 python:
             proof_color = "#2457d6" + baseline[-2:]
         else:
             proof_color = "#2457d6"
+        current_norm = _renforge_editor_normalize_style_color(current)
+        baseline_norm = _renforge_editor_normalize_style_color(baseline)
+        chosen = proof_color if current_norm == baseline_norm else baseline
+        return _renforge_editor_set_style_color(chosen, record=True)
+
     def _renforge_editor_zorder_capable():
         state = _renforge_editor_state()
         if state.selected_target_key is None:
@@ -4088,6 +4290,12 @@ init 1100 python:
         state.save_button_state = "idle"
         state.label_text = "No selection"
         state.drag_active = False
+        state.resize_active = False
+        state.resize_handle = None
+        state.resize_start_pointer = None
+        state.resize_start_position = None
+        state.resize_start_size = None
+        state.resize_start_rect = None
         state.snap_anchor_x = None
         state.snap_anchor_y = None
         state.snap_offset_x = None
@@ -4119,6 +4327,13 @@ init 1100 python:
         _renforge_editor_set_label(pointer_x, pointer_y)
         if pygame is not None:
             if event_type == getattr(pygame, "MOUSEBUTTONDOWN", None) and getattr(event, "button", 0) == 1:
+                # Resize handles win over reselection/move so the drag protocol
+                # and live pointer path share one hit order.
+                handle = _renforge_editor_hit_resize_handle(pointer_x, pointer_y)
+                if handle is not None:
+                    begin = _renforge_editor_begin_resize(handle, pointer_x, pointer_y)
+                    if begin.get("ok") is True:
+                        raise renpy.IgnoreEvent()
                 _renforge_editor_select(screen_x, screen_y)
                 if (
                     _renforge_editor_tool_allows_drag()
@@ -4127,15 +4342,23 @@ init 1100 python:
                 ):
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
+            if event_type == getattr(pygame, "MOUSEMOTION", None) and state.resize_active:
+                _renforge_editor_apply_resize_from_pointer(pointer_x, pointer_y)
+                raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEMOTION", None) and state.drag_active:
                 # Ren'Py already coalesces MOUSEMOTION to the latest event before
                 # dispatch. Apply that motion immediately; do not re-queue it.
                 _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "MOUSEBUTTONUP", None) and getattr(event, "button", 0) == 1:
-                if state.drag_active:
+                if state.resize_active:
+                    _renforge_editor_apply_resize_from_pointer(pointer_x, pointer_y)
+                    _renforge_editor_end_resize()
+                elif state.drag_active:
                     _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift)
-                _renforge_editor_end_drag()
+                    _renforge_editor_end_drag()
+                else:
+                    _renforge_editor_end_drag()
                 raise renpy.IgnoreEvent()
             if event_type == getattr(pygame, "KEYDOWN", None):
                 if key == getattr(pygame, "K_ESCAPE", None):
@@ -4670,7 +4893,7 @@ init 1100 python:
             first_x,
             first_y,
         )
-        if not state.drag_active:
+        if not state.drag_active and not state.resize_active:
             return {
                 "ok": False,
                 "error": state.selected_lock_reason or "drag did not start",
@@ -4694,7 +4917,9 @@ init 1100 python:
             previous_x, previous_y = px, py
 
         preview_before_mouse_up = list(state.preview_position or [])
+        preview_size_before_mouse_up = list(state.preview_size or [])
         drag_active_before_mouse_up = bool(state.drag_active)
+        resize_active_before_mouse_up = bool(state.resize_active)
         dispatch(
             _renforge_editor_fake_event(
                 getattr(pygame, "MOUSEBUTTONUP", None),
@@ -4711,7 +4936,9 @@ init 1100 python:
             "preview_method": state.last_preview_method,
             "samples": samples,
             "preview_before_mouse_up": preview_before_mouse_up,
+            "preview_size_before_mouse_up": preview_size_before_mouse_up,
             "drag_active_before_mouse_up": drag_active_before_mouse_up,
+            "resize_active_before_mouse_up": resize_active_before_mouse_up,
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
         }

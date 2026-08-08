@@ -344,11 +344,9 @@ def run_editor_bar_resize_live_scenario(client: Any, *, fixture_path: Path) -> d
     if report["rebinding"]["ok"] is not True:
         raise AssertionError(f"rebinding failed: {report['rebinding']!r}")
 
-    # Step 1 visible-handle proof: drag the visible right-edge resize handle
-    # while runtime and source still share the committed size, then commit via
-    # the visible Save button. Deliberately red until step 7 adds pointer
-    # handle hit-testing and the resize drag gesture; the `finally` restore
-    # guarantees the fixture returns to baseline even when the proof fails.
+    # Visible-handle proof: drag the right-edge resize handle while runtime and
+    # source still share the committed size, then commit via the visible Save
+    # button. The `finally` restore always returns the fixture to baseline.
     handle_drag: dict[str, Any] = {"ok": False}
     report["visible_handle_drag"] = handle_drag
     try:

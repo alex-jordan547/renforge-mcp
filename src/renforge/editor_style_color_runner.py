@@ -800,10 +800,8 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         and int(pixel_after.get("paint_count") or 0) > 20
     )
 
-    # Step 1 visible-control proof: the user-facing colour buttons must drive
-    # preview colour changes without any source write. Deliberately red while
-    # `_renforge_editor_cycle_style_color_preview()` is a no-op; step 7 wires
-    # the cycle to the preview setter.
+    # Visible-control proof: toolbar/style buttons drive preview colour without
+    # writing source (cycle toggles baseline ↔ proof blue).
     _require_ok(
         client.click_element(id="rf_style_color", screen="_renforge_editor_overlay"),
         "rf_style_color click",

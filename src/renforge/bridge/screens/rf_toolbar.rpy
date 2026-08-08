@@ -243,18 +243,6 @@ screen _rf_editor_toolbar(tools_visible):
 
             use _rf_icon_btn("rf_exit", "exit", Function(_renforge_editor_consume, _renforge_editor_exit), enabled=(not _renforge_editor_state().save_in_progress), size_key="action")
 
-            if _renforge_editor_style_color_capable():
-                textbutton _renforge_editor_style_color_label():
-                    id "rf_style_color"
-                    action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
-                    sensitive not _renforge_editor_state().save_in_progress
-                    background Frame(_renforge_editor_ui_frame("pill_accent"), _RF_FRAME_PILL, _RF_FRAME_PILL)
-                    padding (_renforge_editor_ui_px(_RF_S3), _renforge_editor_ui_px(8))
-                    text_color _renforge_editor_ui_color("accent_on")
-                    text_font _renforge_editor_ui_font()
-                    text_size _renforge_editor_ui_px(_RF_T_XS, minimum=14)
-                    yalign 0.5
-
             if _renforge_editor_selected_lock() is not None:
                 hbox:
                     spacing _renforge_editor_ui_px(_RF_S2)

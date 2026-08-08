@@ -91,15 +91,26 @@ screen _rf_editor_style():
                                 color _renforge_editor_ui_color("surface")
                                 font _renforge_editor_ui_font()
                                 size _renforge_editor_ui_px(18)
-                    textbutton _renforge_editor_t("style.color"):
-                        id "rf_style_cycle"
-                        action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
-                        sensitive not _renforge_editor_state().save_in_progress
-                        background Solid(_renforge_editor_ui_color("accent"))
-                        padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
-                        text_color _renforge_editor_ui_color("accent_on")
-                        text_font _renforge_editor_ui_font()
-                        text_size _renforge_editor_ui_px(16)
+                    hbox:
+                        spacing _renforge_editor_ui_px(8)
+                        textbutton _renforge_editor_style_color_label():
+                            id "rf_style_color"
+                            action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
+                            sensitive not _renforge_editor_state().save_in_progress
+                            background Solid(_renforge_editor_ui_color("accent"))
+                            padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                            text_color _renforge_editor_ui_color("accent_on")
+                            text_font _renforge_editor_ui_font()
+                            text_size _renforge_editor_ui_px(16)
+                        textbutton _renforge_editor_t("style.color"):
+                            id "rf_style_cycle"
+                            action Function(_renforge_editor_consume, _renforge_editor_cycle_style_color_preview)
+                            sensitive not _renforge_editor_state().save_in_progress
+                            background Solid(_renforge_editor_ui_color("accent"))
+                            padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(6))
+                            text_color _renforge_editor_ui_color("accent_on")
+                            text_font _renforge_editor_ui_font()
+                            text_size _renforge_editor_ui_px(16)
                 else:
                     text _renforge_editor_t("style.locked"):
                         id "rf_style_color_value"
