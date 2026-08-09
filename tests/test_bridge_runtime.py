@@ -3006,6 +3006,9 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
         calls["write_handle"].append((handle, data))
         path = calls["create_file"][-1]["path"]
         file_contents[path] = data
+        # In-place ready rewrite writes through the open handle path.
+        with open(path, "wb") as f:
+            f.write(data)
 
     def fake_flush_handle(handle):
         calls["flush_handle"].append(handle)

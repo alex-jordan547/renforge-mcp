@@ -141,14 +141,18 @@ def _write_bridge_info(
         "token": token,
     }
     info_path = _bridge_info_path(root)
-    info_path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
+    if os.name == "nt":
+        from renforge.util.files import atomic_write_private_json, ensure_private_directory
+
+        ensure_private_directory(info_path.parent)
+        atomic_write_private_json(info_path, payload, max_bytes=16 * 1024)
+    else:
+        info_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(info_path.parent, 0o700)
         except OSError:
             pass
-    info_path.write_text(json.dumps(payload), encoding="utf-8")
-    if os.name != "nt":
+        info_path.write_text(json.dumps(payload), encoding="utf-8")
         os.chmod(info_path, 0o600)
 
 
