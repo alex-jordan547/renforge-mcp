@@ -1396,7 +1396,7 @@ def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
             assert result["original_position"] == [12, 10]
 
             committed = _commit(sock, auth, analyzed, x=40, y=50, request_id="co-img")
-            assert committed["ok"] is True
+            assert committed["ok"] is True, committed
             assert committed["result"]["state"] == "published"
             assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
             assert 'imagebutton id "start_btn"' in source.read_text(encoding="utf-8")
