@@ -6,12 +6,35 @@ from pathlib import Path
 
 import pytest
 
+import renforge.editor.paths as editor_paths
 from renforge.editor.paths import (
     EditorPathError,
     conditional_replace_file,
     hash_file_nofollow,
     write_exclusive_bytes,
 )
+
+
+def test_exchange_unix_uses_libc_renameat2_on_linux(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    replacement = tmp_path / "replacement"
+    calls: list[tuple[object, ...]] = []
+
+    def renameat2(*args: object) -> int:
+        calls.append(args)
+        return 0
+
+    class FakeLibc:
+        pass
+
+    libc = FakeLibc()
+    libc.renameat2 = renameat2  # type: ignore[attr-defined]
+    monkeypatch.setattr(editor_paths.sys, "platform", "linux")
+    monkeypatch.setattr(editor_paths.ctypes, "CDLL", lambda *_args, **_kwargs: libc)
+
+    editor_paths._exchange_unix(source, replacement)
+
+    assert calls == [(-100, bytes(source), -100, bytes(replacement), 2)]
 
 
 def test_conditional_replace_exchanges_and_retains_displaced(tmp_path: Path) -> None:

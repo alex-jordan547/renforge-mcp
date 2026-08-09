@@ -769,6 +769,7 @@ def remove_owned_artifacts(
     project_root: Path,
     *,
     expected_session_id: str | None = None,
+    remove_bridge_info: bool = True,
 ) -> bool:
     """Remove schema-3 owned artifacts only after full ownership validation.
 
@@ -812,7 +813,8 @@ def remove_owned_artifacts(
     if asset_tree is not None:
         _remove_asset_tree(game_dir, asset_tree)
 
-    _remove_owned_bridge_info(root, expected_session_id=str(manifest["session_id"]))
+    if remove_bridge_info:
+        _remove_owned_bridge_info(root, expected_session_id=str(manifest["session_id"]))
 
     manifest_path = artifacts_path(root)
     try:

@@ -195,22 +195,43 @@ def _exchange_unix(path: Path, replacement_path: Path) -> None:
             raise OSError(err, os.strerror(err))
         return
 
-    if sys.platform.startswith("linux") and hasattr(os, "renameat2"):
-        flags = getattr(os, "RENAME_EXCHANGE", 1 << 1)
+    if sys.platform.startswith("linux"):
         try:
-            os.renameat2(path.parent, path.name, replacement_path.parent, replacement_path.name, flags=flags)  # type: ignore[attr-defined]
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = libc.renameat2
+        except (AttributeError, OSError) as exc:
+            raise EditorPathError(
+                "SOURCE_CAS_UNAVAILABLE",
+                "atomic rename exchange is unavailable on this system",
+            ) from exc
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        rc = renameat2(
+            -100,  # AT_FDCWD
+            os.fsencode(path),
+            -100,
+            os.fsencode(replacement_path),
+            1 << 1,  # RENAME_EXCHANGE
+        )
+        if rc == 0:
             return
-        except OSError as exc:
-            if getattr(exc, "errno", None) in {
-                getattr(errno, "ENOTSUP", 95),
-                getattr(errno, "EINVAL", 22),
-                getattr(errno, "ENOSYS", 38),
-            }:
-                raise EditorPathError(
-                    "SOURCE_CAS_UNAVAILABLE",
-                    "atomic rename exchange is unavailable on this filesystem",
-                ) from exc
-            raise
+        err = ctypes.get_errno()
+        if err in {
+            getattr(errno, "ENOTSUP", 95),
+            getattr(errno, "EINVAL", 22),
+            getattr(errno, "ENOSYS", 38),
+        }:
+            raise EditorPathError(
+                "SOURCE_CAS_UNAVAILABLE",
+                "atomic rename exchange is unavailable on this filesystem",
+            )
+        raise OSError(err, os.strerror(err))
 
     raise EditorPathError(
         "SOURCE_CAS_UNAVAILABLE",

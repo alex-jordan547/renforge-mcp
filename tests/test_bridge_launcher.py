@@ -738,14 +738,13 @@ def test_preplanted_unsafe_bridge_info_fails_closed_without_unlink(
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project)
 
-    assert excinfo.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert excinfo.value.code == "BRIDGE_INFO_CONFLICT"
     assert unsafe.is_symlink()
     assert victim.read_bytes() == b"secret-bridge-bytes"
     assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
+    assert not _artifacts_path(project_root).exists()
 
-    with pytest.raises(LaunchError) as cleanup_exc:
-        remove_bridge_artifacts(project_root)
-    assert cleanup_exc.value.code == "BRIDGE_CONTROL_DIRECTORY_UNSAFE"
+    assert remove_bridge_artifacts(project_root) is False
     assert unsafe.is_symlink()
     assert victim.read_bytes() == b"secret-bridge-bytes"
 

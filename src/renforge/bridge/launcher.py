@@ -482,14 +482,13 @@ def remove_bridge_artifacts(
     Returns ``False`` when no ownership manifest exists and ``True`` after a
     complete proven removal. Legacy fixed names, ``traceback.txt``,
     ``errors.txt``, and unowned pre-migration metadata are never touched.
-    ``remove_bridge_info`` is retained for call-site compatibility; bridge-info
-    cleanup is owned by the schema-3 manifest path when present.
+    ``remove_bridge_info=False`` removes only source and asset artifacts.
     """
-    _ = remove_bridge_info
     try:
         return remove_owned_artifacts(
             Path(project_root),
             expected_session_id=expected_session_id,
+            remove_bridge_info=remove_bridge_info,
         )
     except ArtifactOwnershipError as exc:
         # Preserve fail-closed cleanup for BridgeSession retries.
