@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from renforge.editor.source import analyze_textbutton_block_statement
+from renforge.editor_runner_status import is_reload_committed
 from renforge.editor_task0_runner import (
     _require_ok,
     _source_generation,
@@ -410,9 +411,7 @@ def run_editor_multiline_textbutton_live_scenario(client: Any, *, fixture_path: 
     )
     save_status = _wait_for_status(
         client,
-        lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_code") == "reload_committed"
-        and _source_generation(status) == generation_before + 1,
+        lambda status: is_reload_committed(status, generation=generation_before + 1),
         timeout=60.0,
         poll_name="ml tb save complete",
     )

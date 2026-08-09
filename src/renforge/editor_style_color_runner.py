@@ -12,6 +12,7 @@ from typing import Any
 
 from PIL import Image
 
+from renforge.editor_runner_status import is_reload_committed
 from renforge.editor.source import (
     TEXT_STYLE_COLOR_MODE_LITERAL,
     analyze_text_color_style,
@@ -648,10 +649,9 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     )
     save_status = _wait_for_status(
         client,
-        lambda status: (
-            not bool(status.get("save_in_progress"))
-            and status.get("status_code") == "reload_committed"
-            and _source_generation(status) >= generation1 + 1
+        lambda status: is_reload_committed(
+            status,
+            minimum_generation=generation1 + 1,
         ),
         timeout=60.0,
         poll_name="style color save complete",
@@ -673,7 +673,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
             report["source_patch"]["matches_independent_expected"]
             and report["source_patch"]["outside_color_span_identical"]
             and report["source_patch"]["source_color_after"] == REQUESTED_COLOR
-            and save_status.get("status_code") == "reload_committed"
+            and is_reload_committed(save_status)
         ),
         "status_code": save_status.get("status_code"), "status_text": save_status.get("status_text"),
         "script_generation": _source_generation(save_status),
@@ -727,10 +727,9 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
     )
     undo_status = _wait_for_status(
         client,
-        lambda status: (
-            not bool(status.get("save_in_progress"))
-            and status.get("status_code") == "reload_committed"
-            and _source_generation(status) >= generation2 + 1
+        lambda status: is_reload_committed(
+            status,
+            minimum_generation=generation2 + 1,
         ),
         timeout=60.0,
         poll_name="style color product undo complete",
@@ -757,7 +756,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
             and _parse_color_from_target_line(undo_text, TARGET_ID) == BASELINE_COLOR
             and pixel_undo.get("dominant") == "red"
             and undo_rebind.get("selected_widget_id") == TARGET_ID
-            and undo_status.get("status_code") == "reload_committed"
+            and is_reload_committed(undo_status)
         ),
         "byte_identical": undo_bytes == baseline,
         "sha256": _sha256_bytes(undo_bytes),

@@ -558,6 +558,46 @@ def test_commit_shadow_isolation_and_validation_failure_diagnostics(tmp_path: Pa
         coordinator.close()
 
 
+def test_shadow_rejects_special_files_and_removes_partial_copy(tmp_path: Path) -> None:
+    import os
+
+    from renforge.editor.shadow import build_shadow_project
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFOs unavailable on this platform")
+    project, _source = _make_project(tmp_path)
+    special = project.root / "game" / "special.pipe"
+    os.mkfifo(special)
+    shadow_root = tmp_path / "shadow-special"
+
+    with pytest.raises(EditorError) as excinfo:
+        build_shadow_project(project, shadow_root=shadow_root, staged_replacements={})
+
+    assert excinfo.value.code == "SHADOW_SPECIAL_FILE"
+    assert not shadow_root.exists()
+
+
+def test_shadow_enforces_file_quota_and_removes_partial_copy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    (project.root / "extra.txt").write_text("extra\n", encoding="utf-8")
+    shadow_root = tmp_path / "shadow-quota"
+    monkeypatch.setattr(shadow, "MAX_SHADOW_FILES", 1)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.build_shadow_project(
+            project,
+            shadow_root=shadow_root,
+            staged_replacements={},
+        )
+
+    assert excinfo.value.code == "SHADOW_QUOTA_EXCEEDED"
+    assert not shadow_root.exists()
+
+
 def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation(script_generation=7)

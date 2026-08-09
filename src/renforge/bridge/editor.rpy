@@ -265,10 +265,10 @@ init 1090 python:
     _RF_ICON_ACTION = 44
     _RF_ICON_GLYPH = 28
     _RF_ICON_GLYPH_SM = 24
-    _RF_ICON_BTN_MIN = 40
-    _RF_ICON_ACTION_MIN = 34
-    _RF_ICON_GLYPH_MIN = 22
-    _RF_ICON_GLYPH_SM_MIN = 20
+    _RF_ICON_BTN_MIN = 28
+    _RF_ICON_ACTION_MIN = 28
+    _RF_ICON_GLYPH_MIN = 18
+    _RF_ICON_GLYPH_SM_MIN = 18
     _RF_BRAND_MARK = 44
     _RF_SAVE_H = 56
     _RF_SEG_H = 42
@@ -1060,6 +1060,19 @@ init 1100 python:
             "depth_truncated": depth_truncated,
         }
 
+    def _renforge_editor_tree_summary():
+        tree = _renforge_editor_tree_rows()
+        terminal_row_count = 0
+        for row in tree.get("rows", []):
+            if row.get("truncated"):
+                terminal_row_count += 1
+        return {
+            "total": tree.get("total"),
+            "count_truncated": tree.get("count_truncated"),
+            "depth_truncated": tree.get("depth_truncated"),
+            "terminal_row_count": terminal_row_count,
+        }
+
     def _renforge_editor_tree_indent(depth):
         return _renforge_editor_ui_px(int(depth) * 26)
 
@@ -1175,6 +1188,8 @@ init 1100 python:
         toolbar_h = ui_px(_RF_DOCK_TOOLBAR_H if layout_mode == "docked" and view_mode == "edit" else _RF_OVERLAY_TOOLBAR_H)
         hud_h = ui_px(_RF_OVERLAY_HUD_H)
         cell = max(28, ui_px(_RF_ICON_BTN, minimum=_RF_ICON_BTN_MIN))
+        text_size = max(12, ui_px(_RF_T_XS))
+        heading_text_size = max(14, ui_px(_RF_T_SM))
 
         # Toolbar inclusion: fixed trailing cluster never elides; optional content
         # hides brand → screen → lock → style → disabled tools.
@@ -1228,6 +1243,8 @@ init 1100 python:
                 "show_disabled_tools": show_disabled_tools,
                 "fixed_control_ids": ["rf_toolbar_view_edit", "rf_save", "rf_exit"],
                 "cell": cell,
+                "text_size": text_size,
+                "heading_text_size": heading_text_size,
                 "synthetic": synthetic,
             }
 
@@ -1331,6 +1348,8 @@ init 1100 python:
             "show_disabled_tools": show_disabled_tools,
             "fixed_control_ids": fixed_ids,
             "cell": cell,
+            "text_size": text_size,
+            "heading_text_size": heading_text_size,
             "synthetic": synthetic,
         }
 
@@ -5626,6 +5645,9 @@ init 1100 python:
             if not exit_reply.get("ok", False):
                 return exit_reply
             return {"ok": True, "repeat": repeat, "shift": shift, "active": state.active}
+        if key_name in nudge_map and _renforge_editor_tool_mode() not in ("select", "move"):
+            state.last_event_trace = [{"key": key_name, "shift": shift, "ignored": True}]
+            return {"ok": False, "error": "TOOL_MODE_BLOCKED", "active": state.active}
         traces = []
         for _index in range(repeat):
             if key_name in nudge_map:

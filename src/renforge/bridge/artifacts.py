@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -23,7 +22,11 @@ from renforge.project import RenpyProject
 from renforge.util.files import (
     PrivatePathError,
     atomic_write_private_json,
+    fsync_directory,
+    hash_file_nofollow,
     read_regular_file_nofollow,
+    sha256_bytes,
+    write_exclusive_bytes,
 )
 
 _ARTIFACTS_NAME: Final[str] = "artifacts.json"
@@ -93,10 +96,6 @@ def editor_assets_dirname(session_id: str) -> str:
     return f"zzrenforge_editor_{session_id}"
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _generated_siblings(basename: str) -> list[str]:
     return [basename + "c", basename + "c.bak"]
 
@@ -133,42 +132,6 @@ def _is_symlink_or_nonfile(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode)
-
-
-def _write_exclusive_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(str(path), flags, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _fsync_parent(path: Path) -> None:
-    parent = path.parent
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    try:
-        fd = os.open(str(parent), flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
 
 
 def session_init_payload() -> bytes:
@@ -450,7 +413,7 @@ def _publish_intent(project_root: Path, manifest: Mapping[str, Any]) -> None:
             phase="publishing_artifact_intent",
             suggested_fix="Remove unsafe paths under .renforge/control and retry.",
         ) from exc
-    _fsync_parent(path)
+    fsync_directory(path.parent)
 
 
 def _assert_allocation_clear(
@@ -502,8 +465,8 @@ def materialize_from_manifest(
                 phase="materializing_artifacts",
             )
         target = game_dir / basename
-        _write_exclusive_bytes(target, data)
-        _fsync_parent(target)
+        write_exclusive_bytes(target, data, mode=0o644)
+        fsync_directory(target.parent)
 
     asset_tree = manifest.get("asset_tree")
     if asset_tree is None:
@@ -523,8 +486,8 @@ def materialize_from_manifest(
                 phase="materializing_artifacts",
             )
         target = assets_dir / rel
-        _write_exclusive_bytes(target, data)
-    _fsync_parent(assets_dir)
+        write_exclusive_bytes(target, data, mode=0o644)
+    fsync_directory(assets_dir.parent)
 
 
 def allocate_and_materialize(
@@ -647,16 +610,11 @@ def allocate_and_materialize(
     ) from last_error
 
 
-def _hash_regular_file(path: Path) -> str:
-    data = path.read_bytes()
-    return sha256_bytes(data)
-
-
-def _unlink_owned_regular(path: Path, *, expected_sha256: str | None = None) -> None:
+def _validate_owned_regular(path: Path, *, expected_sha256: str | None = None) -> bool:
     try:
         st = path.lstat()
     except FileNotFoundError:
-        return
+        return False
     if stat.S_ISLNK(st.st_mode):
         raise ArtifactOwnershipError(
             "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
@@ -669,8 +627,8 @@ def _unlink_owned_regular(path: Path, *, expected_sha256: str | None = None) -> 
         )
     if expected_sha256 is not None:
         try:
-            digest = _hash_regular_file(path)
-        except OSError as exc:
+            digest = hash_file_nofollow(path)
+        except (FileNotFoundError, OSError) as exc:
             raise ArtifactOwnershipError(
                 "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
                 f"owned path is unreadable: {path.name}",
@@ -680,7 +638,63 @@ def _unlink_owned_regular(path: Path, *, expected_sha256: str | None = None) -> 
                 "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
                 f"owned path digest changed: {path.name}",
             )
+    return True
+
+
+def _unlink_owned_regular(path: Path, *, expected_sha256: str | None = None) -> None:
+    if not _validate_owned_regular(path, expected_sha256=expected_sha256):
+        return
     path.unlink()
+
+
+def _validate_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
+    assets_dir = game_dir / str(asset_tree["dirname"])
+    try:
+        st = assets_dir.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise ArtifactOwnershipError(
+            "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
+            "editor asset tree is not a regular directory",
+        )
+
+    expected_files = {
+        str(entry["path"]): str(entry["sha256"])
+        for entry in asset_tree["files"]
+    }
+    expected_dirs = {"."}
+    for relative in expected_files:
+        parent = Path(relative).parent
+        while str(parent) not in {"", "."}:
+            expected_dirs.add(parent.as_posix())
+            parent = parent.parent
+    for relative, digest in expected_files.items():
+        _validate_owned_regular(assets_dir / relative, expected_sha256=digest)
+
+    for dirpath, dirnames, filenames in os.walk(assets_dir, followlinks=False):
+        current = Path(dirpath)
+        for dirname in dirnames:
+            candidate = current / dirname
+            relative = candidate.relative_to(assets_dir).as_posix()
+            candidate_st = candidate.lstat()
+            if (
+                relative not in expected_dirs
+                or stat.S_ISLNK(candidate_st.st_mode)
+                or not stat.S_ISDIR(candidate_st.st_mode)
+            ):
+                raise ArtifactOwnershipError(
+                    "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
+                    f"editor asset tree has unexpected contents under {current.name}",
+                )
+        for filename in filenames:
+            candidate = current / filename
+            relative = candidate.relative_to(assets_dir).as_posix()
+            if relative not in expected_files:
+                raise ArtifactOwnershipError(
+                    "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT",
+                    f"editor asset tree has unexpected contents under {current.name}",
+                )
 
 
 def _remove_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
@@ -727,16 +741,16 @@ def _remove_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
             ) from exc
 
 
-def _remove_owned_bridge_info(
+def _validate_owned_bridge_info(
     project_root: Path,
     *,
     expected_session_id: str | None,
-) -> None:
+) -> Path | None:
     info_path = Path(project_root) / ".renforge" / "control" / _BRIDGE_INFO_BASENAME
     try:
         info_path.lstat()
     except FileNotFoundError:
-        return
+        return None
     if info_path.is_symlink():
         raise LaunchError(
             "BRIDGE_CONTROL_DIRECTORY_UNSAFE",
@@ -759,10 +773,48 @@ def _remove_owned_bridge_info(
             phase="cleaning_bridge_artifacts",
             suggested_fix="Remove the conflicting .renforge/control/bridge.json and retry.",
         ) from exc
+    return info_path
+
+
+def _remove_owned_bridge_info(
+    project_root: Path,
+    *,
+    expected_session_id: str | None,
+) -> None:
+    info_path = _validate_owned_bridge_info(
+        project_root,
+        expected_session_id=expected_session_id,
+    )
+    if info_path is None:
+        return
     try:
         info_path.unlink()
     except FileNotFoundError:
         return
+
+
+def _validate_cleanup_targets(
+    root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    remove_bridge_info: bool,
+) -> None:
+    game_dir = root / "game"
+    for entry in manifest["sources"]:
+        _validate_owned_regular(
+            game_dir / str(entry["basename"]),
+            expected_sha256=str(entry["sha256"]),
+        )
+        for sibling in entry["generated_siblings"]:
+            _validate_owned_regular(game_dir / str(sibling))
+    asset_tree = manifest.get("asset_tree")
+    if asset_tree is not None:
+        _validate_asset_tree(game_dir, asset_tree)
+    if remove_bridge_info:
+        _validate_owned_bridge_info(
+            root,
+            expected_session_id=str(manifest["session_id"]),
+        )
 
 
 def remove_owned_artifacts(
@@ -783,6 +835,12 @@ def remove_owned_artifacts(
     if manifest is None:
         # No schema-3 ownership — never delete unowned fixed names or legacy files.
         return False
+
+    _validate_cleanup_targets(
+        root,
+        manifest,
+        remove_bridge_info=remove_bridge_info,
+    )
 
     game_dir = root / "game"
     for entry in manifest["sources"]:

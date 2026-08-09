@@ -4,6 +4,7 @@ from pathlib import Path
 
 from renforge.bridge.client import BridgeProtocolError
 from renforge.editor_demo_runner import _ed_do_save
+from renforge.editor_runner_status import is_reload_committed
 
 from renforge.editor_task0_runner import (
     EDITOR_RESOURCE,
@@ -25,10 +26,13 @@ def test_task0_runner_injects_editor_and_fixture(tmp_path: Path) -> None:
 
     editor = Path(copied["editor"])
     fixture = Path(copied["fixture"])
+    stress = Path(copied["stress"])
     assert editor.is_file()
     assert fixture.is_file()
+    assert stress.is_file()
     assert editor.read_text(encoding="utf-8")
     assert fixture.read_text(encoding="utf-8")
+    assert stress.read_text(encoding="utf-8")
 
 
 def test_task0_runner_accepts_custom_fixture_path(tmp_path: Path) -> None:
@@ -68,4 +72,19 @@ def test_demo_save_tolerates_bridge_reload_disconnect() -> None:
 
     reply = _ed_do_save(ReloadingClient(), timeout=1.0)
 
-    assert reply.get("status_code") == "reload_committed" or reply.get("status_code") == "reload_committed"
+    assert is_reload_committed(reply)
+    assert reply.get("status_code") == "reload_committed"
+
+
+def test_reload_committed_status_supports_exact_and_minimum_generations() -> None:
+    status = {
+        "save_in_progress": False,
+        "status_code": "reload_committed",
+        "script_generation": 4,
+    }
+
+    assert is_reload_committed(status)
+    assert is_reload_committed(status, generation=4)
+    assert not is_reload_committed(status, generation=5)
+    assert is_reload_committed(status, minimum_generation=3)
+    assert not is_reload_committed(status, minimum_generation=5)

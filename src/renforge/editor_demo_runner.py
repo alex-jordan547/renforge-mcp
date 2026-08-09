@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image
 
 from .bridge.client import BridgeError
+from .editor_runner_status import is_reload_committed
 
 
 _EDITOR_LAUNCHER = "_renforge_editor_launcher"
@@ -194,10 +195,7 @@ def _ed_do_save(client: Any, *, timeout: float = 60.0) -> dict[str, Any]:
         except BridgeError:
             time.sleep(0.2)
             continue
-        if (
-            not last.get("save_in_progress")
-            and last.get("status_code") == "reload_committed"
-        ):
+        if is_reload_committed(last):
             return last
         time.sleep(0.2)
     raise AssertionError(f"save did not commit: {last!r}")

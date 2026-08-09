@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 import ipaddress
 import json
+import shutil
 import socket
 import threading
 import time
@@ -1735,17 +1736,36 @@ class EditorCoordinator:
     def _validate_shadow(self, transaction: _TransactionRecord) -> ShadowLintResult:
         tx_dir = self._transaction_root / transaction.transaction_id
         shadow_root = tx_dir / "shadow"
-        build_shadow_project(
-            self._project,
-            shadow_root=shadow_root,
-            staged_replacements={transaction.source_relative_path: transaction.staged_bytes},
-        )
-        return run_shadow_lint(
-            self._project,
-            self._sdk,
-            shadow_root=shadow_root,
-            timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
-        )
+        try:
+            build_shadow_project(
+                self._project,
+                shadow_root=shadow_root,
+                staged_replacements={transaction.source_relative_path: transaction.staged_bytes},
+            )
+            try:
+                return run_shadow_lint(
+                    self._project,
+                    self._sdk,
+                    shadow_root=shadow_root,
+                    timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
+                )
+            except EditorError:
+                raise
+            except (OSError, ValueError) as exc:
+                raise EditorError(
+                    "SHADOW_LINT_FAILED",
+                    "could not run Ren'Py lint in the shadow project",
+                ) from exc
+        finally:
+            try:
+                shutil.rmtree(shadow_root)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise EditorError(
+                    "SHADOW_CLEANUP_FAILED",
+                    "could not remove the validation shadow project",
+                ) from exc
 
     def _lint_diagnostics(self, lint_result: ShadowLintResult) -> dict[str, Any]:
         return {

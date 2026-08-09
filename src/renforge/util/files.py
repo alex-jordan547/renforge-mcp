@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
 import secrets
@@ -23,6 +25,123 @@ class PrivatePathError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _open_regular_nofollow(path: Path) -> tuple[int, os.stat_result]:
+    target = Path(path)
+    before = target.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.ELOOP, "path is not a regular non-symlink file", str(target))
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(target), flags)
+    try:
+        opened = os.fstat(fd)
+        after = target.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(after.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise OSError(errno.EAGAIN, "file changed while opening", str(target))
+        return fd, opened
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def hash_file_nofollow(path: Path) -> str:
+    """Hash one stable regular-file descriptor without following the leaf."""
+    fd, _opened = _open_regular_nofollow(path)
+    try:
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def copy_regular_file_nofollow(
+    source: Path,
+    destination: Path,
+    *,
+    max_bytes: int,
+) -> int:
+    """Copy a regular source descriptor to a new file without following links."""
+    source_fd, source_st = _open_regular_nofollow(source)
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    destination_fd: int | None = None
+    try:
+        destination_fd = os.open(str(target), flags, stat.S_IMODE(source_st.st_mode))
+        copied = 0
+        while True:
+            chunk = os.read(source_fd, min(1024 * 1024, max_bytes - copied + 1))
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > max_bytes:
+                raise OSError(errno.EFBIG, "file exceeds copy quota", str(source))
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "could not write copied file", str(target))
+                view = view[written:]
+        os.fsync(destination_fd)
+        return copied
+    except Exception:
+        if destination_fd is not None:
+            os.close(destination_fd)
+            destination_fd = None
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(source_fd)
+        if destination_fd is not None:
+            os.close(destination_fd)
+
+
+def write_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(target), flags, mode)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _write_atomic_chunks(
@@ -162,7 +281,7 @@ def _is_symlink(path: Path) -> bool:
         return False
 
 
-def _fsync_directory(path: Path) -> None:
+def fsync_directory(path: Path) -> None:
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
@@ -328,7 +447,7 @@ def _ensure_private_directory_posix(path: Path) -> Path:
 
     validated = _validate_posix_dir(target)
     parent = target.parent
-    _fsync_directory(parent if parent != target else validated)
+    fsync_directory(parent if parent != target else validated)
     return validated
 
 
@@ -419,7 +538,7 @@ def _atomic_write_private_bytes_posix(path: Path, data: bytes) -> None:
         if _is_symlink(target):
             _file_unsafe("private file destination must not be a symlink: %s" % target)
         os.replace(str(temp_path), str(target))
-        _fsync_directory(parent)
+        fsync_directory(parent)
     except PrivatePathError:
         raise
     except OSError as exc:
@@ -473,9 +592,22 @@ def _win_current_sid() -> str:
     import ctypes
     from ctypes import wintypes
 
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = wintypes.HANDLE
+    open_process_token = advapi32.OpenProcessToken
+    open_process_token.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    open_process_token.restype = wintypes.BOOL
+
     token = wintypes.HANDLE()
-    if not ctypes.windll.advapi32.OpenProcessToken(  # type: ignore[attr-defined]
-        ctypes.windll.kernel32.GetCurrentProcess(),  # type: ignore[attr-defined]
+    if not open_process_token(
+        get_current_process(),
         0x0008,
         ctypes.byref(token),
     ):

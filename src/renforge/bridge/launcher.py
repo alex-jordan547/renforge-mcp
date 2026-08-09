@@ -655,20 +655,6 @@ def _is_bridge_token(value: str | None) -> bool:
     )
 
 
-def _allocate_bridge_identity(*, token: str | None) -> tuple[str, str]:
-    session_id = secrets.token_hex(16)
-    if token is None:
-        return session_id, secrets.token_hex(32)
-    if not _is_bridge_token(token):
-        raise LaunchError(
-            "BRIDGE_TOKEN_INVALID",
-            "Bridge token must be 64 lowercase hexadecimal characters.",
-            phase="preparing_bridge_metadata",
-            suggested_fix="Omit token to let RenForge generate one, or pass secrets.token_hex(32).",
-        )
-    return session_id, token
-
-
 class _BoundedPipeReader:
     """Drain one child pipe into a bounded ring and watch for startup markers."""
 

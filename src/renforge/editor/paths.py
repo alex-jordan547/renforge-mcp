@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..util.files import (
+    fsync_directory,
+    hash_file_nofollow as _hash_file_nofollow,
+    sha256_bytes,
+    write_exclusive_bytes,
+)
+
 
 class EditorPathError(ValueError):
     def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None):
@@ -70,28 +77,6 @@ def to_game_relative_path(project_root: str | Path, absolute_path: Path) -> str:
     return resolved.relative_to(game_root).as_posix()
 
 
-def sha256_bytes(payload: bytes) -> str:
-    import hashlib
-
-    return hashlib.sha256(payload).hexdigest()
-
-
-def fsync_directory(path: Path) -> None:
-    if not hasattr(os, "O_RDONLY"):
-        return
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    try:
-        fd = os.open(str(path), flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def atomic_write_file(path: Path, data: bytes) -> None:
     import tempfile
 
@@ -128,7 +113,13 @@ def _lstat_regular(path: Path) -> os.stat_result:
 def hash_file_nofollow(path: Path) -> str:
     """Hash a regular non-symlink file without following links."""
     _lstat_regular(path)
-    return sha256_bytes(path.read_bytes())
+    try:
+        return _hash_file_nofollow(path)
+    except (FileNotFoundError, OSError) as exc:
+        raise EditorPathError(
+            "PATH_NOT_REGULAR_FILE",
+            f"path changed or became unsafe while hashing: {path}",
+        ) from exc
 
 
 def _same_filesystem(left: Path, right: Path) -> bool:
@@ -145,25 +136,6 @@ def _copy_mode_bits(source: Path, destination: Path) -> int:
     mode = stat.S_IMODE(_lstat_regular(source).st_mode)
     os.chmod(destination, mode)
     return mode
-
-
-def write_exclusive_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(str(path), flags, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except Exception:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
 
 
 @dataclass(frozen=True)
@@ -237,6 +209,36 @@ def _exchange_unix(path: Path, replacement_path: Path) -> None:
         "SOURCE_CAS_UNAVAILABLE",
         f"atomic source exchange is not implemented for platform {sys.platform!r}",
     )
+
+
+def _move_noreplace_unix(path: Path, destination: Path) -> None:
+    """Atomically move evidence without replacing a path created by a racer."""
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        renamex_np = libc.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        rc = renamex_np(os.fsencode(path), os.fsencode(destination), 0x00000004)
+    elif sys.platform.startswith("linux"):
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = libc.renameat2
+        except (AttributeError, OSError) as exc:
+            raise OSError(errno.ENOSYS, "renameat2 is unavailable") from exc
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        rc = renameat2(-100, os.fsencode(path), -100, os.fsencode(destination), 1)
+    else:
+        raise OSError(errno.ENOSYS, f"non-replacing move is unavailable on {sys.platform!r}")
+    if rc != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), str(destination))
 
 
 def _exchange_windows(path: Path, replacement_path: Path, displaced_path: Path) -> None:
@@ -398,7 +400,7 @@ def conditional_replace_file(
             },
         )
     try:
-        os.rename(str(replacement), str(displaced))
+        _move_noreplace_unix(replacement, displaced)
     except OSError as exc:
         raise EditorPathError(
             "SOURCE_EXCHANGE_CONFLICT",

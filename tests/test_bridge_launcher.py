@@ -1135,6 +1135,42 @@ def test_editor_artifact_cleanup_stays_retryable_after_any_unlink_failure(
         assert not manifest_path.exists()
 
 
+def test_editor_artifact_cleanup_validates_every_digest_before_unlink(tmp_path: Path) -> None:
+    from renforge.bridge.artifacts import (
+        ArtifactOwnershipError,
+        allocate_and_materialize,
+        remove_owned_artifacts,
+    )
+
+    game_dir = tmp_path / "game"
+    game_dir.mkdir(parents=True)
+    (game_dir / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    project = RenpyProject(tmp_path)
+    materialized = allocate_and_materialize(
+        project,
+        bridge_payload=b"init python:\n    pass\n",
+        include_session_init=False,
+        editor_payload=b"screen _renforge_editor_launcher():\n    pass\n",
+        editor_asset_files=[],
+    )
+    bridge_path = game_dir / f"zzrenforge_bridge_{materialized.session_id}.rpy"
+    editor_path = game_dir / f"zzrenforge_editor_{materialized.session_id}.rpy"
+    original_bridge = bridge_path.read_bytes()
+    editor_path.write_bytes(b"changed after publication\n")
+
+    with pytest.raises(ArtifactOwnershipError) as excinfo:
+        remove_owned_artifacts(
+            tmp_path,
+            expected_session_id=materialized.session_id,
+            remove_bridge_info=False,
+        )
+
+    assert excinfo.value.code == "BRIDGE_ARTIFACT_OWNERSHIP_CONFLICT"
+    assert bridge_path.read_bytes() == original_bridge
+    assert editor_path.read_bytes() == b"changed after publication\n"
+    assert _artifacts_path(tmp_path).exists()
+
+
 def test_editor_artifact_cleanup_refuses_dangling_symlink_artifacts(tmp_path: Path) -> None:
     """A dangling symlink must never read as an absent owned artifact."""
     from renforge.bridge.artifacts import allocate_and_materialize, remove_owned_artifacts
@@ -1934,4 +1970,3 @@ def test_pipe_reader_handles_split_chunk_stream() -> None:
     finally:
         os.close(w_fd)
         r_file.close()
-

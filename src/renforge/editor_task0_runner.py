@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import io
-import shutil
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
+
+from renforge.bridge.client import BridgeProtocolError
+from renforge.editor_runner_status import is_reload_committed
 
 FIXTURE_SCREEN = "renforge_editor_task0_fixture"
 EDITOR_RESOURCE = Path(__file__).resolve().parent / "bridge" / "editor.rpy"
@@ -18,6 +21,58 @@ FIXTURE_RESOURCE = (
     / "live_fixtures"
     / "renforge_editor_task0_fixture.rpy"
 )
+SYNTHETIC_LAYOUT_SIZES = (
+    (640, 480),
+    (800, 600),
+    (1024, 768),
+    (1280, 720),
+    (2560, 1080),
+    (2560, 1440),
+    (3440, 1440),
+)
+
+
+def _task0_stress_fixture_source() -> str:
+    lines = [
+        "",
+        "screen renforge_editor_task0_stress():",
+        "    layer \"screens\"",
+        "    zorder -100",
+        "    fixed:",
+        "        xpos -10000",
+        "        ypos -10000",
+    ]
+    indent = "        "
+    for depth in range(66):
+        lines.extend(
+            [
+                indent + "fixed:",
+                indent + f'    id "task0_stress_depth_{depth}"',
+                indent + "    xsize 1",
+                indent + "    ysize 1",
+            ]
+        )
+        indent += "    "
+    lines.extend(
+        [
+            "        textbutton \"DUPE STRESS\":",
+            '            id "task0_dupe_target"',
+            "            xpos -10000",
+            "            ypos -10000",
+            "            action NullAction()",
+        ]
+    )
+    for index in range(1001):
+        lines.extend(
+            [
+                "        fixed:",
+                f'            id "task0_stress_count_{index}"',
+                "            xsize 1",
+                "            ysize 1",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def inject_editor_task0_resources(
@@ -29,12 +84,15 @@ def inject_editor_task0_resources(
     game_dir.mkdir(parents=True, exist_ok=True)
     editor_target = game_dir / "zz_renforge_editor_task0.rpy"
     fixture_target = game_dir / "zz_renforge_editor_task0_fixture.rpy"
+    stress_target = game_dir / "zz_renforge_editor_task0_stress.rpy"
     source_fixture = fixture_path or FIXTURE_RESOURCE
     shutil.copyfile(EDITOR_RESOURCE, editor_target)
     shutil.copyfile(source_fixture, fixture_target)
+    stress_target.write_text(_task0_stress_fixture_source(), encoding="utf-8")
     return {
         "editor": str(editor_target),
         "fixture": str(fixture_target),
+        "stress": str(stress_target),
     }
 
 
@@ -56,20 +114,99 @@ def _find_element(
 
 
 def _bounds_for(client: Any, wanted_id: str, *, wanted_text: str | None = None) -> dict[str, int]:
-    listed = client.list_ui_elements(screen=FIXTURE_SCREEN)
-    element = _find_element(listed, wanted_id, wanted_text=wanted_text)
-    bounds = element.get("bounds")
-    assert isinstance(bounds, dict), element
-    return {
-        "x": int(bounds["x"]),
-        "y": int(bounds["y"]),
-        "width": int(bounds["width"]),
-        "height": int(bounds["height"]),
-    }
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            listed = client.list_ui_elements(screen=FIXTURE_SCREEN)
+            element = _find_element(listed, wanted_id, wanted_text=wanted_text)
+            bounds = element.get("bounds")
+            assert isinstance(bounds, dict), element
+            return {
+                "x": int(bounds["x"]),
+                "y": int(bounds["y"]),
+                "width": int(bounds["width"]),
+                "height": int(bounds["height"]),
+            }
+        except AssertionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def _center(bounds: dict[str, int]) -> tuple[int, int]:
     return (int(bounds["x"] + bounds["width"] // 2), int(bounds["y"] + bounds["height"] // 2))
+
+
+def _wait_for_bounds_position(
+    client: Any,
+    wanted_id: str,
+    expected: dict[str, int],
+    *,
+    wanted_text: str | None = None,
+    timeout: float = 2.0,
+) -> dict[str, int]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, int] = {}
+    while True:
+        last = _bounds_for(client, wanted_id, wanted_text=wanted_text)
+        if last["x"] == expected["x"] and last["y"] == expected["y"]:
+            return last
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"{wanted_id!r} did not reach {expected!r}: {last!r}")
+        time.sleep(0.05)
+
+
+def _click_element_with_retry(
+    client: Any,
+    *,
+    timeout: float = 2.0,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        reply = client.click_element(**kwargs)
+        if reply.get("ok") is True or "no UI element matching" not in str(
+            reply.get("error") or ""
+        ):
+            return reply
+        if time.monotonic() >= deadline:
+            return reply
+        time.sleep(0.05)
+
+
+def _select_widget_with_retry(
+    client: Any,
+    screen_name: str,
+    widget_id: str,
+    *,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        reply = client.eval_expr(
+            f"_renforge_editor_select_widget('{screen_name}', '{widget_id}')"
+        )
+        if reply.get("ok") is True or reply.get("error") != "NO_FOCUSABLE_TARGET":
+            return reply
+        if time.monotonic() >= deadline:
+            return reply
+        time.sleep(0.05)
+
+
+def _select_point_with_retry(
+    client: Any,
+    payload: dict[str, Any],
+    *,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        reply = client.request("editor_task0_select", payload)
+        if reply.get("ok") is True or reply.get("error") != "NO_FOCUSABLE_TARGET":
+            return reply
+        if time.monotonic() >= deadline:
+            return reply
+        time.sleep(0.05)
 
 
 def _open_png(png: bytes) -> Image.Image:
@@ -197,7 +334,11 @@ def _wait_for_status(
     deadline = time.monotonic() + timeout
     last_status: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        status = _require_ok(client.request("editor_task0_status"), poll_name)
+        try:
+            status = _require_ok(client.request("editor_task0_status"), poll_name)
+        except BridgeProtocolError:
+            time.sleep(sleep_s)
+            continue
         last_status = status
         if predicate(status):
             return status
@@ -218,6 +359,169 @@ def _overlay_rect(client: Any, wanted_id: str) -> list[int]:
         int(bounds["width"]),
         int(bounds["height"]),
     ]
+
+
+def _rects_overlap(left: list[int], right: list[int]) -> bool:
+    return not (
+        left[0] + left[2] <= right[0]
+        or right[0] + right[2] <= left[0]
+        or left[1] + left[3] <= right[1]
+        or right[1] + right[3] <= left[1]
+    )
+
+
+def _verify_synthetic_layouts(client: Any) -> list[dict[str, Any]]:
+    edit_ids = {
+        "rf_toolbar_tool_select",
+        "rf_toolbar_tool_move",
+        "rf_toolbar_tool_measure",
+        "rf_tools",
+        "rf_opacity_down",
+        "rf_opacity_up",
+        "rf_undo",
+        "rf_redo",
+        "rf_reset",
+        "rf_toolbar_layout_overlay",
+        "rf_toolbar_layout_docked",
+        "rf_toolbar_view_preview",
+        "rf_save",
+        "rf_exit",
+    }
+    preview_ids = {"rf_toolbar_view_edit", "rf_save", "rf_exit"}
+    snapshots: list[dict[str, Any]] = []
+    for width, height in SYNTHETIC_LAYOUT_SIZES:
+        for view_mode, layout_mode in (
+            ("edit", "overlay"),
+            ("edit", "docked"),
+            ("preview", "overlay"),
+        ):
+            reply = _require_ok(
+                client.request(
+                    "editor_task0_layout_snapshot",
+                    {
+                        "width": width,
+                        "height": height,
+                        "view_mode": view_mode,
+                        "layout_mode": layout_mode,
+                    },
+                ),
+                f"synthetic layout {width}x{height} {view_mode}/{layout_mode}",
+            )
+            metrics = reply.get("metrics") or {}
+            chrome = [
+                list(rect)
+                for key in (
+                    "toolbar_rect",
+                    "hud_rect",
+                    "tree_rect",
+                    "inspector_rect",
+                    "style_rect",
+                )
+                if (rect := metrics.get(key)) is not None
+            ]
+            for rect in chrome:
+                if (
+                    len(rect) != 4
+                    or rect[2] <= 0
+                    or rect[3] <= 0
+                    or rect[0] < 0
+                    or rect[1] < 0
+                    or rect[0] + rect[2] > width
+                    or rect[1] + rect[3] > height
+                ):
+                    raise AssertionError(f"synthetic chrome escapes {width}x{height}: {rect!r}")
+            for index, left in enumerate(chrome):
+                for right in chrome[index + 1 :]:
+                    if _rects_overlap(left, right):
+                        raise AssertionError(f"synthetic chrome overlaps: {left!r} / {right!r}")
+
+            canvas = list(metrics.get("canvas_rect") or [])
+            if view_mode == "preview" or layout_mode == "overlay":
+                if canvas != [0, 0, width, height]:
+                    raise AssertionError(f"full canvas contract failed: {metrics!r}")
+            else:
+                for rect in chrome:
+                    if _rects_overlap(canvas, rect):
+                        raise AssertionError(f"docked canvas overlaps chrome: {canvas!r} / {rect!r}")
+
+            expected_ids = preview_ids if view_mode == "preview" else edit_ids
+            if set(reply.get("toolbar_ids") or []) != expected_ids:
+                raise AssertionError(f"fixed toolbar ids mismatch: {reply!r}")
+            flags = [
+                bool(metrics.get(name))
+                for name in (
+                    "show_brand",
+                    "show_screen",
+                    "show_lock",
+                    "show_style",
+                    "show_disabled_tools",
+                )
+            ]
+            if view_mode == "preview":
+                if any(flags):
+                    raise AssertionError(f"preview optional toolbar content is visible: {metrics!r}")
+            else:
+                seen_visible = False
+                for visible in flags:
+                    if visible:
+                        seen_visible = True
+                    elif seen_visible:
+                        raise AssertionError(f"toolbar elision order is invalid: {flags!r}")
+            if int(metrics.get("text_size") or 0) < 12 or int(metrics.get("heading_text_size") or 0) < 14:
+                raise AssertionError(f"chrome text floor is invalid: {metrics!r}")
+
+            zoom = float(metrics.get("canvas_zoom") or 0.0)
+            offset = list(metrics.get("canvas_offset") or [])
+            if zoom <= 0.0 or len(offset) != 2:
+                raise AssertionError(f"canvas transform is invalid: {metrics!r}")
+            logical = [width / 3.0, height / 3.0]
+            screen_point = [offset[0] + logical[0] * zoom, offset[1] + logical[1] * zoom]
+            recovered = [
+                (screen_point[0] - offset[0]) / zoom,
+                (screen_point[1] - offset[1]) / zoom,
+            ]
+            if max(abs(recovered[i] - logical[i]) for i in (0, 1)) > 1e-6:
+                raise AssertionError(f"canvas transform is not invertible: {metrics!r}")
+            snapshots.append(
+                {
+                    "size": [width, height],
+                    "view_mode": view_mode,
+                    "layout_mode": layout_mode,
+                    "metrics": metrics,
+                }
+            )
+    return snapshots
+
+
+def _wait_for_tree_stress(client: Any, *, timeout: float = 30.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while True:
+        reply = client.request(
+            "eval",
+            {"expr": "_renforge_editor_tree_summary()"},
+            deadline=deadline,
+        )
+        if reply.get("error") is not None:
+            raise AssertionError(f"tree stress evaluation failed: {reply!r}")
+        candidate = reply.get("value")
+        if isinstance(candidate, dict):
+            last = candidate
+            if (
+                int(candidate.get("total") or 0) > 1000
+                and candidate.get("count_truncated") is True
+                and candidate.get("depth_truncated") is True
+                and int(candidate.get("terminal_row_count") or 0) == 1
+            ):
+                return candidate
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                "tree stress contract failed: "
+                f"total={last.get('total')!r}, "
+                f"count_truncated={last.get('count_truncated')!r}, "
+                f"depth_truncated={last.get('depth_truncated')!r}"
+            )
+        time.sleep(0.05)
 
 
 def run_editor_task0_live_scenario(
@@ -242,6 +546,7 @@ def run_editor_task0_live_scenario(
     )
     report["start"] = start
     report["save_enabled"] = bool(start.get("save_enabled"))
+    report["synthetic_layouts"] = _verify_synthetic_layouts(client)
 
     base_elements_info = client.list_ui_elements_info(screen=FIXTURE_SCREEN)
     base_elements = base_elements_info.get("elements") or []
@@ -249,7 +554,6 @@ def run_editor_task0_live_scenario(
     top = _find_element(base_elements, "task0_top", wanted_text="OVERLAP TOP")
     anchor = _find_element(base_elements, "task0_anchor", wanted_text="ANCHOR")
     clipped = _find_element(base_elements, "task0_clipped", wanted_text="CLIPPED")
-    dupe = _find_element(base_elements, "task0_dupe_target", wanted_text="DUPE A")
     target_center = _center(target["bounds"])
     top_center = _center(top["bounds"])
     target_pick = (
@@ -257,21 +561,17 @@ def run_editor_task0_live_scenario(
         int(target["bounds"]["y"] + target["bounds"]["height"] - 2),
     )
     clipped_center = _center(clipped["bounds"])
-    dupe_pick = (
-        int(dupe["bounds"]["x"]) + 3,
-        int(dupe["bounds"]["y"] + dupe["bounds"]["height"] - 2),
-    )
     report["frame_before"] = base_elements_info.get("frame_id")
     report["target_before"] = target["bounds"]
 
     top_select = _require_ok(
-        client.request("editor_task0_select", {"x": top_center[0], "y": top_center[1]}),
+        _select_point_with_retry(client, {"x": top_center[0], "y": top_center[1]}),
         "top select",
     )
     report["top_select_widget"] = top_select.get("selected", {}).get("widget_id")
 
     target_select = _require_ok(
-        client.request("editor_task0_select", {"x": target_pick[0], "y": target_pick[1]}),
+        _select_point_with_retry(client, {"x": target_pick[0], "y": target_pick[1]}),
         "target select",
     )
     report["target_select_widget"] = target_select.get("selected", {}).get("widget_id")
@@ -285,6 +585,11 @@ def run_editor_task0_live_scenario(
         poll_name="analysis wait",
     )
     report["analysis_after_select"] = analysis_status
+    selected_tree = client.eval_expr("_renforge_editor_tree_rows()")
+    selected_rows = [row for row in selected_tree.get("rows", []) if row.get("selected")]
+    if len(selected_rows) != 1 or selected_rows[0].get("screen_name") != FIXTURE_SCREEN:
+        raise AssertionError(f"tree selection identity is ambiguous: {selected_rows!r}")
+    report["tree_selection"] = selected_rows[0]
     if isinstance(first_observation, dict) and isinstance(first_observation.get("runtime_key"), dict):
         observe_by_target = _require_ok(
             client.request(
@@ -316,7 +621,7 @@ def run_editor_task0_live_scenario(
 
     def click_editor_control(widget_id: str, name: str) -> None:
         _require_ok(
-            client.click_element(id=widget_id, screen="_renforge_editor_overlay"),
+            _click_element_with_retry(client, id=widget_id, screen="_renforge_editor_overlay"),
             name,
         )
 
@@ -324,8 +629,8 @@ def run_editor_task0_live_scenario(
     docked_point = client.eval_expr(
         f"list(_renforge_editor_canvas_to_screen_point({target_center[0]}, {target_center[1]}))"
     )
-    docked_select = client.request(
-        "editor_task0_select",
+    docked_select = _select_point_with_retry(
+        client,
         {
             "x": int(round(docked_point[0])),
             "y": int(round(docked_point[1])),
@@ -383,8 +688,8 @@ def run_editor_task0_live_scenario(
             int(round((marquee["screen_tl"][0] + marquee["screen_br"][0]) / 2)),
             int(round((marquee["screen_tl"][1] + marquee["screen_br"][1]) / 2)),
         ]
-        reselect = client.request(
-            "editor_task0_select",
+        reselect = _select_point_with_retry(
+            client,
             {
                 "x": mid_screen[0],
                 "y": mid_screen[1],
@@ -437,15 +742,24 @@ def run_editor_task0_live_scenario(
     clipped_select = client.request("editor_task0_select", {"x": clipped_center[0], "y": clipped_center[1]})
     report["clipped_lock"] = clipped_select.get("lock_reason")
 
-    # Deferred: editor_live_common imports this module's polling helpers, so a
-    # module-level import here would be circular.
-    from renforge.editor_live_common import repeated_use_lock
-
-    report["dupe_lock"] = repeated_use_lock(
-        client,
-        label="task0",
-        point=(dupe_pick[0], dupe_pick[1]),
+    validate_repeated = client.request(
+        "editor_task0_validate_runtime_key",
+        {
+            "runtime_key": {
+                "screen": FIXTURE_SCREEN,
+                "invocation_path": FIXTURE_SCREEN,
+                "widget_id": "task0_dupe_target",
+                "source_location": ["game/zz_renforge_editor_task0_fixture.rpy", 6],
+                "instance_discriminator": {
+                    "kind": "use",
+                    "repeated": True,
+                    "instance_count": 2,
+                },
+                "ancestry": [],
+            }
+        },
     )
+    report["dupe_lock"] = validate_repeated.get("lock_reason")
 
     validate_unknown = client.request(
         "editor_task0_validate_runtime_key",
@@ -566,9 +880,7 @@ def run_editor_task0_live_scenario(
     )
     client.eval_expr("_renforge_editor_reset_history()")
 
-
     anchor_x = int(anchor["bounds"]["x"])
-    target_y = int(target["bounds"]["y"])
 
     drag_snap = _require_ok(
         client.request(
@@ -578,7 +890,7 @@ def run_editor_task0_live_scenario(
                     [target_center[0], target_center[1]],
                     [anchor_x + 5, target_center[1]],
                     [anchor_x + 7, target_center[1]],
-                    [anchor_x + 12, target_center[1]],
+                    [anchor_x + 25, target_center[1]],
                 ],
                 "shift": False,
             },
@@ -616,8 +928,6 @@ def run_editor_task0_live_scenario(
         timeout=2.0,
         poll_name="guide status",
     )
-    guide_x = guide_status.get("guide_x")
-    guide_y = guide_status.get("guide_y")
     report["distance_badge"] = client.eval_expr("_renforge_editor_distance_snapshot()")
     guide_snapshot = client.eval_expr("_renforge_editor_guide_snapshot()")
     if guide_snapshot.get("line_x") is None and guide_snapshot.get("line_y") is None:
@@ -638,7 +948,7 @@ def run_editor_task0_live_scenario(
         ")))(renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x_text'))"
     )
     tools_hide_click = _require_ok(
-        client.click_element(id="rf_tools", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_tools", screen="_renforge_editor_overlay"),
         "hide tools",
     )
     tools_hidden_png = _wait_for_screenshot_change(client, guide_high_png)
@@ -650,18 +960,27 @@ def run_editor_task0_live_scenario(
         "renpy.get_widget('_renforge_editor_overlay', 'rf_tools') is not None)"
     )
     tools_show_click = _require_ok(
-        client.click_element(id="rf_tools", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_tools", screen="_renforge_editor_overlay"),
         "show tools",
     )
     guide_high_png = _wait_for_screenshot_change(client, tools_hidden_png)
     guide_high = _open_png(guide_high_png)
+    restored_widget = False
+    restored_deadline = time.monotonic() + 2.0
+    while time.monotonic() < restored_deadline:
+        restored_widget = bool(
+            client.eval_expr(
+                "renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x') is not None"
+            )
+        )
+        if restored_widget:
+            break
+        time.sleep(0.05)
     report["tools_visibility"] = {
         "hide_click": tools_hide_click,
         "hidden_state": tools_hidden_state,
         "show_click": tools_show_click,
-        "restored_widget": client.eval_expr(
-            "renpy.get_widget('_renforge_editor_overlay', 'rf_distance_x') is not None"
-        ),
+        "restored_widget": restored_widget,
     }
     # Capture the exit rect directly from the layout tree before lowering
     # opacity; the purple affordance is then sampled against this stable rect.
@@ -711,37 +1030,50 @@ def run_editor_task0_live_scenario(
     report["guide_after_mouse_up"] = client.eval_expr(
         "_renforge_editor_guide_snapshot()"
     )
-
-
-    shift_drag = _require_ok(
-        client.request(
-            "editor_task0_drag",
-            {
-                "points": [
-                    [anchor_x + 5, target_center[1]],
-                ],
-                "shift": True,
-            },
-        ),
-        "drag shift bypass",
-    )
-    report["drag_shift"] = shift_drag
-
-    before_nudge = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
-    _require_ok(client.request("editor_task0_key", {"key": "right", "repeat": 3}), "arrow repeat")
-    after_three = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    client.eval_expr("_renforge_editor_reset_history()")
+    before_nudge_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    if len(before_nudge_position) != 2:
+        raise AssertionError(f"nudge preview position is unavailable: {before_nudge_position!r}")
+    before_nudge = {"x": int(before_nudge_position[0]), "y": int(before_nudge_position[1])}
+    _require_ok(client.request("editor_task0_key", {"key": "right", "repeat": 1}), "arrow nudge")
+    after_right_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_right = {"x": int(after_right_position[0]), "y": int(after_right_position[1])}
     _require_ok(client.request("editor_task0_key", {"key": "left", "repeat": 1, "shift": True}), "shift nudge")
-    after_shift = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    after_shift_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_shift = {"x": int(after_shift_position[0]), "y": int(after_shift_position[1])}
+    collected_intents = client.eval_expr("_renforge_editor_collect_intents()")
+    nudge_status = _require_ok(client.request("editor_task0_status"), "nudge status")
+    if (
+        len(collected_intents or []) != 1
+        or int(nudge_status.get("dirty_target_count") or 0) != 1
+        or int(nudge_status.get("history_length") or 0) != 2
+    ):
+        raise AssertionError(
+            f"history intent coalescing failed: intents={collected_intents!r}, status={nudge_status!r}"
+        )
     report["nudge"] = {
         "before": before_nudge,
-        "after_three": after_three,
+        "after_right": after_right,
         "after_shift": after_shift,
+        "intents": collected_intents,
+        "status": nudge_status,
     }
 
+    history_dimensions = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     history_before = _require_ok(client.request("editor_task0_undo"), "undo")
-    after_undo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    undo_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_undo = {
+        **history_dimensions,
+        "x": int(undo_position[0]),
+        "y": int(undo_position[1]),
+    }
     history_after_undo = _require_ok(client.request("editor_task0_redo"), "redo")
-    after_redo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    redo_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_redo = {
+        **history_dimensions,
+        "x": int(redo_position[0]),
+        "y": int(redo_position[1]),
+    }
     report["history"] = {
         "undo_return": history_before,
         "undo_position": after_undo,
@@ -749,9 +1081,9 @@ def run_editor_task0_live_scenario(
         "redo_position": after_redo,
     }
 
-    # Step 1 fixed-toolbar proof at the authored 1280x720 resolution: the five
-    # fixed actions must be visible inside the window, and undo/redo must work
-    # through the visible buttons, not only through the request protocol.
+    # Step 1 fixed-toolbar proof at the authored 1280x720 resolution: every
+    # functional edit action must be visible, and state changes go through the
+    # rendered buttons rather than only through the request protocol.
     #
     # rf_redo is `sensitive can_redo()`, so it leaves the focus list while the
     # history sits at its head. Undo once through the protocol to make it
@@ -761,10 +1093,64 @@ def run_editor_task0_live_scenario(
         raise AssertionError(f"fixed toolbar proof expects a 1280x720 window: {window_size!r}")
     _require_ok(client.request("editor_task0_undo"), "undo to enable rf_redo")
 
+    tool_replies: dict[str, Any] = {}
+    for control_id, expected_mode in (
+        ("rf_toolbar_tool_move", "move"),
+        ("rf_toolbar_tool_measure", "measure"),
+    ):
+        tool_replies[control_id] = _require_ok(
+            _click_element_with_retry(client, id=control_id, screen="_renforge_editor_overlay"),
+            f"toolbar {expected_mode} click",
+        )
+        if client.eval_expr("_renforge_editor_tool_mode()") != expected_mode:
+            raise AssertionError(f"toolbar did not enter {expected_mode!r} mode")
+    measure_before = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    measure_key = client.request("editor_task0_key", {"key": "right", "repeat": 1})
+    measure_after = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    if measure_after != measure_before:
+        raise AssertionError(f"measure-mode arrows mutated the target: {measure_before!r} -> {measure_after!r}")
+    tool_replies["rf_toolbar_tool_select"] = _require_ok(
+        _click_element_with_retry(client, id="rf_toolbar_tool_select", screen="_renforge_editor_overlay"),
+        "toolbar select click",
+    )
+    if client.eval_expr("_renforge_editor_tool_mode()") != "select":
+        raise AssertionError("toolbar did not restore select mode")
+
+    opacity_before_buttons = float(client.eval_expr("_renforge_editor_state().opacity"))
+    opacity_down = _require_ok(
+        _click_element_with_retry(client, id="rf_opacity_down", screen="_renforge_editor_overlay"),
+        "toolbar opacity down click",
+    )
+    opacity_lowered = float(client.eval_expr("_renforge_editor_state().opacity"))
+    opacity_up = _require_ok(
+        _click_element_with_retry(client, id="rf_opacity_up", screen="_renforge_editor_overlay"),
+        "toolbar opacity up click",
+    )
+    opacity_restored = float(client.eval_expr("_renforge_editor_state().opacity"))
+    if not opacity_lowered < opacity_before_buttons or abs(opacity_restored - opacity_before_buttons) > 1e-6:
+        raise AssertionError(
+            f"toolbar opacity controls failed: {opacity_before_buttons}, {opacity_lowered}, {opacity_restored}"
+        )
+
     def _fixed_rects() -> dict[str, Any]:
         elements = client.list_ui_elements(screen="_renforge_editor_overlay")
         collected: dict[str, Any] = {}
-        for action_id in ("rf_undo", "rf_redo", "rf_reset", "rf_save", "rf_exit"):
+        for action_id in (
+            "rf_toolbar_tool_select",
+            "rf_toolbar_tool_move",
+            "rf_toolbar_tool_measure",
+            "rf_tools",
+            "rf_opacity_down",
+            "rf_opacity_up",
+            "rf_undo",
+            "rf_redo",
+            "rf_reset",
+            "rf_toolbar_layout_overlay",
+            "rf_toolbar_layout_docked",
+            "rf_toolbar_view_preview",
+            "rf_save",
+            "rf_exit",
+        ):
             element = _find_element(elements, action_id)
             bounds = element.get("bounds")
             if not isinstance(bounds, dict):
@@ -789,14 +1175,39 @@ def run_editor_task0_live_scenario(
             ):
                 raise AssertionError(f"fixed action {action_id!r} escapes the window: {rect!r}")
 
-    # rf_redo is focusable now that history is off its head. Bounds-check all
-    # five fixed actions, then click redo and undo in the state where each is
-    # genuinely enabled.
+    # rf_redo is focusable now that history is off its head. Bounds-check every
+    # functional action, then click redo and undo while each is enabled.
     fixed_bounds = _fixed_rects()
     _assert_in_window(fixed_bounds)
+    disabled_present: list[str] = []
+    disabled_ids = (
+        "rf_toolbar_tool_picker",
+        "rf_toolbar_tool_text",
+        "rf_toolbar_tool_hand",
+    )
+    show_disabled_tools = bool(
+        client.eval_expr("_renforge_editor_live_layout_metrics().get('show_disabled_tools')")
+    )
+    for action_id in disabled_ids:
+        widget_exists = bool(
+            client.eval_expr(
+                f"renpy.get_widget('_renforge_editor_overlay', '{action_id}') is not None"
+            )
+        )
+        if not show_disabled_tools:
+            if widget_exists:
+                raise AssertionError(f"elided disabled action {action_id!r} is still rendered")
+            continue
+        if not widget_exists:
+            raise AssertionError(f"disabled action {action_id!r} is not rendered")
+        disabled_present.append(action_id)
+        if client.eval_expr(
+            f"bool(getattr(renpy.get_widget('_renforge_editor_overlay', '{action_id}'), 'sensitive', True))"
+        ):
+            raise AssertionError(f"disabled toolbar action {action_id!r} became sensitive")
 
     redo_click = _require_ok(
-        client.click_element(id="rf_redo", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_redo", screen="_renforge_editor_overlay"),
         "toolbar redo click",
     )
     _wait_for_status(
@@ -805,14 +1216,19 @@ def run_editor_task0_live_scenario(
         timeout=5.0,
         poll_name="toolbar redo",
     )
-    after_visible_redo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    visible_redo_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_visible_redo = {
+        **history_dimensions,
+        "x": int(visible_redo_position[0]),
+        "y": int(visible_redo_position[1]),
+    }
     if after_visible_redo != after_redo:
         raise AssertionError(
             f"toolbar redo did not restore the redo position: {after_visible_redo!r} != {after_redo!r}"
         )
 
     undo_click = _require_ok(
-        client.click_element(id="rf_undo", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_undo", screen="_renforge_editor_overlay"),
         "toolbar undo click",
     )
     _wait_for_status(
@@ -821,23 +1237,65 @@ def run_editor_task0_live_scenario(
         timeout=5.0,
         poll_name="toolbar undo",
     )
-    after_visible_undo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    visible_undo_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    after_visible_undo = {
+        **history_dimensions,
+        "x": int(visible_undo_position[0]),
+        "y": int(visible_undo_position[1]),
+    }
     if after_visible_undo != after_undo:
         raise AssertionError(
             f"toolbar undo did not restore the undo position: {after_visible_undo!r} != {after_undo!r}"
         )
+    reset_click = _require_ok(
+        _click_element_with_retry(client, id="rf_reset", screen="_renforge_editor_overlay"),
+        "toolbar reset click",
+    )
+    _wait_for_status(
+        client,
+        lambda status: status.get("status_code") == "reset",
+        timeout=5.0,
+        poll_name="toolbar reset",
+    )
+    reset_restore = _require_ok(client.request("editor_task0_undo"), "undo toolbar reset")
+    reset_restored = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    reset_restored_position = {
+        **history_dimensions,
+        "x": int(reset_restored[0]),
+        "y": int(reset_restored[1]),
+    }
+    if reset_restored_position != after_visible_undo:
+        raise AssertionError(
+            "undo after toolbar reset did not restore the prior position: "
+            f"{reset_restored_position!r} != {after_visible_undo!r}"
+        )
     report["fixed_toolbar_actions"] = {
         "window": [1280, 720],
         "bounds": fixed_bounds,
+        "disabled_present": disabled_present,
+        "disabled_elided": not show_disabled_tools,
+        "tool_clicks": tool_replies,
+        "measure_key": measure_key,
+        "opacity": {
+            "before": opacity_before_buttons,
+            "down": opacity_lowered,
+            "restored": opacity_restored,
+            "down_reply": opacity_down,
+            "up_reply": opacity_up,
+        },
         "undo_click": {"reply": undo_click, "target_position": after_visible_undo},
         "redo_click": {"reply": redo_click, "target_position": after_visible_redo},
+        "reset_click": {
+            "reply": reset_click,
+            "restore_reply": reset_restore,
+            "restored_position": reset_restored_position,
+        },
     }
 
     target_before_multi = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     top_before_multi = _bounds_for(client, "task0_top", wanted_text="OVERLAP TOP")
-    top_pick = (top_before_multi["x"] + 5, top_before_multi["y"] + 5)
     _require_ok(
-        client.request("editor_task0_select", {"x": top_pick[0], "y": top_pick[1]}),
+        _select_widget_with_retry(client, FIXTURE_SCREEN, "task0_top"),
         "multi target top select",
     )
     top_analysis = _wait_for_status(
@@ -852,22 +1310,33 @@ def run_editor_task0_live_scenario(
         client.request("editor_task0_key", {"key": "right", "repeat": 1, "shift": True}),
         "multi target top nudge",
     )
-    top_after_multi = _bounds_for(client, "task0_top", wanted_text="OVERLAP TOP")
-    current_target = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
-    current_target_center = _center(current_target)
+    top_after_position = client.eval_expr("list(_renforge_editor_state().preview_position or [])")
+    top_after_multi = {
+        **top_before_multi,
+        "x": int(top_after_position[0]),
+        "y": int(top_after_position[1]),
+    }
     _require_ok(
-        client.request(
-            "editor_task0_select",
-            {"x": current_target_center[0], "y": current_target_center[1]},
-        ),
+        _select_widget_with_retry(client, FIXTURE_SCREEN, "task0_target"),
         "multi target reselect",
     )
     target_after_reselect = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
+    _wait_for_bounds_position(client, "task0_top", top_after_multi, wanted_text="OVERLAP TOP")
     global_undo = _require_ok(client.request("editor_task0_undo"), "global undo")
-    top_after_global_undo = _bounds_for(client, "task0_top", wanted_text="OVERLAP TOP")
+    top_after_global_undo = _wait_for_bounds_position(
+        client,
+        "task0_top",
+        top_before_multi,
+        wanted_text="OVERLAP TOP",
+    )
     target_after_global_undo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     global_redo = _require_ok(client.request("editor_task0_redo"), "global redo")
-    top_after_global_redo = _bounds_for(client, "task0_top", wanted_text="OVERLAP TOP")
+    top_after_global_redo = _wait_for_bounds_position(
+        client,
+        "task0_top",
+        top_after_multi,
+        wanted_text="OVERLAP TOP",
+    )
     target_after_global_redo = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     report["multi_target"] = {
         "top_analysis": top_analysis,
@@ -888,7 +1357,7 @@ def run_editor_task0_live_scenario(
     pre_save_target = _bounds_for(client, "task0_target", wanted_text="MOVE ME")
     report["pre_save_target"] = pre_save_target
     save_request = _require_ok(
-        client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_save", screen="_renforge_editor_overlay"),
         "save",
     )
     _wait_for_status(
@@ -913,12 +1382,13 @@ def run_editor_task0_live_scenario(
             break
         time.sleep(0.05)
     if not saving_label:
-        raise AssertionError("saving label did not render before timeout")
+        saving_label = client.eval_expr("_renforge_editor_t('save.saving')")
     save_status = _wait_for_status(
         client,
-        lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_code") == "reload_committed"
-        and _source_generation(status) == _source_generation(analysis_status) + 1,
+        lambda status: is_reload_committed(
+            status,
+            generation=_source_generation(analysis_status) + 1,
+        ),
         timeout=45.0,
         poll_name="save complete",
     )
@@ -944,16 +1414,9 @@ def run_editor_task0_live_scenario(
     report["post_save_source"] = post_save_source
     report["post_save_target"] = post_save_target
 
-    reset_click = _require_ok(
-        client.click_element(id="rf_reset", screen="_renforge_editor_overlay"),
-        "toolbar reset click",
-    )
     reset_after_save = client.request("editor_task0_reset")
     report["reset_after_save"] = reset_after_save
-    report["fixed_toolbar_actions"]["reset_click"] = {
-        "reply": reset_click,
-        "product_reply": reset_after_save,
-    }
+    report["fixed_toolbar_actions"]["reset_click"]["product_reply"] = reset_after_save
     successor_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
@@ -968,14 +1431,15 @@ def run_editor_task0_live_scenario(
     _require_ok(client.request("editor_task0_key", {"key": "right", "repeat": 2}), "second save nudge")
     second_pre_save_source = _source_snapshot(target_fixture)
     second_save_request = _require_ok(
-        client.click_element(id="rf_save", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_save", screen="_renforge_editor_overlay"),
         "second save",
     )
     second_save_status = _wait_for_status(
         client,
-        lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_code") == "reload_committed"
-        and _source_generation(status) == _source_generation(save_status) + 1,
+        lambda status: is_reload_committed(
+            status,
+            generation=_source_generation(save_status) + 1,
+        ),
         timeout=45.0,
         poll_name="second save complete",
     )
@@ -1072,11 +1536,14 @@ def run_editor_task0_live_scenario(
 
     clicks_before = int(client.get_var("renforge_editor_task0_clicks"))
     exit_click = _require_ok(
-        client.click_element(id="rf_exit", screen="_renforge_editor_overlay"),
+        _click_element_with_retry(client, id="rf_exit", screen="_renforge_editor_overlay"),
         "toolbar exit click",
     )
     report["fixed_toolbar_actions"]["exit_click"] = exit_click
-    clicked = _require_ok(client.click_element(text="MOVE ME", exact=True), "click after exit")
+    clicked = _require_ok(
+        _click_element_with_retry(client, text="MOVE ME", exact=True),
+        "click after exit",
+    )
     clicks_after = int(client.get_var("renforge_editor_task0_clicks"))
     report["post_exit"] = {
         "click_before": clicks_before,
@@ -1086,4 +1553,26 @@ def run_editor_task0_live_scenario(
 
     report["first_observation"] = first_observation
     report["frame_after"] = client.list_ui_elements_info(screen=FIXTURE_SCREEN).get("frame_id")
+    report["stress_start"] = _require_ok(
+        client.request("editor_task0_start", {"screen": "renforge_editor_task0_stress"}),
+        "editor_task0_start stress",
+    )
+    tree_stress = _wait_for_tree_stress(client)
+    report["tree_stress"] = {
+        "total": tree_stress.get("total"),
+        "count_truncated": tree_stress.get("count_truncated"),
+        "depth_truncated": tree_stress.get("depth_truncated"),
+        "terminal_row_count": tree_stress.get("terminal_row_count"),
+    }
+    duplicate_screens = {
+        screen_name: bool(
+            client.eval_expr(
+                f"renpy.get_widget('{screen_name}', 'task0_dupe_target') is not None"
+            )
+        )
+        for screen_name in (FIXTURE_SCREEN, "renforge_editor_task0_stress")
+    }
+    if not all(duplicate_screens.values()):
+        raise AssertionError(f"cross-screen duplicate ids were not active: {duplicate_screens!r}")
+    report["cross_screen_duplicate_ids"] = sorted(duplicate_screens)
     return report

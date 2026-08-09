@@ -6,6 +6,7 @@ translation catalogues, and the repository itself — the places where a panel c
 be perfectly written and still never reach a user.
 """
 
+import ast
 import json
 import pathlib
 import re
@@ -32,8 +33,8 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _builtin_keys(editor_content: str) -> set[str]:
-    """Keys of the _RF_UI_STRINGS fallback dict living inside editor.rpy."""
+def _builtin_catalogue(editor_content: str) -> dict[str, str]:
+    """Parse the literal _RF_UI_STRINGS fallback dictionary."""
     start = editor_content.find("_RF_UI_STRINGS = {")
     assert start != -1, f"_RF_UI_STRINGS not found in {EDITOR_RPY}"
     depth = 0
@@ -43,9 +44,15 @@ def _builtin_keys(editor_content: str) -> set[str]:
         elif editor_content[index] == "}":
             depth -= 1
             if depth == 0:
-                body = editor_content[start : index + 1]
-                return set(re.findall(r'["\']([^"\']+)["\']\s*:', body))
+                opening = editor_content.find("{", start)
+                catalogue = ast.literal_eval(editor_content[opening : index + 1])
+                assert isinstance(catalogue, dict)
+                return catalogue
     raise AssertionError("unterminated _RF_UI_STRINGS literal")
+
+
+def _builtin_keys(editor_content: str) -> set[str]:
+    return set(_builtin_catalogue(editor_content))
 
 
 def test_screens_directory_is_not_ignored():
@@ -250,6 +257,23 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "def _renforge_editor_effective_properties" in editor
     assert "def _renforge_editor_layout_metrics" in editor
     assert "editor_task0_layout_snapshot" in editor
+    assert "_renforge_editor_live_layout_metrics()" in toolbar
+    for inclusion_flag in (
+        'show_brand',
+        'show_screen',
+        'show_lock',
+        'show_style',
+        'show_disabled_tools',
+    ):
+        assert f'_rf_metrics["{inclusion_flag}"]' in toolbar
+    preview_screen = toolbar.split("screen _rf_editor_preview_toolbar():", 1)[1].split(
+        "screen _rf_editor_toolbar(tools_visible):", 1
+    )[0]
+    assert '"rf_toolbar_view_edit"' in preview_screen
+    assert '"rf_save"' not in preview_screen
+    assert 'use _rf_save_btn()' in preview_screen
+    assert '"rf_exit"' in preview_screen
+    assert '"rf_undo"' not in preview_screen
     assert "_renforge_editor_can_reset()" in toolbar
     assert "tooltip_text" in toolbar
     assert "GetTooltip()" in toolbar
@@ -266,7 +290,8 @@ def test_status_catalogue_keys_match_plan():
     editor = EDITOR_RPY.read_text(encoding="utf-8")
     english = json.loads(EN_JSON.read_text(encoding="utf-8"))
     chinese = json.loads(ZH_CN_JSON.read_text(encoding="utf-8"))
-    builtin = _builtin_keys(editor)
+    builtin_catalogue = _builtin_catalogue(editor)
+    builtin = set(builtin_catalogue)
 
     required = {
         "toolbar.brand",
@@ -317,9 +342,7 @@ def test_status_catalogue_keys_match_plan():
     assert "{count}" in english["hud.pending"]
     assert "{value}" in english["hud.selection"]
     # Built-in English equals en.json for every shared key
-    for key in sorted(set(english) & builtin):
-        # Extract builtin value from editor literal
-        pass
+    assert builtin_catalogue == english
     # Placeholder parity for named keys
     for key in ("hud.pending", "hud.selection", "tree.items_count", "style.color_value"):
         en_ph = set(re.findall(r"\{(\w+)\}", english[key]))

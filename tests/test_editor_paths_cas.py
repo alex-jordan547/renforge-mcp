@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 import renforge.editor.paths as editor_paths
+import renforge.util.files as file_utils
 from renforge.editor.paths import (
     EditorPathError,
     conditional_replace_file,
@@ -99,3 +101,68 @@ def test_conditional_replace_rejects_existing_displaced_path(tmp_path: Path) -> 
 
     assert excinfo.value.code == "PATH_EXISTS"
     assert source.read_text(encoding="utf-8") == "xpos 10\n"
+
+
+def test_hash_file_nofollow_rejects_leaf_swapped_during_open(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "screen.rpy"
+    backup = tmp_path / "screen.backup"
+    victim = tmp_path / "victim"
+    source.write_text("safe\n", encoding="utf-8")
+    victim.write_text("secret\n", encoding="utf-8")
+    real_open = os.open
+    raced = False
+
+    def racing_open(path: str, flags: int, *args: object) -> int:
+        nonlocal raced
+        if Path(path) == source and not raced:
+            raced = True
+            source.rename(backup)
+            source.symlink_to(victim)
+            try:
+                return real_open(path, flags, *args)
+            finally:
+                source.unlink()
+                backup.rename(source)
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(file_utils.os, "open", racing_open)
+
+    with pytest.raises(EditorPathError) as excinfo:
+        hash_file_nofollow(source)
+
+    assert excinfo.value.code == "PATH_NOT_REGULAR_FILE"
+    assert source.read_text(encoding="utf-8") == "safe\n"
+    assert victim.read_text(encoding="utf-8") == "secret\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix normalization only")
+def test_conditional_replace_never_clobbers_racing_displaced_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "screen.rpy"
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "displaced"
+    source.write_text("original\n", encoding="utf-8")
+    write_exclusive_bytes(replacement, b"published\n")
+    expected = hash_file_nofollow(source)
+    real_exchange = editor_paths._exchange_unix
+
+    def exchange_then_race(path: Path, replacement_path: Path) -> None:
+        real_exchange(path, replacement_path)
+        displaced.write_text("racer\n", encoding="utf-8")
+
+    monkeypatch.setattr(editor_paths, "_exchange_unix", exchange_then_race)
+
+    with pytest.raises(EditorPathError) as excinfo:
+        conditional_replace_file(
+            source,
+            expected_sha256=expected,
+            replacement_path=replacement,
+            displaced_path=displaced,
+        )
+
+    assert excinfo.value.code == "SOURCE_EXCHANGE_CONFLICT"
+    assert displaced.read_text(encoding="utf-8") == "racer\n"
+    assert replacement.read_text(encoding="utf-8") == "original\n"

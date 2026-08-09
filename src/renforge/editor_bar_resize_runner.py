@@ -18,6 +18,7 @@ from renforge.editor_bar_runner import (
     _wait_bounds,
 )
 from renforge.editor_task0_runner import _require_ok, _source_generation, _wait_for_status
+from renforge.editor_runner_status import is_reload_committed
 
 
 def _select_resize_lock(client: Any, widget_id: str, expected_code: str) -> dict[str, Any]:
@@ -248,9 +249,7 @@ def run_editor_bar_resize_live_scenario(client: Any, *, fixture_path: Path) -> d
     )
     save_status = _wait_for_status(
         client,
-        lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_code") == "reload_committed"
-        and _source_generation(status) == generation_before + 1,
+        lambda status: is_reload_committed(status, generation=generation_before + 1),
         timeout=60.0,
         poll_name="bar resize save complete",
     )
@@ -399,8 +398,7 @@ def run_editor_bar_resize_live_scenario(client: Any, *, fixture_path: Path) -> d
         )
         save_status = _wait_for_status(
             client,
-            lambda status: not bool(status.get("save_in_progress"))
-            and status.get("status_code") == "reload_committed",
+            is_reload_committed,
             timeout=60.0,
             poll_name="visible handle resize save complete",
         )
