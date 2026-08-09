@@ -315,8 +315,17 @@ def running_bridge(tmp_path, monkeypatch):
     assert ready_payload["project_root"] == str(project_root)
     assert ready_payload["host"] == "127.0.0.1"
     assert isinstance(ready_payload["port"], int) and 1 <= ready_payload["port"] <= 65535
-    mode = stat.S_IMODE(info_path.lstat().st_mode)
-    assert mode == 0o600
+    # POSIX private mode is 0600. Windows st_mode is not a real Unix mode
+    # (often 0o666); ownership is enforced via the protected DACL instead.
+    import os
+
+    if os.name != "nt":
+        mode = stat.S_IMODE(info_path.lstat().st_mode)
+        assert mode == 0o600
+    else:
+        from renforge.util.files import _win_validate_protected_dacl
+
+        _win_validate_protected_dacl(info_path)
     assert not info_path.is_symlink()
     assert not (project_root / ".renforge" / "bridge.json").exists()
 
