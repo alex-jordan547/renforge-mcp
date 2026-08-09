@@ -1,0 +1,78 @@
+"""Unit tests for conflict-preserving source publication (step 5 CAS)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from renforge.editor.paths import (
+    EditorPathError,
+    conditional_replace_file,
+    hash_file_nofollow,
+    write_exclusive_bytes,
+)
+
+
+def test_conditional_replace_exchanges_and_retains_displaced(tmp_path: Path) -> None:
+    source = tmp_path / "screen.rpy"
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "displaced"
+    source.write_text("xpos 10\n", encoding="utf-8")
+    write_exclusive_bytes(replacement, b"xpos 99\n")
+    expected = hash_file_nofollow(source)
+
+    result = conditional_replace_file(
+        source,
+        expected_sha256=expected,
+        replacement_path=replacement,
+        displaced_path=displaced,
+    )
+
+    assert source.read_text(encoding="utf-8") == "xpos 99\n"
+    assert displaced.read_text(encoding="utf-8") == "xpos 10\n"
+    assert not replacement.exists()
+    assert result.displaced_sha256 == expected
+    assert result.published_sha256 == hash_file_nofollow(source)
+
+
+def test_conditional_replace_stale_source_does_not_write(tmp_path: Path) -> None:
+    source = tmp_path / "screen.rpy"
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "displaced"
+    source.write_text("xpos 10\n", encoding="utf-8")
+    write_exclusive_bytes(replacement, b"xpos 99\n")
+    stale = "0" * 64
+
+    with pytest.raises(EditorPathError) as excinfo:
+        conditional_replace_file(
+            source,
+            expected_sha256=stale,
+            replacement_path=replacement,
+            displaced_path=displaced,
+        )
+
+    assert excinfo.value.code == "STALE_SOURCE"
+    assert source.read_text(encoding="utf-8") == "xpos 10\n"
+    assert not displaced.exists()
+    assert replacement.exists()
+
+
+def test_conditional_replace_rejects_existing_displaced_path(tmp_path: Path) -> None:
+    source = tmp_path / "screen.rpy"
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "displaced"
+    source.write_text("xpos 10\n", encoding="utf-8")
+    write_exclusive_bytes(replacement, b"xpos 99\n")
+    displaced.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(EditorPathError) as excinfo:
+        conditional_replace_file(
+            source,
+            expected_sha256=hash_file_nofollow(source),
+            replacement_path=replacement,
+            displaced_path=displaced,
+        )
+
+    assert excinfo.value.code == "PATH_EXISTS"
+    assert source.read_text(encoding="utf-8") == "xpos 10\n"

@@ -26,7 +26,15 @@ from .constants import (
     TRANSACTION_DIRNAME,
 )
 from .exceptions import EditorError
-from .paths import EditorPathError, atomic_write_file, fsync_directory, resolve_game_path, sha256_bytes
+from .paths import (
+    EditorPathError,
+    atomic_write_file,
+    conditional_replace_file,
+    fsync_directory,
+    hash_file_nofollow,
+    resolve_game_path,
+    sha256_bytes,
+)
 from .runtime import RuntimeProbe
 from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
 from .source import (
@@ -1096,14 +1104,7 @@ class EditorCoordinator:
             )
 
         transaction.diagnostics = self._lint_diagnostics(lint_result)
-        if sha256_bytes(source_path.read_bytes()) != transaction.original_sha256:
-            transaction.state = "failed"
-            self._persist_transaction(transaction)
-            raise EditorError("STALE_SOURCE", "source file changed before atomic publication")
-
-        atomic_write_file(source_path, transaction.staged_bytes)
-        transaction.state = "published"
-        self._persist_transaction(transaction)
+        self._publish_transaction_bytes(transaction)
         self._schedule_attestation_timeout(transaction)
 
         return {"transaction_id": transaction_id, "state": "published", "reload_required": True}
@@ -1257,14 +1258,7 @@ class EditorCoordinator:
             **self._lint_diagnostics(lint_result),
             "undo_of_transaction_id": prior_id,
         }
-        if sha256_bytes(prior.source_absolute_path.read_bytes()) != transaction.original_sha256:
-            transaction.state = "failed"
-            self._persist_transaction(transaction)
-            raise EditorError("STALE_SOURCE", "source file changed before undo publication")
-
-        atomic_write_file(prior.source_absolute_path, transaction.staged_bytes)
-        transaction.state = "published"
-        self._persist_transaction(transaction)
+        self._publish_transaction_bytes(transaction)
         self._schedule_attestation_timeout(transaction)
         return {
             "transaction_id": transaction_id,
@@ -1777,8 +1771,76 @@ class EditorCoordinator:
             return
         self._conditional_rollback(record)
 
+    def _publish_transaction_bytes(self, transaction: _TransactionRecord) -> None:
+        """CAS-publish staged bytes over the live source, retaining displaced evidence."""
+        exchange_dir = self._transaction_root / transaction.transaction_id / "exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        replacement_path = exchange_dir / "replacement"
+        displaced_path = exchange_dir / f"displaced-{uuid.uuid4().hex}"
+        if replacement_path.exists() or replacement_path.is_symlink():
+            try:
+                replacement_path.unlink()
+            except OSError as exc:
+                raise EditorError("SOURCE_CAS_UNAVAILABLE", f"cannot prepare replacement path: {exc}") from exc
+        try:
+            from .paths import write_exclusive_bytes
+
+            write_exclusive_bytes(replacement_path, transaction.staged_bytes)
+        except OSError as exc:
+            raise EditorError("SOURCE_CAS_UNAVAILABLE", f"cannot stage replacement bytes: {exc}") from exc
+
+        transaction.state = "publishing"
+        transaction.diagnostics = {
+            **dict(transaction.diagnostics or {}),
+            "replacement_path": str(replacement_path),
+            "displaced_path": str(displaced_path),
+            "operation": "publish",
+        }
+        self._persist_transaction(transaction)
+
+        try:
+            result = conditional_replace_file(
+                transaction.source_absolute_path,
+                expected_sha256=transaction.original_sha256,
+                replacement_path=replacement_path,
+                displaced_path=displaced_path,
+            )
+        except EditorPathError as exc:
+            if exc.code == "STALE_SOURCE":
+                transaction.state = "failed"
+                self._persist_transaction(transaction)
+                raise EditorError("STALE_SOURCE", "source file changed before atomic publication") from exc
+            if exc.code == "SOURCE_EXCHANGE_CONFLICT":
+                details = dict(exc.details or {})
+                transaction.state = "rollback_conflict"
+                transaction.uncertain_paths = list(details.get("uncertain_paths") or [transaction.source_relative_path])
+                transaction.diagnostics = {**dict(transaction.diagnostics or {}), **details}
+                self._persist_transaction(transaction)
+                raise EditorError(
+                    "SOURCE_EXCHANGE_CONFLICT",
+                    "source changed during atomic exchange; all versions retained",
+                    details=details,
+                ) from exc
+            if exc.code == "SOURCE_CAS_UNAVAILABLE":
+                transaction.state = "failed"
+                self._persist_transaction(transaction)
+                raise EditorError("SOURCE_CAS_UNAVAILABLE", str(exc)) from exc
+            transaction.state = "failed"
+            self._persist_transaction(transaction)
+            raise EditorError(exc.code, str(exc), details=getattr(exc, "details", None)) from exc
+
+        transaction.state = "published"
+        transaction.diagnostics = {
+            **dict(transaction.diagnostics or {}),
+            "published_sha256": result.published_sha256,
+            "displaced_sha256": result.displaced_sha256,
+            "displaced_path": str(result.displaced_path),
+            "source_mode": result.source_mode,
+        }
+        self._persist_transaction(transaction)
+
     def _conditional_rollback(self, transaction: _TransactionRecord, *, allow_staged: bool = False) -> None:
-        allowed_states = {"published", "staged"} if allow_staged else {"published"}
+        allowed_states = {"published", "publishing", "staged"} if allow_staged else {"published", "publishing"}
         with self._lock:
             if transaction.state not in allowed_states:
                 return
@@ -1786,38 +1848,74 @@ class EditorCoordinator:
                 transaction.timer.cancel()
                 transaction.timer = None
         try:
-            current_bytes = transaction.source_absolute_path.read_bytes()
-        except OSError:
+            current_sha = hash_file_nofollow(transaction.source_absolute_path)
+        except (EditorPathError, OSError):
             with self._lock:
-                if transaction.state != "published":
+                if transaction.state not in allowed_states:
                     return
                 transaction.state = "rollback_conflict"
                 transaction.uncertain_paths = [transaction.source_relative_path]
                 self._persist_transaction(transaction)
             return
-        current_sha = sha256_bytes(current_bytes)
+
         with self._lock:
             if transaction.state not in allowed_states:
-                return
-            if current_sha == transaction.staged_sha256:
-                try:
-                    atomic_write_file(transaction.source_absolute_path, transaction.original_bytes)
-                except EditorPathError:
-                    transaction.state = "rollback_conflict"
-                    transaction.uncertain_paths = [transaction.source_relative_path]
-                    self._persist_transaction(transaction)
-                    return
-                transaction.state = "rolled_back"
-                transaction.uncertain_paths = []
-                self._persist_transaction(transaction)
                 return
             if current_sha == transaction.original_sha256:
                 transaction.state = "rolled_back"
                 transaction.uncertain_paths = []
                 self._persist_transaction(transaction)
                 return
-            transaction.state = "rollback_conflict"
-            transaction.uncertain_paths = [transaction.source_relative_path]
+            if current_sha != transaction.staged_sha256:
+                transaction.state = "rollback_conflict"
+                transaction.uncertain_paths = [transaction.source_relative_path]
+                self._persist_transaction(transaction)
+                return
+
+        # Current disk matches staged: CAS original back into place.
+        exchange_dir = self._transaction_root / transaction.transaction_id / "exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        original_candidate = exchange_dir / f"rollback-original-{uuid.uuid4().hex}"
+        displaced_path = exchange_dir / f"rollback-displaced-{uuid.uuid4().hex}"
+        try:
+            from .paths import write_exclusive_bytes
+
+            write_exclusive_bytes(original_candidate, transaction.original_bytes)
+            conditional_replace_file(
+                transaction.source_absolute_path,
+                expected_sha256=transaction.staged_sha256,
+                replacement_path=original_candidate,
+                displaced_path=displaced_path,
+            )
+        except EditorPathError as exc:
+            with self._lock:
+                transaction.state = "rollback_conflict"
+                details = dict(getattr(exc, "details", None) or {})
+                transaction.uncertain_paths = list(
+                    details.get("uncertain_paths")
+                    or [transaction.source_relative_path, str(original_candidate), str(displaced_path)]
+                )
+                transaction.diagnostics = {
+                    **dict(transaction.diagnostics or {}),
+                    "rollback_error": exc.code,
+                    **details,
+                }
+                self._persist_transaction(transaction)
+            return
+        except OSError:
+            with self._lock:
+                transaction.state = "rollback_conflict"
+                transaction.uncertain_paths = [transaction.source_relative_path]
+                transaction.diagnostics = {
+                    **dict(transaction.diagnostics or {}),
+                    "rollback_error": "ROLLBACK_FILE_ERROR",
+                }
+                self._persist_transaction(transaction)
+            return
+
+        with self._lock:
+            transaction.state = "rolled_back"
+            transaction.uncertain_paths = []
             self._persist_transaction(transaction)
 
     def _persist_transaction(self, transaction: _TransactionRecord) -> None:
@@ -1919,10 +2017,10 @@ class EditorCoordinator:
                 uncertain_paths=list(uncertain_paths),
             )
             self._transactions[transaction_id] = record
-            if state in {"staged", "published"} and manifest_intact:
+            if state in {"staged", "publishing", "published"} and manifest_intact:
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
-            elif state in {"staged", "published"} and not manifest_intact:
+            elif state in {"staged", "publishing", "published"} and not manifest_intact:
                 record.state = "rollback_conflict"
                 record.uncertain_paths = [relative_path]
                 self._recovered.append(transaction_id)

@@ -17,6 +17,7 @@ RENFORGE_DIRNAME: Final = ".renforge"
 
 COMMIT_STATES: Final = {
     "staged",
+    "publishing",
     "published",
     "committed",
     "rolled_back",
