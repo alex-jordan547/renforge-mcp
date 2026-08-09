@@ -3377,32 +3377,17 @@ init python:
         import ctypes as _ctypes
         from ctypes import wintypes as _wintypes
 
-        replace_file = _ctypes.windll.kernel32.ReplaceFileW
-        replace_file.argtypes = [
-            _wintypes.LPCWSTR,
-            _wintypes.LPCWSTR,
-            _wintypes.LPCWSTR,
-            _wintypes.DWORD,
-            _ctypes.c_void_p,
-            _ctypes.c_void_p,
-        ]
-        replace_file.restype = _wintypes.BOOL
-
-        if replace_file(str(replaced_path), str(replacement_path), None, flags, None, None):
+        # Prefer MoveFileEx: ReplaceFileW is picky about sharing/backup on CI
+        # runners and was returning publication failures for ready bridge.json.
+        kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+        move_file = kernel32.MoveFileExW
+        move_file.argtypes = [_wintypes.LPCWSTR, _wintypes.LPCWSTR, _wintypes.DWORD]
+        move_file.restype = _wintypes.BOOL
+        # MOVEFILE_REPLACE_EXISTING (0x1) | MOVEFILE_WRITE_THROUGH (0x8) = 0x9
+        if move_file(str(replacement_path), str(replaced_path), 0x9):
             return True
-
-        err = _ctypes.GetLastError()
-        # ERROR_FILE_NOT_FOUND = 2
-        if err == 2:
-            move_file = _ctypes.windll.kernel32.MoveFileExW
-            move_file.argtypes = [_wintypes.LPCWSTR, _wintypes.LPCWSTR, _wintypes.DWORD]
-            move_file.restype = _wintypes.BOOL
-            # MOVEFILE_REPLACE_EXISTING (0x1) | MOVEFILE_WRITE_THROUGH (0x8) = 0x9
-            if move_file(str(replacement_path), str(replaced_path), 0x9):
-                return True
-            err = _ctypes.GetLastError()
-            raise OSError(err, "MoveFileExW failed for %s -> %s" % (replacement_path, replaced_path))
-        raise OSError(err, "ReplaceFileW failed for %s -> %s" % (replacement_path, replaced_path))
+        err = _ctypes.get_last_error()
+        raise OSError(err, "MoveFileExW failed for %s -> %s" % (replacement_path, replaced_path))
 
     def _renforge_bridge_win_is_reparse(path):
         import os as _os
@@ -4067,8 +4052,16 @@ init python:
         }
         try:
             _renforge_bridge_write_ready_info(bridge.project_root, ready)
-        except Exception:
+        except Exception as exc:
             _renforge_bridge_startup_error(_RENFORGE_BRIDGE_STARTUP_PUBLICATION_FAILED)
+            try:
+                import sys as _sys
+                detail = "%s: %s" % (type(exc).__name__, exc)
+                # One line for CI logs; never include secrets (token is not in exc paths).
+                _sys.stderr.write("RENFORGE_BRIDGE_STARTUP_DETAIL=%s\n" % detail.replace("\n", " ")[:500])
+                _sys.stderr.flush()
+            except Exception:
+                pass
             return False
         return True
 
