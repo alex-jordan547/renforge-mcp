@@ -34,6 +34,15 @@ versioning.
 
 ### Fixed
 
+- Conflict-preserving source publication: commits and rollbacks exchange source
+  files with an atomic CAS primitive, retain original/staged/displaced evidence
+  on conflict, and never fall back to unconditional overwrite.
+- Private bridge and artifact lifecycle: schema-3 ownership manifests, authenticated
+  quit, deferred teardown with `SHUTDOWN_INCOMPLETE`, and dashboard/direct launch
+  as a single lifecycle owner.
+- Live editor interactions: status codes with localized HUD text, clear-selection,
+  intent-based unsaved counts, effective inspector properties, structural z-order
+  mutex, responsive layout metrics, tree truncation, and shipped editor assets.
 - The `test` extra now installs `httpx2>=2.0.0`, the client backend required by
   current Starlette `TestClient`, instead of falling back to deprecated `httpx`
   compatibility and emitting `StarletteDeprecationWarning`.

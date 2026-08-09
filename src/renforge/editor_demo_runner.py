@@ -196,7 +196,7 @@ def _ed_do_save(client: Any, *, timeout: float = 60.0) -> dict[str, Any]:
             continue
         if (
             not last.get("save_in_progress")
-            and last.get("status_text") == "Reload committed"
+            and last.get("status_code") == "reload_committed"
         ):
             return last
         time.sleep(0.2)

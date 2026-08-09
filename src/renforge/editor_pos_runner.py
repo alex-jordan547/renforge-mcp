@@ -279,7 +279,7 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     save_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_text") == "Reload committed"
+        and status.get("status_code") == "reload_committed"
         and _source_generation(status) == generation_before + 1,
         timeout=60.0,
         poll_name="pos save complete",
@@ -320,7 +320,7 @@ def run_editor_pos_live_scenario(client: Any, *, fixture_path: Path) -> dict[str
     report["reload"] = {
         "ok": True,
         "script_generation": _source_generation(save_status),
-        "status_text": save_status.get("status_text"),
+        "status_code": save_status.get("status_code"), "status_text": save_status.get("status_text"),
         "generation_delta": _source_generation(save_status) - generation_before,
         "pending_handshake_sent": save_status.get("pending_handshake_sent"),
         "frame_id": None,

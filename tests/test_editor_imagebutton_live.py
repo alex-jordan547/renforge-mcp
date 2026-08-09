@@ -116,7 +116,7 @@ def test_imagebutton_seven_step_live_proof(demo_copy: Path) -> None:
     assert patch["parsed_after"]["ypos"] == patch["source_position_after"]["y"]
 
     assert report["reload"]["ok"] is True
-    assert report["reload"]["status_text"] == "Reload committed"
+    assert report["reload"].get("status_code") == "reload_committed" or report["reload"].get("status_code") == "reload_committed"
     assert report["reload"]["generation_delta"] == 1
 
     assert abs(int(report["pixel_agreement"]["delta"][0])) <= 1

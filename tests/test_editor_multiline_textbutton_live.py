@@ -105,7 +105,7 @@ def test_multiline_textbutton_seven_step_live_proof(demo_copy: Path) -> None:
     }
 
     assert report["reload"]["ok"] is True
-    assert report["reload"]["status_text"] == "Reload committed"
+    assert report["reload"].get("status_code") == "reload_committed" or report["reload"].get("status_code") == "reload_committed"
     assert report["reload"]["generation_delta"] == 1
 
     assert all(abs(int(value)) <= 1 for value in report["pixel_agreement"]["delta"])

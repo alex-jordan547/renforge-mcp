@@ -361,7 +361,7 @@ guards: each capture hashes a new frame.
 | `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. |
 | `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle. |
 | `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle. |
-| `renforge_stop` | Stop a running game or signal an in-progress launch to cancel, then remove injected bridge artifacts. An uninterruptible startup phase may return `launch_cancel_requested=true`; poll launch status until it becomes `failed`. |
+| `renforge_stop` | Stop a running game or cancel an in-progress launch. Uses authenticated bridge quit when a session is owned; may return `SHUTDOWN_INCOMPLETE` with deferred cleanup while the process/artifacts finish tearing down. When another launch holds the project lock, reports `replacement_running`. An uninterruptible startup phase may return `launch_cancel_requested=true`; poll launch status until it becomes `failed` or `closed`. |
 | `renforge_game_state` | Complete state, including variables. Pass `include=["metrics", "audio"]` to add compact render/cache/window metrics and registered-channel audio state. Omitting `include` preserves the default response. Optional `state_profile` filters the store. |
 | `renforge_game_state_compact` | Bounded state (`state_profile=interaction` by default); select variables by name or prefix; supports serialization limits. |
 | `renforge_advance` | Advance the current dialogue. |

@@ -801,7 +801,7 @@ def run_editor_task0_live_scenario(
     )
     _wait_for_status(
         client,
-        lambda status: status.get("status_text") == "Redo",
+        lambda status: status.get("status_code") == "redo",
         timeout=5.0,
         poll_name="toolbar redo",
     )
@@ -817,7 +817,7 @@ def run_editor_task0_live_scenario(
     )
     _wait_for_status(
         client,
-        lambda status: status.get("status_text") == "Undo",
+        lambda status: status.get("status_code") == "undo",
         timeout=5.0,
         poll_name="toolbar undo",
     )
@@ -917,7 +917,7 @@ def run_editor_task0_live_scenario(
     save_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_text") == "Reload committed"
+        and status.get("status_code") == "reload_committed"
         and _source_generation(status) == _source_generation(analysis_status) + 1,
         timeout=45.0,
         poll_name="save complete",
@@ -974,7 +974,7 @@ def run_editor_task0_live_scenario(
     second_save_status = _wait_for_status(
         client,
         lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_text") == "Reload committed"
+        and status.get("status_code") == "reload_committed"
         and _source_generation(status) == _source_generation(save_status) + 1,
         timeout=45.0,
         poll_name="second save complete",

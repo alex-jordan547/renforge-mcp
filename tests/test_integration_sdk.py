@@ -30,7 +30,7 @@ _DEMO = Path(__file__).resolve().parents[1] / "examples" / "demo_game"
 @pytest.fixture(scope="module")
 def sdk():
     from renforge.sdk import DEFAULT_RENPY_VERSION, get_or_install_sdk
-from renforge.editor_live_common import DEMO_COPY_IGNORE
+    from renforge.editor_live_common import DEMO_COPY_IGNORE
 
     return get_or_install_sdk(os.environ.get("RENFORGE_SDK_VERSION", DEFAULT_RENPY_VERSION))
 
@@ -458,7 +458,7 @@ def test_live_demo_control_supports_editor_save(sdk, demo_copy: Path) -> None:
             if not status.get("save_in_progress"):
                 break
             time.sleep(0.25)
-        assert status.get("status_text") == "Reload committed", status
+        assert status.get("status_code") == "reload_committed", status
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="live bridge needs a display (set DISPLAY, or run under xvfb)")
 def test_live_send_input_traverses_real_renpy_input(sdk, demo_copy: Path) -> None:

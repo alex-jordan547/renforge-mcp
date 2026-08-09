@@ -337,7 +337,7 @@ def _runtime_target_probe(client: Any, *, label: str, widget_id: str) -> dict[st
                 "selected_lock_reason": final_status.get("selected_lock_reason"),
                 "current_analysis_id": final_status.get("current_analysis_id"),
                 "save_error": final_status.get("save_error"),
-                "status_text": final_status.get("status_text"),
+                "status_code": final_status.get("status_code"), "status_text": final_status.get("status_text"),
             },
         }
     return {
@@ -590,7 +590,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         client,
         lambda status: (
             not bool(status.get("save_in_progress"))
-            and status.get("status_text") in ("Reload failed", "Commit failed", "Reload handshake failed")
+            and status.get("status_code") in ("reload_failed", "commit_failed", "reload_handshake_failed")
         ),
         timeout=60.0,
         poll_name="style color refused attestation",
@@ -601,7 +601,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         "byte_identical": refused_bytes == baseline,
         "sha256": _sha256_bytes(refused_bytes),
         "save_request": refused_save,
-        "status_text": refused_status.get("status_text"),
+        "status_code": refused_status.get("status_code"), "status_text": refused_status.get("status_text"),
         "save_error": refused_status.get("save_error") or refused_status.get("save_last_error"),
     }
     if not report["refused_attestation_rollback"]["ok"]:
@@ -650,7 +650,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         client,
         lambda status: (
             not bool(status.get("save_in_progress"))
-            and status.get("status_text") == "Reload committed"
+            and status.get("status_code") == "reload_committed"
             and _source_generation(status) >= generation1 + 1
         ),
         timeout=60.0,
@@ -673,9 +673,9 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
             report["source_patch"]["matches_independent_expected"]
             and report["source_patch"]["outside_color_span_identical"]
             and report["source_patch"]["source_color_after"] == REQUESTED_COLOR
-            and save_status.get("status_text") == "Reload committed"
+            and save_status.get("status_code") == "reload_committed"
         ),
-        "status_text": save_status.get("status_text"),
+        "status_code": save_status.get("status_code"), "status_text": save_status.get("status_text"),
         "script_generation": _source_generation(save_status),
         "last_committed_transaction_id": save_status.get("last_committed_transaction_id"),
     }
@@ -729,7 +729,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         client,
         lambda status: (
             not bool(status.get("save_in_progress"))
-            and status.get("status_text") == "Reload committed"
+            and status.get("status_code") == "reload_committed"
             and _source_generation(status) >= generation2 + 1
         ),
         timeout=60.0,
@@ -757,7 +757,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
             and _parse_color_from_target_line(undo_text, TARGET_ID) == BASELINE_COLOR
             and pixel_undo.get("dominant") == "red"
             and undo_rebind.get("selected_widget_id") == TARGET_ID
-            and undo_status.get("status_text") == "Reload committed"
+            and undo_status.get("status_code") == "reload_committed"
         ),
         "byte_identical": undo_bytes == baseline,
         "sha256": _sha256_bytes(undo_bytes),
@@ -765,7 +765,7 @@ def run_editor_style_color_live_scenario(client: Any, *, fixture_path: Path) -> 
         "pixel": pixel_undo,
         "bounds": bounds_undo,
         "click": undo_click,
-        "status_text": undo_status.get("status_text"),
+        "status_code": undo_status.get("status_code"), "status_text": undo_status.get("status_text"),
         "rebinding": {
             "widget_id": undo_rebind.get("selected_widget_id"),
             "analysis_id": undo_rebind.get("current_analysis_id"),

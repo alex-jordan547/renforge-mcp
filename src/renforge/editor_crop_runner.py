@@ -652,7 +652,7 @@ def run_editor_crop_live_scenario(
     # Step 4: reload.
     report["reload"] = {
         "ok": True,
-        "status_text": save_status.get("status_text"),
+        "status_code": save_status.get("status_code"), "status_text": save_status.get("status_text"),
         "generation_delta": _source_generation(save_status) - generation_before,
     }
 

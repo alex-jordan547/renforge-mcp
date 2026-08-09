@@ -59,7 +59,7 @@ def test_demo_save_tolerates_bridge_reload_disconnect() -> None:
             return {
                 "ok": True,
                 "save_in_progress": False,
-                "status_text": "Reload committed",
+                "status_code": "reload_committed", "status_text": "Reload committed",
             }
 
         def click_element(self, **kwargs) -> dict:
@@ -68,4 +68,4 @@ def test_demo_save_tolerates_bridge_reload_disconnect() -> None:
 
     reply = _ed_do_save(ReloadingClient(), timeout=1.0)
 
-    assert reply["status_text"] == "Reload committed"
+    assert reply.get("status_code") == "reload_committed" or reply.get("status_code") == "reload_committed"

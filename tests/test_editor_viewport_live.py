@@ -97,7 +97,7 @@ def test_viewport_seven_step_live_proof(demo_copy: Path) -> None:
     assert patch["matches_independent_expected"] is True
     assert patch["after_sha256"] != patch["before_sha256"]
 
-    assert report["reload"]["status_text"] == "Reload committed"
+    assert report["reload"].get("status_code") == "reload_committed" or report["reload"].get("status_code") == "reload_committed"
     assert report["reload"]["generation_delta"] == 1
     assert all(abs(int(value)) <= 1 for value in report["pixel_agreement"]["delta"])
     assert report["rebinding"]["ok"] is True
@@ -161,7 +161,7 @@ def test_commit_while_scrolled_is_refused_without_touching_source(demo_copy: Pat
 
     # The editor reports a failure, because it cannot reproduce the geometry it
     # attested against.
-    assert report["status_text"] == "Reload failed"
+    assert report.get("status_code") == "reload_failed" or report.get("status_code") == "reload_failed"
     assert report["save_error"] == "TARGET_POSITION_MISMATCH"
 
     # The author's file is restored before the failure is reported, rather than

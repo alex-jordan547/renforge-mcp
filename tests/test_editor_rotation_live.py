@@ -118,7 +118,7 @@ def test_rotation_product_path_pass(demo_copy: Path) -> None:
 
     assert report["product_undo"]["ok"] is True
     assert report["write_chain"]["ok"] is True
-    assert report["write_chain"]["status_text"] == "Reload committed"
+    assert report["write_chain"].get("status_code") == "reload_committed"
     assert report["write_chain"]["generation_delta"] == 1
     assert report["write_chain"]["matches_independent_expected"] is True
     assert report["write_chain"]["post_save_rebind_lock_reason"] is None

@@ -76,7 +76,7 @@ def test_anchor_seven_step_live_proof(demo_copy: Path) -> None:
     patch = report["patch"]
     assert patch["outside_coordinate_spans_identical"] is True
     assert patch["matches_independent_expected"] is True
-    assert report["reload"]["status_text"] == "Reload committed"
+    assert report["reload"].get("status_code") == "reload_committed" or report["reload"].get("status_code") == "reload_committed"
     assert all(abs(int(v)) <= 1 for v in report["pixel_agreement"]["delta"])
     assert report["value_invariance"]["preview"] == report["value_invariance"]["baseline"]
     assert report["rebinding"]["widget_id"] == "anchor_target"
