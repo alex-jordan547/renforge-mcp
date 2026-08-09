@@ -453,7 +453,6 @@ def _verify_synthetic_layouts(client: Any) -> list[dict[str, Any]]:
                     "show_brand",
                     "show_screen",
                     "show_lock",
-                    "show_style",
                     "show_disabled_tools",
                 )
             ]

@@ -1628,6 +1628,25 @@ init python:
         return end_interaction is not None and isinstance(exc, end_interaction)
 
 
+    def _renforge_is_script_control_flow(exc):
+        """Is `exc` a screen action steering the script rather than failing?
+
+        `Jump()` and `Call()` signal by raising, exactly like a button that
+        returns a value raises EndInteraction. The drain runs on the main
+        thread inside `ui.interact`, so these have to reach the context loop;
+        caught there, a working button becomes a silent no-op reported as an
+        error.
+        """
+        if _renforge_is_end_interaction(exc):
+            return True
+        game = getattr(renpy, "game", None)
+        for name in ("JumpException", "CallException"):
+            signal = getattr(game, name, None)
+            if isinstance(signal, type) and isinstance(exc, signal):
+                return True
+        return False
+
+
     def _renforge_reset_testmouse_state():
         testmouse = getattr(getattr(renpy, "test", None), "testmouse", None)
         if testmouse is None:
@@ -3151,12 +3170,7 @@ init python:
                         result.setdefault("interaction_id", explicit_correlation)
                     req.result = result
             except Exception as exc:
-                end_interaction = getattr(
-                    getattr(getattr(renpy, "display", None), "core", None),
-                    "EndInteraction",
-                    None,
-                )
-                if end_interaction is not None and isinstance(exc, end_interaction):
+                if _renforge_is_script_control_flow(exc):
                     preserved_result = getattr(exc, "renforge_result", None)
                     if isinstance(preserved_result, builtins.dict):
                         preserved_result = builtins.dict(preserved_result)

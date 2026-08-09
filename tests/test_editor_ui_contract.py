@@ -246,6 +246,11 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "rf_hud_status" in hud
     assert "_renforge_editor_collect_intents()" in hud
     assert "reload.active" in hud or "reload.reloading" in hud
+    # Timer must not call status_code (returns a string → ends interaction
+    # and auto-advances dialogue). status_tick returns None on purpose.
+    assert "Function(_renforge_editor_status_tick)" in hud
+    assert "Function(_renforge_editor_status_code)" not in hud
+    assert "def _renforge_editor_status_tick():" in editor
 
     # 1.F — canvas ids the live suites sample
     for decor_id in ("rf_guide_x", "rf_guide_y", "rf_distance_x", "rf_distance_y", "rf_label"):
@@ -262,7 +267,6 @@ def test_lot1_panels_cover_the_portage_seams():
         'show_brand',
         'show_screen',
         'show_lock',
-        'show_style',
         'show_disabled_tools',
     ):
         assert f'_rf_metrics["{inclusion_flag}"]' in toolbar

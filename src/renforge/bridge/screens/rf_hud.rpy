@@ -17,8 +17,9 @@ screen _rf_editor_hud():
         _renforge_editor_ui_color("lock_refused") if _rf_reload_failed
         else (_renforge_editor_ui_color("warn") if _rf_reloading else _renforge_editor_ui_color("accent_bright"))
     )
-    # Expire transient status notices without a separate interaction.
-    timer 0.25 repeat True action Function(_renforge_editor_status_code)
+    # Expire transient status notices. Must return None (see status_tick):
+    # Function(non-None) ends the interaction and advances dialogue under us.
+    timer 0.25 repeat True action Function(_renforge_editor_status_tick)
 
     frame:
         id "rf_hud_band"

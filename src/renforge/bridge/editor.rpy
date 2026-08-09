@@ -328,6 +328,10 @@ init 1090 python:
         "hud.selection": "Selection: {value}",
         "hud.none": "no selection",
         "toolbar.screen": "screen",
+        "toolbar.jump": "Jump to a label",
+        "toolbar.jump_none": "—",
+        "toolbar.jump_empty": "No labels to jump to",
+        "toolbar.opacity_value": "{value} %",
         "toolbar.select": "Select",
         "toolbar.move": "Move",
         "toolbar.measure": "Measure",
@@ -566,6 +570,7 @@ init 1100 python:
             state.guide_y_span = None
             state.opacity = 0.86
             state.tools_visible = True
+            state.jump_open = False
             state.layout_mode = "overlay"
             state.label_rect = [20, 20, 260, 32]
             state.label_alpha = 1.0
@@ -631,6 +636,8 @@ init 1100 python:
             state.guide_y_span = None
         if not hasattr(state, "tools_visible"):
             state.tools_visible = True
+        if not hasattr(state, "jump_open"):
+            state.jump_open = False
         if not hasattr(state, "layout_mode"):
             state.layout_mode = "overlay"
         if not hasattr(state, "selected_source_position"):
@@ -782,6 +789,22 @@ init 1100 python:
         if expires is not None and time.monotonic() >= float(expires):
             _renforge_editor_set_status("ready", transient=False)
         return str(getattr(state, "status_code", None) or "ready")
+
+    def _renforge_editor_status_tick():
+        """Expire a transient HUD status without advancing the story.
+
+        Ren'Py's Function action ends the current interaction when the
+        callable returns non-None (behavior.py). The HUD used to fire
+        `Function(_renforge_editor_status_code)` every 0.25s, and that
+        always returns a string — so dialogue dismissed and the game
+        rolled forward on its own. Tick returns None; it only restarts
+        the interaction when a transient notice actually expires.
+        """
+        state = _renforge_editor_state()
+        expires = getattr(state, "status_expires_at", None)
+        if expires is not None and time.monotonic() >= float(expires):
+            _renforge_editor_set_status("ready", transient=False)
+            renpy.restart_interaction()
 
     def _renforge_editor_status_text():
         return _renforge_editor_status_label(_renforge_editor_status_code())
@@ -1210,7 +1233,7 @@ init 1100 python:
             "rf_exit",
         ]
         if view_mode == "preview":
-            show_brand = show_screen = show_lock = show_style = show_disabled_tools = False
+            show_brand = show_screen = show_lock = show_disabled_tools = False
             toolbar_rect = [0, 0, width, toolbar_h]
             hud_rect = None
             tree_rect = None
@@ -1239,7 +1262,6 @@ init 1100 python:
                 "show_brand": show_brand,
                 "show_screen": show_screen,
                 "show_lock": show_lock,
-                "show_style": show_style,
                 "show_disabled_tools": show_disabled_tools,
                 "fixed_control_ids": ["rf_toolbar_view_edit", "rf_save", "rf_exit"],
                 "cell": cell,
@@ -1252,17 +1274,15 @@ init 1100 python:
         brand_w = ui_px(220)
         screen_w = ui_px(_RF_BADGE_MAX_W)
         lock_w = ui_px(160)
-        style_w = ui_px(120)
         disabled_tools_w = cell * 3 + ui_px(18)
         fixed_cluster_w = cell * 14 + ui_px(220)  # tools + actions + segs + save/exit
         budget = width - inset * 2
-        show_brand = show_screen = show_lock = show_style = show_disabled_tools = True
-        used = fixed_cluster_w + brand_w + screen_w + lock_w + style_w + disabled_tools_w
+        show_brand = show_screen = show_lock = show_disabled_tools = True
+        used = fixed_cluster_w + brand_w + screen_w + lock_w + disabled_tools_w
         for flag_name, cost in (
             ("show_brand", brand_w),
             ("show_screen", screen_w),
             ("show_lock", lock_w),
-            ("show_style", style_w),
             ("show_disabled_tools", disabled_tools_w),
         ):
             if used <= budget:
@@ -1273,8 +1293,6 @@ init 1100 python:
                 show_screen = False
             elif flag_name == "show_lock":
                 show_lock = False
-            elif flag_name == "show_style":
-                show_style = False
             else:
                 show_disabled_tools = False
             used -= cost
@@ -1344,7 +1362,6 @@ init 1100 python:
             "show_brand": show_brand,
             "show_screen": show_screen,
             "show_lock": show_lock,
-            "show_style": show_style,
             "show_disabled_tools": show_disabled_tools,
             "fixed_control_ids": fixed_ids,
             "cell": cell,
@@ -3888,6 +3905,73 @@ init 1100 python:
         state.tools_visible = not bool(state.tools_visible)
         renpy.restart_interaction()
         return state.tools_visible
+
+
+    def _renforge_editor_opacity_label():
+        template = _renforge_editor_t("toolbar.opacity_value")
+        value = int(round(_renforge_editor_opacity() * 100))
+        return template.replace("{value}", str(value))
+
+
+    def _renforge_editor_jump_targets():
+        """Story labels the author can warp to.
+
+        Ren'Py registers its own machinery as labels too: ``_``-prefixed ones,
+        local ``label.sub`` ones, and the common/ menus (``save_screen``,
+        ``main_menu_screen``…). Warping into those strands the player in an
+        internal flow, so only labels authored in the project survive.
+        """
+        try:
+            labels = renpy.get_all_labels()
+        except Exception:
+            return []
+        names = []
+        for label in labels:
+            name = str(label)
+            if name.startswith("_") or "." in name:
+                continue
+            try:
+                filename = str(getattr(renpy.game.script.lookup(name), "filename", "") or "")
+            except Exception:
+                continue
+            if "renpy/common" in filename.replace("\\", "/"):
+                continue
+            names.append(name)
+        names.sort()
+        return names
+
+
+    def _renforge_editor_jump_open():
+        return bool(getattr(_renforge_editor_state(), "jump_open", False))
+
+
+    def _renforge_editor_toggle_jump():
+        state = _renforge_editor_state()
+        state.jump_open = not bool(getattr(state, "jump_open", False))
+        renpy.restart_interaction()
+        return state.jump_open
+
+
+    def _renforge_editor_close_jump():
+        state = _renforge_editor_state()
+        state.jump_open = False
+        renpy.restart_interaction()
+        return False
+
+
+    def _renforge_editor_jump_context():
+        """Name shown on the jump chip: the selection's screen, else what runs.
+
+        The chip is a context readout before it is a menu, so it must say
+        something even with nothing selected — an empty pill reads as broken.
+        """
+        state = _renforge_editor_state()
+        selected = str(getattr(state, "selected_screen", "") or "")
+        if selected:
+            return selected
+        for name in _renforge_editor_active_game_screens():
+            return str(name)
+        return _renforge_editor_t("toolbar.jump_none")
 
 
     def _renforge_editor_same_target_key(first, second):
