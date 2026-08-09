@@ -643,12 +643,26 @@ def _win_bind_sid_apis(kernel32: Any, advapi32: Any) -> None:
     ]
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
 
-    advapi32.SetFileSecurityW.argtypes = [
-        wintypes.LPCWSTR,
+    # SetFileSecurityW ignores PROTECTED_DACL_SECURITY_INFORMATION; use
+    # SetNamedSecurityInfoW so SE_DACL_PROTECTED actually sticks on NTFS.
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
         wintypes.DWORD,
         ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
-    advapi32.SetFileSecurityW.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
 
     # Out-params are pointer-to-pointer (PSID*, PACL*, PSECURITY_DESCRIPTOR*).
     advapi32.GetNamedSecurityInfoW.argtypes = [
@@ -767,9 +781,30 @@ def _win_set_protected_dacl(path: Path) -> None:
             "ConvertStringSecurityDescriptorToSecurityDescriptorW failed",
         )
     try:
-        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-        if not advapi32.SetFileSecurityW(str(path), 0x00000004 | 0x80000000, sd):
-            raise OSError(ctypes.get_last_error(), "SetFileSecurityW failed for %s" % path)
+        dacl_present = wintypes.BOOL(0)
+        dacl_defaulted = wintypes.BOOL(0)
+        dacl = ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorDacl(
+            sd,
+            ctypes.byref(dacl_present),
+            ctypes.byref(dacl),
+            ctypes.byref(dacl_defaulted),
+        ):
+            raise OSError(ctypes.get_last_error(), "GetSecurityDescriptorDacl failed")
+        if not dacl_present or not dacl:
+            raise OSError("security descriptor has no DACL")
+        # SE_FILE_OBJECT=1; DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION
+        status = advapi32.SetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x00000004 | 0x80000000,
+            None,
+            None,
+            dacl,
+            None,
+        )
+        if status != 0:
+            raise OSError(status, "SetNamedSecurityInfoW failed for %s" % path)
     finally:
         if sd:
             kernel32.LocalFree(sd)
