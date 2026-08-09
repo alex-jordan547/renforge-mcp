@@ -3376,17 +3376,44 @@ init python:
     def _renforge_bridge_win_replace_file(replaced_path, replacement_path, flags=1):
         import ctypes as _ctypes
         from ctypes import wintypes as _wintypes
+        import os as _os
 
-        # Prefer MoveFileEx: ReplaceFileW is picky about sharing/backup on CI
-        # runners and was returning publication failures for ready bridge.json.
+        # Replacing a private (protected-DACL) destination via MoveFileEx
+        # REPLACE_EXISTING returns ERROR_ACCESS_DENIED (5) on Windows CI even
+        # when the caller owns FA. Clear attributes, remove the destination,
+        # then rename the temp into place — same effective outcome as replace.
         kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+        set_attrs = kernel32.SetFileAttributesW
+        set_attrs.argtypes = [_wintypes.LPCWSTR, _wintypes.DWORD]
+        set_attrs.restype = _wintypes.BOOL
+        FILE_ATTRIBUTE_NORMAL = 0x80
+
+        for candidate in (replaced_path, replacement_path):
+            try:
+                set_attrs(str(candidate), FILE_ATTRIBUTE_NORMAL)
+            except Exception:
+                pass
+
+        if _os.path.lexists(replaced_path) or _renforge_bridge_path_is_symlink(replaced_path):
+            try:
+                _os.unlink(replaced_path)
+            except OSError as exc:
+                raise OSError(getattr(exc, "winerror", None) or exc.errno or 5,
+                              "failed to remove previous bridge info: %s" % replaced_path) from exc
+
         move_file = kernel32.MoveFileExW
         move_file.argtypes = [_wintypes.LPCWSTR, _wintypes.LPCWSTR, _wintypes.DWORD]
         move_file.restype = _wintypes.BOOL
-        # MOVEFILE_REPLACE_EXISTING (0x1) | MOVEFILE_WRITE_THROUGH (0x8) = 0x9
-        if move_file(str(replacement_path), str(replaced_path), 0x9):
+        # MOVEFILE_WRITE_THROUGH only — destination is already gone.
+        if move_file(str(replacement_path), str(replaced_path), 0x8):
             return True
         err = _ctypes.get_last_error()
+        # Fallback: Python's os.replace (MoveFileEx REPLACE_EXISTING).
+        try:
+            _os.replace(str(replacement_path), str(replaced_path))
+            return True
+        except OSError:
+            pass
         raise OSError(err, "MoveFileExW failed for %s -> %s" % (replacement_path, replaced_path))
 
     def _renforge_bridge_win_is_reparse(path):
