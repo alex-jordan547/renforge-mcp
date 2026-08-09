@@ -26,15 +26,14 @@ screen _rf_icon_btn(btn_id, icon_name, btn_action, tooltip_text="", active=False
         tooltip tooltip_text
         xsize _rf_btn
         ysize _rf_btn
-        # Ren'Py buttons have no focused_background property; keyboard focus
-        # reuses the hover style, so the accent hover is also the focus ring.
+        # Keyboard focus reuses the hover style in Ren'Py, so accent hover is
+        # also the focus ring (there is no separate focus background property).
         background (
             Frame(_renforge_editor_ui_frame("brand"), _RF_FRAME_BRAND, _RF_FRAME_BRAND)
             if active
             else Solid("#00000000")
         )
         hover_background Solid(_renforge_editor_ui_color("accent") + "55")
-        selected_background Frame(_renforge_editor_ui_frame("brand"), _RF_FRAME_BRAND, _RF_FRAME_BRAND)
         padding (0, 0)
         yalign 0.5
         add _renforge_editor_ui_icon(icon_name):
