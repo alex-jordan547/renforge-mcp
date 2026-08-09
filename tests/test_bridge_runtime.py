@@ -3034,6 +3034,9 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
     def fake_win_val_dacl(p):
         calls["val_dacl"].append(str(p))
 
+    def fake_truncate_handle(handle):
+        calls.setdefault("truncate_handle", []).append(handle)
+
     @contextlib.contextmanager
     def simulate_nt():
         old_name = os.name
@@ -3051,6 +3054,7 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
     globs["_renforge_bridge_win_write_handle"] = fake_write_handle
     globs["_renforge_bridge_win_flush_handle"] = fake_flush_handle
     globs["_renforge_bridge_win_replace_file"] = fake_replace_file
+    globs["_renforge_bridge_win_truncate_handle"] = fake_truncate_handle
     globs["_renforge_bridge_win_set_protected_dacl"] = fake_win_set_dacl
     globs["_renforge_bridge_win_validate_protected_dacl"] = fake_win_val_dacl
     globs["_renforge_bridge_win_is_reparse"] = lambda p: False
@@ -3089,14 +3093,15 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
     with simulate_nt():
         globs["_renforge_bridge_write_ready_info"](project_root, ready_payload)
     assert len(calls["create_file"]) == 2
+    # Ready publish overwrites the reserved starting file in place.
     assert calls["create_file"][1]["access"] == 0xC0000000
-    assert calls["create_file"][1]["share_mode"] == 0
-    assert calls["create_file"][1]["creation_disposition"] == 1
-    assert calls["create_file"][1]["flags_and_attrs"] == 0x00200000
+    assert calls["create_file"][1]["share_mode"] == 0x00000007
+    assert calls["create_file"][1]["creation_disposition"] == 3  # OPEN_EXISTING
+    assert calls["create_file"][1]["flags_and_attrs"] == 0x00000080
     assert len(calls["flush_handle"]) == 1
-    assert len(calls["replace_file"]) == 1
-    assert calls["replace_file"][0]["replaced"] == str(bridge_info_file)
-    assert calls["replace_file"][0]["flags"] == 1
+    assert len(calls.get("truncate_handle", [])) == 1
+    assert len(calls["replace_file"]) == 0
+    assert len(calls["write_handle"]) >= 1
     assert json.loads(bridge_info_file.read_text(encoding="utf-8"))["port"] == 65000
 
     # Additional Win32 edge cases testing: reparse point rejection and cleanup on BaseException

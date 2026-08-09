@@ -3924,23 +3924,43 @@ init python:
             # Overwrite the reserved starting record in place. Unlink/MoveFileEx
             # against a just-validated private file hits ERROR_SHARING_VIOLATION
             # on Windows CI (file still visible to the scanner / prior open).
+            import time as _time
+
             if _renforge_bridge_path_is_symlink(path):
                 raise OSError("bridge info destination must not be a symlink")
             if not _os.path.lexists(path):
                 raise OSError("starting bridge info is missing")
             _renforge_bridge_win_validate_protected_dacl(path)
 
-            # CREATE_ALWAYS (2): truncate/recreate the reserved path, same inode parent.
-            handle = _renforge_bridge_win_create_file(
-                path,
-                0x40000000,  # GENERIC_WRITE
-                0,
-                2,
-                0x00000080,  # FILE_ATTRIBUTE_NORMAL
-            )
+            # OPEN_EXISTING + shared access + retries: exclusive CREATE_ALWAYS
+            # still races antivirus (errno/winerror 32) on GHA runners.
+            handle = None
+            last_error = None
+            for _ in range(40):
+                try:
+                    handle = _renforge_bridge_win_create_file(
+                        path,
+                        0xC0000000,  # GENERIC_READ | GENERIC_WRITE
+                        0x00000007,  # FILE_SHARE_READ|WRITE|DELETE
+                        3,  # OPEN_EXISTING
+                        0x00000080,  # FILE_ATTRIBUTE_NORMAL
+                    )
+                    break
+                except OSError as exc:
+                    last_error = exc
+                    win_err = getattr(exc, "winerror", None)
+                    if win_err is None and exc.args and isinstance(exc.args[0], int):
+                        win_err = exc.args[0]
+                    if win_err in (5, 32):
+                        _time.sleep(0.025)
+                        continue
+                    raise
+            if handle is None:
+                raise OSError("failed to open starting bridge info for ready publish") from last_error
             try:
                 if _renforge_bridge_win_get_file_type(handle) != 1:
                     raise OSError("bridge info is not a regular disk file")
+                _renforge_bridge_win_truncate_handle(handle)
                 _renforge_bridge_win_write_handle(handle, encoded)
                 _renforge_bridge_win_flush_handle(handle)
             finally:

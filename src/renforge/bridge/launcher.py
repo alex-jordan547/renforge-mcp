@@ -267,12 +267,13 @@ class ProjectBridgeLock:
                 ]
 
             info = BY_HANDLE_FILE_INFORMATION()
-            # Bind argtypes with c_void_p for the out-struct: redefining the
-            # Structure class each call makes POINTER(type) identity flaky on
-            # some Windows/CPython combos ("expected LP__BY_HANDLE...").
+            # Prefer c_void_p for the out-struct (POINTER identity is flaky when
+            # the Structure class is defined inside the function). Skip binding
+            # when tests inject a plain Python method without .argtypes.
             get_info = ctypes.windll.kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
-            get_info.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-            get_info.restype = wintypes.BOOL
+            if hasattr(get_info, "argtypes"):
+                get_info.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+                get_info.restype = wintypes.BOOL
             if not get_info(handle, ctypes.byref(info)):
                 raise OSError(
                     ctypes.GetLastError(),
