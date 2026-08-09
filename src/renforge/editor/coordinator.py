@@ -4,8 +4,10 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 import ipaddress
 import json
+import os
 import shutil
 import socket
+import stat
 import threading
 import time
 import uuid
@@ -1758,7 +1760,16 @@ class EditorCoordinator:
                 ) from exc
         finally:
             try:
-                shutil.rmtree(shadow_root)
+                # Windows marks some copied modes read-only; clear the bit so
+                # rmtree does not raise PermissionError after a successful lint.
+                def _clear_readonly(func: Any, path: str, _exc_info: Any) -> None:
+                    try:
+                        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                        func(path)
+                    except OSError:
+                        raise
+
+                shutil.rmtree(shadow_root, onerror=_clear_readonly)
             except FileNotFoundError:
                 pass
             except OSError as exc:

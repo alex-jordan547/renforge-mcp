@@ -588,36 +588,154 @@ def _win_is_reparse(path: Path) -> bool:
         _file_unsafe("failed to inspect path attributes: %s" % path, exc)
 
 
-def _win_current_sid() -> str:
+def _win_advapi_kernel() -> tuple[Any, Any]:
+    """Load kernel32/advapi32 with WinDLL so GetLastError is reliable."""
+    import ctypes
+
+    # WinDLL (stdcall) + use_last_error is required: cdll/windll without
+    # use_last_error can report stale errors after a failed security call.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+    return kernel32, advapi32
+
+
+def _win_bind_sid_apis(kernel32: Any, advapi32: Any) -> None:
+    """Declare pointer-width argtypes for SID helpers.
+
+    Without argtypes, ctypes defaults integer arguments to c_int (32-bit). A
+    64-bit PSID from TOKEN_USER then raises ``OverflowError: int too long to
+    convert`` on ConvertSidToStringSidW — the Windows CI failure mode.
+    """
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
-    get_current_process = kernel32.GetCurrentProcess
-    get_current_process.argtypes = []
-    get_current_process.restype = wintypes.HANDLE
-    open_process_token = advapi32.OpenProcessToken
-    open_process_token.argtypes = [
+    if getattr(advapi32, "_renforge_sid_bound", False):
+        return
+
+    advapi32.OpenProcessToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
         ctypes.POINTER(wintypes.HANDLE),
     ]
-    open_process_token.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+    # PSID is a pointer: must be c_void_p (pointer-width), never c_int.
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
+    advapi32.SetFileSecurityW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi32.SetFileSecurityW.restype = wintypes.BOOL
+
+    # Out-params are pointer-to-pointer (PSID*, PACL*, PSECURITY_DESCRIPTOR*).
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+
+    advapi32.GetAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetAce.restype = wintypes.BOOL
+
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    advapi32._renforge_sid_bound = True  # type: ignore[attr-defined]
+
+
+def _win_sid_to_string(advapi32: Any, kernel32: Any, sid_ptr: Any) -> str:
+    """Convert a PSID pointer to SDDL form with pointer-safe ctypes."""
+    import ctypes
+    from ctypes import wintypes
+
+    if not sid_ptr:
+        raise OSError("null SID pointer")
+    # Accept either a c_void_p or a raw int; always pass pointer-width.
+    if not isinstance(sid_ptr, ctypes.c_void_p):
+        sid_ptr = ctypes.c_void_p(int(sid_ptr))
+    string_sid = wintypes.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(string_sid)):
+        raise OSError(ctypes.get_last_error(), "ConvertSidToStringSidW failed")
+    try:
+        value = string_sid.value
+        if not value:
+            raise OSError("ConvertSidToStringSidW returned an empty SID")
+        return str(value)
+    finally:
+        # LocalFree the native buffer held by the LPWSTR out-param.
+        if string_sid:
+            kernel32.LocalFree(string_sid)
+
+
+def _win_current_sid() -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, advapi32 = _win_advapi_kernel()
+    _win_bind_sid_apis(kernel32, advapi32)
 
     token = wintypes.HANDLE()
-    if not open_process_token(
-        get_current_process(),
-        0x0008,
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        0x0008,  # TOKEN_QUERY
         ctypes.byref(token),
     ):
-        raise OSError(ctypes.GetLastError(), "OpenProcessToken failed")
+        raise OSError(ctypes.get_last_error(), "OpenProcessToken failed")
     try:
         size = wintypes.DWORD(0)
-        ctypes.windll.advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # type: ignore[attr-defined]
+        # First call sizes the buffer; ERROR_INSUFFICIENT_BUFFER (122) is expected.
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if size.value == 0:
+            raise OSError(ctypes.get_last_error(), "GetTokenInformation size query failed")
         buf = ctypes.create_string_buffer(size.value)
-        if not ctypes.windll.advapi32.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):  # type: ignore[attr-defined]
-            raise OSError(ctypes.GetLastError(), "GetTokenInformation failed")
+        if not advapi32.GetTokenInformation(token, 1, buf, size.value, ctypes.byref(size)):
+            raise OSError(ctypes.get_last_error(), "GetTokenInformation failed")
 
         class _SID_AND_ATTRIBUTES(ctypes.Structure):
             _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
@@ -626,38 +744,43 @@ def _win_current_sid() -> str:
             _fields_ = [("User", _SID_AND_ATTRIBUTES)]
 
         user = ctypes.cast(buf, ctypes.POINTER(_TOKEN_USER)).contents
-        sid = wintypes.LPWSTR()
-        if not ctypes.windll.advapi32.ConvertSidToStringSidW(user.User.Sid, ctypes.byref(sid)):  # type: ignore[attr-defined]
-            raise OSError(ctypes.GetLastError(), "ConvertSidToStringSidW failed")
-        try:
-            return str(sid.value)
-        finally:
-            ctypes.windll.kernel32.LocalFree(sid)  # type: ignore[attr-defined]
+        return _win_sid_to_string(advapi32, kernel32, user.User.Sid)
     finally:
-        ctypes.windll.kernel32.CloseHandle(token)  # type: ignore[attr-defined]
+        kernel32.CloseHandle(token)
 
 
 def _win_set_protected_dacl(path: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
+    kernel32, advapi32 = _win_advapi_kernel()
+    _win_bind_sid_apis(kernel32, advapi32)
+
     sddl = "D:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FA;;;BA)" % _win_current_sid()
     sd = ctypes.c_void_p()
     size = wintypes.ULONG()
-    if not ctypes.windll.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(  # type: ignore[attr-defined]
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, 1, ctypes.byref(sd), ctypes.byref(size)
     ):
-        raise OSError(ctypes.GetLastError(), "ConvertStringSecurityDescriptorToSecurityDescriptorW failed")
+        raise OSError(
+            ctypes.get_last_error(),
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed",
+        )
     try:
-        if not ctypes.windll.advapi32.SetFileSecurityW(str(path), 0x00000004 | 0x80000000, sd):  # type: ignore[attr-defined]
-            raise OSError(ctypes.GetLastError(), "SetFileSecurityW failed for %s" % path)
+        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+        if not advapi32.SetFileSecurityW(str(path), 0x00000004 | 0x80000000, sd):
+            raise OSError(ctypes.get_last_error(), "SetFileSecurityW failed for %s" % path)
     finally:
-        ctypes.windll.kernel32.LocalFree(sd)  # type: ignore[attr-defined]
+        if sd:
+            kernel32.LocalFree(sd)
 
 
 def _win_validate_protected_dacl(path: Path) -> None:
     import ctypes
     from ctypes import wintypes
+
+    kernel32, advapi32 = _win_advapi_kernel()
+    _win_bind_sid_apis(kernel32, advapi32)
 
     class _ACL(ctypes.Structure):
         _fields_ = [
@@ -672,11 +795,11 @@ def _win_validate_protected_dacl(path: Path) -> None:
         _fields_ = [("AceType", wintypes.BYTE), ("AceFlags", wintypes.BYTE), ("AceSize", wintypes.WORD)]
 
     sd = ctypes.c_void_p()
-    dacl = ctypes.POINTER(_ACL)()
-    status = ctypes.windll.advapi32.GetNamedSecurityInfoW(  # type: ignore[attr-defined]
+    dacl = ctypes.c_void_p()
+    status = advapi32.GetNamedSecurityInfoW(
         str(path),
-        1,
-        0x00000004,
+        1,  # SE_FILE_OBJECT
+        0x00000004,  # DACL_SECURITY_INFORMATION
         None,
         None,
         ctypes.byref(dacl),
@@ -690,33 +813,28 @@ def _win_validate_protected_dacl(path: Path) -> None:
             raise OSError("missing DACL on %s" % path)
         control = wintypes.DWORD()
         revision = wintypes.DWORD()
-        if not ctypes.windll.advapi32.GetSecurityDescriptorControl(  # type: ignore[attr-defined]
-            sd, ctypes.byref(control), ctypes.byref(revision)
-        ):
-            raise OSError(ctypes.GetLastError(), "GetSecurityDescriptorControl failed")
-        if not (control.value & 0x1000):
+        if not advapi32.GetSecurityDescriptorControl(sd, ctypes.byref(control), ctypes.byref(revision)):
+            raise OSError(ctypes.get_last_error(), "GetSecurityDescriptorControl failed")
+        if not (control.value & 0x1000):  # SE_DACL_PROTECTED
             raise OSError("DACL is not protected on %s" % path)
 
         allowed = {_win_current_sid(), "S-1-5-18", "S-1-5-32-544"}
-        for index in range(dacl.contents.AceCount):
+        acl = ctypes.cast(dacl, ctypes.POINTER(_ACL)).contents
+        for index in range(acl.AceCount):
             ace = ctypes.c_void_p()
-            if not ctypes.windll.advapi32.GetAce(dacl, index, ctypes.byref(ace)):  # type: ignore[attr-defined]
-                raise OSError(ctypes.GetLastError(), "GetAce failed")
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                raise OSError(ctypes.get_last_error(), "GetAce failed")
             header = ctypes.cast(ace, ctypes.POINTER(_ACE_HEADER)).contents
-            if header.AceType != 0:
+            if header.AceType != 0:  # ACCESS_ALLOWED_ACE_TYPE
                 raise OSError("unexpected ACE type on %s" % path)
-            sid_ptr = ctypes.c_void_p(ace.value + 8)  # type: ignore[operator]
-            sid = wintypes.LPWSTR()
-            if not ctypes.windll.advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid)):  # type: ignore[attr-defined]
-                raise OSError(ctypes.GetLastError(), "ConvertSidToStringSidW failed")
-            try:
-                if str(sid.value) not in allowed:
-                    raise OSError("unexpected trustee on private path %s" % path)
-            finally:
-                ctypes.windll.kernel32.LocalFree(sid)  # type: ignore[attr-defined]
+            # ACCESS_ALLOWED_ACE: header (4) + Mask (4) + SidStart
+            sid_ptr = ctypes.c_void_p(int(ace.value or 0) + 8)
+            sid_text = _win_sid_to_string(advapi32, kernel32, sid_ptr)
+            if sid_text not in allowed:
+                raise OSError("unexpected trustee on private path %s" % path)
     finally:
         if sd:
-            ctypes.windll.kernel32.LocalFree(sd)  # type: ignore[attr-defined]
+            kernel32.LocalFree(sd)
 
 
 def _ensure_private_directory_windows(path: Path) -> Path:
@@ -762,21 +880,51 @@ def _read_regular_file_windows(path: Path, *, max_bytes: int) -> bytes:
     except OSError as exc:
         _file_unsafe("private file DACL is unsafe: %s" % target, exc)
 
-    create_file = ctypes.windll.kernel32.CreateFileW  # type: ignore[attr-defined]
+    kernel32, _advapi32 = _win_advapi_kernel()
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
     create_file.restype = wintypes.HANDLE
+    read_file = kernel32.ReadFile
+    read_file.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    read_file.restype = wintypes.BOOL
+    get_file_type = kernel32.GetFileType
+    get_file_type.argtypes = [wintypes.HANDLE]
+    get_file_type.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
     handle = create_file(
         str(target),
-        0x80000000,
-        0x00000001,
+        0x80000000,  # GENERIC_READ
+        0x00000001,  # FILE_SHARE_READ
         None,
-        3,
-        0x00200000 | 0x02000000,
+        3,  # OPEN_EXISTING
+        0x00200000 | 0x02000000,  # FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_BACKUP_SEMANTICS
         None,
     )
-    if handle == ctypes.c_void_p(-1).value:
-        _file_unsafe("failed to open private file: %s" % target, OSError(ctypes.GetLastError(), "CreateFileW"))
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid or handle is None:
+        _file_unsafe(
+            "failed to open private file: %s" % target,
+            OSError(ctypes.get_last_error(), "CreateFileW"),
+        )
     try:
-        if ctypes.windll.kernel32.GetFileType(handle) != 1:  # type: ignore[attr-defined]
+        if get_file_type(handle) != 1:  # FILE_TYPE_DISK
             _file_unsafe("private path is not a regular file: %s" % target)
         chunks: list[bytes] = []
         remaining = max_bytes + 1
@@ -784,8 +932,11 @@ def _read_regular_file_windows(path: Path, *, max_bytes: int) -> bytes:
             size = min(65536, remaining)
             buf = ctypes.create_string_buffer(size)
             read = wintypes.DWORD(0)
-            if not ctypes.windll.kernel32.ReadFile(handle, buf, size, ctypes.byref(read), None):  # type: ignore[attr-defined]
-                _file_unsafe("failed to read private file: %s" % target, OSError(ctypes.GetLastError(), "ReadFile"))
+            if not read_file(handle, buf, size, ctypes.byref(read), None):
+                _file_unsafe(
+                    "failed to read private file: %s" % target,
+                    OSError(ctypes.get_last_error(), "ReadFile"),
+                )
             if read.value == 0:
                 break
             chunks.append(buf.raw[: read.value])
@@ -795,7 +946,7 @@ def _read_regular_file_windows(path: Path, *, max_bytes: int) -> bytes:
             _file_unsafe("private file exceeds %d bytes: %s" % (max_bytes, target))
         return payload
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        close_handle(handle)
 
 
 def _atomic_write_private_bytes_windows(path: Path, data: bytes) -> None:
