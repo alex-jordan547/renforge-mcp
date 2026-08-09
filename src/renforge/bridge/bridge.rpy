@@ -3363,6 +3363,28 @@ init python:
                 raise OSError("short write on Win32 handle")
             written += chunk_written.value
 
+    def _renforge_bridge_win_truncate_handle(handle):
+        """Seek to start and truncate so a shorter ready payload does not leave tails."""
+        import ctypes as _ctypes
+        from ctypes import wintypes as _wintypes
+
+        kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+        set_pointer = kernel32.SetFilePointer
+        set_pointer.argtypes = [
+            _wintypes.HANDLE,
+            _ctypes.c_long,
+            _ctypes.c_void_p,
+            _wintypes.DWORD,
+        ]
+        set_pointer.restype = _wintypes.DWORD
+        set_eof = kernel32.SetEndOfFile
+        set_eof.argtypes = [_wintypes.HANDLE]
+        set_eof.restype = _wintypes.BOOL
+        if set_pointer(handle, 0, None, 0) == 0xFFFFFFFF:
+            raise OSError(_ctypes.get_last_error(), "SetFilePointer failed")
+        if not set_eof(handle):
+            raise OSError(_ctypes.get_last_error(), "SetEndOfFile failed")
+
     def _renforge_bridge_win_flush_handle(handle):
         import ctypes as _ctypes
         from ctypes import wintypes as _wintypes
