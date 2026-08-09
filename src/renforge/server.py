@@ -114,19 +114,35 @@ def _register_tools(app: Any) -> None:
         cancel_event: threading.Event | None = None,
     ) -> dict:
         canonical_editor = True
+        session_cfg = dict(session or {})
+        effective_savedir = session_cfg.get("savedir", savedir)
+        effective_persistent = str(session_cfg.get("persistent", persistent) or "existing")
+        effective_cleanup = (
+            session_cfg["cleanup_on_stop"]
+            if isinstance(session_cfg.get("cleanup_on_stop"), bool)
+            else cleanup_on_stop
+        )
         if cancel_event is not None and cancel_event.is_set():
             return live.cancelled_launch_result(phase="detecting_environment")
         from .dashboard_client import (
             launch_game as launch_via_dashboard,
+            launch_status as status_via_dashboard,
             stop_game as stop_via_dashboard,
         )
 
-        # Dashboard owns its own display process; only warp/version are delegated.
+        # None = no matching dashboard. Any dict (including failure) is final:
+        # never fall back to a local launch after a contacted dashboard errors.
         delegated = launch_via_dashboard(
             project_path,
             version=version,
             warp=warp,
             editor=canonical_editor,
+            display=display,
+            audio=audio,
+            savedir=effective_savedir if isinstance(effective_savedir, str) else None,
+            persistent=effective_persistent,
+            cleanup_on_stop=bool(effective_cleanup),
+            timeout=timeout,
         )
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
@@ -169,9 +185,9 @@ def _register_tools(app: Any) -> None:
             editor=canonical_editor,
             display=display,
             audio=audio,
-            savedir=savedir,
-            persistent=persistent,
-            cleanup_on_stop=cleanup_on_stop,
+            savedir=effective_savedir if isinstance(effective_savedir, str) else None,
+            persistent=effective_persistent,
+            cleanup_on_stop=bool(effective_cleanup),
             timeout=timeout,
             session=session,
             cancel_event=cancel_event,
@@ -181,7 +197,14 @@ def _register_tools(app: Any) -> None:
         from .dashboard_client import stop_game as stop_via_dashboard
 
         delegated = stop_via_dashboard(project_path)
+        # Contacted dashboard failure is final; None means no dashboard.
         return delegated if delegated is not None else live.stop_game(project_path)
+
+    def _launch_status(project_path: str) -> dict:
+        from .dashboard_client import launch_status as status_via_dashboard
+
+        delegated = status_via_dashboard(project_path)
+        return delegated if delegated is not None else live.launch_status(project_path)
 
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
         kwargs["editor"] = True
@@ -421,7 +444,7 @@ def _register_tools(app: Any) -> None:
             name="renforge_launch_status",
             params={"project_path": project_path},
             project_root=project_path,
-            fn=live.launch_status,
+            fn=_launch_status,
             args=(project_path,),
             kwargs={},
         )

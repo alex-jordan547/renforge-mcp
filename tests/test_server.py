@@ -119,7 +119,7 @@ def test_info_reports_the_project_selected_in_the_dashboard(tmp_path, monkeypatc
 
     monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "runtime"))
     project = tmp_path / "game-project"
-    publish_dashboard(project, url="http://127.0.0.1:8765/")
+    publish_dashboard(project, url="http://127.0.0.1:8765/", token="secret_token_22chars__")
 
     async def _call():
         async with Client(create_app()) as client:
@@ -331,9 +331,14 @@ def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch)
 
     calls = {}
 
-    def fake_dashboard_launch(project_path: str, *, version: str, warp: str | None, editor: bool):
-        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
-        return {"ok": True, "via": "dashboard"}
+    def fake_dashboard_launch(project_path: str, **kwargs):
+        calls.update(
+            project_path=project_path,
+            version=kwargs.get("version"),
+            warp=kwargs.get("warp"),
+            editor=kwargs.get("editor"),
+        )
+        return {"ok": True, "ready": True, "status": "ready", "via": "dashboard"}
 
     monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
     monkeypatch.setattr(

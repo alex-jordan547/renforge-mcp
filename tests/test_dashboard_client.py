@@ -48,11 +48,15 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     )
 
     assert result == {"ok": True, "current_label": "start", "via": "dashboard"}
-    assert calls == {
-        "url": "http://127.0.0.1:8765/api/live/launch?token=secret+token",
-        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": True},
-        "timeout": 45,
-    }
+    assert calls["url"] == "http://127.0.0.1:8765/api/live/launch?token=secret+token"
+    assert calls["timeout"] == 45
+    assert calls["payload"]["version"] == "8.3.7"
+    assert calls["payload"]["warp"] == "game/script.rpy:12"
+    assert calls["payload"]["editor"] is True
+    assert calls["payload"]["display"] == "auto"
+    assert calls["payload"]["audio"] == "auto"
+    assert calls["payload"]["persistent"] == "existing"
+    assert calls["payload"]["cleanup_on_stop"] is True
 
 
 def test_dashboard_matching_applies_normcase(tmp_path: Path, monkeypatch) -> None:
@@ -117,10 +121,10 @@ def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert result == {"ok": True, "current_label": "start", "via": "dashboard"}
-    assert calls == {
-        "payload": {"version": "8.3.7", "warp": "game/script.rpy:12", "editor": True},
-        "timeout": 45,
-    }
+    assert calls["timeout"] == 45
+    assert calls["payload"]["version"] == "8.3.7"
+    assert calls["payload"]["warp"] == "game/script.rpy:12"
+    assert calls["payload"]["editor"] is True
 
 
 def test_launch_game_ignores_dashboard_for_another_project(tmp_path: Path, monkeypatch) -> None:

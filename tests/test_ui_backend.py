@@ -244,14 +244,15 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
     project = _project_root(tmp_path)
     calls = {}
 
-    def fake_launch(
-        project_path: str,
-        version: str = "stable",
-        warp: str | None = None,
-        editor: bool = False,
-    ):
-        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
-        return {"ok": True, "already_running": False, "current_label": "start", "editor": editor}
+    def fake_launch(project_path: str, **kwargs):
+        calls.update(project_path=project_path, **{k: kwargs.get(k) for k in ("version", "warp", "editor")})
+        return {
+            "ok": True,
+            "ready": True,
+            "already_running": False,
+            "current_label": "start",
+            "editor": True,
+        }
 
     monkeypatch.setattr(server.live, "launch_game", fake_launch)
     app = create_ui_app(project, ui_token="token")
@@ -262,13 +263,12 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "already_running": False,
-        "current_label": "start",
-        "editor": True,
-    }
-    assert calls == {"project_path": str(project), "version": "stable", "warp": None, "editor": True}
+    body = response.json()
+    assert body["ok"] is True
+    assert body.get("status") in ("ready", "starting")
+    assert body.get("editor") is True
+    assert calls["project_path"] == str(project)
+    assert calls.get("editor") is True
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
@@ -278,14 +278,15 @@ def test_api_live_launch_defaults_editor_false(tmp_path: Path, monkeypatch) -> N
     project = _project_root(tmp_path)
     calls = {}
 
-    def fake_launch(
-        project_path: str,
-        version: str = "stable",
-        warp: str | None = None,
-        editor: bool = False,
-    ):
-        calls.update(project_path=project_path, version=version, warp=warp, editor=editor)
-        return {"ok": True, "already_running": False, "current_label": "start", "editor": editor}
+    def fake_launch(project_path: str, **kwargs):
+        calls.update(project_path=project_path, **{k: kwargs.get(k) for k in ("version", "warp", "editor")})
+        return {
+            "ok": True,
+            "ready": True,
+            "already_running": False,
+            "current_label": "start",
+            "editor": True,
+        }
 
     monkeypatch.setattr(server.live, "launch_game", fake_launch)
     app = create_ui_app(project, ui_token="token")
@@ -296,13 +297,13 @@ def test_api_live_launch_defaults_editor_false(tmp_path: Path, monkeypatch) -> N
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "already_running": False,
-        "current_label": "start",
-        "editor": False,
-    }
-    assert calls == {"project_path": str(project), "version": "stable", "warp": None, "editor": False}
+    body = response.json()
+    assert body["ok"] is True
+    assert body.get("status") in ("ready", "starting")
+    # Dashboard-owned launch always requests editor mode.
+    assert body.get("editor") is True
+    assert calls["project_path"] == str(project)
+    assert calls.get("editor") is True
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")

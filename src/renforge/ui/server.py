@@ -639,6 +639,23 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             since = 0
         return JSONResponse(live.poll_events(str(runtime.root), since=since))
 
+    def _start_live_launch(**launch_kwargs: Any) -> dict[str, Any]:
+        """Own dashboard launches through live.start_launch (never bare launch_game)."""
+        project_path = str(runtime.root)
+
+        def _worker(project_root: Path, cancel_event: threading.Event) -> dict[str, Any]:
+            return live.launch_game(
+                str(project_root),
+                cancel_event=cancel_event,
+                **launch_kwargs,
+            )
+
+        return live.start_launch(
+            project_path,
+            _worker,
+            editor=bool(launch_kwargs.get("editor", True)),
+        )
+
     async def warp(request: Request):
         if not await _check_token(request):
             return _unauthorized(request)
@@ -660,7 +677,19 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"target": target},
             )
-        return JSONResponse(live.launch_game(str(runtime.root), warp=str(resolved["target"])))
+        result = await asyncio.to_thread(
+            _start_live_launch,
+            version=str(payload.get("version") or "stable"),
+            warp=str(resolved["target"]),
+            editor=True,
+            display=str(payload.get("display") or "auto"),
+            audio=str(payload.get("audio") or "auto"),
+            savedir=payload.get("savedir"),
+            persistent=str(payload.get("persistent") or "existing"),
+            cleanup_on_stop=bool(payload.get("cleanup_on_stop", True)),
+            timeout=payload.get("timeout"),
+        )
+        return JSONResponse(result)
 
     async def advance(request: Request):
         if not await _check_token(request):
@@ -687,7 +716,13 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         payload = _as_dict(await _read_json(request))
         version = payload.get("version", "stable")
         warp = payload.get("warp")
-        editor = payload.get("editor", False)
+        editor = payload.get("editor", True)
+        display = payload.get("display", "auto")
+        audio = payload.get("audio", "auto")
+        savedir = payload.get("savedir")
+        persistent = payload.get("persistent", "existing")
+        cleanup_on_stop = payload.get("cleanup_on_stop", True)
+        timeout = payload.get("timeout")
         if not isinstance(version, str) or not version:
             return error_response(
                 code="launch_version_invalid",
@@ -709,13 +744,66 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"editor": editor},
             )
+        if not isinstance(display, str) or not display:
+            return error_response(
+                code="launch_display_invalid",
+                error="display must be a non-empty string",
+                status_code=400,
+                details={"display": display},
+            )
+        if not isinstance(audio, str) or not audio:
+            return error_response(
+                code="launch_audio_invalid",
+                error="audio must be a non-empty string",
+                status_code=400,
+                details={"audio": audio},
+            )
+        if savedir is not None and not isinstance(savedir, str):
+            return error_response(
+                code="launch_savedir_invalid",
+                error="savedir must be a string",
+                status_code=400,
+                details={"savedir": savedir},
+            )
+        if not isinstance(persistent, str) or not persistent:
+            return error_response(
+                code="launch_persistent_invalid",
+                error="persistent must be a non-empty string",
+                status_code=400,
+                details={"persistent": persistent},
+            )
+        if not isinstance(cleanup_on_stop, bool):
+            return error_response(
+                code="launch_cleanup_on_stop_invalid",
+                error="cleanup_on_stop must be a boolean",
+                status_code=400,
+                details={"cleanup_on_stop": cleanup_on_stop},
+            )
+        if timeout is not None and not isinstance(timeout, (int, float)):
+            return error_response(
+                code="launch_timeout_invalid",
+                error="timeout must be a number",
+                status_code=400,
+                details={"timeout": timeout},
+            )
         result = await asyncio.to_thread(
-            live.launch_game,
-            str(runtime.root),
+            _start_live_launch,
             version=version,
             warp=warp,
-            editor=editor,
+            editor=True,
+            display=display,
+            audio=audio,
+            savedir=savedir,
+            persistent=persistent,
+            cleanup_on_stop=cleanup_on_stop,
+            timeout=float(timeout) if timeout is not None else None,
         )
+        return JSONResponse(result)
+
+    async def launch_status(request: Request):
+        if not await _check_token(request):
+            return _unauthorized(request)
+        result = await asyncio.to_thread(live.launch_status, str(runtime.root))
         return JSONResponse(result)
 
     async def stop(request: Request):
@@ -820,6 +908,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         Route("/api/advance", advance, methods=["POST"]),
         Route("/api/live/control", control, methods=["POST"]),
         Route("/api/live/launch", launch, methods=["POST"]),
+        Route("/api/live/status", launch_status, methods=["GET"]),
         Route("/api/live/stop", stop, methods=["POST"]),
         Route("/api/select-choice", select_choice, methods=["POST"]),
         Route("/api/eval", eval_route, methods=["POST"]),
