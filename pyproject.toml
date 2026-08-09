@@ -40,12 +40,18 @@ ui = ["starlette>=0.31", "uvicorn[standard]>=0.30", "watchfiles>=0.22"]
 renforge = "renforge.cli:main"
 
 [tool.hatch.build]
-include = ["src/renforge/**/*.py", "src/renforge/**/*.rpy"]
+include = [
+  "src/renforge/**/*.py",
+  "src/renforge/**/*.rpy",
+  "src/renforge/bridge/editor_assets/**",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/renforge"]
 exclude = ["src/renforge/ui/static/**"]
-force-include = { "src/renforge/ui/static" = "renforge/ui/static" }
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/renforge/ui/static" = "renforge/ui/static"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/renforge"]

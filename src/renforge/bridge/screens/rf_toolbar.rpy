@@ -8,7 +8,7 @@ screen _rf_vrule():
         yalign 0.5
 
 
-screen _rf_icon_btn(btn_id, icon_name, btn_action, active=False, enabled=True, dim=False, size_key="tool"):
+screen _rf_icon_btn(btn_id, icon_name, btn_action, tooltip_text="", active=False, enabled=True, dim=False, size_key="tool"):
     $ _rf_btn = (
         _renforge_editor_ui_px(_RF_ICON_BTN, minimum=_RF_ICON_BTN_MIN)
         if size_key == "tool"
@@ -23,6 +23,7 @@ screen _rf_icon_btn(btn_id, icon_name, btn_action, active=False, enabled=True, d
         id btn_id
         action btn_action
         sensitive enabled
+        tooltip tooltip_text
         xsize _rf_btn
         ysize _rf_btn
         background (
@@ -31,6 +32,8 @@ screen _rf_icon_btn(btn_id, icon_name, btn_action, active=False, enabled=True, d
             else Solid("#00000000")
         )
         hover_background Solid(_renforge_editor_ui_color("row_hover"))
+        focused_background Solid(_renforge_editor_ui_color("accent") + "55")
+        selected_background Frame(_renforge_editor_ui_frame("brand"), _RF_FRAME_BRAND, _RF_FRAME_BRAND)
         padding (0, 0)
         yalign 0.5
         add _renforge_editor_ui_icon(icon_name):
@@ -60,7 +63,6 @@ screen _rf_editor_toolbar(tools_visible):
     $ _rf_view_mode = _renforge_editor_view_mode()
     $ _rf_layout_mode = _renforge_editor_layout_mode()
     $ _rf_docked = _renforge_editor_chrome_docked()
-    $ _rf_status = _renforge_editor_status_text()
     # Catalogue keys kept live for i18n contract.
     $ _rf_t_select = _renforge_editor_t("toolbar.select")
     $ _rf_t_move = _renforge_editor_t("toolbar.move")
@@ -116,7 +118,7 @@ screen _rf_editor_toolbar(tools_visible):
                         size _renforge_editor_ui_px(_RF_T_SM)
                         xalign 0.5
                         yalign 0.5
-                text "RENFORGE · LIVE":
+                text _renforge_editor_t("toolbar.brand"):
                     id "rf_toolbar_brand"
                     color _renforge_editor_ui_color("surface")
                     font _renforge_editor_ui_font()
@@ -151,12 +153,12 @@ screen _rf_editor_toolbar(tools_visible):
                 hbox:
                     spacing _renforge_editor_ui_px(6)
                     yalign 0.5
-                    use _rf_icon_btn("rf_toolbar_tool_select", "select", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "select"), active=(_rf_tool_mode == "select"))
-                    use _rf_icon_btn("rf_toolbar_tool_move", "move", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "move"), active=(_rf_tool_mode == "move"))
-                    use _rf_icon_btn("rf_toolbar_tool_measure", "measure", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "measure"), active=(_rf_tool_mode == "measure"))
-                    use _rf_icon_btn("rf_toolbar_tool_picker", "picker", NullAction(), enabled=False, dim=True)
-                    use _rf_icon_btn("rf_toolbar_tool_text", "text", NullAction(), enabled=False, dim=True)
-                    use _rf_icon_btn("rf_toolbar_tool_hand", "hand", NullAction(), enabled=False, dim=True)
+                    use _rf_icon_btn("rf_toolbar_tool_select", "select", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "select"), _rf_t_select, active=(_rf_tool_mode == "select"))
+                    use _rf_icon_btn("rf_toolbar_tool_move", "move", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "move"), _rf_t_move, active=(_rf_tool_mode == "move"))
+                    use _rf_icon_btn("rf_toolbar_tool_measure", "measure", Function(_renforge_editor_consume, _renforge_editor_set_tool_mode, "measure"), _rf_t_measure, active=(_rf_tool_mode == "measure"))
+                    use _rf_icon_btn("rf_toolbar_tool_picker", "picker", NullAction(), _rf_t_picker, enabled=False, dim=True)
+                    use _rf_icon_btn("rf_toolbar_tool_text", "text", NullAction(), _rf_t_text, enabled=False, dim=True)
+                    use _rf_icon_btn("rf_toolbar_tool_hand", "hand", NullAction(), _rf_t_hand, enabled=False, dim=True)
 
             null width 1 xfill True
 
@@ -164,27 +166,12 @@ screen _rf_editor_toolbar(tools_visible):
             hbox:
                 spacing _renforge_editor_ui_px(4)
                 yalign 0.5
-                use _rf_icon_btn("rf_undo", "undo", Function(_renforge_editor_consume, _renforge_editor_undo), enabled=_renforge_editor_can_undo(), size_key="action")
-                use _rf_icon_btn("rf_redo", "redo", Function(_renforge_editor_consume, _renforge_editor_redo), enabled=_renforge_editor_can_redo(), size_key="action")
-                use _rf_icon_btn("rf_reset", "reset", Function(_renforge_editor_consume, _renforge_editor_reset_selected), enabled=_renforge_editor_has_selection(), size_key="action")
-                use _rf_icon_btn("rf_tools", "eye", Function(_renforge_editor_consume, _renforge_editor_toggle_tools), active=tools_visible, size_key="action")
-                use _rf_icon_btn("rf_opacity_down", "minus", Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1), size_key="action")
-                use _rf_icon_btn("rf_opacity_up", "plus", Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1), size_key="action")
-
-            # Transient status only when non-empty (steady state lives on HUD).
-            # Widget id is always present so live probes never miss it.
-            if _rf_status:
-                text _rf_status:
-                    id "rf_toolbar_status"
-                    color _renforge_editor_ui_color("meta")
-                    font _renforge_editor_ui_font()
-                    size _renforge_editor_ui_px(_RF_T_MICRO)
-                    xmaximum _renforge_editor_ui_px(_RF_STATUS_MAX_W)
-                    yalign 0.5
-            else:
-                text "":
-                    id "rf_toolbar_status"
-                    size 1
+                use _rf_icon_btn("rf_undo", "undo", Function(_renforge_editor_consume, _renforge_editor_undo), _rf_t_undo, enabled=_renforge_editor_can_undo(), size_key="action")
+                use _rf_icon_btn("rf_redo", "redo", Function(_renforge_editor_consume, _renforge_editor_redo), _rf_t_redo, enabled=_renforge_editor_can_redo(), size_key="action")
+                use _rf_icon_btn("rf_reset", "reset", Function(_renforge_editor_consume, _renforge_editor_reset_selected), _rf_t_reset, enabled=_renforge_editor_can_reset(), size_key="action")
+                use _rf_icon_btn("rf_tools", "eye", Function(_renforge_editor_consume, _renforge_editor_toggle_tools), _rf_t_tools, active=tools_visible, size_key="action")
+                use _rf_icon_btn("rf_opacity_down", "minus", Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, -0.1), _rf_t_opacity_down, size_key="action")
+                use _rf_icon_btn("rf_opacity_up", "plus", Function(_renforge_editor_consume, _renforge_editor_adjust_opacity, 0.1), _rf_t_opacity_up, size_key="action")
 
             use _rf_vrule()
 
@@ -241,7 +228,7 @@ screen _rf_editor_toolbar(tools_visible):
                         size _renforge_editor_ui_px(_RF_T_XS, minimum=14)
                         yalign 0.5
 
-            use _rf_icon_btn("rf_exit", "exit", Function(_renforge_editor_consume, _renforge_editor_exit), enabled=(not _renforge_editor_state().save_in_progress), size_key="action")
+            use _rf_icon_btn("rf_exit", "exit", Function(_renforge_editor_consume, _renforge_editor_exit), _rf_t_exit, enabled=(not _renforge_editor_state().save_in_progress), size_key="action")
 
             if _renforge_editor_selected_lock() is not None:
                 hbox:
@@ -260,3 +247,17 @@ screen _rf_editor_toolbar(tools_visible):
                         font _renforge_editor_ui_font()
                         size _renforge_editor_ui_px(_RF_T_MICRO)
                         yalign 0.5
+
+
+    $ _rf_tip = GetTooltip()
+    if _rf_tip:
+        frame:
+            id "rf_toolbar_tooltip"
+            background Solid(_renforge_editor_ui_color("panel"))
+            padding (_renforge_editor_ui_px(12), _renforge_editor_ui_px(8))
+            xmaximum _renforge_editor_ui_px(480)
+            text _rf_tip:
+                substitute False
+                color _renforge_editor_ui_color("surface")
+                font _renforge_editor_ui_font()
+                size _renforge_editor_ui_text_px(_RF_T_MICRO)

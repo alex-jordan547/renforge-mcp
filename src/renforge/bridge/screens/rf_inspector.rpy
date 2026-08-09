@@ -6,11 +6,13 @@
 screen _rf_editor_inspector():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
-    $ _rf_props_by_widget = _renforge_editor_widget_properties(_rf_facts["screen"]) if _rf_facts is not None else {}
-    $ _rf_props = _rf_props_by_widget.get(_rf_facts["id"], {}) if _rf_facts is not None else {}
+    $ _rf_props = (
+        _renforge_editor_effective_properties(_rf_facts["screen"], _rf_facts["id"])
+        if _rf_facts is not None else {}
+    )
     $ _rf_docked = _renforge_editor_chrome_docked()
-    $ _rf_xa = _rf_props.get("xanchor", 0) if _rf_facts is not None else 0
-    $ _rf_ya = _rf_props.get("yanchor", 0) if _rf_facts is not None else 0
+    $ _rf_xa = _rf_props.get("xanchor", "—") if _rf_facts is not None else "—"
+    $ _rf_ya = _rf_props.get("yanchor", "—") if _rf_facts is not None else "—"
 
     frame:
         id "rf_inspector_panel"
@@ -55,6 +57,7 @@ screen _rf_editor_inspector():
                             spacing _renforge_editor_ui_px(4)
                             text _rf_facts["id"]:
                                 id "rf_inspector_name"
+                                substitute False
                                 color _renforge_editor_ui_color("surface")
                                 font _renforge_editor_ui_font()
                                 size _renforge_editor_ui_px(24)
@@ -63,6 +66,7 @@ screen _rf_editor_inspector():
                                 + ("  ·  " + _rf_facts["source"] if _rf_facts["source"] else "")
                             ):
                                 id "rf_inspector_path"
+                                substitute False
                                 color _renforge_editor_ui_color("meta")
                                 font _renforge_editor_ui_font()
                                 size _renforge_editor_ui_px(17)
@@ -97,8 +101,8 @@ screen _rf_editor_inspector():
                             yoffset _renforge_editor_ui_px(8)
                         hbox:
                             spacing _renforge_editor_ui_px(12)
-                            use _rf_editor_field("xoffset", str(_rf_props.get("xoffset", "0")))
-                            use _rf_editor_field("yoffset", str(_rf_props.get("yoffset", "0")))
+                            use _rf_editor_field("xoffset", str(_rf_props.get("xoffset", "—")))
+                            use _rf_editor_field("yoffset", str(_rf_props.get("yoffset", "—")))
 
                         text _renforge_editor_t("inspector.anchor"):
                             color _renforge_editor_ui_color("meta")
@@ -149,13 +153,20 @@ screen _rf_editor_inspector():
                             yoffset _renforge_editor_ui_px(8)
                         hbox:
                             spacing _renforge_editor_ui_px(12)
-                            use _rf_editor_field("xfill", str(_rf_props.get("xfill", "false")))
-                            use _rf_editor_field("yfill", str(_rf_props.get("yfill", "false")))
+                            use _rf_editor_field("xfill", str(_rf_props.get("xfill", "—")))
+                            use _rf_editor_field("yfill", str(_rf_props.get("yfill", "—")))
                     else:
                         text _renforge_editor_t("inspector.no_geometry"):
                             color _renforge_editor_ui_color("meta")
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(17)
+
+                    text _renforge_editor_t("inspector.read_only"):
+                        id "rf_inspector_read_only"
+                        color _renforge_editor_ui_color("meta")
+                        font _renforge_editor_ui_font()
+                        size _renforge_editor_ui_px(15)
+                        yoffset _renforge_editor_ui_px(6)
 
                     if _rf_facts["lock"] is not None:
                         text (
@@ -163,6 +174,7 @@ screen _rf_editor_inspector():
                             + " — " + (_rf_facts["lock"][2] or _rf_facts["lock"][1])
                         ):
                             id "rf_inspector_lock"
+                            substitute False
                             color _renforge_editor_lock_color()
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(16)
@@ -185,6 +197,7 @@ screen _rf_editor_field(key, value):
                 size _renforge_editor_ui_px(16)
                 yalign 0.5
             text value:
+                substitute False
                 color _renforge_editor_ui_color("surface")
                 font _renforge_editor_ui_font()
                 size _renforge_editor_ui_px(18)

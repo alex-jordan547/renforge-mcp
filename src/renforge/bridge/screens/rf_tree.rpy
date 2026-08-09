@@ -3,7 +3,15 @@
 # is running and its screens change under the editor, so a cached tree would
 # quietly describe a scene that no longer exists.
 screen _rf_editor_tree():
-    $ _rf_rows = _renforge_editor_tree_rows()
+    $ _rf_tree = _renforge_editor_tree_rows()
+    $ _rf_rows = _rf_tree.get("rows") if isinstance(_rf_tree, dict) else _rf_tree
+    $ _rf_tree_total = int(_rf_tree.get("total") or len(_rf_rows or [])) if isinstance(_rf_tree, dict) else len(_rf_rows or [])
+    $ _rf_tree_truncated = bool(isinstance(_rf_tree, dict) and (_rf_tree.get("count_truncated") or _rf_tree.get("depth_truncated")))
+    $ _rf_tree_count_text = (
+        _renforge_editor_t("tree.items_more").replace("{count}", "1000")
+        if _rf_tree_truncated
+        else _renforge_editor_t("tree.items_count").replace("{count}", str(_rf_tree_total))
+    )
     $ _rf_docked = _renforge_editor_chrome_docked()
 
     frame:
@@ -44,36 +52,13 @@ screen _rf_editor_tree():
                         background Solid(_renforge_editor_ui_color("accent_bright") + "26")
                         padding (_renforge_editor_ui_px(10), _renforge_editor_ui_px(3))
                         yalign 0.5
-                        text ("%d items" % len(_rf_rows)):
+                        text _rf_tree_count_text:
+                            substitute False
                             id "rf_tree_count"
                             color _renforge_editor_ui_color("accent_bright")
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(15)
                             yalign 0.5
-
-            # Filter/Search bar
-            frame:
-                id "rf_tree_filter"
-                xfill True
-                ysize _renforge_editor_ui_px(50)
-                background Solid(_renforge_editor_ui_color("sunken"))
-                padding (_renforge_editor_ui_px(16), _renforge_editor_ui_px(10))
-                hbox:
-                    spacing _renforge_editor_ui_px(10)
-                    yalign 0.5
-                    add _renforge_editor_ui_icon("search"):
-                        xysize (
-                            _renforge_editor_ui_px(22, minimum=18),
-                            _renforge_editor_ui_px(22, minimum=18),
-                        )
-                        yalign 0.5
-                        at Transform(alpha=0.65)
-                    text _renforge_editor_t("tree.filter"):
-                        id "rf_tree_filter_text"
-                        color _renforge_editor_ui_color("meta")
-                        font _renforge_editor_ui_font()
-                        size _renforge_editor_ui_px(16)
-                        yalign 0.5
 
             viewport:
                 id "rf_tree_viewport"
@@ -81,6 +66,7 @@ screen _rf_editor_tree():
                 yfill True
                 mousewheel True
                 draggable True
+                scrollbars "vertical"
                 vbox:
                     xfill True
                     spacing _renforge_editor_ui_px(3)
@@ -119,7 +105,7 @@ screen _rf_editor_tree():
                                         background Solid("#0000004d")
                                         padding (_renforge_editor_ui_px(6), _renforge_editor_ui_px(2))
                                         yalign 0.5
-                                        text "SCREEN":
+                                        text _renforge_editor_t("tree.screen"):
                                             color _renforge_editor_ui_color("tree_screen")
                                             font _renforge_editor_ui_font()
                                             size _renforge_editor_ui_px(13)
@@ -129,7 +115,7 @@ screen _rf_editor_tree():
                             # Interactive Widget item (selectable)
                             button:
                                 id ("rf_tree_item_" + str(_rf_current_screen) + "_" + str(row["id"]))
-                                action Function(_renforge_editor_consume, _renforge_editor_select_widget, _rf_current_screen, row["id"])
+                                action Function(_renforge_editor_consume, _renforge_editor_select_widget, row.get("screen_name") or _rf_current_screen, row["id"])
                                 background (Solid(_renforge_editor_ui_color("accent") + "33") if row["selected"] else None)
                                 hover_background Solid(_renforge_editor_ui_color("row_hover"))
                                 xfill True
@@ -162,6 +148,7 @@ screen _rf_editor_tree():
                                         color (_renforge_editor_ui_color("surface") if row["selected"] else _renforge_editor_ui_color("border"))
                                         font _renforge_editor_ui_font()
                                         size _renforge_editor_ui_px(18)
+                                        xmaximum _renforge_editor_ui_px(160)
                                         yalign 0.5
                                     frame:
                                         background Solid("#0000004d")
@@ -172,6 +159,7 @@ screen _rf_editor_tree():
                                             color _renforge_editor_ui_color("accent_bright")
                                             font _renforge_editor_ui_font()
                                             size _renforge_editor_ui_px(14)
+                                            xmaximum _renforge_editor_ui_px(140)
                                             yalign 0.5
                                     if row.get("snippet"):
                                         # Pre-escaped in _renforge_editor_tree_escape; never substitute.
