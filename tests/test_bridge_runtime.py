@@ -31,9 +31,12 @@ def _load_editor_body():
     raw = Path(__file__).resolve().parents[1] / "src/renforge/bridge/editor.rpy"
     lines = raw.read_text(encoding="utf-8").splitlines()
     start = lines.index("init 1100 python:")
-    return "\n".join(
-        line[4:] if line.startswith("    ") else line for line in lines[start + 1 :]
-    )
+    body = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith("    ") and not line.startswith("#"):
+            break
+        body.append(line[4:] if line.startswith("    ") else line)
+    return "\n".join(body)
 
 
 class _FakeWidget:

@@ -210,6 +210,71 @@ init 1090 python:
         """Look up a design token. Unknown names shout in magenta on purpose."""
         return _RF_UI_COLORS.get(name, "#ff00ff")
 
+
+    def _renforge_editor_install_scrollbar_styles():
+        """Apple-thin overlay scrollbars for every ``style_prefix "rf"`` viewport.
+
+        Default game scrollbars are chunky and square — they read as a foreign
+        control and poke past the panel's rounded corners. Scope the fix to the
+        ``rf_`` prefix so the host game's own chrome is untouched.
+
+        The thumb travel is shortened with gutters (not just widget margins):
+        when scrolled fully to either end the capsule still has to sit inside
+        the panel radius, otherwise it clips the rounded corner.
+        """
+        try:
+            clear = Solid("#00000000")
+            border = int(_RF_FRAME_SCROLL)
+            thumb = Frame(_renforge_editor_ui_frame("scroll_thumb"), border, border)
+            hover = Frame(_renforge_editor_ui_frame("scroll_thumb_hover"), border, border)
+            width = max(4, int(_renforge_editor_ui_px(10, minimum=5)))
+            top_edge = max(10, int(_renforge_editor_ui_px(_RF_FRAME_PANEL, minimum=14)))
+            bottom_edge = max(14, int(_renforge_editor_ui_px(_RF_FRAME_PANEL + 4, minimum=18)))
+            # Panel frame corners keep their source-pixel radius when the rest
+            # of the chrome scales, so this gutter must use that fixed radius.
+            bottom_radius = int(_RF_FRAME_PANEL)
+            # Pull off the right edge a bit (reads as floating, not flush).
+            inset = max(6, int(_renforge_editor_ui_px(12, minimum=8)))
+
+            for style_name in ("rf_vscrollbar", "rf_scrollbar"):
+                try:
+                    bar = getattr(style, style_name)
+                except Exception:
+                    continue
+                bar.base_bar = clear
+                bar.thumb = thumb
+                bar.hover_thumb = hover
+                bar.unscrollable = "hide"
+                bar.thumb_offset = 0
+                bar.bar_resizing = True
+                if style_name == "rf_vscrollbar":
+                    bar.xsize = width
+                    bar.xmaximum = width
+                    bar.top_margin = top_edge
+                    bar.bottom_margin = bottom_edge
+                    bar.right_margin = inset
+                    bar.left_margin = 0
+                    # Runtime style assignment uses the orientation-neutral
+                    # names consumed by Bar.render; top_gutter/bottom_gutter
+                    # are only translated by screen/style-language parsing.
+                    bar.fore_gutter = 0
+                    bar.aft_gutter = bottom_radius
+                    bar.left_gutter = 0
+                    bar.right_gutter = 0
+                else:
+                    bar.ysize = width
+                    bar.ymaximum = width
+                    bar.left_margin = top_edge
+                    bar.right_margin = bottom_edge
+                    bar.bottom_margin = inset
+                    bar.top_margin = 0
+                    bar.left_gutter = 0
+                    bar.right_gutter = 0
+                    bar.fore_gutter = 0
+                    bar.aft_gutter = 0
+        except Exception:
+            pass
+
     # ── Layout geometry (maquette 2560-space) ────────────────────────────────
     # Overlay = floating chrome on a full-screen game.
     # Docked  = solid edge rails + scaled canvas between them.
@@ -279,6 +344,8 @@ init 1090 python:
     _RF_FRAME_TOOLS = 19
     _RF_FRAME_PILL = 29
     _RF_FRAME_BRAND = 13
+    # Capsule scroll thumb is 20×40 → Frame border = half width.
+    _RF_FRAME_SCROLL = 10
 
     # ── Interface catalogue (Lot 0.D) ───────────────────────────────────────
     # The overlay is a guest in someone else's game, so it never touches
@@ -445,6 +512,23 @@ init 1090 python:
         return _RF_UI_STRINGS.get(key, key)
 
 
+init 1095 python in _renforge_editor_runtime:
+    # This store is rebuilt by script reloads and excluded from save data.
+    # Keeping the custom displayable here prevents reload slots from referring
+    # to a class in the default store before that store has been restored.
+    _constant = True
+
+    class EventCatcher(renpy.Displayable):
+        def render(self, width, height, st, at):
+            return renpy.Render(int(max(1, width)), int(max(1, height)))
+
+        def event(self, event, x, y, st):
+            return renpy.store._renforge_editor_handle_event(event, x, y, st)
+
+    event_catcher = EventCatcher()
+    event_catcher._renforge_editor_owner = "renforge.editor.v1"
+
+
 init 1100 python:
     import builtins
     import hashlib
@@ -571,6 +655,7 @@ init 1100 python:
             state.opacity = 0.86
             state.tools_visible = True
             state.jump_open = False
+            state.jump_context_last = None
             state.layout_mode = "overlay"
             state.label_rect = [20, 20, 260, 32]
             state.label_alpha = 1.0
@@ -638,6 +723,8 @@ init 1100 python:
             state.tools_visible = True
         if not hasattr(state, "jump_open"):
             state.jump_open = False
+        if not hasattr(state, "jump_context_last"):
+            state.jump_context_last = None
         if not hasattr(state, "layout_mode"):
             state.layout_mode = "overlay"
         if not hasattr(state, "selected_source_position"):
@@ -711,6 +798,10 @@ init 1100 python:
             return {"ok": False, "error": "editor session unavailable"}
         state.active = True
         state.selected_lock_reason = None
+        try:
+            _renforge_editor_install_scrollbar_styles()
+        except NameError:
+            pass
         _renforge_editor_apply_layout_transform()
         renpy.show_screen(_EDITOR_SCREEN, _layer=_EDITOR_LAYER)
         renpy.restart_interaction()
@@ -3959,19 +4050,63 @@ init 1100 python:
         return False
 
 
+    # Dialogue surfaces take required scope args (who/what). Jumping out of a
+    # screen while they are still showing leaves them in the layer with an empty
+    # scope; the next interact (often a `scene … with dissolve`) then dies with
+    # `TypeError: missing a required argument: 'who'`. Tear them down first.
+    _RF_JUMP_DISMISS_SCREENS = ("say", "nvl", "bubble", "choice")
+
+    def _renforge_editor_jump_to(label):
+        """Warp the running game to `label` without stranding dialogue screens."""
+        state = _renforge_editor_state()
+        state.jump_open = False
+        for name in _RF_JUMP_DISMISS_SCREENS:
+            try:
+                if renpy.get_screen(name) is not None:
+                    renpy.hide_screen(name)
+            except Exception:
+                pass
+        renpy.jump(str(label))
+
+
+    # Always-on chrome that is not "where the author is working". Taking the
+    # first layer entry after a Jump() briefly leaves only quick_menu (say has
+    # already been torn down), so the chip would flash "screen quick_menu".
+    _RF_JUMP_CONTEXT_CHROME = frozenset({
+        "quick_menu",
+        "notify",
+        "confirm",
+        "skip_indicator",
+    })
+    _RF_JUMP_CONTEXT_PREFER = ("say", "nvl", "bubble", "choice", "main_menu", "game_menu")
+
     def _renforge_editor_jump_context():
         """Name shown on the jump chip: the selection's screen, else what runs.
 
         The chip is a context readout before it is a menu, so it must say
         something even with nothing selected — an empty pill reads as broken.
+        Prefer dialogue/content screens over chrome, and stick the last good
+        name across Jump() transitions so quick_menu never flashes through.
         """
         state = _renforge_editor_state()
+        none_label = _renforge_editor_t("toolbar.jump_none")
         selected = str(getattr(state, "selected_screen", "") or "")
-        if selected:
+        if selected and selected not in _RF_JUMP_CONTEXT_CHROME:
+            state.jump_context_last = selected
             return selected
-        for name in _renforge_editor_active_game_screens():
-            return str(name)
-        return _renforge_editor_t("toolbar.jump_none")
+        names = [str(n) for n in _renforge_editor_active_game_screens() if n]
+        for prefer in _RF_JUMP_CONTEXT_PREFER:
+            if prefer in names:
+                state.jump_context_last = prefer
+                return prefer
+        for name in names:
+            if name not in _RF_JUMP_CONTEXT_CHROME:
+                state.jump_context_last = name
+                return name
+        last = str(getattr(state, "jump_context_last", "") or "")
+        if last:
+            return last
+        return none_label
 
 
     def _renforge_editor_same_target_key(first, second):
@@ -4873,21 +5008,8 @@ init 1100 python:
         return _renforge_editor_apply_preview(x, y, shift=shift, allow_snap=False, record=True)
 
 
-    class _RenforgeEditorEventCatcher(renpy.Displayable):
-        def render(self, width, height, st, at):
-            render = renpy.Render(int(max(1, width)), int(max(1, height)))
-            return render
-
-        def event(self, event, x, y, st):
-            return _renforge_editor_handle_event(event, x, y, st)
-
-
-    _renforge_editor_event_catcher_singleton = _RenforgeEditorEventCatcher()
-    _renforge_editor_event_catcher_singleton._renforge_editor_owner = _EDITOR_OWNER
-
-
     def _renforge_editor_event_catcher():
-        return _renforge_editor_event_catcher_singleton
+        return renpy.store._renforge_editor_runtime.event_catcher
 
 
     def _renforge_editor_event_shift(event):
@@ -6302,3 +6424,19 @@ init 1100 python:
         handlers["editor_task0_layout_snapshot"] = _renforge_editor_h_layout_snapshot
         handlers["editor_observe_target"] = _renforge_editor_h_observe_target
         handlers["editor_attest_targets"] = _renforge_editor_h_attest_targets
+
+        # Styles exist once every .rpy has been loaded; bind the thin thumbs now
+        # so the first show of the overlay already uses them.
+        try:
+            _renforge_editor_install_scrollbar_styles()
+        except NameError:
+            pass
+
+
+# Scoped chrome styles. The host game keeps its own vscrollbar; only viewports
+# with style_prefix "rf" pick these up. Properties are filled at runtime by
+# _renforge_editor_install_scrollbar_styles (assets + scaled sizes).
+style rf_vscrollbar is vscrollbar
+style rf_scrollbar is scrollbar
+style rf_viewport is viewport
+style rf_side is side

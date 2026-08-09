@@ -62,6 +62,7 @@ screen _rf_editor_tree():
 
             viewport:
                 id "rf_tree_viewport"
+                style_prefix "rf"
                 xfill True
                 yfill True
                 mousewheel True

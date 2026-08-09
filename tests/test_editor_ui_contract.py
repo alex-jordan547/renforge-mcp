@@ -9,8 +9,12 @@ be perfectly written and still never reach a user.
 import ast
 import json
 import pathlib
+import pickle
 import re
 import subprocess
+import sys
+import textwrap
+import types
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 BRIDGE_DIR = BASE_DIR / "src" / "renforge" / "bridge"
@@ -287,6 +291,37 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "_renforge_editor_effective_properties" in inspector
     assert "inspector.read_only" in inspector
     assert "scrollbars" in tree
+    assert 'style_prefix "rf"' in tree
+    assert "bar.aft_gutter = bottom_radius" in editor
+
+
+def test_editor_event_catcher_survives_script_reload_unpickle(monkeypatch):
+    """The overlay catcher must not be serialized as a default-store class."""
+    editor = EDITOR_RPY.read_text(encoding="utf-8")
+    marker = "init 1095 python in _renforge_editor_runtime:\n"
+    assert marker in editor
+    block = editor.split(marker, 1)[1].split("\ninit 1100 python:\n", 1)[0]
+    body = textwrap.dedent(block)
+    assert "_constant = True" in body
+
+    runtime_store = types.ModuleType("store._renforge_editor_runtime")
+    parent_store = types.ModuleType("store")
+    parent_store.__path__ = []
+    parent_store._renforge_editor_runtime = runtime_store
+    runtime_store.__dict__["renpy"] = types.SimpleNamespace(
+        Displayable=object,
+        Render=lambda width, height: types.SimpleNamespace(width=width, height=height),
+        store=types.SimpleNamespace(
+            _renforge_editor_handle_event=lambda event, x, y, st: (event, x, y, st)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, parent_store.__name__, parent_store)
+    monkeypatch.setitem(sys.modules, runtime_store.__name__, runtime_store)
+    exec(compile(body, "editor.rpy", "exec"), runtime_store.__dict__)
+
+    payload = pickle.dumps(runtime_store.event_catcher)
+    restored = pickle.loads(payload)
+    assert restored.__class__.__module__ == runtime_store.__name__
 
 
 def test_status_catalogue_keys_match_plan():

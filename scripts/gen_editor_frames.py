@@ -89,13 +89,47 @@ def main() -> int:
         radius=12,
         outline=None,
     )
+    # Apple-thin overlay scrollbar: a capsule thumb only (no track). 20×40 so
+    # Frame(border=10) keeps circular caps when the thumb stretches.
+    scroll_border = _capsule(
+        OUT_DIR / "scroll_thumb.png",
+        (255, 255, 255, 90),
+        size=(20, 40),
+    )
+    _capsule(
+        OUT_DIR / "scroll_thumb_hover.png",
+        (255, 255, 255, 150),
+        size=(20, 40),
+    )
     print(
         "\nFrame borders: "
         f"panel {panel_border}, head ({head_border}, {head_border}, {head_border}, 2), "
         f"chip {chip_border}, tools {tools_border}, "
-        f"pill {pill_border}, pill_accent {accent_pill_border}, brand {brand_border}"
+        f"pill {pill_border}, pill_accent {accent_pill_border}, brand {brand_border}, "
+        f"scroll_thumb {scroll_border}"
     )
     return 0
+
+
+def _capsule(
+    path: Path,
+    fill: tuple[int, int, int, int],
+    *,
+    size: tuple[int, int],
+) -> int:
+    """Fully rounded pill used as a scrollbar thumb nine-patch."""
+    width, height = size
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=width // 2,
+        fill=fill,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    print(f"{path.relative_to(REPO_ROOT)}  {width}x{height}  capsule")
+    return width // 2
 
 
 if __name__ == "__main__":

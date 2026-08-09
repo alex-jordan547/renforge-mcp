@@ -141,6 +141,7 @@ screen _rf_toolbar_jump_menu():
         if _rf_jump_labels:
             viewport:
                 id "rf_toolbar_jump_viewport"
+                style_prefix "rf"
                 ymaximum _renforge_editor_ui_px(720)
                 scrollbars "vertical"
                 mousewheel True
@@ -149,7 +150,8 @@ screen _rf_toolbar_jump_menu():
                     xfill True
                     for _rf_jump_label in _rf_jump_labels:
                         textbutton _rf_jump_label:
-                            action [Function(_renforge_editor_consume, _renforge_editor_close_jump), Jump(_rf_jump_label)]
+                            # hide say/nvl/bubble before jump — see _renforge_editor_jump_to
+                            action Function(_renforge_editor_consume, _renforge_editor_jump_to, _rf_jump_label)
                             xfill True
                             ysize _renforge_editor_ui_px(_RF_SEG_H)
                             background Solid("#00000000")
