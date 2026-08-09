@@ -3921,72 +3921,35 @@ init python:
             _renforge_bridge_validate_private_file_stat(st, path)
 
         if _os.name == "nt":
-            temp_path = None
-            handle = None
-            last_error = None
-            for _ in range(32):
-                candidate = _os.path.join(
-                    control_dir,
-                    ".bridge.json.%s.tmp" % _secrets.token_hex(8),
-                )
-                try:
-                    handle = _renforge_bridge_win_create_file(
-                        candidate,
-                        0xC0000000,
-                        0,
-                        1,
-                        0x00200000,
-                    )
-                except OSError as exc:
-                    win_err = getattr(exc, "winerror", None) or (exc.args[0] if exc.args and isinstance(exc.args[0], int) else None)
-                    if win_err in (8, 183):
-                        last_error = exc
-                        continue
-                    raise OSError("failed to create private temporary bridge info") from exc
-                temp_path = candidate
-                break
+            # Overwrite the reserved starting record in place. Unlink/MoveFileEx
+            # against a just-validated private file hits ERROR_SHARING_VIOLATION
+            # on Windows CI (file still visible to the scanner / prior open).
+            if _renforge_bridge_path_is_symlink(path):
+                raise OSError("bridge info destination must not be a symlink")
+            if not _os.path.lexists(path):
+                raise OSError("starting bridge info is missing")
+            _renforge_bridge_win_validate_protected_dacl(path)
 
-            if handle is None or temp_path is None:
-                raise OSError("failed to allocate private temporary bridge info") from last_error
-
+            # CREATE_ALWAYS (2): truncate/recreate the reserved path, same inode parent.
+            handle = _renforge_bridge_win_create_file(
+                path,
+                0x40000000,  # GENERIC_WRITE
+                0,
+                2,
+                0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            )
             try:
                 if _renforge_bridge_win_get_file_type(handle) != 1:
-                    raise OSError("temporary bridge info is not a regular disk file")
-                attrs = _renforge_bridge_win_get_handle_attributes(handle)
-                if attrs & 0x400:
-                    raise OSError("temporary bridge info is a reparse point")
-
-                # Write then close before touching DACL: exclusive CreateFile handles
-                # can make SetNamedSecurityInfo fail mid-publish on some runners.
+                    raise OSError("bridge info is not a regular disk file")
                 _renforge_bridge_win_write_handle(handle, encoded)
                 _renforge_bridge_win_flush_handle(handle)
-                _renforge_bridge_win_close_handle(handle)
-                handle = None
-
-                _renforge_bridge_win_set_protected_dacl(temp_path)
-                _renforge_bridge_win_validate_protected_dacl(temp_path)
-
-                if _renforge_bridge_path_is_symlink(path):
-                    raise OSError("bridge info destination must not be a symlink")
-                if _os.path.lexists(path):
-                    _renforge_bridge_win_validate_protected_dacl(path)
-
-                _renforge_bridge_win_replace_file(path, temp_path, flags=1)
-                temp_path = None
-
-                _renforge_bridge_win_set_protected_dacl(path)
-                _renforge_bridge_win_validate_protected_dacl(path)
-                if _renforge_bridge_win_is_reparse(path):
-                    raise OSError("published bridge info must not be a reparse point")
             finally:
-                if handle is not None:
-                    _renforge_bridge_win_close_handle(handle)
-                if temp_path is not None:
-                    try:
-                        if _os.path.lexists(temp_path) or _renforge_bridge_path_is_symlink(temp_path):
-                            _os.unlink(temp_path)
-                    except OSError:
-                        pass
+                _renforge_bridge_win_close_handle(handle)
+
+            _renforge_bridge_win_set_protected_dacl(path)
+            _renforge_bridge_win_validate_protected_dacl(path)
+            if _renforge_bridge_win_is_reparse(path):
+                raise OSError("published bridge info must not be a reparse point")
         else:
             flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL
             if hasattr(_os, "O_NOFOLLOW"):

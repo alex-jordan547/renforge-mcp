@@ -243,8 +243,9 @@ def _move_noreplace_unix(path: Path, destination: Path) -> None:
 
 def _exchange_windows(path: Path, replacement_path: Path, displaced_path: Path) -> None:
     """Replace ``path`` with ``replacement_path``, writing the previous bytes to ``displaced_path``."""
+    # Prefer ReplaceFileW (atomic with backup). Fall back to two os.replace
+    # steps when it returns ACCESS_DENIED/sharing errors on CI volumes.
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    # BOOL ReplaceFileW(lpReplacedFileName, lpReplacementFileName, lpBackupFileName, dwReplaceFlags, ...)
     ReplaceFileW = kernel32.ReplaceFileW
     ReplaceFileW.argtypes = [
         ctypes.c_wchar_p,
@@ -264,13 +265,38 @@ def _exchange_windows(path: Path, replacement_path: Path, displaced_path: Path) 
         None,
         None,
     )
-    if not ok:
-        err = ctypes.get_last_error()
+    if ok:
+        return
+    err = ctypes.get_last_error()
+    if err not in {5, 32}:  # ACCESS_DENIED / SHARING_VIOLATION
         raise EditorPathError(
             "SOURCE_CAS_UNAVAILABLE",
             f"ReplaceFileW failed with Win32 error {err}",
             details={"win32_error": err},
         )
+    try:
+        os.replace(str(path), str(displaced_path))
+        try:
+            os.replace(str(replacement_path), str(path))
+        except OSError as exc:
+            # Best-effort restore of the original bytes.
+            try:
+                os.replace(str(displaced_path), str(path))
+            except OSError:
+                pass
+            raise EditorPathError(
+                "SOURCE_CAS_UNAVAILABLE",
+                f"fallback source replace failed: {exc}",
+                details={"win32_error": err},
+            ) from exc
+    except EditorPathError:
+        raise
+    except OSError as exc:
+        raise EditorPathError(
+            "SOURCE_CAS_UNAVAILABLE",
+            f"ReplaceFileW failed with Win32 error {err}; fallback also failed: {exc}",
+            details={"win32_error": err},
+        ) from exc
 
 
 def conditional_replace_file(

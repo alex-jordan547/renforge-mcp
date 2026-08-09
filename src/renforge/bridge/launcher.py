@@ -267,9 +267,13 @@ class ProjectBridgeLock:
                 ]
 
             info = BY_HANDLE_FILE_INFORMATION()
-            if not ctypes.windll.kernel32.GetFileInformationByHandle(  # type: ignore[attr-defined]
-                handle, ctypes.byref(info)
-            ):
+            # Bind argtypes with c_void_p for the out-struct: redefining the
+            # Structure class each call makes POINTER(type) identity flaky on
+            # some Windows/CPython combos ("expected LP__BY_HANDLE...").
+            get_info = ctypes.windll.kernel32.GetFileInformationByHandle  # type: ignore[attr-defined]
+            get_info.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+            get_info.restype = wintypes.BOOL
+            if not get_info(handle, ctypes.byref(info)):
                 raise OSError(
                     ctypes.GetLastError(),
                     f"GetFileInformationByHandle failed for {self.path}",
