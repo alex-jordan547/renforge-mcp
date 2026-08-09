@@ -491,10 +491,15 @@ def test_bridge_startup_rejects_non_canonical_project_root(tmp_path, monkeypatch
 def test_bridge_startup_emits_info_conflict_when_bridge_info_is_symlink(tmp_path, monkeypatch):
     project_root = tmp_path.resolve(strict=True)
     control = project_root / ".renforge" / "control"
-    control.mkdir(parents=True)
     import os
 
-    os.chmod(control, 0o700)
+    if os.name == "nt":
+        from renforge.util.files import ensure_private_directory
+
+        ensure_private_directory(control)
+    else:
+        control.mkdir(parents=True)
+        os.chmod(control, 0o700)
     victim = project_root / "victim.json"
     victim.write_text("{}", encoding="utf-8")
     _seed_starting_bridge(project_root, session_id="a" * 32, token="b" * 64)
@@ -2908,9 +2913,15 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
 
     project_root = str(tmp_path)
     control_dir = tmp_path / ".renforge" / "control"
-    control_dir.mkdir(parents=True, exist_ok=True)
-    if hasattr(os, "chmod") and os.name != "nt":
-        os.chmod(control_dir, 0o700)
+    if os.name == "nt":
+        from renforge.util.files import ensure_private_directory
+
+        # Real Windows path: private control must carry the protected DACL.
+        ensure_private_directory(control_dir)
+    else:
+        control_dir.mkdir(parents=True, exist_ok=True)
+        if hasattr(os, "chmod"):
+            os.chmod(control_dir, 0o700)
 
     bridge_info_file = control_dir / "bridge.json"
 
@@ -2926,9 +2937,14 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
             "port": 0,
             "token": "0" * 64,
         }
-        bridge_info_file.write_text(json.dumps(payload), encoding="utf-8")
-        if hasattr(os, "chmod") and os.name != "nt":
-            os.chmod(bridge_info_file, 0o600)
+        if os.name == "nt":
+            from renforge.util.files import atomic_write_private_json
+
+            atomic_write_private_json(bridge_info_file, payload, max_bytes=16 * 1024)
+        else:
+            bridge_info_file.write_text(json.dumps(payload), encoding="utf-8")
+            if hasattr(os, "chmod"):
+                os.chmod(bridge_info_file, 0o600)
 
         with pytest.raises(OSError, match="bridge info version is invalid"):
             globs["_renforge_bridge_read_starting_info"](project_root)

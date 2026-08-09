@@ -738,7 +738,10 @@ def test_preplanted_unsafe_bridge_info_fails_closed_without_unlink(
     with pytest.raises(LaunchError) as excinfo:
         launch_with_bridge(sdk, project)
 
-    assert excinfo.value.code == "BRIDGE_INFO_CONFLICT"
+    # Windows: bare control/ without a protected DACL fails closed as
+    # BRIDGE_CONTROL_DIRECTORY_UNSAFE before the symlink is classified as
+    # BRIDGE_INFO_CONFLICT. Both are fail-closed and must not launch.
+    assert excinfo.value.code in {"BRIDGE_INFO_CONFLICT", "BRIDGE_CONTROL_DIRECTORY_UNSAFE"}
     assert unsafe.is_symlink()
     assert victim.read_bytes() == b"secret-bridge-bytes"
     assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))

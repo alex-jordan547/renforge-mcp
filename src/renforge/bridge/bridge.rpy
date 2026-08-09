@@ -3679,6 +3679,8 @@ init python:
                 raise OSError("DACL is not protected on %s" % path)
 
             allowed = {_renforge_bridge_win_current_sid(), "S-1-5-18", "S-1-5-32-544"}
+            protected = bool(control.value & 0x1000)  # SE_DACL_PROTECTED
+            inherited_ace = False
             acl = _ctypes.cast(dacl, _ctypes.POINTER(_ACL)).contents
             for index in range(acl.AceCount):
                 ace = _ctypes.c_void_p()
@@ -3687,11 +3689,18 @@ init python:
                 header = _ctypes.cast(ace, _ctypes.POINTER(_ACE_HEADER)).contents
                 if header.AceType != 0:  # ACCESS_ALLOWED_ACE_TYPE
                     raise OSError("unexpected ACE type on %s" % path)
+                if header.AceFlags & 0x10:  # INHERITED_ACE
+                    inherited_ace = True
                 # ACCESS_ALLOWED_ACE: header (4) + Mask (4) + SidStart
                 sid_ptr = _ctypes.c_void_p(int(ace.value or 0) + 8)
                 sid_text = _renforge_bridge_win_sid_to_string(advapi32, kernel32, sid_ptr)
                 if sid_text not in allowed:
                     raise OSError("unexpected trustee on private path %s" % path)
+            # Prefer SE_DACL_PROTECTED; accept explicit-only DACLs with no inherited ACEs.
+            if not protected and inherited_ace:
+                raise OSError("DACL is not protected on %s" % path)
+            if not protected and acl.AceCount == 0:
+                raise OSError("DACL is not protected on %s" % path)
         finally:
             if sd:
                 kernel32.LocalFree(sd)
@@ -3934,13 +3943,16 @@ init python:
                 attrs = _renforge_bridge_win_get_handle_attributes(handle)
                 if attrs & 0x400:
                     raise OSError("temporary bridge info is a reparse point")
-                _renforge_bridge_win_set_protected_dacl(temp_path)
-                _renforge_bridge_win_validate_protected_dacl(temp_path)
 
+                # Write then close before touching DACL: exclusive CreateFile handles
+                # can make SetNamedSecurityInfo fail mid-publish on some runners.
                 _renforge_bridge_win_write_handle(handle, encoded)
                 _renforge_bridge_win_flush_handle(handle)
                 _renforge_bridge_win_close_handle(handle)
                 handle = None
+
+                _renforge_bridge_win_set_protected_dacl(temp_path)
+                _renforge_bridge_win_validate_protected_dacl(temp_path)
 
                 if _renforge_bridge_path_is_symlink(path):
                     raise OSError("bridge info destination must not be a symlink")
