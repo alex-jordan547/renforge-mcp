@@ -36,7 +36,7 @@ def _open_regular_nofollow(path: Path) -> tuple[int, os.stat_result]:
     before = target.lstat()
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise OSError(errno.ELOOP, "path is not a regular non-symlink file", str(target))
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -83,7 +83,7 @@ def copy_regular_file_nofollow(
     source_fd, source_st = _open_regular_nofollow(source)
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):

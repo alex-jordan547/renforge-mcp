@@ -15,6 +15,7 @@ from renforge.editor.paths import (
     hash_file_nofollow,
     write_exclusive_bytes,
 )
+from renforge.util.files import copy_regular_file_nofollow
 
 
 def test_exchange_unix_uses_libc_renameat2_on_linux(monkeypatch, tmp_path: Path) -> None:
@@ -59,6 +60,37 @@ def test_conditional_replace_exchanges_and_retains_displaced(tmp_path: Path) -> 
     assert not replacement.exists()
     assert result.displaced_sha256 == expected
     assert result.published_sha256 == hash_file_nofollow(source)
+
+
+def test_nofollow_copy_opens_source_and_destination_in_binary_mode(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    payload = b"first\r\nsecond\x1aafter-eof\r\n"
+    source.write_bytes(payload)
+    real_open = os.open
+    binary_flag = 1 << 29
+    opened_flags: list[int] = []
+
+    monkeypatch.setattr(file_utils.os, "O_BINARY", binary_flag, raising=False)
+
+    def recording_open(path: str, flags: int, *args: object) -> int:
+        opened_flags.append(flags)
+        return real_open(path, flags & ~binary_flag, *args)
+
+    monkeypatch.setattr(file_utils.os, "open", recording_open)
+
+    copied = copy_regular_file_nofollow(
+        source,
+        destination,
+        max_bytes=len(payload),
+    )
+
+    assert copied == len(payload)
+    assert destination.read_bytes() == payload
+    assert len(opened_flags) == 2
+    assert all(flags & binary_flag for flags in opened_flags)
 
 
 def test_conditional_replace_stale_source_does_not_write(tmp_path: Path) -> None:

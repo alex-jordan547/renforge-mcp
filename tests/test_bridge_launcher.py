@@ -684,14 +684,11 @@ def test_lock_file_open_permission_error_is_not_reported_as_contention(
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    original_open = os.open
 
-    def denied_open(path, flags, mode=0o777, *args, **kwargs):
-        if Path(path).name == "bridge.lock":
-            raise PermissionError(errno.EACCES, "permission denied", str(path))
-        return original_open(path, flags, mode, *args, **kwargs)
+    def denied_open(lock: ProjectBridgeLock) -> None:
+        raise PermissionError(errno.EACCES, "permission denied", str(lock.path))
 
-    monkeypatch.setattr(os, "open", denied_open)
+    monkeypatch.setattr(ProjectBridgeLock, "_open_lock_file", denied_open)
 
     with pytest.raises(LaunchError) as excinfo:
         ProjectBridgeLock(project_root).acquire()
