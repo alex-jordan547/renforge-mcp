@@ -44,6 +44,9 @@ screen _rf_editor_tree_panel():
         else _renforge_editor_t("tree.items_count").replace("{count}", str(_rf_tree_total))
     )
     $ _rf_docked = _renforge_editor_chrome_docked()
+    $ _rf_tree_rect = _renforge_editor_live_layout_metrics().get("tree_rect")
+    $ _rf_tree_panel_w = int(_rf_tree_rect[2]) if _rf_tree_rect is not None else _renforge_editor_ui_px(_RF_OVERLAY_TREE_W)
+    $ _rf_tree_header_w = max(1, _rf_tree_panel_w - _renforge_editor_ui_px(104, minimum=52))
 
     frame:
         id "rf_tree_panel"
@@ -69,28 +72,37 @@ screen _rf_editor_tree_panel():
                 ysize _renforge_editor_ui_px(76)
                 background Frame(_renforge_editor_ui_frame("panel_head"), _RF_FRAME_PANEL, _RF_FRAME_PANEL, _RF_FRAME_PANEL, 2)
                 padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(10))
-                hbox:
+                fixed:
                     xfill True
-                    yalign 0.5
-                    text _renforge_editor_t("tree.title"):
-                        id "rf_tree_title"
-                        color _renforge_editor_ui_color("surface")
-                        font _renforge_editor_ui_font()
-                        size _renforge_editor_ui_text_px(18, minimum=13)
+                    yfill True
+                    hbox:
+                        id "rf_tree_header_content"
+                        xfill True
+                        xmaximum _rf_tree_header_w
                         yalign 0.5
-                    null width 1 xfill True
-                    frame:
-                        background Solid(_renforge_editor_ui_color("sunken"))
-                        padding (_renforge_editor_ui_px(10), _renforge_editor_ui_px(3))
-                        yalign 0.5
-                        text _rf_tree_count_text:
-                            substitute False
-                            id "rf_tree_count"
-                            color _renforge_editor_ui_color("meta")
+                        text _renforge_editor_t("tree.title"):
+                            id "rf_tree_title"
+                            color _renforge_editor_ui_color("surface")
                             font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_text_px(15, minimum=11)
+                            size _renforge_editor_ui_text_px(18, minimum=13)
                             yalign 0.5
-                    use _rf_editor_panel_hide_button("tree", "left", "rf_tree_hide")
+                        null width 1 xfill True
+                        frame:
+                            background Solid(_renforge_editor_ui_color("sunken"))
+                            padding (_renforge_editor_ui_px(10), _renforge_editor_ui_px(3))
+                            yalign 0.5
+                            text _rf_tree_count_text:
+                                substitute False
+                                id "rf_tree_count"
+                                color _renforge_editor_ui_color("meta")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_text_px(15, minimum=11)
+                                yalign 0.5
+                    hbox:
+                        id "rf_tree_panel_action"
+                        xalign 1.0
+                        yalign 0.5
+                        use _rf_editor_panel_hide_button("tree", "left", "rf_tree_hide")
 
             viewport:
                 id "rf_tree_viewport"

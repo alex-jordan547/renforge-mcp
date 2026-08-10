@@ -44,11 +44,13 @@ screen _rf_icon_btn(btn_id, icon_name, btn_action, tooltip_text, active=False, e
 
 
 screen _rf_seg_btn(btn_id, label, btn_action, pressed=False):
+    $ _rf_seg_background = Frame(_renforge_editor_ui_frame("seg_on"), _RF_FRAME_CHIP, _RF_FRAME_CHIP)
     textbutton label:
         id btn_id
         action btn_action
         ysize _renforge_editor_ui_px(_RF_SEG_H)
-        background (Solid(_renforge_editor_ui_color("seg_on")) if pressed else Solid("#00000000"))
+        background (_rf_seg_background if pressed else Solid("#00000000"))
+        hover_background _rf_seg_background
         padding (_renforge_editor_ui_px(_RF_S3), 0)
         text_color _renforge_editor_ui_color("surface" if pressed else "meta")
         text_font _renforge_editor_ui_font()

@@ -27,6 +27,7 @@ OUT_DIR = REPO_ROOT / "src" / "renforge" / "bridge" / "editor_assets" / "frames"
 PANEL_FILL = (39, 39, 41, 255)
 HEAD_FILL = (42, 42, 44, 255)
 SUNKEN_FILL = (0, 0, 0, 87)
+SEGMENT_FILL = (255, 255, 255, 33)
 HAIRLINE = (255, 255, 255, 26)
 
 
@@ -74,6 +75,12 @@ def main() -> int:
         bottom_rule=True,
     )
     chip_border = rounded(OUT_DIR / "chip.png", SUNKEN_FILL, radius=12)
+    segment_border = rounded(
+        OUT_DIR / "seg_on.png",
+        SEGMENT_FILL,
+        radius=12,
+        outline=None,
+    )
     tools_border = rounded(OUT_DIR / "tools.png", SUNKEN_FILL, radius=18)
     # Pill: radius large enough that Frame() yields capsule ends at ~56 px height.
     pill_border = rounded(OUT_DIR / "pill.png", PANEL_FILL, radius=28, outline=None)
@@ -104,7 +111,7 @@ def main() -> int:
     print(
         "\nFrame borders: "
         f"panel {panel_border}, head ({head_border}, {head_border}, {head_border}, 2), "
-        f"chip {chip_border}, tools {tools_border}, "
+        f"chip {chip_border}, segment {segment_border}, tools {tools_border}, "
         f"pill {pill_border}, pill_accent {accent_pill_border}, brand {brand_border}, "
         f"scroll_thumb {scroll_border}"
     )
