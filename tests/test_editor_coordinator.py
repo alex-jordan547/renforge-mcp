@@ -2481,6 +2481,69 @@ def _style_color_observation(*, script_generation: int = 20) -> dict[str, Any]:
     return observation
 
 
+def test_anonymous_text_can_move_by_source_location_without_an_id(tmp_path: Path) -> None:
+    root = tmp_path / "project_anonymous_text"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    source.write_text(
+        "screen test_screen:\n"
+        '    text "The gate is silent. Choose your path." xpos 140 ypos 240\n',
+        encoding="utf-8",
+    )
+    observation = _base_observation(script_generation=20)
+    observation["runtime_key"]["widget_id"] = None
+    observation["runtime_key"]["locator"] = {
+        "kind": "source",
+        "source_location": ["script.rpy", 2],
+        "statement_kind": "text",
+    }
+    observation["runtime_key"]["ancestry"][-1]["type"] = "Text"
+    observation["measurement_method"] = "scene_tree_text"
+    observation["rect"] = [140, 240, 402, 27]
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "independent-frame-anonymous-text",
+            "object_id": "obj-independent-anonymous-text",
+        }
+    )
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-anonymous-text")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            assert result["lock_reason"] is None
+            assert result["source_key"]["widget_id"] is None
+            assert result["source_key"]["statement_kind"] == "text"
+            assert result["source_key"]["position_mode"] == "xy"
+            assert result["capabilities"]["move"] is True
+            assert result["capabilities"].get("style_color") is None
+            assert result["source_key"]["style_lock_reason"]["code"] == "STYLE_COLOR_NOT_DIRECTLY_AUTHORED"
+
+            committed = _commit(
+                sock,
+                auth,
+                analyzed,
+                x=196,
+                y=284,
+                request_id="co-anonymous-text",
+            )
+            assert committed["ok"] is True
+            patched = source.read_text(encoding="utf-8")
+            assert patched == (
+                "screen test_screen:\n"
+                '    text "The gate is silent. Choose your path." xpos 196 ypos 284\n'
+            )
+            assert " id " not in patched
+    finally:
+        coordinator.close()
+
+
 def _send_editor_command(
     sock: socket.socket,
     auth: dict[str, Any],
@@ -2553,7 +2616,7 @@ def test_text_style_color_commit_and_product_undo_are_transactional(
             assert result["source_key"]["style_mode"] == "literal_hex"
             assert result["source_key"]["style_color"] == baseline_color
             assert result["capabilities"] == {
-                "move": False,
+                "move": True,
                 "resize": False,
                 "style_color": True,
                 "style_color_preview": True,
@@ -2587,6 +2650,7 @@ def test_text_style_color_commit_and_product_undo_are_transactional(
 
             # The second independent observation sees the product preview.
             probe.observe_reply["style_color"] = requested_color
+            probe.observe_reply["rect"] = [260, 230, 286, 112]
 
             committed = _send_editor_command(
                 sock,
@@ -2598,6 +2662,8 @@ def test_text_style_color_commit_and_product_undo_are_transactional(
                         {
                             "analysis_id": result["analysis_id"],
                             "source_key": result["source_key"],
+                            "x": 260,
+                            "y": 230,
                             "color": requested_color,
                         }
                     ],
@@ -2606,7 +2672,10 @@ def test_text_style_color_commit_and_product_undo_are_transactional(
             )
             assert committed["ok"] is True
             transaction_id = committed["result"]["transaction_id"]
-            assert source.read_text(encoding="utf-8") == baseline.replace(baseline_color, requested_color)
+            assert source.read_text(encoding="utf-8") == (
+                baseline.replace(baseline_color, requested_color)
+                .replace("xpos 240 ypos 220", "xpos 260 ypos 230")
+            )
 
             handshake = _send_editor_command(
                 sock,
@@ -2618,6 +2687,7 @@ def test_text_style_color_commit_and_product_undo_are_transactional(
             assert handshake["ok"] is True
             assert handshake["result"]["state"] == "committed"
             assert probe.attest_calls[-1]["expected_targets"][0]["style_color"] == requested_color
+            assert probe.attest_calls[-1]["expected_targets"][0]["position"] == [260, 230]
 
             undo = _send_editor_command(
                 sock,

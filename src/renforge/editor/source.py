@@ -152,6 +152,22 @@ class TextbuttonStatement:
 
 
 @dataclass(frozen=True)
+class TextPositionStatement:
+    """Writable literal position for a screen-language ``text`` statement.
+
+    ``widget_id`` is an optional authored alias. Anonymous statements are
+    addressed by their runtime source locator instead of receiving a synthetic
+    id that would alter the user's source.
+    """
+
+    widget_id: str | None
+    xpos: int
+    ypos: int
+    xpos_span: tuple[int, int]
+    ypos_span: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class ButtonStatement:
     widget_id: str
     xpos: int
@@ -226,7 +242,7 @@ class TextColorStyleStatement:
     relative to the single statement line (including quotes on the colour token).
     """
 
-    widget_id: str
+    widget_id: str | None
     color: str | None = None
     color_span: tuple[int, int] | None = None
     quote_char: str | None = None
@@ -239,6 +255,7 @@ class TextColorStyleStatement:
 _StatementT = TypeVar(
     "_StatementT",
     bound=TextbuttonStatement
+    | TextPositionStatement
     | ImagebuttonStatement
     | BarStatement
     | VbarStatement
@@ -377,9 +394,10 @@ def peek_statement_kind(line: str) -> str | None:
 def _analyze_positioned_kind_statement(
     line: str,
     *,
-    expected_widget_id: str,
+    expected_widget_id: str | None,
     expected_kind: str,
     statement_cls: type[_StatementT],
+    allow_anonymous: bool = False,
 ) -> _StatementT:
     statement_text = _statement_text(line)
     tokens = _lex_single_line(statement_text)
@@ -431,15 +449,20 @@ def _analyze_positioned_kind_statement(
             ypos_value = value
             ypos_span = (value_token.start, value_token.end)
 
-    if keyword_counts["id"] != 1:
-        raise EditorSourceError(
-            "ID_LITERAL_REQUIRED",
-            f"{expected_kind} statement must contain exactly one literal id",
-        )
-    if "id" in invalid_literals or widget_id is None:
-        raise EditorSourceError("ID_LITERAL_REQUIRED", "id must be a literal string")
-    if widget_id != expected_widget_id:
-        raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
+    if allow_anonymous and expected_widget_id is None:
+        if keyword_counts["id"] != 0:
+            raise EditorSourceError("ID_MISMATCH", "literal id does not match anonymous runtime target")
+        widget_id = None
+    else:
+        if keyword_counts["id"] != 1:
+            raise EditorSourceError(
+                "ID_LITERAL_REQUIRED",
+                f"{expected_kind} statement must contain exactly one literal id",
+            )
+        if "id" in invalid_literals or widget_id is None:
+            raise EditorSourceError("ID_LITERAL_REQUIRED", "id must be a literal string")
+        if widget_id != expected_widget_id:
+            raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
     if keyword_counts["xpos"] != 1:
         raise EditorSourceError(
             "XPOS_DUPLICATE",
@@ -491,6 +514,24 @@ def _require_single_literal_id(
     if widget_id != expected_widget_id:
         raise EditorSourceError("ID_MISMATCH", "literal id does not match runtime widget id")
     return widget_id
+
+
+def _resolve_optional_literal_id(
+    tokens: list[_Token],
+    *,
+    expected_widget_id: str | None,
+    human_kind: str,
+) -> str | None:
+    """Validate an authored id alias without requiring one for anonymous targets."""
+    if expected_widget_id is not None:
+        return _require_single_literal_id(
+            tokens,
+            expected_widget_id=expected_widget_id,
+            human_kind=human_kind,
+        )
+    if any(token.depth == 0 and token.kind == "WORD" and token.text == "id" for token in tokens):
+        raise EditorSourceError("ID_MISMATCH", "literal id does not match anonymous runtime target")
+    return None
 
 
 # Property keywords that may follow pure pair forms on a textbutton line.
@@ -2155,7 +2196,48 @@ def _text_style_lock(code: str, message: str) -> tuple[str, str]:
     return code, message
 
 
-def analyze_text_color_style(line: str, *, expected_widget_id: str) -> TextColorStyleStatement:
+def analyze_text_position_statement(
+    line: str,
+    *,
+    expected_widget_id: str | None,
+) -> TextPositionStatement:
+    """Analyze a literal ``xpos``/``ypos`` pair on a text statement.
+
+    Named text keeps the existing id proof. Anonymous text is accepted only
+    when the source statement is anonymous too; its source locator supplies
+    identity at the coordinator/bridge layers.
+    """
+    return _analyze_positioned_kind_statement(
+        line,
+        expected_widget_id=expected_widget_id,
+        expected_kind="text",
+        statement_cls=TextPositionStatement,
+        allow_anonymous=True,
+    )
+
+
+def apply_text_position_patch(
+    source_bytes: bytes,
+    statement: TextPositionStatement,
+    *,
+    x: int,
+    y: int,
+) -> bytes:
+    """Rewrite only the literal position tokens of a text statement."""
+    return _apply_integer_span_patch(
+        source_bytes,
+        xpos_span=statement.xpos_span,
+        ypos_span=statement.ypos_span,
+        x=x,
+        y=y,
+    )
+
+
+def analyze_text_color_style(
+    line: str,
+    *,
+    expected_widget_id: str | None,
+) -> TextColorStyleStatement:
     """Analyze ownership of a pure literal ``color`` on a single-line ``text``.
 
     This is a dedicated style contract — not a position/size analyser. Coordinate
@@ -2180,7 +2262,7 @@ def analyze_text_color_style(line: str, *, expected_widget_id: str) -> TextColor
             "text style colour requires a single-line statement",
         )
 
-    widget_id = _require_single_literal_id(
+    widget_id = _resolve_optional_literal_id(
         tokens,
         expected_widget_id=expected_widget_id,
         human_kind="text",

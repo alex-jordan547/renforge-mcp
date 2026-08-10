@@ -2,6 +2,13 @@
 # Panel anchored bottom-right. Only text + literal hex colour is editable; every
 # other selection is locked with a reason (never silent, never a dead click).
 screen _rf_editor_style():
+    if _renforge_editor_panel_visible("style"):
+        use _rf_editor_style_panel()
+    else:
+        use _rf_editor_panel_restore_tab("style", "right", "style_rect", "rf_style_show")
+
+
+screen _rf_editor_style_panel():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
     $ _rf_docked = _renforge_editor_chrome_docked()
@@ -57,6 +64,7 @@ screen _rf_editor_style():
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(18)
                             yalign 0.5
+                    use _rf_editor_panel_hide_button("style", "right", "rf_style_hide")
 
             vbox:
                 xfill True

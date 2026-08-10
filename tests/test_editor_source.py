@@ -19,6 +19,7 @@ from renforge.editor.source import (
     analyze_editable_statement,
     analyze_imagebutton_statement,
     analyze_slider_statement,
+    analyze_text_position_statement,
     analyze_textbutton_block_statement,
     analyze_textbutton_statement,
     analyze_vbar_statement,
@@ -28,12 +29,39 @@ from renforge.editor.source import (
     apply_editable_statement_patch,
     apply_imagebutton_patch,
     apply_slider_patch,
+    apply_text_position_patch,
     apply_textbutton_patch,
     apply_vbar_patch,
     is_slider_style_bar_line,
     is_textbutton_block_header,
     peek_statement_kind,
 )
+
+
+def test_anonymous_text_position_is_source_addressable_without_injecting_an_id() -> None:
+    line = '    text "The gate is silent. Choose your path." xpos 140 ypos 240\n'
+
+    statement = analyze_text_position_statement(line, expected_widget_id=None)
+
+    assert statement.widget_id is None
+    assert statement.xpos == 140
+    assert statement.ypos == 240
+    patched = apply_text_position_patch(
+        line.encode("utf-8"),
+        statement,
+        x=196,
+        y=284,
+    ).decode("utf-8")
+    assert patched == '    text "The gate is silent. Choose your path." xpos 196 ypos 284\n'
+    assert " id " not in patched
+
+
+def test_anonymous_text_position_rejects_an_authored_id_mismatch() -> None:
+    with pytest.raises(EditorSourceError, match="does not match"):
+        analyze_text_position_statement(
+            '    text "Named" id "named" xpos 10 ypos 20\n',
+            expected_widget_id=None,
+        )
 
 
 def test_analyze_textbutton_statement_rejects_expressions_and_duplicates() -> None:

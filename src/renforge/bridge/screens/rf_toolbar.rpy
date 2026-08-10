@@ -261,7 +261,8 @@ screen _rf_editor_edit_toolbar(tools_visible):
                     ysize _renforge_editor_ui_px(52)
                     xmaximum _renforge_editor_ui_px(_RF_BADGE_MAX_W)
                     xfill False
-                    background Frame(_renforge_editor_ui_frame("chip"), _RF_FRAME_CHIP, _RF_FRAME_CHIP)
+                    background Solid("#00000000")
+                    hover_background Solid(_renforge_editor_ui_color("row_hover"))
                     padding (_renforge_editor_ui_px(_RF_S3), 0)
                     yalign 0.5
                     hbox:
@@ -314,7 +315,8 @@ screen _rf_editor_edit_toolbar(tools_visible):
                     action Function(_renforge_editor_consume, _renforge_editor_toggle_tools)
                     tooltip _rf_t_tools
                     ysize _renforge_editor_ui_px(_RF_SEG_H)
-                    background (Frame(_renforge_editor_ui_frame("chip"), _RF_FRAME_CHIP, _RF_FRAME_CHIP) if tools_visible else Solid("#00000000"))
+                    background (Solid(_renforge_editor_ui_color("seg_on")) if tools_visible else Solid("#00000000"))
+                    hover_background Solid(_renforge_editor_ui_color("row_hover"))
                     padding (_renforge_editor_ui_px(_RF_S3), 0)
                     text_color _renforge_editor_ui_color("surface" if tools_visible else "meta")
                     text_font _renforge_editor_ui_font()

@@ -46,17 +46,20 @@ from .source import (
     BarStatement,
     EditorSourceError,
     TextColorStyleStatement,
+    TextPositionStatement,
     align_geometry_matches_parent,
     _literal_button_id,
     analyze_button_statement,
     analyze_editable_statement,
     analyze_raise_adjacent_sibling,
     analyze_text_color_style,
+    analyze_text_position_statement,
     analyze_textbutton_block_statement,
     apply_button_patch,
     apply_button_sibling_swap,
     apply_editable_statement_patch,
     apply_text_color_patch,
+    apply_text_position_patch,
     apply_textbutton_patch,
     is_slider_style_bar_line,
     is_textbutton_block_header,
@@ -582,23 +585,48 @@ class EditorCoordinator:
             lines = source_text.splitlines(keepends=True)
             if source_line < 1 or source_line > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source line is out of range")
-            widget_id = self._require_runtime_widget_id(runtime_key)
+            widget_id = self._runtime_widget_alias(runtime_key)
             header_line = lines[source_line - 1]
             header_kind = peek_statement_kind(header_line)
             position_mode: str | None = None
+            text_position: TextPositionStatement | None = None
+            text_style: TextColorStyleStatement | None = None
+            move_lock_reason: dict[str, Any] | None = None
+            style_lock_reason: dict[str, Any] | None = None
             if header_kind == "text":
-                statement = analyze_text_color_style(
-                    header_line,
-                    expected_widget_id=widget_id,
-                )
-                statement_kind = "text"
-                position_mode = None
-                original_position = list(runtime_position)
-                if lock_reason is None and statement.style_lock_code is not None:
-                    lock_reason = self._lock_reason(
-                        statement.style_lock_code,
-                        statement.style_lock_message or statement.style_lock_code,
+                try:
+                    text_position = analyze_text_position_statement(
+                        header_line,
+                        expected_widget_id=widget_id,
                     )
+                except EditorSourceError as exc:
+                    move_lock_reason = self._lock_reason(exc.code, str(exc))
+                try:
+                    text_style = analyze_text_color_style(
+                        header_line,
+                        expected_widget_id=widget_id,
+                    )
+                    if text_style.style_lock_code is not None:
+                        style_lock_reason = self._lock_reason(
+                            text_style.style_lock_code,
+                            text_style.style_lock_message or text_style.style_lock_code,
+                        )
+                except EditorSourceError as exc:
+                    style_lock_reason = self._lock_reason(exc.code, str(exc))
+                statement = text_position or text_style
+                if statement is None:
+                    reason = move_lock_reason or style_lock_reason
+                    raise EditorError(
+                        (reason or {}).get("code", "TEXT_SOURCE_UNSUPPORTED"),
+                        (reason or {}).get("message", "text source is not writable"),
+                    )
+                statement_kind = "text"
+                position_mode = "xy" if text_position is not None else None
+                original_position = (
+                    [int(text_position.xpos), int(text_position.ypos)]
+                    if text_position is not None
+                    else list(runtime_position)
+                )
             elif header_kind == "button":
                 statement = analyze_button_statement(
                     source_text,
@@ -618,7 +646,7 @@ class EditorCoordinator:
                     header_line,
                     expected_widget_id=widget_id,
                 )
-            if not isinstance(statement, TextColorStyleStatement):
+            if header_kind != "text" and not isinstance(statement, TextColorStyleStatement):
                 # Runtime-delta modes (align/offset): original_position is focus TL.
                 position_mode = getattr(statement, "position_mode", "xy")
                 if uses_runtime_delta_position(position_mode):
@@ -651,6 +679,7 @@ class EditorCoordinator:
                 "line": source_line,
                 "screen": runtime_key.get("screen"),
                 "widget_id": widget_id,
+                "locator": runtime_key.get("locator"),
                 "invocation_path": runtime_key.get("invocation_path"),
                 "instance_discriminator": runtime_key.get("instance_discriminator"),
                 "ancestry": normalized_ancestry,
@@ -658,9 +687,11 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
-            if isinstance(statement, TextColorStyleStatement):
-                source_key["style_mode"] = statement.style_mode
-                source_key["style_color"] = statement.color
+            if statement_kind == "text":
+                source_key["move_lock_reason"] = move_lock_reason
+                source_key["style_lock_reason"] = style_lock_reason
+                source_key["style_mode"] = text_style.style_mode if text_style is not None else None
+                source_key["style_color"] = text_style.color if text_style is not None else None
             # Issue #47: bar-only resize capability from pure xsize/ysize.
             if statement_kind == "bar" and isinstance(statement, BarStatement):
                 if (
@@ -762,9 +793,10 @@ class EditorCoordinator:
                         "independent observation did not provide a fresh frame",
                     )
                 elif (
-                    isinstance(statement, TextColorStyleStatement)
+                    text_style is not None
+                    and text_style.style_mode is not None
                     and self._normalize_style_color(independent.get("style_color"))
-                    != self._normalize_style_color(statement.color)
+                    != self._normalize_style_color(text_style.color)
                 ):
                     lock_reason = self._lock_reason(
                         "RUNTIME_STYLE_COLOR_MISMATCH",
@@ -787,8 +819,17 @@ class EditorCoordinator:
             lock_reason = self._lock_reason("SOURCE_READ_FAILED", f"unable to read source: {exc}")
 
         analysis_id = uuid.uuid4().hex
-        can_style_color = lock_reason is None and source_key is not None and source_key.get("statement_kind") == "text"
-        can_move = lock_reason is None and not can_style_color
+        can_style_color = (
+            lock_reason is None
+            and source_key is not None
+            and source_key.get("statement_kind") == "text"
+            and source_key.get("style_mode") == "literal_hex"
+        )
+        can_move = (
+            lock_reason is None
+            and source_key is not None
+            and source_key.get("position_mode") is not None
+        )
         can_resize = (
             can_move
             and original_size is not None
@@ -948,7 +989,7 @@ class EditorCoordinator:
                 or "sibling_widget_id" in intent
                 or "swap_sibling" in intent
             )
-            is_style_color = source_key.get("statement_kind") == "text"
+            is_text = source_key.get("statement_kind") == "text"
             if is_structural_swap:
                 if any(key in intent for key in ("x", "y", "w", "h", "width", "height", "color")):
                     raise EditorError("STRUCTURAL_INTENT_COMBINATION_REJECTED", "structural swap intent cannot include position, size, or color fields")
@@ -965,32 +1006,48 @@ class EditorCoordinator:
                     source_key=source_key,
                     swap_sibling=(sibling_id, sibling_line),
                 )
-            elif is_style_color:
-                if not isinstance(color, str):
-                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a string")
-                literal_color = self._literal_style_color(color)
-                literal_baseline = self._literal_style_color(source_key.get("style_color"))
-                if literal_color is None:
-                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a supported hex literal")
-                if literal_baseline is None:
-                    raise EditorError("SOURCE_KEY_INVALID", "style source key is missing its literal baseline colour")
-                if len(literal_color) != len(literal_baseline):
-                    raise EditorError(
-                        "STYLE_COLOR_HEX_FAMILY_MISMATCH",
-                        "text style intent must preserve the authored hex literal length",
-                    )
-                if any(key in intent for key in ("x", "y", "w", "h", "width", "height")):
-                    raise EditorError("INTENT_STYLE_MIXED", "style color intent cannot include position or size fields")
-                if source_key.get("style_mode") != "literal_hex":
-                    raise EditorError("ANALYSIS_STYLE_COLOR_UNSUPPORTED", "analysis does not unlock literal style color")
+            elif is_text:
+                has_position = "x" in intent or "y" in intent
+                if not has_position and color is None:
+                    raise EditorError("INTENT_INVALID", "text intent requires position and/or color")
+                x = intent.get("x") if has_position else None
+                y = intent.get("y") if has_position else None
+                if has_position:
+                    if not isinstance(x, int) or not isinstance(y, int):
+                        raise EditorError("INTENT_POSITION_INVALID", "intent x and y must be integers")
+                    if source_key.get("position_mode") is None:
+                        raise EditorError("ANALYSIS_MOVE_UNSUPPORTED", "analysis does not unlock movement for this text")
+                if any(key in intent for key in ("w", "h", "width", "height")):
+                    raise EditorError("ANALYSIS_RESIZE_UNSUPPORTED", "text resize is not supported")
+                literal_color = None
+                if color is not None:
+                    if not isinstance(color, str):
+                        raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a string")
+                    literal_color = self._literal_style_color(color)
+                    literal_baseline = self._literal_style_color(source_key.get("style_color"))
+                    if literal_color is None:
+                        raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent color must be a supported hex literal")
+                    if literal_baseline is None:
+                        raise EditorError("SOURCE_KEY_INVALID", "style source key is missing its literal baseline colour")
+                    if len(literal_color) != len(literal_baseline):
+                        raise EditorError(
+                            "STYLE_COLOR_HEX_FAMILY_MISMATCH",
+                            "text style intent must preserve the authored hex literal length",
+                        )
+                    if source_key.get("style_mode") != "literal_hex":
+                        raise EditorError("ANALYSIS_STYLE_COLOR_UNSUPPORTED", "analysis does not unlock literal style color")
                 selected = _SelectedIntent(
                     record=record,
                     source_key=source_key,
+                    x=x,
+                    y=y,
                     color=literal_color,
                 )
             else:
                 if color is not None:
                     raise EditorError("ANALYSIS_STYLE_COLOR_UNSUPPORTED", "style color is only supported for text")
+                if source_key.get("position_mode") is None:
+                    raise EditorError("ANALYSIS_MOVE_UNSUPPORTED", "analysis does not unlock movement for this target")
                 x = intent.get("x")
                 y = intent.get("y")
                 if not isinstance(x, int) or not isinstance(y, int):
@@ -1054,7 +1111,11 @@ class EditorCoordinator:
                 raise EditorError("INDEPENDENT_OBSERVATION_INVALID", "runtime probe returned invalid observation")
             if not self._runtime_keys_equivalent_for_reobservation(record.runtime_key, independent.get("runtime_key")):
                 raise EditorError("RUNTIME_KEY_MISMATCH", "runtime reanalysis key mismatch")
-            expected_measurement = "scene_tree_text" if selected.color is not None else "focus_list"
+            expected_measurement = (
+                "scene_tree_text"
+                if selected.source_key.get("statement_kind") == "text"
+                else "focus_list"
+            )
             if independent.get("measurement_method") != expected_measurement:
                 raise EditorError(
                     "MEASUREMENT_METHOD_INVALID",
@@ -1153,8 +1214,10 @@ class EditorCoordinator:
                 raise EditorError("SOURCE_KEY_INVALID", "style source key is missing its baseline colour")
             expected["style_color"] = selected.color
             expected["previous_style_color"] = previous
-            return expected
-
+        if selected.x is None and selected.y is None:
+            if selected.color is not None:
+                return expected
+            raise EditorError("INTENT_POSITION_INVALID", "position intent is missing x or y")
         if selected.x is None or selected.y is None:
             raise EditorError("INTENT_POSITION_INVALID", "position intent is missing x or y")
         expected["position"] = [
@@ -1350,10 +1413,12 @@ class EditorCoordinator:
             raise EditorError("SOURCE_PATH_INVALID", "source_key.relative_path exceeds size limit")
         return relative_path
 
-    def _require_runtime_widget_id(self, runtime_key: dict[str, Any]) -> str:
+    def _runtime_widget_alias(self, runtime_key: dict[str, Any]) -> str | None:
         widget_id = runtime_key.get("widget_id")
+        if widget_id is None:
+            return None
         if not isinstance(widget_id, str) or widget_id == "":
-            raise EditorError("WIDGET_ID_INVALID", "runtime_key.widget_id must be a non-empty string")
+            raise EditorError("WIDGET_ID_INVALID", "runtime_key.widget_id must be null or a non-empty string")
         if len(widget_id.encode("utf-8")) > MAX_STRING_BYTES:
             raise EditorError("WIDGET_ID_INVALID", "runtime_key.widget_id exceeds size limit")
         return widget_id
@@ -1385,11 +1450,15 @@ class EditorCoordinator:
         return key_a == key_b
 
     def _runtime_lock_reason(self, runtime_key: dict[str, Any]) -> dict[str, Any] | None:
-        required_string_keys = ("screen", "invocation_path", "widget_id")
+        required_string_keys = ("screen", "invocation_path")
         for key in required_string_keys:
             value = runtime_key.get(key)
             if not isinstance(value, str) or value == "":
                 return self._lock_reason("RUNTIME_KEY_INVALID", f"runtime_key.{key} must be a non-empty string")
+
+        widget_id = runtime_key.get("widget_id")
+        if widget_id is not None and (not isinstance(widget_id, str) or widget_id == ""):
+            return self._lock_reason("WIDGET_ID_INVALID", "runtime_key.widget_id must be null or a non-empty string")
 
         source_location = runtime_key.get("source_location")
         if not (
@@ -1399,6 +1468,19 @@ class EditorCoordinator:
             and isinstance(source_location[1], int)
         ):
             return self._lock_reason("SOURCE_LOCATION_INVALID", "runtime_key.source_location must be [path, line]")
+
+        if widget_id is None:
+            locator = runtime_key.get("locator")
+            if not (
+                isinstance(locator, dict)
+                and locator.get("kind") == "source"
+                and locator.get("source_location") == source_location
+                and isinstance(locator.get("statement_kind"), str)
+            ):
+                return self._lock_reason(
+                    "SOURCE_LOCATOR_INVALID",
+                    "anonymous targets require a matching source locator",
+                )
 
         instance_discriminator = runtime_key.get("instance_discriminator")
         if not isinstance(instance_discriminator, dict):
@@ -1590,7 +1672,7 @@ class EditorCoordinator:
         selected_records: list[_SelectedIntent],
     ) -> tuple[bytes, tuple[tuple[str, int], tuple[str, int]] | None]:
         lines = source_bytes.decode("utf-8").splitlines(keepends=True)
-        seen_targets: set[tuple[str, int, str]] = set()
+        seen_targets: set[tuple[object, int, str | None]] = set()
         swap_locations: tuple[tuple[str, int], tuple[str, int]] | None = None
 
         for selected in selected_records:
@@ -1603,8 +1685,10 @@ class EditorCoordinator:
             source_key = selected.source_key
             line_no = source_key.get("line")
             widget_id = source_key.get("widget_id")
-            if not isinstance(line_no, int) or not isinstance(widget_id, str):
+            if not isinstance(line_no, int) or not (widget_id is None or isinstance(widget_id, str)):
                 raise EditorError("SOURCE_KEY_INVALID", "source_key line/widget_id is invalid")
+            if widget_id is None and source_key.get("statement_kind") != "text":
+                raise EditorError("SOURCE_KEY_INVALID", "only source-located text may omit widget_id")
             if line_no < 1 or line_no > len(lines):
                 raise EditorError("SOURCE_LINE_INVALID", "source_key line is out of range")
             target_key = (source_key.get("relative_path"), line_no, widget_id)
@@ -1653,17 +1737,33 @@ class EditorCoordinator:
                 continue
 
             if actual_kind == "text":
-                if color is None or any(value is not None for value in (x, y, width, height)):
-                    raise EditorError("INTENT_STYLE_COLOR_INVALID", "text style intent shape is invalid")
-                statement = analyze_text_color_style(
-                    lines[line_no - 1],
-                    expected_widget_id=widget_id,
-                )
-                lines[line_no - 1] = apply_text_color_patch(
-                    lines[line_no - 1].encode("utf-8"),
-                    statement,
-                    color=color,
-                ).decode("utf-8")
+                if width is not None or height is not None:
+                    raise EditorError("ANALYSIS_RESIZE_UNSUPPORTED", "text resize is not supported")
+                if x is not None or y is not None:
+                    if x is None or y is None:
+                        raise EditorError("INTENT_POSITION_INVALID", "text position intent shape is invalid")
+                    statement = analyze_text_position_statement(
+                        lines[line_no - 1],
+                        expected_widget_id=widget_id,
+                    )
+                    lines[line_no - 1] = apply_text_position_patch(
+                        lines[line_no - 1].encode("utf-8"),
+                        statement,
+                        x=x,
+                        y=y,
+                    ).decode("utf-8")
+                if color is not None:
+                    statement = analyze_text_color_style(
+                        lines[line_no - 1],
+                        expected_widget_id=widget_id,
+                    )
+                    lines[line_no - 1] = apply_text_color_patch(
+                        lines[line_no - 1].encode("utf-8"),
+                        statement,
+                        color=color,
+                    ).decode("utf-8")
+                if x is None and y is None and color is None:
+                    raise EditorError("INTENT_INVALID", "text intent requires position and/or color")
                 continue
 
             if x is None or y is None:

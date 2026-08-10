@@ -22,8 +22,6 @@ screen _renforge_editor_overlay():
     zorder 12000
 
     if _renforge_editor_is_active():
-        add _renforge_editor_event_catcher()
-
         $ _rf_selection = _renforge_editor_selection_snapshot()
         $ _rf_label = _renforge_editor_label_snapshot()
         $ _rf_distance = _renforge_editor_distance_snapshot()
@@ -50,6 +48,11 @@ screen _renforge_editor_overlay():
                     ):
                         xpos _rf_band[0]
                         ypos _rf_band[1]
+
+            # Keep canvas input in this container so events that pass through
+            # the chrome reach it before Ren'Py continues to the game layer.
+            # Panels and the toolbar are declared later and retain priority.
+            add _renforge_editor_event_catcher()
 
             # Panels are chrome; the canvas decorations are the tool. Drawing
             # the panels first keeps selection, guides and labels legible on
@@ -106,18 +109,17 @@ init 1090 python:
 
     _RF_UI_BASE_WIDTH = 2560.0
 
-    # Colors are the maquette's :root, verbatim. Ren'Py has no alpha in a
-    # Solid() hex without the trailing pair, so translucency is spelled out
-    # where it is wanted rather than implied.
+    # The editor chrome stays deliberately opaque: it must remain readable over
+    # any game scene without borrowing a glass/material effect from the host.
     _RF_UI_COLORS = {
-        "panel": "#272729f0",       # graphite-a @ 0.94
-        "panel_head": "#2a2a2cf5",  # graphite-d @ 0.96
+        "panel": "#272729",
+        "panel_head": "#2a2a2c",
         "sunken": "#00000057",      # black @ 0.34
         "hairline": "#ffffff1a",    # white @ 0.10
         "row_hover": "#ffffff0d",   # white @ 0.05
         "seg_on": "#ffffff21",      # white @ 0.13 (segment pressed)
         "surface": "#f5f5f7",
-        "meta": "#86868b",
+        "meta": "#a1a1a6",
         "border": "#d2d2d7",
         "fg": "#1d1d1f",
         "accent": "#0071e3",
@@ -379,6 +381,11 @@ init 1090 python:
         "tree.items_more": "{count}+ items",
         "tree.screen": "SCREEN",
         "tree.truncated": "More items not shown",
+        "panel.tree": "Scene Tree",
+        "panel.inspector": "Inspector",
+        "panel.style": "Style",
+        "panel.hide": "Hide {panel}",
+        "panel.show": "Show {panel}",
         "style.title": "STYLE",
         "inspector.offset": "OFFSET",
         "inspector.anchor": "ANCHOR",
@@ -654,6 +661,7 @@ init 1100 python:
             state.guide_y_span = None
             state.opacity = 0.86
             state.tools_visible = True
+            state.tree_collapsed_keys = set()
             state.jump_open = False
             state.jump_context_last = None
             state.layout_mode = "overlay"
@@ -721,6 +729,8 @@ init 1100 python:
             state.guide_y_span = None
         if not hasattr(state, "tools_visible"):
             state.tools_visible = True
+        if not hasattr(state, "tree_collapsed_keys"):
+            state.tree_collapsed_keys = set()
         if not hasattr(state, "jump_open"):
             state.jump_open = False
         if not hasattr(state, "jump_context_last"):
@@ -1039,13 +1049,17 @@ init 1100 python:
     def _renforge_editor_tree_walk(
         displayable,
         depth,
+        path,
         by_id,
+        runtime_by_object,
         rows,
         selected_id,
+        selected_runtime_key,
         selected_screen,
         screen_name,
         visited,
         counters,
+        visible=True,
     ):
         try:
             node_key = (screen_name, builtins.id(displayable))
@@ -1059,51 +1073,92 @@ init 1100 python:
             return
         kind = _renforge_editor_tree_kind(displayable)
         widget_id = by_id.get(builtins.id(displayable), "")
+        runtime_key = runtime_by_object.get(builtins.id(displayable))
         # A wrapper with no id and no recognised kind is engine plumbing: step
         # through it without spending a row or a level of indentation on it.
         if kind is None and not widget_id:
-            for child in _renforge_editor_children(displayable) or []:
+            for child_index, child in enumerate(_renforge_editor_children(displayable) or []):
                 _renforge_editor_tree_walk(
-                    child, depth, by_id, rows, selected_id, selected_screen,
-                    screen_name, visited, counters,
+                    child, depth, path + (child_index,), by_id, runtime_by_object, rows,
+                    selected_id, selected_runtime_key, selected_screen,
+                    screen_name, visited, counters, visible,
                 )
             return
         counters["total"] += 1
+        if counters["total"] > _RF_TREE_MAX_ROWS:
+            counters["count_truncated"] = True
         if kind is not None:
             badge, label, kind_cat = kind
         else:
             badge, label, kind_cat = ("?", type(displayable).__name__, "default")
         snippet = _renforge_editor_tree_snippet(displayable, type(displayable).__name__)
         badge_color = _renforge_editor_tree_badge_color(badge)
-        if len(rows) < _RF_TREE_MAX_ROWS:
+        children = _renforge_editor_children(displayable) or []
+        tree_key = (str(screen_name), tuple(path))
+        has_children = bool(children) and depth < _RF_TREE_MAX_DEPTH
+        expanded = has_children and tree_key not in _renforge_editor_state().tree_collapsed_keys
+        if visible and len(rows) < _RF_TREE_MAX_ROWS:
             rows.append({
                 "depth": depth,
                 "tag": badge,
                 "label": label,
                 "id": widget_id,
+                "runtime_key": runtime_key,
+                "selectable": bool(widget_id or runtime_key),
+                "source_location": (
+                    list(runtime_key.get("source_location") or [])
+                    if isinstance(runtime_key, builtins.dict)
+                    else None
+                ),
                 "snippet": snippet,
                 "kind_cat": kind_cat,
                 "badge_color": badge_color,
                 "screen_name": screen_name,
+                "node_key": tree_key,
+                "toggle_id": "rf_tree_toggle_%s_%s" % (
+                    screen_name,
+                    "_".join(str(part) for part in path),
+                ),
+                "has_children": has_children,
+                "expanded": expanded,
                 "selected": bool(
-                    widget_id
-                    and widget_id == selected_id
-                    and screen_name == selected_screen
+                    (
+                        isinstance(runtime_key, builtins.dict)
+                        and isinstance(selected_runtime_key, builtins.dict)
+                        and _renforge_editor_same_target_key(runtime_key, selected_runtime_key)
+                    )
+                    or (
+                        widget_id
+                        and widget_id == selected_id
+                        and screen_name == selected_screen
+                    )
                 ),
             })
-        else:
+        elif visible:
             counters["count_truncated"] = True
         if depth >= _RF_TREE_MAX_DEPTH:
             # Count this node but do not descend past the depth cap.
-            children = _renforge_editor_children(displayable) or []
             if children:
                 counters["depth_truncated"] = True
             return
-        for child in _renforge_editor_children(displayable) or []:
+        for child_index, child in enumerate(children):
             _renforge_editor_tree_walk(
-                child, depth + 1, by_id, rows, selected_id, selected_screen,
-                screen_name, visited, counters,
+                child, depth + 1, path + (child_index,), by_id, runtime_by_object, rows,
+                selected_id, selected_runtime_key, selected_screen,
+                screen_name, visited, counters, visible and expanded,
             )
+
+    def _renforge_editor_toggle_tree_node(node_key):
+        """Toggle one disclosure node without touching game/save state."""
+        state = _renforge_editor_state()
+        if node_key in state.tree_collapsed_keys:
+            state.tree_collapsed_keys.remove(node_key)
+            expanded = True
+        else:
+            state.tree_collapsed_keys.add(node_key)
+            expanded = False
+        renpy.restart_interaction()
+        return {"ok": True, "expanded": expanded}
 
     def _renforge_editor_tree_rows():
         """Flatten every active game screen into displayable rows.
@@ -1116,14 +1171,23 @@ init 1100 python:
         counters = {"total": 0, "count_truncated": False, "depth_truncated": False}
         visited = set()
         selected_id = ""
+        selected_runtime_key = None
         selected_screen = ""
         try:
             state = _renforge_editor_state()
             selected_id = str(state.selected_widget_id or "")
+            selected_runtime_key = state.selected_runtime_key
             selected_screen = str(state.selected_screen or "")
         except Exception:
             selected_id = ""
+            selected_runtime_key = None
             selected_screen = ""
+        runtime_by_object = {}
+        for candidate in _renforge_editor_all_candidates():
+            widget = candidate.get("focused_widget")
+            runtime_key = candidate.get("runtime_key")
+            if widget is not None and isinstance(runtime_key, builtins.dict):
+                runtime_by_object[builtins.id(widget)] = runtime_key
         for screen_name in _renforge_editor_active_game_screens():
             screen, widgets = _renforge_editor_widget_map(screen_name)
             if screen is None:
@@ -1135,6 +1199,10 @@ init 1100 python:
                 except Exception:
                     pass
             counters["total"] += 1
+            if counters["total"] > _RF_TREE_MAX_ROWS:
+                counters["count_truncated"] = True
+            screen_key = ("screen", str(screen_name))
+            screen_expanded = screen_key not in _renforge_editor_state().tree_collapsed_keys
             if len(rows) < _RF_TREE_MAX_ROWS:
                 rows.append({
                     "depth": 0, "tag": "S", "label": "screen",
@@ -1142,6 +1210,10 @@ init 1100 python:
                     "kind_cat": "screen",
                     "badge_color": _renforge_editor_ui_color("tree_screen"),
                     "screen_name": str(screen_name),
+                    "node_key": screen_key,
+                    "toggle_id": "rf_tree_toggle_screen_" + str(screen_name),
+                    "has_children": getattr(screen, "child", None) is not None,
+                    "expanded": screen_expanded,
                     "selected": False,
                 })
             else:
@@ -1149,8 +1221,9 @@ init 1100 python:
             child = getattr(screen, "child", None)
             if child is not None:
                 _renforge_editor_tree_walk(
-                    child, 1, by_id, rows, selected_id, selected_screen,
-                    str(screen_name), visited, counters,
+                    child, 1, (0,), by_id, runtime_by_object, rows,
+                    selected_id, selected_runtime_key, selected_screen,
+                    str(screen_name), visited, counters, screen_expanded,
                 )
         count_truncated = bool(counters["count_truncated"])
         depth_truncated = bool(counters["depth_truncated"])
@@ -1164,6 +1237,10 @@ init 1100 python:
                 "kind_cat": "truncated",
                 "badge_color": _renforge_editor_ui_color("meta"),
                 "screen_name": "",
+                "node_key": None,
+                "toggle_id": "",
+                "has_children": False,
+                "expanded": False,
                 "selected": False,
                 "truncated": True,
             })
@@ -1711,6 +1788,30 @@ init 1100 python:
         return {"ok": False, "error": "NO_FOCUSABLE_TARGET"}
 
 
+    def _renforge_editor_select_runtime_key(runtime_key):
+        """Select a source-located row without inventing an authored widget id."""
+        if not isinstance(runtime_key, builtins.dict):
+            return {"ok": False, "error": "runtime_key required"}
+        matches = [
+            candidate
+            for candidate in _renforge_editor_all_candidates()
+            if _renforge_editor_same_target_key(candidate.get("runtime_key"), runtime_key)
+        ]
+        if len(matches) != 1:
+            return {
+                "ok": False,
+                "error": "MULTI_INSTANCE_UNSUPPORTED" if len(matches) > 1 else "NO_FOCUSABLE_TARGET",
+            }
+        rect = matches[0].get("rect") or []
+        if len(rect) < 4:
+            return {"ok": False, "error": "UNMEASURED"}
+        return _renforge_editor_select(
+            int(rect[0]) + int(rect[2]) // 2,
+            int(rect[1]) + int(rect[3]) // 2,
+            matches[0],
+        )
+
+
     # ── Canvas decorations (Lot 1.F) ────────────────────────────────────────
 
     # TL T TR / L R / BL B BR — same order as drawn handles.
@@ -1923,11 +2024,16 @@ init 1100 python:
         """
         state = _renforge_editor_state()
         widget_id = str(getattr(state, "selected_widget_id", "") or "")
-        if not widget_id:
+        runtime_key = getattr(state, "selected_runtime_key", None)
+        if not widget_id and not isinstance(runtime_key, builtins.dict):
             return None
         screen_name = str(getattr(state, "selected_screen", "") or "")
         source = ""
-        if screen_name:
+        if isinstance(runtime_key, builtins.dict):
+            location = runtime_key.get("source_location") or []
+            if len(location) == 2:
+                source = "%s:%s" % (location[0], location[1])
+        if not source and screen_name and widget_id:
             _screen, widgets = _renforge_editor_widget_map(screen_name)
             widget = widgets.get(widget_id) if widgets else None
             if widget is not None:
@@ -1935,7 +2041,7 @@ init 1100 python:
                 if location:
                     source = "%s:%s" % (location[0], location[1])
         return {
-            "id": widget_id,
+            "id": widget_id or "—",
             "screen": screen_name,
             "source": source,
             "rect": _renforge_editor_selection_snapshot(),
@@ -2492,6 +2598,7 @@ init 1100 python:
                 "path": tuple(builtins.repr(part) for part in path),
                 "use_boundaries": tuple(uses),
                 "displayable": displayable,
+                "cache": cache,
             }
 
         walk(root, [], [], 0)
@@ -2752,15 +2859,21 @@ init 1100 python:
             statement_id = cache_index["statement_ids"].get(cache_entry["path"][-1])
             if statement_id:
                 widget_id, resolve_error = statement_id, None
+            else:
+                # No authored alias: source location + cache instance identity
+                # remains sufficient to select and analyze the target.
+                widget_id, resolve_error = None, None
+        elif resolve_error in ("SYNTHETIC_WIDGET_ID", "MISSING_WIDGET_MAP") and _renforge_editor_location(widget) is not None:
+            widget_id, resolve_error = None, None
         if resolve_error is not None:
             return None, resolve_error, None, None
-        if not isinstance(widget_id, str) or not widget_id:
+        if widget_id is not None and (not isinstance(widget_id, str) or not widget_id):
             return None, "SYNTHETIC_WIDGET_ID", None, None
         if screen is None:
             return None, "MISSING_SCREEN", None, None
         named_widget = None
         widgets = getattr(screen, "widgets", None) or {}
-        if isinstance(widgets, builtins.dict):
+        if widget_id is not None and isinstance(widgets, builtins.dict):
             named_widget = widgets.get(widget_id)
         if named_widget is None:
             named_widget = widget
@@ -2832,6 +2945,13 @@ init 1100 python:
             "invocation_path": screen_name,
             "widget_id": widget_id,
             "source_location": source_location,
+            "locator": {
+                "kind": "source",
+                "source_location": list(source_location),
+                "statement_kind": str(
+                    getattr(getattr(widget, "__class__", None), "__name__", "displayable")
+                ).lower(),
+            },
             "instance_discriminator": discriminator,
             "ancestry": ancestry,
         }
@@ -3050,8 +3170,8 @@ init 1100 python:
     def _renforge_editor_runtime_key_from_text_widget(screen_name, widget, widget_id, ordinal, instances=None):
         if not isinstance(screen_name, str) or not screen_name:
             return None, "MISSING_INVOCATION_PATH", None
-        if not isinstance(widget_id, str) or not widget_id:
-            return None, "SYNTHETIC_WIDGET_ID", None
+        if widget_id is not None and (not isinstance(widget_id, str) or not widget_id):
+            return None, "INVALID_WIDGET_ID", None
         try:
             if not isinstance(widget, renpy.text.text.Text):
                 return None, "STATEMENT_KIND_MISMATCH", None
@@ -3063,7 +3183,7 @@ init 1100 python:
         cache_index = instances.get(screen_name) if instances else None
         cache_entry = cache_index["entries"].get(id(widget)) if cache_index else None
         named_widget = None
-        if isinstance(widgets, builtins.dict):
+        if widget_id is not None and isinstance(widgets, builtins.dict):
             named_widget = widgets.get(widget_id)
         if named_widget is None:
             named_widget = widget
@@ -3129,6 +3249,11 @@ init 1100 python:
             "invocation_path": screen_name,
             "widget_id": widget_id,
             "source_location": source_location,
+            "locator": {
+                "kind": "source",
+                "source_location": list(source_location),
+                "statement_kind": "text",
+            },
             "instance_discriminator": discriminator,
             "ancestry": ancestry,
         }
@@ -3136,7 +3261,7 @@ init 1100 python:
 
 
     def _renforge_editor_text_candidates():
-        """Discover non-focusable Text targets with literal ids (scene_tree_text)."""
+        """Discover source-backed Text targets, with or without authored ids."""
         candidates = []
         instances = {}
         ordinal = 100000
@@ -3144,16 +3269,30 @@ init 1100 python:
             screen, widgets = _renforge_editor_widget_map(screen_name)
             if screen is None or not isinstance(widgets, builtins.dict):
                 continue
-            _renforge_editor_screen_instances(screen_name, instances)
+            screen_instances = _renforge_editor_screen_instances(screen_name, instances)
+            widget_ids = {}
             for widget_id, widget in list(widgets.items()):
-                if not isinstance(widget_id, str) or not widget_id:
+                if isinstance(widget_id, str) and widget_id:
+                    widget_ids[id(widget)] = widget_id
+            runtime_widgets = []
+            seen_widgets = set()
+            for widget in list(widgets.values()) + [
+                entry.get("displayable")
+                for entry in screen_instances.get("entries", {}).values()
+                if isinstance(entry, builtins.dict)
+            ]:
+                if widget is None or id(widget) in seen_widgets:
                     continue
+                seen_widgets.add(id(widget))
                 try:
                     is_text = isinstance(widget, renpy.text.text.Text)
                 except Exception:
                     is_text = False
                 if not is_text:
                     continue
+                runtime_widgets.append(widget)
+            for widget in runtime_widgets:
+                widget_id = widget_ids.get(id(widget))
                 rect = _renforge_editor_measure_text_rect(screen, widget)
                 if rect is None:
                     continue
@@ -3298,13 +3437,19 @@ init 1100 python:
         y = max(0, min(height - label_h, raw_y))
         hovered = x <= int(pointer_x) < x + label_w and y <= int(pointer_y) < y + label_h
         alpha = 0.20 if hovered else 1.0
-        selected = state.selected_widget_id or "none"
+        selected = state.selected_widget_id
+        if not selected and isinstance(state.selected_runtime_key, builtins.dict):
+            location = state.selected_runtime_key.get("source_location") or []
+            if len(location) == 2:
+                selected = "%s:%s" % (str(location[0]).split("/")[-1], location[1])
+        selected = selected or "none"
         selected_pos = _renforge_editor_current_selected_position()
         lock_text = ""
         if state.selected_lock_reason:
             lock_text = " [%s]" % _renforge_editor_lock_code(state.selected_lock_reason)
         if selected_pos is not None and len(selected_pos) == 2:
-            state.label_text = "id=%s x=%d y=%d%s" % (
+            identity_label = "id=%s" if state.selected_widget_id else "source=%s"
+            state.label_text = (identity_label + " x=%d y=%d%s") % (
                 selected,
                 int(selected_pos[0]),
                 int(selected_pos[1]),
@@ -3396,6 +3541,111 @@ init 1100 python:
             if props:
                 properties[str(widget_id)] = props
         return properties
+
+
+    def _renforge_editor_target_dirty(target):
+        return bool(
+            isinstance(target, builtins.dict)
+            and (
+                _renforge_editor_target_geometry_style_dirty(target)
+                or target.get("zorder_dirty")
+            )
+        )
+
+
+    def _renforge_editor_ast_node_for_runtime_key(screen_name, runtime_key):
+        """Resolve one live SLDisplayable AST node from a source locator."""
+        screen, _widgets = _renforge_editor_widget_map(screen_name)
+        screen_definition = getattr(screen, "screen", None) if screen is not None else None
+        root = getattr(screen_definition, "ast", None)
+        location = runtime_key.get("source_location") if isinstance(runtime_key, builtins.dict) else None
+        if root is None or not isinstance(location, (builtins.list, tuple)) or len(location) != 2:
+            return None
+        wanted = (str(location[0]), int(location[1]))
+        matches = []
+        seen = set()
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            node_location = getattr(node, "location", None)
+            if (
+                type(node).__name__ == "SLDisplayable"
+                and isinstance(node_location, (builtins.list, tuple))
+                and len(node_location) >= 2
+                and (str(node_location[0]), int(node_location[1])) == wanted
+            ):
+                matches.append(node)
+            children = getattr(node, "children", None)
+            if isinstance(children, (builtins.list, tuple)):
+                stack.extend(children)
+            entries = getattr(node, "entries", None)
+            if isinstance(entries, (builtins.list, tuple)):
+                for entry in entries:
+                    if isinstance(entry, (builtins.list, tuple)):
+                        stack.extend(entry)
+        return matches[0] if len(matches) == 1 else None
+
+
+    def _renforge_editor_prepare_anonymous_target_overrides(screen_name):
+        """Apply previews to the in-memory Screen Language AST before rebuild.
+
+        This changes neither source bytes nor persistent editor state. The AST
+        node is resolved from the source locator on each call, so no Ren'Py
+        displayable/AST object is ever pickled into store state.
+        """
+        state = _renforge_editor_state()
+        anonymous_targets = [
+            target
+            for target in state.targets.values()
+            if isinstance(target, builtins.dict)
+            and target.get("screen") == screen_name
+            and target.get("widget_id") is None
+            and isinstance(target.get("runtime_key"), builtins.dict)
+        ]
+        for target in anonymous_targets:
+            runtime_key = target.get("runtime_key")
+            node = _renforge_editor_ast_node_for_runtime_key(screen_name, runtime_key)
+            keyword_values = getattr(node, "keyword_values", None) if node is not None else None
+            if not isinstance(keyword_values, builtins.dict):
+                continue
+            position = target.get("position") or []
+            runtime_baseline = target.get("runtime_baseline") or []
+            source_position = target.get("source_position") or []
+            if (
+                len(position) == 2
+                and len(runtime_baseline) == 2
+                and len(source_position) == 2
+                and (target.get("capabilities") or {}).get("move") is True
+            ):
+                if target.get("dirty"):
+                    next_x, next_y = _renforge_editor_compute_next_position(target)
+                else:
+                    next_x, next_y = int(source_position[0]), int(source_position[1])
+                keyword_values["xpos"] = int(next_x)
+                keyword_values["ypos"] = int(next_y)
+            style_color = _renforge_editor_literal_style_color(target.get("style_color"))
+            baseline_color = _renforge_editor_literal_style_color(target.get("style_color_baseline"))
+            if (
+                baseline_color is not None
+                and (target.get("capabilities") or {}).get("style_color") is True
+            ):
+                keyword_values["color"] = style_color if target.get("dirty") and style_color is not None else baseline_color
+            # Literal-only statements are commonly cached as constant
+            # displayables. Invalidate just this statement's runtime cache so
+            # the next screen update evaluates the modified keyword values.
+            screen, _widgets = _renforge_editor_widget_map(screen_name)
+            for entry in _renforge_editor_cache_index(screen).values():
+                if _renforge_editor_location(entry.get("displayable")) != list(runtime_key.get("source_location") or []):
+                    continue
+                cache = entry.get("cache")
+                if cache is not None:
+                    try:
+                        cache.constant = None
+                    except Exception:
+                        pass
 
 
     def _renforge_editor_effective_properties(screen_name, widget_id):
@@ -3548,6 +3798,7 @@ init 1100 python:
 
 
     def _renforge_editor_show_target_overrides(screen):
+        _renforge_editor_prepare_anonymous_target_overrides(screen)
         properties = _renforge_editor_widget_properties(screen)
         if properties:
             renpy.show_screen(screen, _layer="screens", _widget_properties=properties)
@@ -3564,20 +3815,7 @@ init 1100 python:
         runtime_baseline = target.get("runtime_baseline") or []
         state.save_button_state = "idle"
         target["position"] = next_position
-        size = target.get("size") or []
-        runtime_size = target.get("runtime_size") or []
-        size_dirty = (
-            len(size) == 2
-            and len(runtime_size) == 2
-            and [int(size[0]), int(size[1])] != [int(runtime_size[0]), int(runtime_size[1])]
-        )
-        target["dirty"] = (
-            (
-                len(runtime_baseline) == 2
-                and next_position != [int(runtime_baseline[0]), int(runtime_baseline[1])]
-            )
-            or size_dirty
-        )
+        target["dirty"] = _renforge_editor_target_dirty(target)
         _renforge_editor_show_target_overrides(target.get("screen"))
         if state.selected_target_key == target_key:
             state.preview_position = list(next_position)
@@ -3662,42 +3900,40 @@ init 1100 python:
                     }
                 )
                 continue
-            if capabilities.get("style_color") is True:
-                if (
-                    style_color is None
-                    or baseline_literal is None
-                    or len(style_color) != len(baseline_literal)
-                    or _renforge_editor_normalize_style_color(style_color)
-                    == _renforge_editor_normalize_style_color(baseline_literal)
-                ):
-                    return []
-                intents.append(
-                    {
-                        "analysis_id": analysis_id,
-                        "source_key": source_key,
-                        "color": style_color,
-                    }
-                )
-                continue
             position = target.get("position")
             runtime_baseline = target.get("runtime_baseline")
             source_position = target.get("source_position")
-            if not (
+            position_dirty = bool(
                 isinstance(position, (builtins.list, tuple))
                 and len(position) == 2
                 and isinstance(runtime_baseline, (builtins.list, tuple))
                 and len(runtime_baseline) == 2
                 and isinstance(source_position, (builtins.list, tuple))
                 and len(source_position) == 2
-            ):
-                return []
-            next_x, next_y = _renforge_editor_compute_next_position(target)
+                and [int(position[0]), int(position[1])]
+                != [int(runtime_baseline[0]), int(runtime_baseline[1])]
+            )
+            style_dirty = bool(
+                style_color is not None
+                and baseline_literal is not None
+                and len(style_color) == len(baseline_literal)
+                and _renforge_editor_normalize_style_color(style_color)
+                != _renforge_editor_normalize_style_color(baseline_literal)
+            )
             intent = {
                 "analysis_id": analysis_id,
                 "source_key": source_key,
-                "x": next_x,
-                "y": next_y,
             }
+            if position_dirty:
+                if capabilities.get("move") is not True:
+                    return []
+                next_x, next_y = _renforge_editor_compute_next_position(target)
+                intent["x"] = next_x
+                intent["y"] = next_y
+            if style_dirty:
+                if capabilities.get("style_color") is not True:
+                    return []
+                intent["color"] = style_color
             size = target.get("size")
             runtime_size = target.get("runtime_size")
             source_size = target.get("source_size")
@@ -3712,6 +3948,21 @@ init 1100 python:
             ):
                 intent["w"] = int(source_size[0]) + int(size[0]) - int(runtime_size[0])
                 intent["h"] = int(source_size[1]) + int(size[1]) - int(runtime_size[1])
+                if "x" not in intent:
+                    if not (
+                        isinstance(position, (builtins.list, tuple))
+                        and len(position) == 2
+                        and isinstance(runtime_baseline, (builtins.list, tuple))
+                        and len(runtime_baseline) == 2
+                        and isinstance(source_position, (builtins.list, tuple))
+                        and len(source_position) == 2
+                    ):
+                        return []
+                    next_x, next_y = _renforge_editor_compute_next_position(target)
+                    intent["x"] = next_x
+                    intent["y"] = next_y
+            if len(intent) == 2:
+                return []
             intents.append(intent)
         return intents
 
@@ -3804,7 +4055,7 @@ init 1100 python:
             state.history = list(state.history_entries)
             state.history_index = len(state.history_entries) - 1
         target["style_color"] = literal
-        target["dirty"] = bool(normalized != baseline)
+        target["dirty"] = _renforge_editor_target_dirty(target)
         state.style_color_input = literal
         state.save_button_state = "idle"
         _renforge_editor_set_current_analysis(
@@ -4338,7 +4589,7 @@ init 1100 python:
 
     def _renforge_editor_apply_preview(x, y, *, shift=False, allow_snap=True, record=False):
         state = _renforge_editor_state()
-        if not state.selected_screen or not state.selected_widget_id:
+        if not state.selected_screen or state.selected_target_key is None:
             return {"ok": False, "error": "NO_SELECTION"}
         if state.selected_lock_reason not in (None, ""):
             if not (
@@ -4790,7 +5041,9 @@ init 1100 python:
             selected_screen = runtime_key.get("screen") if isinstance(runtime_key, builtins.dict) else None
             if isinstance(selected_screen, str) and selected_screen:
                 state.screen = selected_screen
-                state.editor_session_screen = selected_screen
+                # Selection follows transient screens such as say/choice, but
+                # must not turn them into session screens that periodic()
+                # resurrects later without their required scope arguments.
             if not isinstance(runtime_key, builtins.dict):
                 state.selected_runtime_key = None
                 state.selected_lock_reason = candidate.get("resolve_error") or "UNMEASURED"
@@ -4912,21 +5165,9 @@ init 1100 python:
             if refused is not None:
                 return refused
         next_size = [max(1, int(size[0])), max(1, int(size[1]))]
-        runtime_baseline = target.get("runtime_baseline") or []
-        runtime_size = target.get("runtime_size") or []
         state.save_button_state = "idle"
         target["size"] = next_size
-        position = target.get("position") or []
-        pos_dirty = (
-            len(position) == 2
-            and len(runtime_baseline) == 2
-            and [int(position[0]), int(position[1])] != [int(runtime_baseline[0]), int(runtime_baseline[1])]
-        )
-        size_dirty = (
-            len(runtime_size) == 2
-            and next_size != [int(runtime_size[0]), int(runtime_size[1])]
-        )
-        target["dirty"] = pos_dirty or size_dirty
+        target["dirty"] = _renforge_editor_target_dirty(target)
         _renforge_editor_show_target_overrides(target.get("screen"))
         if state.selected_target_key == target_key:
             state.preview_size = list(next_size)
@@ -5022,10 +5263,16 @@ init 1100 python:
 
 
     def _renforge_editor_event_pos(event, x, y):
+        # Displayable.event already normalizes native/Retina coordinates into
+        # Ren'Py's logical screen space. SDL's event.pos can remain physical.
+        try:
+            return int(x), int(y)
+        except (TypeError, ValueError, OverflowError):
+            pass
         pos = getattr(event, "pos", None)
         if builtins.isinstance(pos, (builtins.list, tuple)) and len(pos) >= 2:
             return int(pos[0]), int(pos[1])
-        return int(x), int(y)
+        return 0, 0
 
 
     def _renforge_editor_apply_drag_from_pointer(pointer_x, pointer_y, shift):
@@ -5980,8 +6227,16 @@ init 1100 python:
             if not isinstance(expected_runtime_key, builtins.dict):
                 return {"ok": False, "error": "runtime_key missing"}
             widget_id = source_key.get("widget_id")
-            if not isinstance(widget_id, str) or not widget_id:
-                return {"ok": False, "error": "widget_id missing"}
+            if widget_id is not None and (not isinstance(widget_id, str) or not widget_id):
+                return {"ok": False, "error": "widget_id invalid"}
+            if widget_id is None:
+                locator = source_key.get("locator")
+                if not (
+                    isinstance(locator, builtins.dict)
+                    and locator.get("kind") == "source"
+                    and locator.get("source_location") == expected_runtime_key.get("source_location")
+                ):
+                    return {"ok": False, "error": "source locator missing"}
             targets = [
                 candidate
                 for candidate in _renforge_editor_all_candidates()
@@ -6352,7 +6607,10 @@ init 1100 python:
 
     def _renforge_editor_label_snapshot():
         state = _renforge_editor_state()
-        if (state.selected_widget_id is None and state.selected_lock_reason is None) or state.selected_rect is None:
+        if (
+            state.selected_runtime_key is None
+            and state.selected_lock_reason is None
+        ) or state.selected_rect is None:
             return None
         rect = list(state.label_rect or [20, 20, 220, 32])
         if len(rect) != 4:

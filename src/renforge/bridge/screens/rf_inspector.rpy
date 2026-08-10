@@ -1,9 +1,115 @@
+init 1101 python:
+    _RF_EDITOR_PANEL_NAMES = frozenset(("tree", "inspector", "style"))
+    _RF_EDITOR_PANEL_ICONS = {
+        "tree": "panel-tree",
+        "inspector": "panel-inspector",
+        "style": "panel-style",
+    }
+    _RF_EDITOR_PANEL_LABEL_KEYS = {
+        "tree": "panel.tree",
+        "inspector": "panel.inspector",
+        "style": "panel.style",
+    }
+
+    def _renforge_editor_hidden_panels():
+        state = _renforge_editor_state()
+        hidden = getattr(state, "hidden_panels", None)
+        if not isinstance(hidden, set):
+            hidden = set()
+            state.hidden_panels = hidden
+        return hidden
+
+    def _renforge_editor_panel_visible(panel_name):
+        return panel_name in _RF_EDITOR_PANEL_NAMES and panel_name not in _renforge_editor_hidden_panels()
+
+    def _renforge_editor_panel_tooltip(panel_name, action):
+        label = _renforge_editor_t(_RF_EDITOR_PANEL_LABEL_KEYS[panel_name])
+        return _renforge_editor_t("panel.%s" % action).replace("{panel}", label)
+
+    def _renforge_editor_toggle_panel(panel_name):
+        if panel_name not in _RF_EDITOR_PANEL_NAMES:
+            return {"ok": False, "error": "unknown editor panel"}
+        hidden = _renforge_editor_hidden_panels()
+        if panel_name in hidden:
+            hidden.remove(panel_name)
+        else:
+            hidden.add(panel_name)
+        renpy.restart_interaction()
+        return {"ok": True, "panel": panel_name, "visible": panel_name not in hidden}
+
+
+screen _rf_editor_panel_hide_button(panel_name, side, control_id):
+    $ _rf_hide_icon = "panel-collapse-left" if side == "left" else "panel-collapse-right"
+    button:
+        id control_id
+        action Function(_renforge_editor_consume, _renforge_editor_toggle_panel, panel_name)
+        tooltip _renforge_editor_panel_tooltip(panel_name, "hide")
+        xsize _renforge_editor_ui_px(32, minimum=28)
+        ysize _renforge_editor_ui_px(32, minimum=28)
+        background Solid("#00000000")
+        hover_background Solid(_renforge_editor_ui_color("row_hover"))
+        padding (0, 0)
+        yalign 0.5
+        add _renforge_editor_ui_icon(_rf_hide_icon):
+            xysize (
+                _renforge_editor_ui_px(18, minimum=14),
+                _renforge_editor_ui_px(18, minimum=14),
+            )
+            xalign 0.5
+            yalign 0.5
+
+
+screen _rf_editor_panel_restore_tab(panel_name, side, rect_key, control_id):
+    $ _rf_panel_rect = _renforge_editor_live_layout_metrics().get(rect_key)
+    if _rf_panel_rect is not None:
+        $ _rf_tab_w = _renforge_editor_ui_px(34, minimum=26)
+        $ _rf_tab_h = _renforge_editor_ui_px(56, minimum=42)
+        $ _rf_tab_inset = _renforge_editor_ui_px(4, minimum=2)
+        $ _rf_tab_x = (
+            int(_rf_panel_rect[0]) + _rf_tab_inset
+            if side == "left"
+            else int(_rf_panel_rect[0] + _rf_panel_rect[2]) - _rf_tab_w - _rf_tab_inset
+        )
+        $ _rf_show_icon = _RF_EDITOR_PANEL_ICONS[panel_name]
+        button:
+            id control_id
+            action Function(_renforge_editor_consume, _renforge_editor_toggle_panel, panel_name)
+            tooltip _renforge_editor_panel_tooltip(panel_name, "show")
+            xpos _rf_tab_x
+            ypos int(_rf_panel_rect[1]) + _renforge_editor_ui_px(10, minimum=6)
+            xsize _rf_tab_w
+            ysize _rf_tab_h
+            background Solid(_renforge_editor_ui_color("panel_head"))
+            hover_background Solid(_renforge_editor_ui_color("row_hover"))
+            padding (0, 0)
+            fixed:
+                add Solid(
+                    _renforge_editor_ui_color("accent_bright"),
+                    xysize=(_renforge_editor_ui_px(2, minimum=1), _rf_tab_h),
+                ):
+                    xalign (1.0 if side == "left" else 0.0)
+                add _renforge_editor_ui_icon(_rf_show_icon):
+                    xysize (
+                        _renforge_editor_ui_px(20, minimum=15),
+                        _renforge_editor_ui_px(20, minimum=15),
+                    )
+                    xalign 0.5
+                    yalign 0.5
+
+
 # ── Lot 1.C — inspector ─────────────────────────────────────────────────────
 # Identity, source location and geometry for the current selection, plus the
 # refusal when there is one. Anchored to the right edge rather than to a fixed
 # x, so it stays on screen whatever width the game runs at.
 # Fields are read-only displays (maquette language); free-text edit is deferred.
 screen _rf_editor_inspector():
+    if _renforge_editor_panel_visible("inspector"):
+        use _rf_editor_inspector_panel()
+    else:
+        use _rf_editor_panel_restore_tab("inspector", "right", "inspector_rect", "rf_inspector_show")
+
+
+screen _rf_editor_inspector_panel():
 
     $ _rf_facts = _renforge_editor_inspector_facts()
     $ _rf_props = (
@@ -39,43 +145,49 @@ screen _rf_editor_inspector():
                 xfill True
                 background Frame(_renforge_editor_ui_frame("panel_head"), _RF_FRAME_PANEL, _RF_FRAME_PANEL, _RF_FRAME_PANEL, 2)
                 padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(12))
-                if _rf_facts is not None:
-                    hbox:
-                        spacing _renforge_editor_ui_px(12)
-                        yalign 0.5
-                        frame:
-                            xsize _renforge_editor_ui_px(_RF_TREE_BADGE)
-                            ysize _renforge_editor_ui_px(_RF_TREE_BADGE)
-                            background Solid(_renforge_editor_ui_color("sunken"))
-                            text "·":
-                                color _renforge_editor_ui_color("accent_bright")
-                                font _renforge_editor_ui_font()
-                                size _renforge_editor_ui_px(18)
-                                xalign 0.5
-                                yalign 0.5
-                        vbox:
-                            spacing _renforge_editor_ui_px(4)
-                            text _rf_facts["id"]:
-                                id "rf_inspector_name"
-                                substitute False
-                                color _renforge_editor_ui_color("surface")
-                                font _renforge_editor_ui_font()
-                                size _renforge_editor_ui_px(24)
-                            text (
-                                ("screen " + _rf_facts["screen"] if _rf_facts["screen"] else "")
-                                + ("  ·  " + _rf_facts["source"] if _rf_facts["source"] else "")
-                            ):
-                                id "rf_inspector_path"
-                                substitute False
-                                color _renforge_editor_ui_color("meta")
-                                font _renforge_editor_ui_font()
-                                size _renforge_editor_ui_px(17)
-                else:
-                    text _renforge_editor_t("inspector.none"):
-                        id "rf_inspector_name"
-                        color _renforge_editor_ui_color("meta")
-                        font _renforge_editor_ui_font()
-                        size _renforge_editor_ui_px(18)
+                hbox:
+                    xfill True
+                    yalign 0.5
+                    if _rf_facts is not None:
+                        hbox:
+                            spacing _renforge_editor_ui_px(12)
+                            yalign 0.5
+                            frame:
+                                xsize _renforge_editor_ui_px(_RF_TREE_BADGE)
+                                ysize _renforge_editor_ui_px(_RF_TREE_BADGE)
+                                background Solid(_renforge_editor_ui_color("sunken"))
+                                text "·":
+                                    color _renforge_editor_ui_color("accent_bright")
+                                    font _renforge_editor_ui_font()
+                                    size _renforge_editor_ui_px(18)
+                                    xalign 0.5
+                                    yalign 0.5
+                            vbox:
+                                spacing _renforge_editor_ui_px(4)
+                                text _rf_facts["id"]:
+                                    id "rf_inspector_name"
+                                    substitute False
+                                    color _renforge_editor_ui_color("surface")
+                                    font _renforge_editor_ui_font()
+                                    size _renforge_editor_ui_px(24)
+                                text (
+                                    ("screen " + _rf_facts["screen"] if _rf_facts["screen"] else "")
+                                    + ("  ·  " + _rf_facts["source"] if _rf_facts["source"] else "")
+                                ):
+                                    id "rf_inspector_path"
+                                    substitute False
+                                    color _renforge_editor_ui_color("meta")
+                                    font _renforge_editor_ui_font()
+                                    size _renforge_editor_ui_px(17)
+                    else:
+                        text _renforge_editor_t("inspector.none"):
+                            id "rf_inspector_name"
+                            color _renforge_editor_ui_color("meta")
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(18)
+                            yalign 0.5
+                    null width 1 xfill True
+                    use _rf_editor_panel_hide_button("inspector", "right", "rf_inspector_hide")
 
             if _rf_facts is not None:
                 vbox:

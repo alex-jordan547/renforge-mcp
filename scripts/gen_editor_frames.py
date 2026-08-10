@@ -24,8 +24,8 @@ OUT_DIR = REPO_ROOT / "src" / "renforge" / "bridge" / "editor_assets" / "frames"
 
 # Maquette radii at 2560 (k=1.5): r-sm≈12, r-md≈18, r-lg≈27. Pill is half-height.
 # Straight from the maquette's :root — panel fill, header fill, hairline.
-PANEL_FILL = (39, 39, 41, 240)
-HEAD_FILL = (42, 42, 44, 245)
+PANEL_FILL = (39, 39, 41, 255)
+HEAD_FILL = (42, 42, 44, 255)
 SUNKEN_FILL = (0, 0, 0, 87)
 HAIRLINE = (255, 255, 255, 26)
 

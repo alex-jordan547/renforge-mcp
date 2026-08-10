@@ -1307,13 +1307,19 @@ def test_editor_mouse_up_applies_final_drag_position_without_motion(
 
         down = pygame.event.Event(
             pygame.MOUSEBUTTONDOWN,
-            {"button": 1, "pos": tuple(center), "mod": pygame.KMOD_NONE},
+            {
+                "button": 1,
+                # SDL reports physical Retina pixels while Displayable.event
+                # receives Ren'Py's already-normalized logical coordinates.
+                "pos": (center[0] * 2, center[1] * 2),
+                "mod": pygame.KMOD_NONE,
+            },
         )
         up = pygame.event.Event(
             pygame.MOUSEBUTTONUP,
             {
                 "button": 1,
-                "pos": (center[0] + 40, center[1] + 30),
+                "pos": ((center[0] + 40) * 2, (center[1] + 30) * 2),
                 "mod": pygame.KMOD_NONE,
             },
         )
@@ -2805,6 +2811,7 @@ def test_editor_select_widget_keeps_the_requested_identity_when_widgets_overlap(
         }
         state = globs["_renforge_editor_state"]()
         state.active = True
+        state.editor_session_screen = None
         for widget_id in ("behind", "top"):
             state.targets[widget_id] = {
                 "analysis_id": "analysis-" + widget_id,
@@ -2837,6 +2844,7 @@ def test_editor_select_widget_keeps_the_requested_identity_when_widgets_overlap(
         assert selected["ok"] is True
         assert selected["selected"]["widget_id"] == "behind"
         assert state.selected_widget_id == "behind"
+        assert state.editor_session_screen is None
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 
@@ -2868,6 +2876,204 @@ def test_editor_status_exposes_current_host_capabilities(
 
         state.current_analysis_id = None
         assert globs["_renforge_editor_h_status"]({})["current_capabilities"] == {}
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_discovers_anonymous_text_from_screen_cache(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    ScreenDisplayable = type("ScreenDisplayable", (), {})
+    Text = type("Text", (), {})
+    widget = Text()
+    widget._location = ("game/screens.rpy", 236)
+    widget.style = types.SimpleNamespace(color="#ffffff", xpos=140, ypos=240)
+    screen = ScreenDisplayable()
+    screen.children = [widget]
+    screen.child = widget
+    screen.offsets = [(140, 240)]
+    screen.widgets = {}
+    screen.cache = {1786330708373445: types.SimpleNamespace(displayable=widget)}
+    renpy.text = types.SimpleNamespace(text=types.SimpleNamespace(Text=Text))
+    renpy.display.screen = types.SimpleNamespace(
+        get_screen=lambda name: screen if name == "exploration_scene" else None
+    )
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(width=width, height=height)
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        globs["_renforge_editor_active_game_screens"] = lambda: ["exploration_scene"]
+        globs["_renforge_editor_measure_text_rect"] = lambda _screen, _widget: [140, 240, 402, 27]
+        globs["_renforge_editor_ui_color"] = lambda _name: "#ffffff"
+
+        candidates = globs["_renforge_editor_text_candidates"]()
+
+        assert len(candidates) == 1
+        key = candidates[0]["runtime_key"]
+        assert key["widget_id"] is None
+        assert key["source_location"] == ["game/screens.rpy", 236]
+        assert key["locator"] == {
+            "kind": "source",
+            "source_location": ["game/screens.rpy", 236],
+            "statement_kind": "text",
+        }
+        assert candidates[0]["measurement_method"] == "scene_tree_text"
+        rows = globs["_renforge_editor_tree_rows"]()["rows"]
+        text_row = next(row for row in rows if row.get("label") == "text")
+        assert text_row["id"] == ""
+        assert text_row["selectable"] is True
+        assert text_row["runtime_key"] == key
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_anonymous_text_preview_moves_the_resolved_runtime_widget(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(width=width, height=height)
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *_args, **_kwargs: None
+    renpy.redraw = lambda *_args, **_kwargs: None
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        key = {
+            "screen": "exploration_scene",
+            "invocation_path": "exploration_scene",
+            "widget_id": None,
+            "source_location": ["game/screens.rpy", 236],
+            "locator": {
+                "kind": "source",
+                "source_location": ["game/screens.rpy", 236],
+                "statement_kind": "text",
+            },
+            "instance_discriminator": {"kind": "static", "instance_count": 1, "ordinal": 100000},
+            "ancestry": [],
+        }
+        widget = types.SimpleNamespace(
+            _location=("game/screens.rpy", 236),
+            style=types.SimpleNamespace(xpos=140, ypos=240),
+        )
+        runtime_cache = types.SimpleNamespace(displayable=widget, constant=True)
+        screen = types.SimpleNamespace(widgets={}, cache={1: runtime_cache})
+        renpy.display.screen = types.SimpleNamespace(
+            get_screen=lambda name: screen if name == "exploration_scene" else None
+        )
+        ast_node = types.SimpleNamespace(keyword_values={"xpos": 140, "ypos": 240})
+        candidate = {
+            "runtime_key": key,
+            "focused_widget": widget,
+            "editor_owned": False,
+            "rect": [140, 240, 402, 27],
+        }
+        globs["_renforge_editor_all_candidates"] = lambda: [candidate]
+        globs["_renforge_editor_text_candidates"] = lambda: [candidate]
+        globs["_renforge_editor_ast_node_for_runtime_key"] = lambda _screen, _key: ast_node
+        state = globs["_renforge_editor_state"]()
+        state.selected_screen = "exploration_scene"
+        state.selected_widget_id = None
+        state.selected_runtime_key = key
+        target_key = globs["_renforge_editor_target_key"](key)
+        state.selected_target_key = target_key
+        state.selected_lock_reason = None
+        state.current_capabilities = {"move": True}
+        state.targets[target_key] = {
+            "analysis_id": "analysis-anonymous-text",
+            "source_key": {"position_mode": "xy"},
+            "capabilities": {"move": True},
+            "runtime_key": key,
+            "screen": "exploration_scene",
+            "widget_id": None,
+            "runtime_baseline": [140, 240],
+            "source_position": [140, 240],
+            "position": [140, 240],
+            "dirty": False,
+        }
+
+        moved = globs["_renforge_editor_apply_preview"](
+            196,
+            284,
+            shift=False,
+            allow_snap=False,
+            record=False,
+        )
+
+        assert moved["ok"] is True
+        assert ast_node.keyword_values["xpos"] == 196
+        assert ast_node.keyword_values["ypos"] == 284
+        assert runtime_cache.constant is None
+        assert state.targets[target_key]["dirty"] is True
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_focus_candidate_identity_does_not_require_an_authored_id(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    ScreenDisplayable = type("ScreenDisplayable", (), {})
+    Button = type("Button", (), {})
+    widget = Button()
+    widget._location = ("game/screens.rpy", 250)
+    widget.style = types.SimpleNamespace()
+    screen = ScreenDisplayable()
+    screen.children = [widget]
+    screen.widgets = {}
+    screen.cache = {99: types.SimpleNamespace(displayable=widget)}
+    focus = _FakeFocus("Anonymous action", 100, 300, 180, 40, widget=widget)
+    focus.screen_name = "exploration_scene"
+    renpy.display.focus.focus_list[:] = [focus]
+    renpy.display.screen = types.SimpleNamespace(
+        get_screen=lambda name: screen if name == "exploration_scene" else None
+    )
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(width=width, height=height)
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        candidate = globs["_renforge_editor_focus_candidates"]()[0]
+        key = candidate["runtime_key"]
+        assert candidate["resolve_error"] is None
+        assert key["widget_id"] is None
+        assert key["source_location"] == ["game/screens.rpy", 250]
+        assert key["locator"]["kind"] == "source"
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 
@@ -3131,5 +3337,3 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
         with simulate_nt():
             globs["_renforge_bridge_read_starting_info"](project_root)
     assert len(calls["close_handle"]) == 1
-
-

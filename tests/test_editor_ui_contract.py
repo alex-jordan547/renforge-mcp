@@ -224,9 +224,33 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "rf_tree_viewport" in tree
     assert '_renforge_editor_tree_rows()' in tree
     assert '_renforge_editor_select_widget' in tree
+    assert '_renforge_editor_select_runtime_key' in tree
+    assert 'elif row.get("selectable")' in tree
+    assert 'row.get("source_location")' in tree
     assert "_RF_TREE_BADGE" in tree
     assert "substitute False" in tree
     assert "_renforge_editor_tree_snippet" in editor
+    overlay = editor.split("screen _renforge_editor_overlay():", 1)[1].split(
+        "init 1090 python:", 1
+    )[0]
+    main_fixed = overlay.split("        fixed:", 1)[1]
+    assert "add _renforge_editor_event_catcher()" not in overlay.split(
+        "        fixed:", 1
+    )[0]
+    assert main_fixed.index("add _renforge_editor_event_catcher()") < main_fixed.index(
+        "use _rf_editor_tree()"
+    )
+    assert "def _renforge_editor_toggle_tree_node(node_key):" in editor
+    assert "state.tree_collapsed_keys = set()" in editor
+    assert '"has_children": has_children' in editor
+    assert 'screen _rf_tree_disclosure(row):' in tree
+    assert 'use _rf_tree_disclosure(row)' in tree
+    assert 'at Transform(rotate=(0 if row.get("expanded") else -90))' in tree
+    assert '"panel": "#272729"' in editor
+    assert '"panel_head": "#2a2a2c"' in editor
+    assert "# Flat section header" in tree
+    assert 'background Solid(_renforge_editor_ui_color("panel_head"))' in tree
+    assert "_renforge_editor_ui_text_px(18, minimum=13)" in tree
 
     # 1.C — geometry fields + display-only 3×3 anchor
     assert "rf_inspector_anchor_grid" in inspector
@@ -322,6 +346,47 @@ def test_editor_event_catcher_survives_script_reload_unpickle(monkeypatch):
     payload = pickle.dumps(runtime_store.event_catcher)
     restored = pickle.loads(payload)
     assert restored.__class__.__module__ == runtime_store.__name__
+
+
+def test_editor_side_panels_can_be_collapsed_independently():
+    """Each side panel keeps its own hide control and restore tab."""
+    tree = (SCREENS_DIR / "rf_tree.rpy").read_text(encoding="utf-8")
+    inspector = (SCREENS_DIR / "rf_inspector.rpy").read_text(encoding="utf-8")
+    style = (SCREENS_DIR / "rf_style.rpy").read_text(encoding="utf-8")
+
+    assert "def _renforge_editor_panel_visible(panel_name):" in inspector
+    assert "def _renforge_editor_toggle_panel(panel_name):" in inspector
+    assert "def _renforge_editor_panel_tooltip(panel_name, action):" in inspector
+    assert "screen _rf_editor_panel_hide_button(" in inspector
+    assert "screen _rf_editor_panel_restore_tab(" in inspector
+    assert '"panel-collapse-left" if side == "left" else "panel-collapse-right"' in inspector
+    assert '_RF_EDITOR_PANEL_ICONS[panel_name]' in inspector
+    assert 'tooltip _renforge_editor_panel_tooltip(panel_name, "hide")' in inspector
+    assert 'tooltip _renforge_editor_panel_tooltip(panel_name, "show")' in inspector
+    hide_button = inspector.split("screen _rf_editor_panel_hide_button", 1)[1].split(
+        "screen _rf_editor_panel_restore_tab", 1
+    )[0]
+    assert 'background Solid("#00000000")' in hide_button
+
+    icons = BRIDGE_DIR / "editor_assets" / "icons"
+    for icon_name in (
+        "panel-collapse-left",
+        "panel-collapse-right",
+        "panel-tree",
+        "panel-inspector",
+        "panel-style",
+    ):
+        assert (icons / f"{icon_name}.svg").is_file(), icon_name
+
+    for source, panel_name, side in (
+        (tree, "tree", "left"),
+        (inspector, "inspector", "right"),
+        (style, "style", "right"),
+    ):
+        assert f'screen _rf_editor_{panel_name}():' in source
+        assert f'use _rf_editor_{panel_name}_panel()' in source
+        assert f'"{panel_name}", "{side}", "rf_{panel_name}_hide"' in source
+        assert f'"{panel_name}", "{side}", "{panel_name}_rect", "rf_{panel_name}_show"' in source
 
 
 def test_status_catalogue_keys_match_plan():
