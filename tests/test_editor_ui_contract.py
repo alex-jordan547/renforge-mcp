@@ -190,6 +190,18 @@ def test_editor_ships_maquette_toolbar_icons():
     assert 'use _rf_icon_btn("rf_exit"' in toolbar
 
 
+def test_toolbar_pressed_segments_use_a_rounded_background():
+    """Pressed segments must not expose square corners inside rounded groups."""
+    toolbar = (SCREENS_DIR / "rf_toolbar.rpy").read_text(encoding="utf-8")
+    segment = toolbar.split("screen _rf_seg_btn(", 1)[1].split(
+        "screen _rf_save_btn():", 1
+    )[0]
+
+    assert 'Frame(_renforge_editor_ui_frame("seg_on")' in segment
+    assert 'Solid(_renforge_editor_ui_color("seg_on"))' not in segment
+    assert (BRIDGE_DIR / "editor_assets" / "frames" / "seg_on.png").is_file()
+
+
 def test_lot1_panels_cover_the_portage_seams():
     """Stable screen/id wiring for the toolbar, panels, HUD, and canvas."""
     toolbar = (SCREENS_DIR / "rf_toolbar.rpy").read_text(encoding="utf-8")
@@ -240,6 +252,9 @@ def test_lot1_panels_cover_the_portage_seams():
     assert main_fixed.index("add _renforge_editor_event_catcher()") < main_fixed.index(
         "use _rf_editor_tree()"
     )
+    assert main_fixed.index("use _rf_editor_canvas_decor(") < main_fixed.index(
+        "use _rf_editor_tree()"
+    )
     assert "def _renforge_editor_toggle_tree_node(node_key):" in editor
     assert "state.tree_collapsed_keys = set()" in editor
     assert '"has_children": has_children' in editor
@@ -257,13 +272,17 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "_renforge_editor_anchor_cell_on" in inspector
     assert 'use _rf_editor_field("xpos"' in inspector
     assert 'use _rf_editor_field("xanchor"' in inspector
-    assert "rf_inspector_lock" in inspector
+    assert "rf_inspector_lock" not in inspector
+    assert "text _renforge_editor_lock_detail():" not in inspector
+    assert '_rf_facts["lock"][1]' not in inspector
 
     # 1.D — colour allowlist surface + lock reason + visible colour controls
     assert "rf_style_color_value" in style
     assert 'id "rf_style_color"' in style
     assert 'id "rf_style_cycle"' in style
     assert "rf_style_lock" in style or "style.locked" in style
+    assert "text _renforge_editor_lock_detail():" in style
+    assert '_rf_facts["lock"][1]' not in style
     assert "_renforge_editor_style_color_capable" in style
     assert "_renforge_editor_cycle_style_color_preview" in style
 
@@ -367,6 +386,18 @@ def test_editor_side_panels_can_be_collapsed_independently():
         "screen _rf_editor_panel_restore_tab", 1
     )[0]
     assert 'background Solid("#00000000")' in hide_button
+    assert 'id "rf_inspector_identity"' in inspector
+    assert 'xmaximum _rf_inspector_identity_w' in inspector
+    inspector_action = inspector.split('id "rf_inspector_panel_action"', 1)[1].split(
+        'use _rf_editor_panel_hide_button("inspector"', 1
+    )[0]
+    assert "xalign 1.0" in inspector_action
+    for source, panel_name in ((tree, "tree"), (style, "style")):
+        assert f'id "rf_{panel_name}_panel_action"' in source
+        panel_action = source.split(f'id "rf_{panel_name}_panel_action"', 1)[1].split(
+            f'use _rf_editor_panel_hide_button("{panel_name}"', 1
+        )[0]
+        assert "xalign 1.0" in panel_action
 
     icons = BRIDGE_DIR / "editor_assets" / "icons"
     for icon_name in (

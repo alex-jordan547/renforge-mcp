@@ -3118,6 +3118,59 @@ def test_editor_locked_selection_clears_current_host_capabilities(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_lock_ui_never_exposes_internal_codes_or_expands_canvas_label(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width,
+        height=height,
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        strings = {
+            "lock.locked": "Locked",
+            "lock.reason.xpos_literal_required": "Position must use a literal xpos value.",
+        }
+        globs["_renforge_editor_t"] = lambda key: strings.get(key, "[[%s]]" % key)
+        state = globs["_renforge_editor_state"]()
+        state.selected_widget_id = "demo_locked_expr"
+        state.selected_runtime_key = {
+            "screen": "village_gate_choices",
+            "widget_id": "demo_locked_expr",
+            "source_location": ["game/screens.rpy", 239],
+        }
+        state.selected_screen = "village_gate_choices"
+        state.selected_rect = [22, 440, 329, 35]
+        state.selected_original_position = [22, 440]
+        state.preview_position = None
+        state.selected_lock_reason = "XPOS_LITERAL_REQUIRED"
+
+        globs["_renforge_editor_set_label"](22, 440)
+
+        assert globs["_renforge_editor_label_snapshot"]()["text"] == (
+            "id=demo_locked_expr x=22 y=440"
+        )
+        assert globs["_renforge_editor_lock_detail"]() == (
+            "Locked — Position must use a literal xpos value."
+        )
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path: Path, monkeypatch) -> None:
     import json
     import os

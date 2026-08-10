@@ -54,16 +54,9 @@ screen _renforge_editor_overlay():
             # Panels and the toolbar are declared later and retain priority.
             add _renforge_editor_event_catcher()
 
-            # Panels are chrome; the canvas decorations are the tool. Drawing
-            # the panels first keeps selection, guides and labels legible on
-            # top of them until the docked layout moves the game out from
-            # under the chrome entirely.
-            if _renforge_editor_panels_visible():
-                use _rf_editor_tree()
-                use _rf_editor_inspector()
-                use _rf_editor_style()
-                use _rf_editor_hud()
-
+            # Canvas decorations belong to the game surface. Paint them before
+            # the chrome so selections near an edge never cover tree rows or
+            # inspector controls in overlay mode.
             fixed:
                 xfill True
                 yfill True
@@ -76,6 +69,12 @@ screen _renforge_editor_overlay():
                     _rf_measure,
                     _rf_guide,
                 )
+
+            if _renforge_editor_panels_visible():
+                use _rf_editor_tree()
+                use _rf_editor_inspector()
+                use _rf_editor_style()
+                use _rf_editor_hud()
 
             use _rf_editor_toolbar(_rf_tools_visible)
 
@@ -376,6 +375,13 @@ init 1090 python:
         "lock.locked": "Locked",
         "lock.blocked": "Blocked here",
         "lock.refused": "Refused",
+        "lock.reason.xpos_literal_required": "Position must use a literal xpos value.",
+        "lock.reason.ypos_literal_required": "Position must use a literal ypos value.",
+        "lock.reason.literal_required": "This property must use a literal value in source.",
+        "lock.reason.unsupported": "This source form is not editable yet.",
+        "lock.reason.mismatch": "The live element no longer matches its source.",
+        "lock.reason.ambiguous": "This selection does not resolve to one unique source element.",
+        "lock.reason.default": "This selection cannot be edited safely.",
         "tree.title": "SCENE TREE",
         "tree.items_count": "{count} items",
         "tree.items_more": "{count}+ items",
@@ -2072,6 +2078,11 @@ init 1100 python:
     # the word.
     _RF_LOCK_PENDING = frozenset({"ANALYZING"})
 
+    _RF_LOCK_REASON_KEYS = {
+        "XPOS_LITERAL_REQUIRED": "lock.reason.xpos_literal_required",
+        "YPOS_LITERAL_REQUIRED": "lock.reason.ypos_literal_required",
+    }
+
     def _renforge_editor_lock_level(code):
         """Sort a lock code into locked, blocked or refused.
 
@@ -2103,10 +2114,27 @@ init 1100 python:
         return "blocked"
 
     def _renforge_editor_lock_message(lock_reason):
-        """The coordinator's own sentence about this refusal, if it wrote one."""
+        """Return a readable refusal sentence without exposing protocol codes."""
         if isinstance(lock_reason, builtins.dict):
-            return str(lock_reason.get("message") or "")
-        return ""
+            message = str(lock_reason.get("message") or "").strip()
+            if message:
+                return message
+        code = _renforge_editor_lock_code(lock_reason)
+        if not code:
+            return ""
+        name = str(code).upper()
+        exact_key = _RF_LOCK_REASON_KEYS.get(name)
+        if exact_key is not None:
+            return _renforge_editor_t(exact_key)
+        if name.endswith("_LITERAL_REQUIRED"):
+            return _renforge_editor_t("lock.reason.literal_required")
+        if name.endswith("_UNSUPPORTED") or name.endswith("_REQUIRED"):
+            return _renforge_editor_t("lock.reason.unsupported")
+        if name.endswith("_MISMATCH"):
+            return _renforge_editor_t("lock.reason.mismatch")
+        if name.endswith("_AMBIGUOUS") or name.startswith("AMBIGUOUS_"):
+            return _renforge_editor_t("lock.reason.ambiguous")
+        return _renforge_editor_t("lock.reason.default")
 
     def _renforge_editor_selected_lock():
         """Current selection's refusal as (level, code, message), or None."""
@@ -2127,12 +2155,15 @@ init 1100 python:
         return _renforge_editor_t("lock.%s" % current[0])
 
     def _renforge_editor_lock_detail():
-        """The reason in full: level, message, and the code to report with."""
+        """The refusal level and a readable reason, without protocol codes."""
         current = _renforge_editor_selected_lock()
         if current is None:
             return ""
         level, code, message = current
-        return "%s — %s (%s)" % (_renforge_editor_t("lock.%s" % level), message or code, code)
+        return "%s — %s" % (
+            _renforge_editor_t("lock.%s" % level),
+            message or _renforge_editor_lock_message(code),
+        )
 
     def _renforge_editor_lock_color():
         current = _renforge_editor_selected_lock()
@@ -3444,19 +3475,15 @@ init 1100 python:
                 selected = "%s:%s" % (str(location[0]).split("/")[-1], location[1])
         selected = selected or "none"
         selected_pos = _renforge_editor_current_selected_position()
-        lock_text = ""
-        if state.selected_lock_reason:
-            lock_text = " [%s]" % _renforge_editor_lock_code(state.selected_lock_reason)
         if selected_pos is not None and len(selected_pos) == 2:
             identity_label = "id=%s" if state.selected_widget_id else "source=%s"
-            state.label_text = (identity_label + " x=%d y=%d%s") % (
+            state.label_text = (identity_label + " x=%d y=%d") % (
                 selected,
                 int(selected_pos[0]),
                 int(selected_pos[1]),
-                lock_text,
             )
         else:
-            state.label_text = "id=%s%s" % (selected, lock_text)
+            state.label_text = "id=%s" % selected
         state.label_rect = [x, y, label_w, label_h]
         state.label_alpha = alpha
 

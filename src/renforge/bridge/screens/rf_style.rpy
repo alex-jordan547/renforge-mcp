@@ -14,6 +14,10 @@ screen _rf_editor_style_panel():
     $ _rf_docked = _renforge_editor_chrome_docked()
     $ _rf_color_capable = _renforge_editor_style_color_capable() if _rf_facts is not None else False
     $ _rf_color_hex = _renforge_editor_style_color_value() if _rf_color_capable else ""
+    $ _rf_style_rect = _renforge_editor_live_layout_metrics().get("style_rect")
+    $ _rf_style_panel_w = int(_rf_style_rect[2]) if _rf_style_rect is not None else _renforge_editor_ui_px(_RF_OVERLAY_PANEL_W)
+    $ _rf_style_header_w = max(1, _rf_style_panel_w - _renforge_editor_ui_px(104, minimum=52))
+    $ _rf_style_header_name = _renforge_editor_panel_text(_rf_facts["id"], 18) if _rf_facts is not None else _renforge_editor_t("style.none")
 
     frame:
         id "rf_style_panel"
@@ -40,31 +44,33 @@ screen _rf_editor_style_panel():
                 xfill True
                 background Frame(_renforge_editor_ui_frame("panel_head"), _RF_FRAME_PANEL, _RF_FRAME_PANEL, _RF_FRAME_PANEL, 2)
                 padding (_renforge_editor_ui_px(20), _renforge_editor_ui_px(12))
-                hbox:
+                fixed:
                     xfill True
-                    yalign 0.5
-                    text _renforge_editor_t("style.title"):
-                        id "rf_style_title"
-                        color _renforge_editor_ui_color("meta")
-                        font _renforge_editor_ui_font()
-                        size _renforge_editor_ui_px(18)
+                    ysize _renforge_editor_ui_px(56, minimum=28)
+                    hbox:
+                        id "rf_style_header_content"
+                        xfill True
+                        xmaximum _rf_style_header_w
                         yalign 0.5
-                    null width 1 xfill True
-                    if _rf_facts is not None:
-                        text _rf_facts["id"]:
-                            id "rf_style_name"
-                            color _renforge_editor_ui_color("surface")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(18)
-                            yalign 0.5
-                    else:
-                        text _renforge_editor_t("style.none"):
-                            id "rf_style_name"
+                        text _renforge_editor_t("style.title"):
+                            id "rf_style_title"
                             color _renforge_editor_ui_color("meta")
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(18)
                             yalign 0.5
-                    use _rf_editor_panel_hide_button("style", "right", "rf_style_hide")
+                        null width 1 xfill True
+                        text _rf_style_header_name:
+                            id "rf_style_name"
+                            substitute False
+                            color (_renforge_editor_ui_color("surface") if _rf_facts is not None else _renforge_editor_ui_color("meta"))
+                            font _renforge_editor_ui_font()
+                            size _renforge_editor_ui_px(18)
+                            yalign 0.5
+                    hbox:
+                        id "rf_style_panel_action"
+                        xalign 1.0
+                        yalign 0.5
+                        use _rf_editor_panel_hide_button("style", "right", "rf_style_hide")
 
             vbox:
                 xfill True
@@ -127,11 +133,9 @@ screen _rf_editor_style_panel():
                         size _renforge_editor_ui_px(17)
 
                 if _rf_facts is not None and _rf_facts["lock"] is not None:
-                    text (
-                        _renforge_editor_t("lock.%s" % _rf_facts["lock"][0])
-                        + " — " + (_rf_facts["lock"][2] or _rf_facts["lock"][1])
-                    ):
+                    text _renforge_editor_lock_detail():
                         id "rf_style_lock"
+                        substitute False
                         color _renforge_editor_lock_color()
                         font _renforge_editor_ui_font()
                         size _renforge_editor_ui_px(16)
