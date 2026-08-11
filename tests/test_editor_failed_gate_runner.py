@@ -25,7 +25,11 @@ def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None
     client = MagicMock()
     client.request.side_effect = [
         {"ok": False, "lock_reason": LOCK_SYNTHETIC_WIDGET_ID},  # select reply
-        {"ok": True, "preview_position": [100, 100]},  # status before
+        {
+            "ok": True,
+            "preview_position": [100, 100],
+            "selected_lock_reason": LOCK_SYNTHETIC_WIDGET_ID,
+        },  # status before
         {"ok": False, "error": LOCK_SYNTHETIC_WIDGET_ID},  # drag reply
         {"ok": True, "preview_position": [100, 100]},  # status after
     ]

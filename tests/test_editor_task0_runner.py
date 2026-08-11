@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from renforge.bridge.client import BridgeProtocolError
 from renforge.editor_demo_runner import _ed_do_save
 from renforge.editor_runner_status import is_reload_committed
@@ -9,6 +11,7 @@ from renforge.editor_runner_status import is_reload_committed
 from renforge.editor_task0_runner import (
     EDITOR_RESOURCE,
     FIXTURE_RESOURCE,
+    _purple_border_visible,
     inject_editor_task0_resources,
 )
 
@@ -16,6 +19,20 @@ from renforge.editor_task0_runner import (
 def test_task0_runner_resources_are_real_files() -> None:
     assert EDITOR_RESOURCE.is_file(), EDITOR_RESOURCE
     assert FIXTURE_RESOURCE.is_file(), FIXTURE_RESOURCE
+
+
+def test_purple_border_detection_scales_logical_coordinates() -> None:
+    image = Image.new("RGB", (2560, 1440), "#101010")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((200, 200, 598, 398), outline="#a78bfa", width=4)
+
+    assert _purple_border_visible(image, [100, 100, 200, 100])
+
+
+def test_purple_border_detection_rejects_plain_perimeter() -> None:
+    image = Image.new("RGB", (1280, 720), "#101010")
+
+    assert not _purple_border_visible(image, [100, 100, 200, 100])
 
 
 def test_task0_runner_injects_editor_and_fixture(tmp_path: Path) -> None:

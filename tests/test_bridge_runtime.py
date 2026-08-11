@@ -3312,15 +3312,73 @@ def test_editor_lock_ui_never_exposes_internal_codes_or_expands_canvas_label(
         state.selected_original_position = [22, 440]
         state.preview_position = None
         state.selected_lock_reason = "XPOS_LITERAL_REQUIRED"
+        state.opacity = 1.0
 
         globs["_renforge_editor_set_label"](22, 440)
 
-        assert globs["_renforge_editor_label_snapshot"]()["text"] == (
+        far_label = globs["_renforge_editor_label_snapshot"]()
+        assert far_label["text"] == (
             "id=demo_locked_expr x=22 y=440"
         )
+        assert far_label["alpha"] == 1.0
+        globs["_renforge_editor_set_label"](
+            int(far_label["x"]) + int(far_label["w"]) // 2,
+            int(far_label["y"]) + int(far_label["h"]) // 2,
+        )
+        assert globs["_renforge_editor_label_snapshot"]()["alpha"] == 0.2
         assert globs["_renforge_editor_lock_detail"]() == (
             "Locked — Position must use a literal xpos value."
         )
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_tree_summary_reports_cross_screen_duplicate_ids(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        globs["_renforge_editor_active_game_screens"] = lambda: [
+            "screen_a",
+            "screen_b",
+        ]
+        widget_maps = {
+            "screen_a": {"shared": object(), "unique": object()},
+            "screen_b": {"shared": object()},
+        }
+        globs["_renforge_editor_widget_map"] = lambda screen_name: (
+            object(),
+            widget_maps[screen_name],
+        )
+        globs["_renforge_editor_tree_rows"] = lambda: {
+            "rows": [
+                {"truncated": True},
+            ],
+            "total": 1200,
+            "count_truncated": True,
+            "depth_truncated": True,
+        }
+
+        assert globs["_renforge_editor_tree_summary"]() == {
+            "total": 1200,
+            "count_truncated": True,
+            "depth_truncated": True,
+            "terminal_row_count": 1,
+            "duplicate_widget_screens": {"shared": ["screen_a", "screen_b"]},
+        }
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 

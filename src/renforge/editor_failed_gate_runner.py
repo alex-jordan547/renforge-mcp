@@ -27,6 +27,7 @@ FIXTURE_RESOURCE = (
 
 # Shared Gate Lock Reason Codes
 LOCK_SYNTHETIC_WIDGET_ID = "SYNTHETIC_WIDGET_ID"
+LOCK_MISSING_SOURCE_LOCATION = "MISSING_SOURCE_LOCATION"
 LOCK_TRANSFORM_CROP_COMPOSITE = "TRANSFORM_CROP_PARTIAL_UNSUPPORTED"
 LOCK_LOOP_INSTANCE = "LOOP_INSTANCE_UNSUPPORTED"
 LOCK_MULTI_INSTANCE = "MULTI_INSTANCE_UNSUPPORTED"
@@ -100,11 +101,6 @@ def probe_locked_target(
     selected_rect = client.eval_expr("_renforge_editor_state().selected_rect")
     save_enabled = bool(client.eval_expr("_renforge_editor_save_enabled()"))
 
-    if expected_lock_reason not in label_text:
-        raise AssertionError(
-            f"label_text for {target_name} missing lock code {expected_lock_reason!r}: {label_text!r}"
-        )
-
     if not (isinstance(selected_rect, list) and len(selected_rect) == 4 and selected_rect[2] > 0 and selected_rect[3] > 0):
         raise AssertionError(f"selected_rect for {target_name} is not visible/measurable: {selected_rect!r}")
 
@@ -115,6 +111,16 @@ def probe_locked_target(
     # validation error here would mean the lock was never exercised, so only
     # the target-specific lock code counts as a prevented drag.
     status_before = client.request("editor_task0_status", {})
+    structured_lock_reason = (
+        status_before.get("selected_lock_reason")
+        if isinstance(status_before, dict)
+        else None
+    )
+    if structured_lock_reason != expected_lock_reason:
+        raise AssertionError(
+            f"structured lock reason for {target_name} is {structured_lock_reason!r}, "
+            f"expected {expected_lock_reason!r}"
+        )
     preview_before = status_before.get("preview_position") if isinstance(status_before, dict) else None
     source_before = fixture_path.read_bytes()
     drag_reply = client.request(
@@ -149,6 +155,7 @@ def probe_locked_target(
         "ok": ok,
         "lock_reason": lock_reason,
         "label_text": label_text,
+        "structured_lock_reason": structured_lock_reason,
         "selected_rect": selected_rect,
         "save_enabled": save_enabled,
         "drag_prevented": True,
@@ -174,7 +181,7 @@ def run_editor_failed_gate_live_scenario(
         "gate_families": {},
     }
 
-    # 1. Missing source identity (textbutton "NO_ID")
+    # 1. Missing source location (source-backed textbutton without an authored id)
     info = list_ui_info(client, FIXTURE_SCREEN)
     elements = info.get("elements") if isinstance(info.get("elements"), list) else []
     no_id_elem = next(
@@ -189,7 +196,7 @@ def run_editor_failed_gate_live_scenario(
         client,
         click_x=click_x,
         click_y=click_y,
-        expected_lock_reason=LOCK_SYNTHETIC_WIDGET_ID,
+        expected_lock_reason=LOCK_MISSING_SOURCE_LOCATION,
         target_name="identity",
         fixture_path=fixture_path,
         output_dir=output_dir,

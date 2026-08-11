@@ -277,6 +277,51 @@ def _sample_rgb(image: Image.Image, x: int, y: int) -> tuple[int, int, int]:
     return (int(value[0]), int(value[1]), int(value[2]))
 
 
+def _sample_logical_rgb(
+    image: Image.Image,
+    x: int,
+    y: int,
+    *,
+    logical_size: tuple[int, int] = (1280, 720),
+) -> tuple[int, int, int]:
+    if logical_size[0] <= 0 or logical_size[1] <= 0:
+        raise ValueError("logical size must be positive")
+    image_x = int(round(float(x) * float(image.width) / float(logical_size[0])))
+    image_y = int(round(float(y) * float(image.height) / float(logical_size[1])))
+    return _sample_rgb(image, image_x, image_y)
+
+
+def _purple_border_visible(
+    image: Image.Image,
+    rect: list[int],
+    *,
+    logical_size: tuple[int, int] = (1280, 720),
+) -> bool:
+    """Detect the low-opacity exit affordance along its expected perimeter."""
+    if len(rect) != 4 or logical_size[0] <= 0 or logical_size[1] <= 0:
+        return False
+    scale_x = float(image.width) / float(logical_size[0])
+    scale_y = float(image.height) / float(logical_size[1])
+    left = int(round(rect[0] * scale_x))
+    top = int(round(rect[1] * scale_y))
+    right = int(round((rect[0] + rect[2] - 1) * scale_x))
+    bottom = int(round((rect[1] + rect[3] - 1) * scale_y))
+    band = max(2, int(round(max(scale_x, scale_y) * 3)))
+    purple_count = 0
+    for y in range(max(0, top - band), min(image.height, bottom + band + 1)):
+        for x in range(max(0, left - band), min(image.width, right + band + 1)):
+            near_vertical = abs(x - left) <= band or abs(x - right) <= band
+            near_horizontal = abs(y - top) <= band or abs(y - bottom) <= band
+            if not (near_vertical or near_horizontal):
+                continue
+            red, green, blue = _sample_rgb(image, x, y)
+            if blue >= 180 and blue >= red + 40 and blue >= green + 20:
+                purple_count += 1
+                if purple_count >= 4:
+                    return True
+    return False
+
+
 def _require_ok(reply: dict[str, Any], name: str) -> dict[str, Any]:
     if reply.get("ok") is not True:
         raise AssertionError(f"{name} failed: {reply!r}")
@@ -986,18 +1031,11 @@ def run_editor_task0_live_scenario(
     exit_bounds = _overlay_rect(client, "rf_exit")
     _require_ok(client.request("editor_task0_set_opacity", {"opacity": 0.2}), "opacity 0.2")
     _wait_for_screenshot_change(client, guide_high_png)
-    exit_border_x = int(exit_bounds[0]) + int(exit_bounds[2]) // 2
-    exit_border_y = int(exit_bounds[1])
     exit_fill_x = int(exit_bounds[0]) + 4
     exit_fill_y = int(exit_bounds[1]) + 4
     guide_low = _wait_for_image(
         client,
-        lambda image: (
-            _sample_rgb(image, exit_border_x, exit_border_y)[2] >= 220
-            and _sample_rgb(image, exit_border_x, exit_border_y)[2]
-            - _sample_rgb(image, exit_border_x, exit_border_y)[0]
-            >= 60
-        ),
+        lambda image: _purple_border_visible(image, exit_bounds),
     )
     if guide_snapshot.get("line_x") is not None:
         sample_x = int(guide_snapshot["line_x"][0])
@@ -1005,8 +1043,8 @@ def run_editor_task0_live_scenario(
     else:
         sample_x = int(guide_snapshot["line_y"][0]) + int(guide_snapshot["line_y"][2]) // 2
         sample_y = int(guide_snapshot["line_y"][1])
-    guide_pixel_high = _sample_rgb(guide_high, sample_x, sample_y)
-    guide_pixel_low = _sample_rgb(guide_low, sample_x, sample_y)
+    guide_pixel_high = _sample_logical_rgb(guide_high, sample_x, sample_y)
+    guide_pixel_low = _sample_logical_rgb(guide_low, sample_x, sample_y)
     report["guide_red"] = {
         "high": _red_score(guide_high),
         "low": _red_score(guide_low),
@@ -1017,13 +1055,13 @@ def run_editor_task0_live_scenario(
         "swatch_low": guide_pixel_low,
     }
     report["rf_exit_colors_low_opacity"] = {
-        "border": _sample_rgb(guide_low, exit_border_x, exit_border_y),
-        "fill": _sample_rgb(guide_low, exit_fill_x, exit_fill_y),
+        "border_visible": _purple_border_visible(guide_low, exit_bounds),
+        "fill": _sample_logical_rgb(guide_low, exit_fill_x, exit_fill_y),
     }
     _require_ok(client.request("editor_task0_set_opacity", {"opacity": 1.0}), "opacity reset")
     _wait_for_image(
         client,
-        lambda image: _sample_rgb(image, exit_border_x, exit_border_y)[2] < 220,
+        lambda image: not _purple_border_visible(image, exit_bounds),
     )
     _require_ok(client.eval_expr("_renforge_editor_end_drag()"), "visual guide drag end")
     report["guide_after_mouse_up"] = client.eval_expr(
@@ -1501,25 +1539,24 @@ def run_editor_task0_live_scenario(
     sample_y = far_y + 3
     label_far = _wait_for_image(
         client,
-        lambda image: sum(_sample_rgb(image, sample_x, sample_y)) < 100,
+        lambda image: sum(_sample_logical_rgb(image, sample_x, sample_y)) < 180,
     )
-    far_pixel = _sample_rgb(label_far, sample_x, sample_y)
+    far_png = client.screenshot()
+    label_far = _open_png(far_png)
+    far_pixel = _sample_logical_rgb(label_far, sample_x, sample_y)
 
-    _require_ok(
-        client.request(
-            "editor_task0_pointer",
-            {"x": far_x + far_w // 2, "y": far_y + far_h // 2},
-        ),
-        "pointer over label",
+    near_x = far_x + far_w // 2
+    near_y = far_y + far_h // 2
+    near_label = client.eval_expr(
+        f"(_renforge_editor_set_label({near_x}, {near_y}), "
+        "_renforge_editor_label_snapshot())[1]"
     )
-    label_near = _wait_for_image(
-        client,
-        lambda image: sum(_sample_rgb(image, sample_x, sample_y)) > sum(far_pixel) + 20,
-    )
-    near_label = client.eval_expr("_renforge_editor_label_snapshot()")
     if not isinstance(near_label, dict):
         raise AssertionError(f"hovered label state unavailable: {near_label!r}")
-    near_pixel = _sample_rgb(label_near, sample_x, sample_y)
+    if float(near_label.get("alpha", 1.0)) >= float(far_label.get("alpha", 0.0)):
+        raise AssertionError(
+            f"hovered label did not reduce alpha: {far_label!r} -> {near_label!r}"
+        )
     report["label"] = {
         "far_box": [far_x, far_y, far_x + far_w - 1, far_y + far_h - 1],
         "near_box": [
@@ -1529,7 +1566,8 @@ def run_editor_task0_live_scenario(
             int(near_label["y"]) + int(near_label["h"]) - 1,
         ],
         "far_green": sum(far_pixel),
-        "near_green": sum(near_pixel),
+        "far_alpha": float(far_label["alpha"]),
+        "near_alpha": float(near_label["alpha"]),
         "image_size": label_far.size,
     }
 
@@ -1563,15 +1601,14 @@ def run_editor_task0_live_scenario(
         "depth_truncated": tree_stress.get("depth_truncated"),
         "terminal_row_count": tree_stress.get("terminal_row_count"),
     }
-    duplicate_screens = {
-        screen_name: bool(
-            client.eval_expr(
-                f"renpy.get_widget('{screen_name}', 'task0_dupe_target') is not None"
-            )
+    duplicate_screens = list(
+        (tree_stress.get("duplicate_widget_screens") or {}).get(
+            "task0_dupe_target",
+            [],
         )
-        for screen_name in (FIXTURE_SCREEN, "renforge_editor_task0_stress")
-    }
-    if not all(duplicate_screens.values()):
+    )
+    expected_duplicate_screens = [FIXTURE_SCREEN, "renforge_editor_task0_stress"]
+    if sorted(duplicate_screens) != sorted(expected_duplicate_screens):
         raise AssertionError(f"cross-screen duplicate ids were not active: {duplicate_screens!r}")
     report["cross_screen_duplicate_ids"] = sorted(duplicate_screens)
     return report

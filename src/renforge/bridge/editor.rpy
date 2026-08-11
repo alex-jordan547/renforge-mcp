@@ -1258,7 +1258,21 @@ init 1100 python:
             "depth_truncated": depth_truncated,
         }
 
+    def _renforge_editor_duplicate_widget_screens():
+        widget_screens = {}
+        for screen_name in _renforge_editor_active_game_screens():
+            _mapped_screen, widgets = _renforge_editor_widget_map(screen_name)
+            for widget_id in widgets:
+                widget_screens.setdefault(str(widget_id), set()).add(str(screen_name))
+        return {
+            widget_id: sorted(screen_names)
+            for widget_id, screen_names in widget_screens.items()
+            if len(screen_names) > 1
+        }
+
+
     def _renforge_editor_tree_summary():
+        duplicate_widget_screens = _renforge_editor_duplicate_widget_screens()
         tree = _renforge_editor_tree_rows()
         terminal_row_count = 0
         for row in tree.get("rows", []):
@@ -1269,6 +1283,7 @@ init 1100 python:
             "count_truncated": tree.get("count_truncated"),
             "depth_truncated": tree.get("depth_truncated"),
             "terminal_row_count": terminal_row_count,
+            "duplicate_widget_screens": duplicate_widget_screens,
         }
 
     def _renforge_editor_tree_indent(depth):
