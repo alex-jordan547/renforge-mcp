@@ -19,6 +19,7 @@ from renforge.editor_live_common import (
     sha256_file as _sha256_file,
     wait_bounds,
 )
+from renforge.editor_runner_status import is_reload_settled
 from renforge.editor_task0_runner import (
     _require_ok,
     _source_generation,
@@ -431,6 +432,11 @@ def _attempt_save_and_rebind(
         "status_text": None,
     }
 
+    def failure(reason: str, **details: Any) -> dict[str, Any]:
+        report.update({"ok": False, "reason": reason})
+        report.update(details)
+        return report
+
     pre_analysis = _require_ok(
         client.request("editor_task0_status"),
         "rotation status before save",
@@ -451,38 +457,26 @@ def _attempt_save_and_rebind(
 
     save_request = client.click_element(id="rf_save", screen="_renforge_editor_overlay")
     if not isinstance(save_request, dict) or save_request.get("ok") is not True:
-        return {
-            "ok": False,
-            "reason": "write_chain_failed",
-            "save_request": save_request,
-        }
+        return failure("write_chain_failed", save_request=save_request)
 
     save_status = _wait_for_status(
         client,
-        lambda status: (not bool(status.get("save_in_progress")))
-        and str(status.get("status_text")) in {"Reload committed", "Reload failed"},
+        is_reload_settled,
         timeout=60.0,
         poll_name="rotation save settle",
     )
     report["status_code"] = save_status.get("status_code")
     report["status_text"] = str(save_status.get("status_text"))
-    if report["status_text"] != "Reload committed":
-        return {
-            "ok": False,
-            "reason": "write_chain_failed",
-            "status_text": report["status_text"],
-            "save_error": save_status.get("save_error"),
-        }
+    if report["status_code"] != "reload_committed":
+        return failure("write_chain_failed", save_error=save_status.get("save_error"))
 
     generation_after = _source_generation(save_status)
     if isinstance(generation_before, int) and generation_after != generation_before + 1:
-        return {
-            "ok": False,
-            "reason": "write_chain_failed",
-            "status_text": report["status_text"],
-            "generation_before": generation_before,
-            "generation_after": generation_after,
-        }
+        return failure(
+            "write_chain_failed",
+            generation_before=generation_before,
+            generation_after=generation_after,
+        )
 
     post_status = _wait_for_status(
         client,
@@ -494,24 +488,21 @@ def _attempt_save_and_rebind(
     )
     selected_reason = post_status.get("selected_lock_reason")
     if selected_reason not in (None, ""):
-        return {
-            "ok": False,
-            "reason": "write_chain_failed",
-            "status_text": report["status_text"],
-            "post_save_rebind_lock_reason": selected_reason,
-        }
+        return failure(
+            "write_chain_failed",
+            post_save_rebind_lock_reason=selected_reason,
+        )
 
     post_text = fixture_path.read_text(encoding="utf-8")
     post_pos = _parse_xy(post_text, widget_id=TARGET_ID)
     source_preserved = post_text == expected_text
     if not source_preserved or post_pos != expected_pos:
-        return {
-            "ok": False,
-            "reason": "source_preservation_failed",
-            "expected_position": expected_pos,
-            "post_position": post_pos,
-            "matches_independent_expected": source_preserved,
-        }
+        return failure(
+            "source_preservation_failed",
+            expected_position=expected_pos,
+            post_position=post_pos,
+            matches_independent_expected=source_preserved,
+        )
 
     report.update(
         {

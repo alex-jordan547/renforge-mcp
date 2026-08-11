@@ -4,6 +4,13 @@ from collections.abc import Mapping
 from typing import Any
 
 
+_RELOAD_SETTLED_CODES = frozenset({"reload_committed", "reload_failed"})
+
+
+def is_reload_settled(status: Mapping[str, Any]) -> bool:
+    return not bool(status.get("save_in_progress")) and status.get("status_code") in _RELOAD_SETTLED_CODES
+
+
 def is_reload_committed(
     status: Mapping[str, Any],
     *,

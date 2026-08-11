@@ -26,7 +26,7 @@ def test_scrolled_commit_preserves_structured_reload_status(tmp_path: Path, monk
                 "ok": True,
                 "save_in_progress": False,
                 "status_code": "reload_failed",
-                "status_text": "Reload failed",
+                "status_text": "Échec du rechargement",
                 "save_error": "ATTESTATION_FAILED",
             },
         ]
@@ -37,7 +37,12 @@ def test_scrolled_commit_preserves_structured_reload_status(tmp_path: Path, monk
         "wait_bounds",
         lambda *_args, **_kwargs: {"x": 100, "y": 80, "width": 80, "height": 40},
     )
-    monkeypatch.setattr(viewport_runner, "_wait_for_status", lambda *_args, **_kwargs: next(statuses))
+    def wait_for_status(_client, predicate, **_kwargs):
+        status = next(statuses)
+        assert predicate(status)
+        return status
+
+    monkeypatch.setattr(viewport_runner, "_wait_for_status", wait_for_status)
 
     class Client:
         def request(self, _name: str, _payload=None) -> dict:
@@ -56,5 +61,5 @@ def test_scrolled_commit_preserves_structured_reload_status(tmp_path: Path, monk
     )
 
     assert report["status_code"] == "reload_failed"
-    assert report["status_text"] == "Reload failed"
+    assert report["status_text"] == "Échec du rechargement"
     assert report["source_unchanged"] is True

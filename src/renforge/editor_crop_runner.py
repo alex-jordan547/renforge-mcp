@@ -33,6 +33,7 @@ from renforge.editor_live_common import (
     sha256_file as _sha256_file,
     wait_bounds,
 )
+from renforge.editor_runner_status import is_reload_settled
 from renforge.editor_task0_runner import (
     _require_ok,
     _source_generation,
@@ -609,12 +610,11 @@ def run_editor_crop_live_scenario(
     )
     save_status = _wait_for_status(
         client,
-        lambda status: not bool(status.get("save_in_progress"))
-        and status.get("status_text") in ("Reload committed", "Reload failed"),
+        is_reload_settled,
         timeout=60.0,
         poll_name="crop save settled",
     )
-    if save_status.get("status_text") != "Reload committed":
+    if save_status.get("status_code") != "reload_committed":
         raise AssertionError(f"save did not commit: {save_status.get('save_error')!r}")
     if _source_generation(save_status) != generation_before + 1:
         raise AssertionError(f"unexpected script generation after save: {save_status!r}")

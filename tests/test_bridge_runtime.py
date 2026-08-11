@@ -3004,25 +3004,43 @@ def test_editor_tree_marks_only_exact_runtime_representation_selected(
         globs["_renforge_editor_tree_snippet"] = lambda *_args: ""
         globs["_renforge_editor_tree_badge_color"] = lambda _badge: "#fff"
 
-        rows = []
-        globs["_renforge_editor_tree_walk"](
-            parent,
-            0,
-            (),
-            {id(child): "task0_target"},
-            {id(parent): focus_key, id(child): text_key},
-            rows,
+        def selected_rows(selected_id, selected_runtime_key, runtime_by_object):
+            rows = []
+            globs["_renforge_editor_tree_walk"](
+                parent,
+                0,
+                (),
+                {id(child): "task0_target"},
+                runtime_by_object,
+                rows,
+                selected_id,
+                selected_runtime_key,
+                "test_screen",
+                "test_screen",
+                set(),
+                {"total": 0, "count_truncated": False, "depth_truncated": False},
+            )
+            return [row for row in rows if row.get("selected")]
+
+        selected = selected_rows(
             "task0_target",
             focus_key,
-            "test_screen",
-            "test_screen",
-            set(),
-            {"total": 0, "count_truncated": False, "depth_truncated": False},
+            {id(parent): focus_key, id(child): text_key},
         )
-
-        selected = [row for row in rows if row.get("selected")]
         assert len(selected) == 1
         assert selected[0]["runtime_key"] == focus_key
+
+        legacy_id_selected = selected_rows("task0_target", None, {})
+        assert len(legacy_id_selected) == 1
+        assert legacy_id_selected[0]["label"] == "text"
+
+        anonymous_selected = selected_rows(
+            None,
+            text_key,
+            {id(parent): focus_key, id(child): text_key},
+        )
+        assert len(anonymous_selected) == 1
+        assert anonymous_selected[0]["runtime_key"] == text_key
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 

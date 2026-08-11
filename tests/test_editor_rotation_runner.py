@@ -37,7 +37,7 @@ def test_save_and_rebind_preserves_structured_reload_status(tmp_path: Path, monk
                 "ok": True,
                 "save_in_progress": False,
                 "status_code": "reload_committed",
-                "status_text": "Reload committed",
+                "status_text": "Rechargement terminé",
                 "script_generation": 4,
             },
             {
@@ -48,7 +48,12 @@ def test_save_and_rebind_preserves_structured_reload_status(tmp_path: Path, monk
             },
         ]
     )
-    monkeypatch.setattr(rotation_runner, "_wait_for_status", lambda *_args, **_kwargs: next(statuses))
+    def wait_for_status(_client, predicate, **_kwargs):
+        status = next(statuses)
+        assert predicate(status)
+        return status
+
+    monkeypatch.setattr(rotation_runner, "_wait_for_status", wait_for_status)
 
     class Client:
         def request(self, name: str) -> dict:
@@ -68,3 +73,47 @@ def test_save_and_rebind_preserves_structured_reload_status(tmp_path: Path, monk
 
     assert report["ok"] is True
     assert report["status_code"] == "reload_committed"
+
+
+def test_save_failure_preserves_structured_reload_status(tmp_path: Path, monkeypatch) -> None:
+    fixture = tmp_path / "fixture.rpy"
+    fixture.write_text(
+        'screen example():\n'
+        '    button id "rotation_target" xpos 100 ypos 200:\n'
+        '        add Transform(Solid("#fff"), rotate=9)\n',
+        encoding="utf-8",
+    )
+
+    def wait_for_status(_client, predicate, **_kwargs):
+        status = {
+            "ok": True,
+            "save_in_progress": False,
+            "status_code": "reload_failed",
+            "status_text": "Échec du rechargement",
+            "save_error": "ATTESTATION_FAILED",
+            "script_generation": 3,
+        }
+        assert predicate(status)
+        return status
+
+    monkeypatch.setattr(rotation_runner, "_wait_for_status", wait_for_status)
+
+    class Client:
+        def request(self, name: str) -> dict:
+            assert name == "editor_task0_status"
+            return {"ok": True, "script_generation": 3}
+
+        def click_element(self, **_kwargs) -> dict:
+            return {"ok": True}
+
+    report = rotation_runner._attempt_save_and_rebind(
+        Client(),
+        fixture_path=fixture,
+        expected_move=[5, 7],
+    )
+
+    assert report["ok"] is False
+    assert report["reason"] == "write_chain_failed"
+    assert report["status_code"] == "reload_failed"
+    assert report["status_text"] == "Échec du rechargement"
+    assert report["save_error"] == "ATTESTATION_FAILED"
