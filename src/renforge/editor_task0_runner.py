@@ -391,6 +391,15 @@ def _wait_for_status(
     raise AssertionError(f"{poll_name} timeout: {last_status!r}")
 
 
+def _save_has_started(status: dict[str, Any]) -> bool:
+    return (
+        bool(status.get("save_in_progress"))
+        and bool(status.get("save_requested"))
+        and status.get("status_code") == "saving"
+        and status.get("save_button_state") == "saving"
+    )
+
+
 def _overlay_rect(client: Any, wanted_id: str) -> list[int]:
     """Return ``[x, y, width, height]`` from the overlay's focusable UI elements."""
     elements = client.list_ui_elements(screen="_renforge_editor_overlay")
@@ -1399,10 +1408,7 @@ def run_editor_task0_live_scenario(
     )
     _wait_for_status(
         client,
-        lambda status: (
-            bool(status.get("pending_transaction_id"))
-            and status.get("save_button_state") == "saving"
-        ),
+        _save_has_started,
         timeout=6.0,
         poll_name="save pending",
     )

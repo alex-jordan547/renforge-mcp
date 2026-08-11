@@ -12,6 +12,7 @@ from renforge.editor_task0_runner import (
     EDITOR_RESOURCE,
     FIXTURE_RESOURCE,
     _purple_border_visible,
+    _save_has_started,
     inject_editor_task0_resources,
 )
 
@@ -19,6 +20,23 @@ from renforge.editor_task0_runner import (
 def test_task0_runner_resources_are_real_files() -> None:
     assert EDITOR_RESOURCE.is_file(), EDITOR_RESOURCE
     assert FIXTURE_RESOURCE.is_file(), FIXTURE_RESOURCE
+
+
+def test_save_has_started_uses_structured_state_before_transaction_assignment() -> None:
+    status = {
+        "save_in_progress": True,
+        "save_requested": True,
+        "status_code": "saving",
+        "status_text": "Enregistrement",
+        "save_button_state": "saving",
+        "pending_transaction_id": None,
+    }
+
+    assert _save_has_started(status)
+    assert not _save_has_started({**status, "save_in_progress": False})
+    assert not _save_has_started({**status, "save_requested": False})
+    assert not _save_has_started({**status, "status_code": "reload_committed"})
+    assert not _save_has_started({**status, "save_button_state": "idle"})
 
 
 def test_purple_border_detection_scales_logical_coordinates() -> None:
