@@ -330,13 +330,10 @@ def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Pat
 
     mismatch = live.launch_game(str(project), editor=False)
 
-    assert mismatch == {
-        "ok": True,
-        "already_running": True,
-        "ready": True,
-        "current_label": "dashboard_scene",
-        "editor": True,
-    }
+    assert mismatch["ok"] is False
+    assert mismatch["code"] == "SESSION_MODE_MISMATCH"
+    assert mismatch["requested_editor"] is False
+    assert mismatch["existing_editor"] is True
     assert live._SESSIONS[key] is session
     assert session.close_calls == 0
 
@@ -398,8 +395,8 @@ def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkey
 
     result = live.launch_game(str(project), editor=False)
     assert result["ok"] is True
-    assert result["editor"] is True
-    assert launch_kwargs["editor"] is True
+    assert result["editor"] is False
+    assert launch_kwargs["editor"] is False
 
     live._SESSIONS.pop(live._key(project), None)
 
@@ -568,7 +565,7 @@ def test_start_launch_returns_before_slow_startup_and_exposes_ready_status(tmp_p
     live.stop_game(str(project))
 
 
-def test_start_launch_defaults_editor_false(tmp_path: Path) -> None:
+def test_start_launch_defaults_editor_true(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     release = threading.Event()
     started = threading.Event()
@@ -584,13 +581,13 @@ def test_start_launch_defaults_editor_false(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["ready"] is False
     assert result["status"] == "starting"
-    assert result["editor"] is False
+    assert result["editor"] is True
 
     release.set()
     final = _wait_for_launch_status(project, "ready")
     assert final["ok"] is True
     assert final["ready"] is True
-    assert final["editor"] is False
+    assert final["editor"] is True
     live.stop_game(str(project))
 
 

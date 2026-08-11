@@ -120,7 +120,7 @@ def launch_game(
     body: dict[str, Any] = {
         "version": version,
         "warp": warp,
-        "editor": True,
+        "editor": bool(editor),
         "display": display,
         "audio": audio,
         "savedir": savedir,

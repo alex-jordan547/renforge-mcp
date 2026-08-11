@@ -30,32 +30,25 @@ def _source(role: str, basename: str, digest: str) -> dict[str, object]:
 
 
 def _write_schema3_manifest(project_root: Path) -> tuple[Path, str]:
+    from renforge.bridge.artifacts import _publish_intent, artifacts_path
+
     editor_basename = "zzrenforge_editor_" + "a" * 32 + ".rpy"
-    control = project_root / ".renforge" / "control"
-    control.mkdir(parents=True)
-    control.chmod(0o700)
-    manifest_path = control / "artifacts.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 3,
-                "session_id": "a" * 32,
-                "project_root": str(project_root.resolve()),
-                "bridge_info": "bridge.json",
-                "sources": [
-                    _source("bridge", "zzrenforge_bridge_" + "a" * 32 + ".rpy", "1" * 64),
-                    _source("editor", editor_basename, "2" * 64),
-                ],
-                "asset_tree": {
-                    "dirname": editor_basename.removesuffix(".rpy"),
-                    "files": [],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    manifest_path.chmod(0o600)
-    return manifest_path, editor_basename
+    manifest = {
+        "schema_version": 3,
+        "session_id": "a" * 32,
+        "project_root": str(project_root.resolve()),
+        "bridge_info": "bridge.json",
+        "sources": [
+            _source("bridge", "zzrenforge_bridge_" + "a" * 32 + ".rpy", "1" * 64),
+            _source("editor", editor_basename, "2" * 64),
+        ],
+        "asset_tree": {
+            "dirname": editor_basename.removesuffix(".rpy"),
+            "files": [],
+        },
+    }
+    _publish_intent(project_root, manifest)
+    return artifacts_path(project_root), editor_basename
 
 
 def test_injected_editor_path_reads_schema3_artifact_manifest(tmp_path: Path) -> None:

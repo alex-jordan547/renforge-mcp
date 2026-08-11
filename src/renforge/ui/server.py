@@ -790,7 +790,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             _start_live_launch,
             version=version,
             warp=warp,
-            editor=True,
+            editor=editor,
             display=display,
             audio=audio,
             savedir=savedir,

@@ -59,7 +59,7 @@ class _LaunchTask:
     ``closed``. Cancellation is ``failed`` with ``LAUNCH_CANCELLED``.
     """
 
-    def __init__(self, project_root: Path, *, requested_editor: bool = False) -> None:
+    def __init__(self, project_root: Path, *, requested_editor: bool = True) -> None:
         self.project_root = Path(project_root)
         self.started = time.monotonic()
         self.requested_editor = requested_editor
@@ -153,7 +153,7 @@ def _run_launch(
     task: _LaunchTask,
     launch: Callable[[Path, threading.Event], dict[str, Any]],
     *,
-    editor: bool = False,
+    editor: bool = True,
 ) -> None:
     try:
         if task.cancel_event.is_set():
@@ -306,7 +306,7 @@ def start_launch(
     launch: Callable[[Path, threading.Event], dict[str, Any]],
     *,
     wait_timeout: float = _LAUNCH_RESPONSE_WAIT_SECONDS,
-    editor: bool = False,
+    editor: bool = True,
 ) -> dict[str, Any]:
     project = RenpyProject(Path(project_path))
     key = _key(project.root)
@@ -431,7 +431,7 @@ def launch_game(
     version: str = "stable",
     warp: str | None = None,
     *,
-    editor: bool = False,
+    editor: bool = True,
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
@@ -464,16 +464,15 @@ def launch_game(
     if isinstance(session_cfg.get("cleanup_on_stop"), bool):
         cleanup_on_stop = session_cfg["cleanup_on_stop"]
     preferences = str(session_cfg.get("preferences", "existing") or "existing")
-    requested_editor = True
+    requested_editor = bool(editor)
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
     if existing is not None:
         existing_editor = bool(getattr(existing, "editor", False))
-        canonical_editor = bool(existing_editor or requested_editor)
-        if existing_editor != canonical_editor:
+        if existing_editor != requested_editor:
             return _session_mode_mismatch(
-                requested_editor=canonical_editor,
+                requested_editor=requested_editor,
                 existing_editor=existing_editor,
                 message=(
                     "The requested launch mode does not match the existing owned session. "
@@ -590,7 +589,7 @@ def launch_game(
             for parameter in launch_signature.parameters.values()
         )
         if supports_editor:
-            launch_kwargs["editor"] = True
+            launch_kwargs["editor"] = requested_editor
         session_obj = launch_with_bridge(sdk, project, cancel_event=cancel_event, **launch_kwargs)
     except LaunchError as exc:
         return exc.to_dict()
@@ -603,7 +602,7 @@ def launch_game(
             "message": f"{type(exc).__name__}: {exc}",
         }
 
-    session_obj.editor = bool(getattr(session_obj, "editor", True))
+    session_obj.editor = bool(getattr(session_obj, "editor", requested_editor))
     _SESSIONS[key] = session_obj
     label = None
     try:

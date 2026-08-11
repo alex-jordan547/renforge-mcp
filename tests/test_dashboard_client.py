@@ -124,7 +124,7 @@ def test_launch_game_includes_editor_mode(tmp_path: Path, monkeypatch) -> None:
     assert calls["timeout"] == 45
     assert calls["payload"]["version"] == "8.3.7"
     assert calls["payload"]["warp"] == "game/script.rpy:12"
-    assert calls["payload"]["editor"] is True
+    assert calls["payload"]["editor"] is False
 
 
 def test_launch_game_ignores_dashboard_for_another_project(tmp_path: Path, monkeypatch) -> None:

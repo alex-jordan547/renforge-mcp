@@ -238,7 +238,7 @@ def test_api_live_control_dispatches_runtime_action(tmp_path: Path, monkeypatch)
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
-def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -> None:
+def test_api_live_launch_honors_editor_false(tmp_path: Path, monkeypatch) -> None:
     import renforge.ui.server as server
 
     project = _project_root(tmp_path)
@@ -251,7 +251,7 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
             "ready": True,
             "already_running": False,
             "current_label": "start",
-            "editor": True,
+            "editor": kwargs.get("editor"),
         }
 
     monkeypatch.setattr(server.live, "launch_game", fake_launch)
@@ -259,20 +259,20 @@ def test_api_live_launch_dispatches_runtime_start(tmp_path: Path, monkeypatch) -
     client = TestClient(app)
     response = client.post(
         "/api/live/launch?token=token",
-        json={"version": "stable", "editor": True},
+        json={"version": "stable", "editor": False},
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body.get("status") in ("ready", "starting")
-    assert body.get("editor") is True
+    assert body.get("editor") is False
     assert calls["project_path"] == str(project)
-    assert calls.get("editor") is True
+    assert calls.get("editor") is False
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
-def test_api_live_launch_defaults_editor_false(tmp_path: Path, monkeypatch) -> None:
+def test_api_live_launch_defaults_editor_true(tmp_path: Path, monkeypatch) -> None:
     import renforge.ui.server as server
 
     project = _project_root(tmp_path)

@@ -104,6 +104,7 @@ def test_launch_tool_description_mentions_live_editor_default() -> None:
 
     assert "Live Editor" in description
     assert "enabled by default" in description.lower() or "by default" in description.lower()
+    assert "editor=false" in description.lower()
     # First safe follow-ups for agents that only read the tool catalogue.
     assert "renforge_launch_status" in description
     assert "renforge_screenshot" in description or "renforge_scene_tree" in description

@@ -419,6 +419,8 @@ def _register_tools(app: Any) -> None:
     ) -> dict:
         """Launch or reuse a game with the Live Editor enabled by default.
 
+        Pass ``editor=False`` to launch intentionally without the visual editor.
+
         After launch, poll ``renforge_launch_status`` until ready, then observe
         with a fresh ``renforge_screenshot`` or ``renforge_scene_tree`` before
         any click. Use ``renforge_click_at`` or ``renforge_click_element`` with
@@ -1746,7 +1748,8 @@ def create_app() -> Any:
         "an overlay. renforge_launch returns status=starting after 20 seconds "
         "instead of exceeding common MCP timeouts; poll renforge_launch_status "
         "until ready or failed. It uses display/audio=auto and accepts "
-        "savedir=temporary for isolated sessions. For "
+        "savedir=temporary for isolated sessions; pass editor=false only when "
+        "a session without the visual editor is intentional. For "
         "live iteration after external .rpy edits, use "
         "renforge_control(action=\"reload_script\"); Live Editor Save already "
         "reloads and attests its own changes. Use renforge_wait_until for one "

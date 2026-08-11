@@ -212,10 +212,9 @@ def _fake_renpy(store):
 
 @pytest.fixture
 def running_bridge(tmp_path, monkeypatch):
-    import json
     import stat
 
-    from renforge.bridge.control import write_starting_bridge_info
+    from renforge.bridge.control import read_bridge_info, write_starting_bridge_info
 
     project_root = tmp_path.resolve(strict=True)
     session_id = "a" * 32
@@ -301,23 +300,24 @@ def running_bridge(tmp_path, monkeypatch):
 
     # Wait for the listener to publish ready metadata under the private control path.
     info_path = project_root / ".renforge" / "control" / "bridge.json"
-    ready_payload = None
+    ready_info = None
     for _ in range(300):
-        if info_path.exists():
-            try:
-                payload = json.loads(info_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                payload = None
-            if isinstance(payload, dict) and payload.get("state") == "ready":
-                ready_payload = payload
-                break
+        try:
+            ready_info = read_bridge_info(
+                project_root,
+                require_ready=True,
+                expected_session_id=session_id,
+            )
+            break
+        except Exception:
+            pass
         time.sleep(0.01)
-    assert ready_payload is not None, "bridge did not publish ready metadata"
-    assert ready_payload["session_id"] == session_id
-    assert ready_payload["token"] == token
-    assert ready_payload["project_root"] == str(project_root)
-    assert ready_payload["host"] == "127.0.0.1"
-    assert isinstance(ready_payload["port"], int) and 1 <= ready_payload["port"] <= 65535
+    assert ready_info is not None, "bridge did not publish valid ready metadata"
+    assert ready_info.session_id == session_id
+    assert ready_info.token == token
+    assert ready_info.project_root == str(project_root)
+    assert ready_info.host == "127.0.0.1"
+    assert 1 <= ready_info.port <= 65535
     # POSIX private mode is 0600. Windows st_mode is not a real Unix mode
     # (often 0o666); ownership is enforced via the protected DACL instead.
     import os
@@ -332,7 +332,13 @@ def running_bridge(tmp_path, monkeypatch):
     assert not info_path.is_symlink()
     assert not (project_root / ".renforge" / "bridge.json").exists()
 
-    client = BridgeClient.from_project(project_root)
+    client = BridgeClient(
+        BridgeConfig(
+            host=ready_info.host,
+            port=ready_info.port,
+            token=ready_info.token,
+        )
+    )
     env = types.SimpleNamespace(
         client=client,
         store=store,
