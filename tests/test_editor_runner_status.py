@@ -25,13 +25,14 @@ def test_reload_settled_rejects_saving_or_unstructured_english_text() -> None:
     )
 
 
-def test_reload_committed_ignores_localized_text() -> None:
-    assert is_reload_committed(
-        {
-            "save_in_progress": False,
-            "status_code": "reload_committed",
-            "status_text": "Rechargement terminé",
-            "script_generation": 4,
-        },
-        generation=4,
-    )
+def test_reload_committed_ignores_localized_or_contradictory_text() -> None:
+    for status_text in ("Rechargement terminé", "Reload failed"):
+        assert is_reload_committed(
+            {
+                "save_in_progress": False,
+                "status_code": "reload_committed",
+                "status_text": status_text,
+                "script_generation": 4,
+            },
+            generation=4,
+        )
