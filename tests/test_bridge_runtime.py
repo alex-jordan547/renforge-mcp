@@ -2959,6 +2959,74 @@ def test_editor_discovers_anonymous_text_from_screen_cache(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_tree_marks_only_exact_runtime_representation_selected(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        class Node:
+            def __init__(self, label: str, children=()):
+                self.label = label
+                self.children = list(children)
+
+        child = Node("text")
+        parent = Node("button", [child])
+        focus_key = {
+            "screen": "test_screen",
+            "widget_id": "task0_target",
+            "source_location": ["game/screens.rpy", 12],
+            "instance_discriminator": {"kind": "static", "instance_count": 1},
+            "ancestry": [{"type": "Button"}],
+        }
+        text_key = {
+            **focus_key,
+            "ancestry": [{"type": "Button"}, {"type": "Text"}],
+        }
+        globs["_renforge_editor_children"] = lambda node: node.children
+        globs["_renforge_editor_tree_kind"] = lambda node: (
+            ("B", "button", "interactive")
+            if node is parent
+            else ("T", "text", "content")
+        )
+        globs["_renforge_editor_tree_snippet"] = lambda *_args: ""
+        globs["_renforge_editor_tree_badge_color"] = lambda _badge: "#fff"
+
+        rows = []
+        globs["_renforge_editor_tree_walk"](
+            parent,
+            0,
+            (),
+            {id(child): "task0_target"},
+            {id(parent): focus_key, id(child): text_key},
+            rows,
+            "task0_target",
+            focus_key,
+            "test_screen",
+            "test_screen",
+            set(),
+            {"total": 0, "count_truncated": False, "depth_truncated": False},
+        )
+
+        selected = [row for row in rows if row.get("selected")]
+        assert len(selected) == 1
+        assert selected[0]["runtime_key"] == focus_key
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_anonymous_text_preview_moves_the_resolved_runtime_widget(
     running_bridge,
     monkeypatch,

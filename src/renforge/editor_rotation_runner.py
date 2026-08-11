@@ -427,6 +427,7 @@ def _attempt_save_and_rebind(
     report: dict[str, Any] = {
         "ok": False,
         "reason": None,
+        "status_code": None,
         "status_text": None,
     }
 
@@ -463,6 +464,7 @@ def _attempt_save_and_rebind(
         timeout=60.0,
         poll_name="rotation save settle",
     )
+    report["status_code"] = save_status.get("status_code")
     report["status_text"] = str(save_status.get("status_text"))
     if report["status_text"] != "Reload committed":
         return {
@@ -524,6 +526,7 @@ def _attempt_save_and_rebind(
             "matches_independent_expected": source_preserved,
             "post_save_rebind_lock_reason": selected_reason,
             "selected_widget": post_status.get("selected_widget_id"),
+            "status_code": report["status_code"],
             "status_text": report["status_text"],
             "preview_to_source_delta": [expected_pos["x"] - pre_pos["x"], expected_pos["y"] - pre_pos["y"]],
         }

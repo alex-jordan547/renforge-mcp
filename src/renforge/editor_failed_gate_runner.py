@@ -11,7 +11,11 @@ from typing import Any
 
 from PIL import Image
 
-from renforge.editor_live_common import list_ui_info, wait_bounds
+from renforge.editor_live_common import (
+    focusable_edge_point as _focusable_edge_point,
+    list_ui_info,
+    wait_bounds,
+)
 
 FIXTURE_SCREEN = "renforge_editor_failed_gate_fixture"
 FIXTURE_RESOURCE = (
@@ -180,8 +184,7 @@ def run_editor_failed_gate_live_scenario(
     if no_id_elem is None:
         raise AssertionError("could not find NO_ID element in list_ui_info")
     bounds = no_id_elem.get("bounds") or {}
-    click_x = bounds["x"] + bounds["width"] // 2
-    click_y = bounds["y"] + bounds["height"] // 2
+    click_x, click_y = _focusable_edge_point(bounds)
     identity_res = probe_locked_target(
         client,
         click_x=click_x,

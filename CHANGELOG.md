@@ -56,6 +56,9 @@ versioning.
   eliminating a startup race that could surface as intermittent connection refusals.
 - `renforge_launch` keeps the Live Editor enabled by default while honoring an
   explicit `editor=false` opt-out across dashboard and direct launch paths.
+- Live Editor tree selection now highlights only the exact runtime representation;
+  live-proof runners preserve structured reload codes and target focusable button
+  padding when validating locks, eliminating false failures in the 21-suite gate.
 - The working-tree Live Editor launcher now reads and atomically restamps schema-3
   artifact manifests instead of the removed editor-session manifest.
 - Windows TEMP dashboard discovery now uses a process-stable user digest, and

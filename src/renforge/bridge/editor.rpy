@@ -1131,10 +1131,11 @@ init 1100 python:
                     (
                         isinstance(runtime_key, builtins.dict)
                         and isinstance(selected_runtime_key, builtins.dict)
-                        and _renforge_editor_same_target_key(runtime_key, selected_runtime_key)
+                        and runtime_key == selected_runtime_key
                     )
                     or (
-                        widget_id
+                        not isinstance(selected_runtime_key, builtins.dict)
+                        and widget_id
                         and widget_id == selected_id
                         and screen_name == selected_screen
                     )

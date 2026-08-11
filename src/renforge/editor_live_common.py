@@ -87,6 +87,16 @@ def center(bounds: dict[str, Any]) -> tuple[int, int]:
     )
 
 
+def focusable_edge_point(bounds: dict[str, Any]) -> tuple[int, int]:
+    """Pick button padding rather than its nested painted Text displayable."""
+    width = max(1, int(bounds["width"]))
+    height = max(1, int(bounds["height"]))
+    return (
+        int(bounds["x"]) + min(10, width - 1),
+        int(bounds["y"]) + max(0, height - 2),
+    )
+
+
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -133,11 +143,13 @@ def select_lock(
     expected_code: str,
     *,
     fixture_screen: str,
+    prefer_focusable_edge: bool = False,
 ) -> str:
     bounds = wait_bounds(client, widget_id, fixture_screen=fixture_screen)
+    point = focusable_edge_point(bounds) if prefer_focusable_edge else center(bounds)
     selection = client.request(
         "editor_task0_select",
-        {"x": center(bounds)[0], "y": center(bounds)[1]},
+        {"x": point[0], "y": point[1]},
     )
     immediate = selection.get("lock_reason") if isinstance(selection, dict) else None
     if immediate == expected_code:

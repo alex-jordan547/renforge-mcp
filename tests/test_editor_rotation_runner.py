@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from renforge.editor_rotation_runner import _run_manual_rotate_roundtrip
+import renforge.editor_rotation_runner as rotation_runner
 
 
 def test_manual_rotate_roundtrip_handles_replacement_length_change(tmp_path: Path) -> None:
@@ -14,10 +14,57 @@ def test_manual_rotate_roundtrip_handles_replacement_length_change(tmp_path: Pat
     )
     fixture.write_bytes(baseline)
 
-    report = _run_manual_rotate_roundtrip(fixture)
+    report = rotation_runner._run_manual_rotate_roundtrip(fixture)
 
     assert report["rotate"] == {"before": 9, "patched": 10}
     assert report["outside_bytes_equal"] is True
     assert report["patch"]["patched_end"] == report["patch"]["original_end"] + 1
     assert report["matches_baseline"] is True
     assert fixture.read_bytes() == baseline
+
+
+def test_save_and_rebind_preserves_structured_reload_status(tmp_path: Path, monkeypatch) -> None:
+    fixture = tmp_path / "fixture.rpy"
+    fixture.write_text(
+        'screen example():\n'
+        '    button id "rotation_target" xpos 100 ypos 200:\n'
+        '        add Transform(Solid("#fff"), rotate=9)\n',
+        encoding="utf-8",
+    )
+    statuses = iter(
+        [
+            {
+                "ok": True,
+                "save_in_progress": False,
+                "status_code": "reload_committed",
+                "status_text": "Reload committed",
+                "script_generation": 4,
+            },
+            {
+                "ok": True,
+                "selected_widget_id": "rotation_target",
+                "selected_lock_reason": None,
+                "selected_analysis_pending": False,
+            },
+        ]
+    )
+    monkeypatch.setattr(rotation_runner, "_wait_for_status", lambda *_args, **_kwargs: next(statuses))
+
+    class Client:
+        def request(self, name: str) -> dict:
+            assert name == "editor_task0_status"
+            return {"ok": True, "script_generation": 3}
+
+        def click_element(self, **_kwargs) -> dict:
+            text = fixture.read_text(encoding="utf-8")
+            fixture.write_text(text.replace("xpos 100 ypos 200", "xpos 105 ypos 207"), encoding="utf-8")
+            return {"ok": True}
+
+    report = rotation_runner._attempt_save_and_rebind(
+        Client(),
+        fixture_path=fixture,
+        expected_move=[5, 7],
+    )
+
+    assert report["ok"] is True
+    assert report["status_code"] == "reload_committed"

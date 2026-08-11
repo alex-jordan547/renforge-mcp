@@ -9,6 +9,7 @@ from PIL import Image
 from renforge.editor_failed_gate_runner import (
     FIXTURE_SCREEN,
     LOCK_SYNTHETIC_WIDGET_ID,
+    _focusable_edge_point,
     inject_editor_failed_gate_resources,
     probe_locked_target,
 )
@@ -19,6 +20,10 @@ def test_inject_editor_failed_gate_resources(tmp_path: Path) -> None:
     assert target_path.exists()
     assert target_path.name == "zz_renforge_editor_failed_gate_fixture.rpy"
     assert "screen renforge_editor_failed_gate_fixture():" in target_path.read_text("utf-8")
+
+
+def test_focusable_edge_point_avoids_the_text_child() -> None:
+    assert _focusable_edge_point({"x": 100, "y": 100, "width": 77, "height": 44}) == (110, 142)
 
 
 def test_probe_locked_target_verifies_ui_and_lock_reason(tmp_path: Path) -> None:

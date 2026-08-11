@@ -206,6 +206,7 @@ def run_editor_viewport_scrolled_commit(
         "scroll_before": scroll_before,
         "scroll_after": scroll_after,
         "scroll_survived_reload": abs(scroll_after - scroll_before) <= 1,
+        "status_code": settled.get("status_code"),
         "status_text": settled.get("status_text"),
         "save_error": settled.get("save_error"),
         "source_unchanged": after_bytes == baseline_bytes,
@@ -252,6 +253,7 @@ def run_editor_viewport_live_scenario(
             "viewport_container",
             "CONTAINER_POSITION_UNSUPPORTED",
             fixture_screen=FIXTURE_SCREEN,
+            prefer_focusable_edge=True,
         ),
         "nested": select_lock(
             client,
