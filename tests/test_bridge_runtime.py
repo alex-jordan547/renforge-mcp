@@ -348,6 +348,18 @@ def running_bridge(tmp_path, monkeypatch):
     bridge.stop.set()
 
 
+def test_listener_listens_before_publishing_ready_metadata() -> None:
+    """Clients must never observe a ready record before accept() can succeed."""
+    body = _load_bridge_body()
+    start = body.index("def _renforge_listener")
+    end = body.index("def _renforge_install_callbacks", start)
+    listener = body[start:end]
+
+    assert listener.index("server.listen(5)") < listener.index(
+        "if not _renforge_publish_ready"
+    )
+
+
 def _seed_starting_bridge(project_root: Path, *, session_id: str, token: str) -> None:
     from renforge.bridge.control import write_starting_bridge_info
 

@@ -4131,13 +4131,16 @@ init python:
         try:
             server.bind((bridge.host, bridge.port))
             bridge.port = server.getsockname()[1]
+            # Accept connections before advertising a ready record. Publishing
+            # first leaves a race where clients observe state="ready" but the
+            # socket still rejects connections with ECONNREFUSED.
+            server.listen(5)
             # Plain int only — never hang the bridge object off the store.
             setattr(renpy.store, "renforge_bridge_port", bridge.port)
             if not _renforge_publish_ready(bridge, bridge.port):
                 bridge.stop.set()
                 return
             published = True
-            server.listen(5)
 
             while not bridge.stop.is_set():
                 try:
