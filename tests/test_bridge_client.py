@@ -595,4 +595,3 @@ def test_from_project_rejects_non_int_version_types(tmp_path: Path) -> None:
         _write_ready_bridge_info(root, protocol_version=bad_version)
         with pytest.raises(BridgeProtocolError, match="^bridge metadata failed validation$"):
             BridgeClient.from_project(root)
-

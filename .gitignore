@@ -1,4 +1,5 @@
 .venv/
+/uv.lock
 __pycache__/
 *.py[cod]
 *.so
@@ -38,6 +39,7 @@ examples/demo_game/game/gui/**/*.png
 docs/*
 !docs/MCP.md
 !docs/ARCHITECTURE.md
+!docs/LIVE_EDITOR.md
 !docs/superpowers/
 !docs/superpowers/specs/
 !docs/superpowers/specs/*.md
@@ -73,6 +75,16 @@ screens
 # Superpowers visual brainstorming artifacts
 .superpowers/
 
+# Local Live Editor verification and media outputs
+/.rf_polish.pid
+/.rf_polish_launch.py
+/.rf_verify.py
+/.rf_verify_out/
+/.rf_verify_work/
+/out_2/
+/marketing/remotion/audio-master/
+/marketing/remotion/out/
+/marketing/remotion/out_2/
 
 # Local isolated development worktrees
 .worktrees/

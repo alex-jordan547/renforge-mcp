@@ -126,15 +126,24 @@ or a Ren'Py project auto-detected from the current directory. A null
 accepts `project_path` directly (no dashboard required), so ask the user for
 the game's path and continue.
 
+`renforge_info` / `renforge_context` also advertise a structured `live_editor`
+capability: the Live Editor is **enabled by default** on `renforge_launch`,
+with a short public-tool `agent_workflow` and a pointer to
+[docs/LIVE_EDITOR.md](LIVE_EDITOR.md). Use only public MCP tools with the
+editor — never private test-only `editor_task0_*` handlers.
+
 ## Recommended workflow
 
 ```text
 renforge_info
-  -> active_project
+  -> active_project, live_editor (enabled_by_default, launch_tool, guide)
 renforge_launch(project_path)
   -> ready, or starting after at most 20 seconds
+  -> Live Editor injected by default (floating RF control in the game window)
 renforge_launch_status(project_path)  # while starting
   -> starting, ready, failed, or idle
+renforge_screenshot(project_path)          # observe the frame (and editor chrome)
+renforge_scene_tree(project_path)          # structured layout in logical coords
 renforge_game_state_compact(project_path)  # once ready
   -> current label and bounded state
 renforge_game_state(project_path, include=["metrics", "audio"])
@@ -146,8 +155,13 @@ renforge_list_ui_elements(project_path)
 renforge_hover_element(..., expected_frame_id=frame_id)
   -> move over a control without clicking
 renforge_click_element(..., expected_frame_id=frame_id)
-  -> safe interaction
+  -> safe interaction (or renforge_click_at with coordinate_space + frame_id)
+renforge_stop(project_path)
+  -> clean session teardown
 ```
+
+Live Editor human and agent detail (editable vs locked, Save vs preview,
+source safety): **[LIVE_EDITOR.md](LIVE_EDITOR.md)**.
 
 After editing a running project's `.rpy` file, hot-reload it and inspect the
 result without restarting the game process:
@@ -345,8 +359,8 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_info` | Version, dashboard status, and active project. Call this first. |
-| `renforge_context` | Active dashboard and selected Ren'Py project. |
+| `renforge_info` | Version, dashboard status, active project, and the structured `live_editor` capability (enabled by default, launch tool, agent workflow, guide). Call this first. |
+| `renforge_context` | Same discovery payload as `renforge_info` (active project + `live_editor`). |
 | `renforge_inspect_project` | Lightweight Ren'Py project summary. |
 | `renforge_scan_project` | Scan scripts, labels, links, and metadata. Use filters and pagination for large projects. |
 | `renforge_find_references` | Exact Ren'Py definitions and usages, including text interpolations. |
@@ -357,7 +371,7 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game and inject the temporary bridge. The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; `savedir=temporary` isolates saves. `timeout` controls the background startup deadline. |
+| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; `savedir=temporary` isolates saves. `timeout` controls the background startup deadline. |
 | `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. |
 | `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle. |
 | `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle. |

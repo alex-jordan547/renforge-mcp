@@ -11,18 +11,34 @@ RenForge is an **MCP (Model Context Protocol) server, CLI, and web dashboard**
 for working with [Ren'Py](https://www.renpy.org/) visual-novel projects.
 
 It lets an AI agent — or a human via the dashboard — inspect a project, launch
-and drive a running game, read/write game state, capture screenshots, generate
-translations, find orphaned assets, run builds, and search Ren'Py's docs.
+a game with the **Live Editor enabled by default**, select and inspect on-screen
+controls, preview layout changes before writing guarded `.rpy` source, drive
+runtime state, capture screenshots, generate translations, find orphaned
+assets, run builds, and search Ren'Py's docs.
 
 > Status: **alpha**, actively developed. The core surfaces (MCP tools, in-game
-> bridge, CLI, dashboard) are functional; APIs may still change.
+> bridge, Live Editor, CLI, dashboard) are functional; APIs may still change.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/live-dark.png" />
-  <img src=".github/screenshots/live.png" alt="RenForge dashboard — live control of a running game" />
-</picture>
+<img src=".github/screenshots/live-editor-editable-selection.png" alt="RenForge Live Editor — selected editable control with scene tree, handles, inspector, and style panel" />
+
+<p align="center"><em>Live Editor — select an editable control, inspect it, preview moves, then Save to source</em></p>
 
 <table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/live-dark.png" />
+        <img src=".github/screenshots/live.png" alt="RenForge dashboard — live control of a running game" />
+      </picture>
+    </td>
+    <td width="50%">
+      <img src=".github/screenshots/live-editor-locked-reason.png" alt="Live Editor — locked selection with a clear human-readable reason" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>Dashboard — live control of a running game</em></td>
+    <td align="center"><em>Live Editor — locked targets stay inspectable with a clear reason</em></td>
+  </tr>
   <tr>
     <td width="50%">
       <picture>
@@ -54,7 +70,23 @@ uvx --from "renforge[ui]@latest" renforge ui
 ```
 
 Then choose your game in the dashboard's project picker — no path to type. (Or
-skip the picker with `--project /path/to/your/game`.)
+skip the picker with `--project /path/to/your/game`.) Launch the game and click
+the floating **RF** control to open the Live Editor.
+
+## Live Editor
+
+The Live Editor is the headline 0.7 feature: edit eligible on-screen controls
+**inside the running game**, preview layout changes at runtime, and **Save**
+only when a target is source-safe. Locked or unsupported targets stay
+inspectable with a clear reason — they are not silently forced.
+
+| Audience | Start here |
+| --- | --- |
+| **Human** | Dashboard or game window → launch → click **RF** → select from canvas or scene tree → inspect / move where editable → **Save** → stop cleanly. |
+| **AI agent** | `renforge_info` (read `live_editor`) → `renforge_launch` → poll `renforge_launch_status` → `renforge_screenshot` / `renforge_scene_tree` → guarded `renforge_click_at` or `renforge_click_element` → verify → `renforge_stop`. |
+
+Full human and agent workflows, source-safety rules, and screenshots:
+**[docs/LIVE_EDITOR.md](docs/LIVE_EDITOR.md)**.
 
 ## Install
 
@@ -145,12 +177,15 @@ JSON summary of the project (labels, scripts, assets, and related metadata).
 
 ## What it does
 
+- **Live Editor (default on launch)** — in-game selection, inspection, and
+  source-safe preview/Save for editable controls; locked targets stay
+  inspectable. Guide: [docs/LIVE_EDITOR.md](docs/LIVE_EDITOR.md).
 - **Project inspection** — summarize structure, scan scripts/labels/assets,
   parse lint output.
-- **Live game control** — launch a project with an injected in-game bridge, then
-  advance dialogue, list/select choices, evaluate expressions, get/set store
-  variables, send focused text/key/scroll input, poll pushed events, and capture
-  frames the model can literally see.
+- **Live game control** — launch a project with an injected in-game bridge and
+  Live Editor, then advance dialogue, list/select choices, evaluate
+  expressions, get/set store variables, send focused text/key/scroll input,
+  poll pushed events, and capture frames the model can literally see.
 - **Scene perception (pixel-perfect, no vision needed)** — read the whole frame
   as structured logical-coordinate nodes (`renforge_scene_tree`): every sprite,
   control, and text block with bounds, z-order, colour, and style, plus an ASCII
@@ -177,8 +212,10 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 
 ## Documentation
 
+- **[Live Editor](docs/LIVE_EDITOR.md)** — human and agent workflows, editable
+  vs locked targets, source-safety, public screenshots.
 - **[MCP guide](docs/MCP.md)** — full tool catalogue, agent workflows
-  (hot reload, saves, pixel-perfect placement, scene perception),
+  (Live Editor, hot reload, saves, pixel-perfect placement, scene perception).
 - **[Architecture](docs/ARCHITECTURE.md)** — code layout, live-control flow,
   Ren'Py SDK resolution, packaging.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, frontend build, PRs.

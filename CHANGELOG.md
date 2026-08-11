@@ -3,10 +3,19 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2026-08-11
 
 ### Added
 
+- **Live Editor (headline capability).** Launch with the in-game visual editor
+  **enabled by default** (`renforge_launch`): select controls from the canvas
+  or scene tree, inspect editable vs locked targets, preview layout changes at
+  runtime, and **Save** source-safe edits to guarded `.rpy` files. Locked and
+  unsupported targets remain inspectable with clear reasons. Public guide:
+  [docs/LIVE_EDITOR.md](docs/LIVE_EDITOR.md). `renforge_info` /
+  `renforge_context` advertise a structured `live_editor` capability
+  (default-on, launch tool, agent workflow) so agents discover the feature
+  without private `editor_task0_*` handlers.
 - **Scene perception suite for non-multimodal agents.** `renforge_scene_tree`
   reports the whole frame as structured, logical-coordinate nodes — every layer
   displayable, focusable control, and (unlike `renforge_list_ui_elements`)

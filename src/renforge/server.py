@@ -237,6 +237,27 @@ def _register_tools(app: Any) -> None:
             "active_project": active_project,
             "project_source": project_source,
             "dashboard": dashboard,
+            "live_editor": {
+                "enabled_by_default": True,
+                "launch_tool": "renforge_launch",
+                "guide": "docs/LIVE_EDITOR.md",
+                "summary": (
+                    "In-game Live Editor is injected by default on "
+                    "renforge_launch. Preview is runtime-only until Save; "
+                    "locked targets stay inspectable. Use only public MCP "
+                    "tools — never private editor_task0_* handlers."
+                ),
+                "agent_workflow": [
+                    "renforge_info",
+                    "renforge_launch",
+                    "renforge_launch_status",
+                    "renforge_screenshot",
+                    "renforge_scene_tree",
+                    "renforge_click_at",
+                    "renforge_click_element",
+                    "renforge_stop",
+                ],
+            },
         }
         if active_project is None:
             payload["hint"] = (
@@ -396,7 +417,13 @@ def _register_tools(app: Any) -> None:
         cleanup_on_stop: bool = True,
         timeout: float = 0,
     ) -> dict:
-        """Launch or reuse a game; set warp to a Ren'Py file:line target.
+        """Launch or reuse a game with the Live Editor enabled by default.
+
+        After launch, poll ``renforge_launch_status`` until ready, then observe
+        with a fresh ``renforge_screenshot`` or ``renforge_scene_tree`` before
+        any click. Use ``renforge_click_at`` or ``renforge_click_element`` with
+        a current ``frame_id`` guard; verify the result, then ``renforge_stop``.
+        See docs/LIVE_EDITOR.md. Optional ``warp`` is a Ren'Py file:line target.
 
         The call waits at most 20 seconds for readiness, then returns
         ``status="starting"`` while startup continues in the background. Poll
