@@ -276,6 +276,34 @@ def _commit_status(sock: socket.socket, auth: dict[str, Any], transaction_id: st
     return _recv_json(sock)
 
 
+def _wait_for_commit_state(
+    sock: socket.socket,
+    auth: dict[str, Any],
+    transaction_id: str,
+    expected_state: str,
+    *,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    last_status: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last_status = _commit_status(
+            sock,
+            auth,
+            transaction_id,
+            request_id=f"wait-{transaction_id}-{attempt}",
+        )
+        assert last_status["ok"] is True
+        if last_status["result"]["state"] == expected_state:
+            return last_status
+        attempt += 1
+        time.sleep(0.05)
+    raise AssertionError(
+        f"transaction {transaction_id} did not reach {expected_state!r}: {last_status!r}"
+    )
+
+
 def test_analyze_target_returns_lock_reasons_for_runtime_denials(tmp_path: Path) -> None:
     project, _ = _make_project(tmp_path)
     observation = _base_observation()
@@ -620,10 +648,7 @@ def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -
             assert commit["ok"] is True
             tx = commit["result"]["transaction_id"]
 
-            time.sleep(0.35)
-            status = _commit_status(sock, auth, tx, request_id="st-timeout")
-            assert status["ok"] is True
-            assert status["result"]["state"] == "rolled_back"
+            status = _wait_for_commit_state(sock, auth, tx, "rolled_back")
             assert source.read_bytes() == baseline
 
             analysis_2 = _analyze(sock, auth, observation, request_id="an-conflict")
@@ -631,10 +656,7 @@ def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -
             tx_2 = commit_2["result"]["transaction_id"]
             source.write_text("external\n", encoding="utf-8")
 
-            time.sleep(0.35)
-            conflict = _commit_status(sock, auth, tx_2, request_id="st-conflict")
-            assert conflict["ok"] is True
-            assert conflict["result"]["state"] == "rollback_conflict"
+            conflict = _wait_for_commit_state(sock, auth, tx_2, "rollback_conflict")
             assert conflict["result"]["uncertain_paths"] == ["script.rpy"]
             assert source.read_text(encoding="utf-8") == "external\n"
     finally:
