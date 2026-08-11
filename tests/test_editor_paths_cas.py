@@ -112,16 +112,23 @@ def test_nofollow_copy_opens_source_and_destination_in_binary_mode(
     native_binary_flag = getattr(os, "O_BINARY", None)
     binary_flag = native_binary_flag or (1 << 29)
     opened_flags: list[int] = []
+    tracked_paths = {os.fspath(source), os.fspath(destination)}
 
     if native_binary_flag is None:
         monkeypatch.setattr(file_utils.os, "O_BINARY", binary_flag, raising=False)
 
-    def recording_open(path: str, flags: int, *args: object) -> int:
-        opened_flags.append(flags)
+    def recording_open(path: str | os.PathLike[str], flags: int, *args: object) -> int:
+        if os.fspath(path) in tracked_paths:
+            opened_flags.append(flags)
         host_flags = flags if native_binary_flag is not None else flags & ~binary_flag
         return real_open(path, host_flags, *args)
 
     monkeypatch.setattr(file_utils.os, "open", recording_open)
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"background")
+    unrelated_fd = file_utils.os.open(unrelated, os.O_RDONLY)
+    os.close(unrelated_fd)
 
     copied = copy_regular_file_nofollow(
         source,
