@@ -33,8 +33,16 @@ def test_save_has_started_uses_structured_state_before_transaction_assignment() 
     }
 
     assert _save_has_started(status)
+    assert _save_has_started(
+        {
+            **status,
+            "status_code": "commit_queued",
+            "pending_transaction_id": "transaction-1",
+        }
+    )
     assert not _save_has_started({**status, "save_in_progress": False})
     assert not _save_has_started({**status, "save_requested": False})
+    assert not _save_has_started({**status, "status_code": "commit_queued"})
     assert not _save_has_started({**status, "status_code": "reload_committed"})
     assert not _save_has_started({**status, "save_button_state": "idle"})
 

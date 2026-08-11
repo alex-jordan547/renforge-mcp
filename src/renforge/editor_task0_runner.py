@@ -392,12 +392,16 @@ def _wait_for_status(
 
 
 def _save_has_started(status: dict[str, Any]) -> bool:
-    return (
+    if not (
         bool(status.get("save_in_progress"))
         and bool(status.get("save_requested"))
-        and status.get("status_code") == "saving"
         and status.get("save_button_state") == "saving"
-    )
+    ):
+        return False
+    status_code = status.get("status_code")
+    if status_code == "saving":
+        return True
+    return status_code == "commit_queued" and bool(status.get("pending_transaction_id"))
 
 
 def _overlay_rect(client: Any, wanted_id: str) -> list[int]:
