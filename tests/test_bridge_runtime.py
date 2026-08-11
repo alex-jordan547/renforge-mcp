@@ -2959,6 +2959,56 @@ def test_editor_discovers_anonymous_text_from_screen_cache(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_text_candidates_skip_labels_inside_focusable_targets(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    Text = type("Text", (), {})
+
+    class Button:
+        def __init__(self, child):
+            self.children = [child]
+            self.child = child
+
+    label = Text()
+    button = Button(label)
+    renpy.text = types.SimpleNamespace(text=types.SimpleNamespace(Text=Text))
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        globs["_renforge_editor_active_game_screens"] = lambda: ["test_screen"]
+        globs["_renforge_editor_widget_map"] = lambda _screen: (object(), {})
+        globs["_renforge_editor_screen_instances"] = lambda *_args: {
+            "entries": {1: {"displayable": label}}
+        }
+        globs["_renforge_editor_focus_candidates"] = lambda: [
+            {"focused_widget": button}
+        ]
+        globs["_renforge_editor_measure_text_rect"] = lambda *_args: [10, 20, 80, 24]
+        globs["_renforge_editor_runtime_key_from_text_widget"] = lambda *_args: (
+            {"screen": "test_screen", "widget_id": None, "source_location": None, "ancestry": []},
+            "MISSING_SOURCE_LOCATION",
+            label,
+        )
+        globs["_renforge_editor_style_color_from_widget"] = lambda _widget: "#fff"
+
+        assert globs["_renforge_editor_text_candidates"]() == []
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_tree_marks_only_exact_runtime_representation_selected(
     running_bridge,
     monkeypatch,

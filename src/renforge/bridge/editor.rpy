@@ -3292,11 +3292,18 @@ init 1100 python:
         return key, None, named_widget
 
 
-    def _renforge_editor_text_candidates():
+    def _renforge_editor_text_candidates(focus_candidates=None):
         """Discover source-backed Text targets, with or without authored ids."""
         candidates = []
         instances = {}
         ordinal = 100000
+        if focus_candidates is None:
+            focus_candidates = _renforge_editor_focus_candidates()
+        focus_covered_ids = set()
+        for candidate in focus_candidates or []:
+            focused_widget = candidate.get("focused_widget")
+            if focused_widget is not None:
+                focus_covered_ids.update(_renforge_editor_descendant_ids(focused_widget))
         for screen_name in _renforge_editor_active_game_screens():
             screen, widgets = _renforge_editor_widget_map(screen_name)
             if screen is None or not isinstance(widgets, builtins.dict):
@@ -3321,6 +3328,8 @@ init 1100 python:
                 except Exception:
                     is_text = False
                 if not is_text:
+                    continue
+                if id(widget) in focus_covered_ids:
                     continue
                 runtime_widgets.append(widget)
             for widget in runtime_widgets:
@@ -3390,7 +3399,8 @@ init 1100 python:
 
 
     def _renforge_editor_all_candidates():
-        return list(_renforge_editor_focus_candidates()) + list(_renforge_editor_text_candidates())
+        focus_candidates = list(_renforge_editor_focus_candidates())
+        return focus_candidates + list(_renforge_editor_text_candidates(focus_candidates))
 
 
     def _renforge_editor_barrier():
