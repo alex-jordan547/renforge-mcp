@@ -52,6 +52,14 @@ versioning.
 - Live editor interactions: status codes with localized HUD text, clear-selection,
   intent-based unsaved counts, effective inspector properties, structural z-order
   mutex, responsive layout metrics, tree truncation, and shipped editor assets.
+- Bridge readiness is now published only after the listener accepts connections,
+  eliminating a startup race that could surface as intermittent connection refusals.
+- `renforge_launch` keeps the Live Editor enabled by default while honoring an
+  explicit `editor=false` opt-out across dashboard and direct launch paths.
+- The working-tree Live Editor launcher now reads and atomically restamps schema-3
+  artifact manifests instead of the removed editor-session manifest.
+- Windows TEMP dashboard discovery now uses a process-stable user digest, and
+  Windows source CAS fails closed if `ReplaceFileW` is unavailable.
 - The `test` extra now installs `httpx2>=2.0.0`, the client backend required by
   current Starlette `TestClient`, instead of falling back to deprecated `httpx`
   compatibility and emitting `StarletteDeprecationWarning`.

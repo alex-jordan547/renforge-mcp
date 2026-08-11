@@ -15,7 +15,6 @@ artifact.
 from __future__ import annotations
 
 import hashlib
-import json
 import sys
 import time
 from pathlib import Path
@@ -24,6 +23,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 BRIDGE_DIR = REPO_ROOT / "src" / "renforge" / "bridge"
 
+from renforge.bridge.artifacts import (  # noqa: E402
+    _publish_intent,
+    artifacts_path,
+    load_validated_manifest,
+)
 from renforge.bridge.launcher import _editor_payload, launch_with_bridge  # noqa: E402
 from renforge.project import RenpyProject  # noqa: E402
 from renforge.sdk import get_or_install_sdk  # noqa: E402
@@ -77,13 +81,21 @@ def _sources_stamp() -> tuple[int, ...]:
 
 
 def _manifest_path(project_root: Path) -> Path:
-    return project_root / ".renforge" / "editor-session.json"
+    return artifacts_path(project_root)
 
 
 def _injected_editor_path(project_root: Path) -> Path:
     """Resolve the injected copy from the session manifest the launcher wrote."""
-    manifest = json.loads(_manifest_path(project_root).read_text(encoding="utf-8"))
-    return project_root / "game" / manifest["basename"]
+    manifest = load_validated_manifest(project_root)
+    if manifest is None:
+        raise RuntimeError("Live Editor artifact manifest is missing")
+    editor = next(
+        (entry for entry in manifest["sources"] if entry["role"] == "editor"),
+        None,
+    )
+    if editor is None:
+        raise RuntimeError("Live Editor source is missing from the artifact manifest")
+    return project_root / "game" / str(editor["basename"])
 
 
 def _restamp_manifest(project_root: Path, payload: bytes) -> None:
@@ -94,10 +106,17 @@ def _restamp_manifest(project_root: Path, payload: bytes) -> None:
     edited. Hot reload rewrites that file on purpose, so it has to re-establish
     ownership rather than quietly break it.
     """
-    path = _manifest_path(project_root)
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["source_sha256"] = hashlib.sha256(payload).hexdigest()
-    path.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
+    manifest = load_validated_manifest(project_root)
+    if manifest is None:
+        raise RuntimeError("Live Editor artifact manifest is missing")
+    editor = next(
+        (entry for entry in manifest["sources"] if entry["role"] == "editor"),
+        None,
+    )
+    if editor is None:
+        raise RuntimeError("Live Editor source is missing from the artifact manifest")
+    editor["sha256"] = hashlib.sha256(payload).hexdigest()
+    _publish_intent(project_root, manifest)
 
 
 def _watch_and_reload(session: object, injected: Path) -> None:

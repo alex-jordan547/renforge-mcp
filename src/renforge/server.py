@@ -103,7 +103,7 @@ def _register_tools(app: Any) -> None:
         *,
         version: str = "stable",
         warp: str | None = None,
-        editor: bool = False,
+        editor: bool = True,
         display: str = "auto",
         audio: str = "auto",
         savedir: str | None = None,
@@ -113,7 +113,7 @@ def _register_tools(app: Any) -> None:
         session: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict:
-        canonical_editor = True
+        canonical_editor = bool(editor)
         session_cfg = dict(session or {})
         effective_savedir = session_cfg.get("savedir", savedir)
         effective_persistent = str(session_cfg.get("persistent", persistent) or "existing")
@@ -126,7 +126,6 @@ def _register_tools(app: Any) -> None:
             return live.cancelled_launch_result(phase="detecting_environment")
         from .dashboard_client import (
             launch_game as launch_via_dashboard,
-            launch_status as status_via_dashboard,
             stop_game as stop_via_dashboard,
         )
 
@@ -207,7 +206,8 @@ def _register_tools(app: Any) -> None:
         return delegated if delegated is not None else live.launch_status(project_path)
 
     def _start_launch(project_path: str, **kwargs: Any) -> dict:
-        kwargs["editor"] = True
+        requested_editor = bool(kwargs.get("editor", True))
+        kwargs["editor"] = requested_editor
 
         def _launch(project_root: Path, cancel_event: threading.Event) -> dict:
             return _launch_game(
@@ -216,7 +216,7 @@ def _register_tools(app: Any) -> None:
                 **kwargs,
             )
 
-        return live.start_launch(project_path, _launch, editor=True)
+        return live.start_launch(project_path, _launch, editor=requested_editor)
 
     def _context_payload() -> dict[str, Any]:
         dashboard = session_registry.active_dashboard()
@@ -409,7 +409,7 @@ def _register_tools(app: Any) -> None:
         project_path: str,
         warp: str = "",
         version: str = "stable",
-        editor: bool = False,
+        editor: bool = True,
         display: str = "auto",
         audio: str = "auto",
         savedir: str = "",
@@ -1747,8 +1747,10 @@ def create_app() -> Any:
         "instead of exceeding common MCP timeouts; poll renforge_launch_status "
         "until ready or failed. It uses display/audio=auto and accepts "
         "savedir=temporary for isolated sessions. For "
-        "live iteration, use renforge_control(action=\"reload_script\") after "
-        "edits, renforge_wait_until for one bounded condition, and "
+        "live iteration after external .rpy edits, use "
+        "renforge_control(action=\"reload_script\"); Live Editor Save already "
+        "reloads and attests its own changes. Use renforge_wait_until for one "
+        "bounded condition, and "
         "renforge_get_errors after risky actions or a stopped process."
     )
     try:

@@ -1,12 +1,39 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 
+def test_windows_temp_registry_digest_is_process_stable() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from renforge.session_registry import _windows_user_digest; "
+            "print(_windows_user_digest('same-user'))"
+        ),
+    ]
+    outputs = []
+    for seed in ("1", "2"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        outputs.append(
+            subprocess.check_output(command, env=env, text=True).strip()
+        )
+
+    assert outputs[0] == outputs[1]
+    assert len(outputs[0]) == 12
+
+
 def test_dashboard_project_is_discoverable_across_processes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RENFORGE_RUNTIME_DIR", str(tmp_path / "runtime"))
 
-    from renforge.session_registry import active_dashboard, dashboard_connection, publish_dashboard
+    from renforge.session_registry import (
+        active_dashboard,
+        dashboard_connection,
+        publish_dashboard,
+    )
 
     project = tmp_path / "visual-novel"
     publish_dashboard(project, url="http://127.0.0.1:8765/", token="secret_token_22chars__")

@@ -7,6 +7,9 @@ in the game window. Open it to select displayables, inspect them, preview
 layout changes at runtime, and — when a target is editable — write those
 changes back to guarded `.rpy` source with **Save**.
 
+Pass `editor=false` to `renforge_launch` only when you intentionally need a
+game session without the visual editor; omitting it keeps the default-on flow.
+
 This guide is for **humans** (dashboard / game window) and **AI agents**
 (public MCP tools only). Deeper tool contracts live in [MCP.md](MCP.md).
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,44 @@ def test_exchange_unix_uses_libc_renameat2_on_linux(monkeypatch, tmp_path: Path)
     editor_paths._exchange_unix(source, replacement)
 
     assert calls == [(-100, bytes(source), -100, bytes(replacement), 2)]
+
+
+def test_exchange_windows_fails_closed_when_replace_file_is_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "displaced"
+    source.write_bytes(b"original")
+    replacement.write_bytes(b"replacement")
+    replace_calls: list[tuple[str, str]] = []
+
+    def replace_file(*_args: object) -> int:
+        return 0
+
+    monkeypatch.setattr(
+        editor_paths.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: types.SimpleNamespace(ReplaceFileW=replace_file),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        editor_paths.ctypes, "get_last_error", lambda: 5, raising=False
+    )
+    monkeypatch.setattr(
+        editor_paths.os,
+        "replace",
+        lambda old, new: replace_calls.append((str(old), str(new))),
+    )
+
+    with pytest.raises(EditorPathError) as excinfo:
+        editor_paths._exchange_windows(source, replacement, displaced)
+
+    assert excinfo.value.code == "SOURCE_CAS_UNAVAILABLE"
+    assert replace_calls == []
+    assert source.read_bytes() == b"original"
+    assert replacement.read_bytes() == b"replacement"
+    assert not displaced.exists()
 
 
 def test_conditional_replace_exchanges_and_retains_displaced(tmp_path: Path) -> None:

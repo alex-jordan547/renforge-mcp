@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,11 @@ _RECORD_KEYS = frozenset(
 )
 
 
+def _windows_user_digest(identity: str) -> str:
+    """Return a process-stable, non-reversible directory discriminator."""
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+
+
 def _registry_dir() -> Path:
     configured = os.environ.get("RENFORGE_RUNTIME_DIR")
     if configured:
@@ -38,9 +44,9 @@ def _registry_dir() -> Path:
         local = os.environ.get("LOCALAPPDATA")
         if local:
             return Path(local) / "RenForge" / "runtime" / "dashboards"
-        # SID-hashed TEMP fallback when LOCALAPPDATA is unavailable.
-        sid = os.environ.get("USERNAME") or "user"
-        digest = abs(hash(sid)) % (10**12)
+        # Identity-hashed TEMP fallback when LOCALAPPDATA is unavailable.
+        identity = os.environ.get("USERNAME") or "user"
+        digest = _windows_user_digest(identity)
         return Path(tempfile.gettempdir()) / f"renforge-{digest}" / "dashboards"
 
     xdg = os.environ.get("XDG_RUNTIME_DIR")
