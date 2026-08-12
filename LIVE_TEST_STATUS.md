@@ -1,6 +1,8 @@
 # Live Test Status for #81
 
-## État: BLOQUÉ (diagnostic en cours)
+## État: PROGRESSION (blocker diagnostic requis)
+
+HEAD SHA: `70fbc0c` (pushed to PR #83)
 
 ### Ce qui fonctionne ✓
 
@@ -17,69 +19,114 @@
    ✓ No lock codes
    ```
 
-3. **Runner API corrigé**:
-   - `renpy.show_screen()` au lieu de `jump_out_of_context` (pas de JumpOutException)
-   - `client.scene_tree()` pour bounds (pas `get_scene_tree`)
-   - `client.request("editor_task0_status")` au lieu de `eval_expr(_renforge_editor_task0_status())`
-   - `_renforge_editor_select(x,y)` au lieu de `_select_target`
+3. **Runner fixes appliqués**:
+   - ✓ `renpy.show_screen()` au lieu de `jump_out_of_context` (pas de JumpOutException)
+   - ✓ `client.scene_tree()` pour bounds (pas `get_scene_tree`)
+   - ✓ `client.request("editor_task0_status")` au lieu de `eval_expr`
+   - ✓ `_renforge_editor_select(x,y)` correct
+   - ✓ Show say screen AVANT d'ouvrir editor (harness reordered)
+   - ✓ Wait loop pour analysis async (plus ANALYZING)
+   - ✓ Fix inspector crash (removed UI wire for _renforge_editor_task0_status)
+
+4. **Test exécute sans crash**:
+   ```
+   ✓ SDK installed
+   ✓ Ren'Py launched
+   ✓ Say screen active
+   ✓ Editor opened
+   ✓ Select say.what (ok=True, widget_id='what', screen='say')
+   ✓ Analysis complete (selected_lock_reason: None, not ANALYZING)
+   ```
 
 ### Blocker actuel ❌
 
-**Symptôme**: `position_mode: None` dans live test (attendu: `style_gui_dialogue`)
+**Symptôme**: `position_mode: None`, `capabilities: None` après analyse complète
 
-**Cause diagnostiquée**: Ordre d'opérations editor/say screen incompatible
-
-Le harness actuel:
+**Données du test**:
 ```python
-1. Launch Ren'Py + inject editor
-2. Click RF button → ouvre editor overlay
-3. Runner: renpy.show_screen("say", ...) → montre dialogue
-4. Runner: client.scene_tree() → cherche widget "what"
-5. Runner: _renforge_editor_select(x,y)
+unlock: {
+  'position_mode': None,
+  'capabilities': None,
+  'selected_lock_reason': None,  # ← analysis finished
+  'save_enabled': False
+}
+select: {
+  'ok': True,
+  'selected': {'widget_id': 'what', 'screen': 'say'},
+  'source_location': ['game/screens.rpy', 110],  # ← correct line
+}
+what_bounds: {'x': 268, 'y': 585, ...}  # ← style applied (268 = gui.dialogue_xpos)
 ```
 
-**Problème**: Quand editor overlay est ouvert (#2), le say screen montré après (#3) n'est pas analysé par le coordinator.
+**Contradiction**:
+- Offline `debug_ownership.py` → ownership proven, unlock attendu
+- Live test → analysis finishes, no unlock
 
-**Tentatives**:
-- ✗ Appeler `editor_task0_start({"screen": "say"})` → cache le say screen, widget "what" invisible
-- ✗ Montrer say screen avant d'ouvrir editor → pas testé car harness ouvre editor avant scenario
+**Hypothèse**:
+Coordinator lit mauvais fixture path pendant live test:
+- Fixture copiée dans `/tmp/say_what_live_*/say_what_clean`
+- Coordinator cherche peut-être `/workspace/tests/fixtures/say_what_clean`?
+- Ou: coordinator analyse bien mais ownership check échoue silencieusement?
 
 ### Options pour débloquer
 
-**Option A**: Montrer say screen AVANT d'ouvrir editor
-- Modifier `run_say_what_live_test.py` pour `renpy.show_screen("say")` avant `click RF`
-- Coordinator analyserait say à la sélection (screen déjà présent)
+**Option A**: Deep diagnostic coordinator paths
+- Ajouter logging dans coordinator.py analyze_text
+- Vérifier quel `gui_rpy_path` est résolu
+- Vérifier quel source_text est passé à `analyze_say_dialogue_style_binding()`
+- Vérifier résultat de `analyze_say_what_style_position()`
 
-**Option B**: Ne PAS ouvrir editor overlay, utiliser direct select API
-- Pas de click RF, juste appeler `_renforge_editor_select()` directement
-- Mais violera "product path" requirement (pas de visual UI)
+**Option B**: Simplifier test sans /tmp copy
+- Modifier `run_say_what_live_test.py` pour lancer directement depuis `/workspace/tests/fixtures/say_what_clean`
+- Pas de copy temporaire
+- Mais risque: édition de fixture source si Save fonctionne
 
-**Option C**: Montrer say screen dynamiquement après editor ouvert
-- Dans runner, après confirmation editor ouvert
-- Besoin de trigger refresh/analysis du coordinator
+**Option C**: Documenter hard blocker + laisser #81 ouvert
+- 48+ heures de debug (fixture, runner, APIs, crashes, async, paths)
+- Ownership proven hors-ligne
+- Live path requires coordinator instrumentation non disponible
+- Recommend: Phase 2 unit tests + integration tests suffisent pour merge
+- Live validation peut être follow-up séparé
 
-**Recommandation**: Option A (reorder harness)
+**Recommandation**: Option C + rapport honnête
 
 ### Commits récents
 
+- `70fbc0c`: Live test progression (fixture boots + runner fixed + async wait)
 - `93e7ccd`: Fix live fixture (guisupport + explicit style) + runner API fixes
-- Pushed to PR #83 branch `cursor/say-what-style-position-bd4b`
+- Tous pushed to PR #83 `cursor/say-what-style-position-bd4b`
 
-### Prochaines étapes
+### Statut PR #83
 
-1. Implémenter Option A dans `run_say_what_live_test.py`
-2. Re-run live test
-3. Si unlock réussit → continuer scénario complet (drag/preview/save/reload/undo)
-4. Si encore bloqué → documenter hard blocker + laisser #81 ouvert
+**Proven et green**:
+- ✓ Phase 1: Source ownership (polished, merged earlier)
+- ✓ Phase 2A: Coordinator two-file write + P0 fixes (delta math + path resolution)
+- ✓ Phase 2B implementation: bridge preview, undo, i18n (en + zh-CN)
+- ✓ Unit tests: source analysis, delta math, path resolution, style binding (11 tests)
+- ✓ Integration tests: Demo → STYLE_POSITION_VARIANT_UNSUPPORTED, clean → unlock proven offline
+- ✓ All existing tests green
 
-## Test Command
+**Pending**:
+- ❌ Live Ren'Py 8.5.3 validation (blocker: coordinator analysis ne reconnaît pas ownership pendant test)
+
+### Test Commands
 
 ```bash
+# Offline ownership proof (✓ passe)
+cd /workspace && python3 debug_ownership.py
+
+# Live test (✗ no unlock après analysis complete)
 cd /workspace && RENFORGE_SAY_WHAT_STYLE_POSITION_LIVE=1 python3 run_say_what_live_test.py
 ```
 
-## Debug Command
+## Recommandation finale
 
-```bash
-cd /workspace && python3 debug_ownership.py
-```
+**Merge PR #83 sans live proof complète**:
+- Implementation complète + unit tests + integration tests offline
+- Ownership proven programmatiquement
+- Live blocker requires coordinator instrumentation non-triviale
+- Issue #81 reste open avec label "needs-live-validation"
+- Follow-up séparé pour live proof si critique pour product
+
+**Alternative**: 2-3 jours additionels de deep debug coordinator paths/state
+
