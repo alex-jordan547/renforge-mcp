@@ -80,7 +80,42 @@ define gui.dialogue_ypos = gui.scale(50)
 
 **Status:** Ready for PR A
 
-## Phase 2: Coordinator integration (TODO)
+## Phase 2: Coordinator integration (✓ PARTIAL — 2A complete, 2B pending)
+
+### 2A: Two-file write-path (✓ COMPLETE)
+
+**Deliverables:**
+- ✅ Analyze flow detects say.what when direct xpos fails
+- ✅ Load and analyze gui.rpy for style-backed ownership
+- ✅ New `position_mode = SAY_WHAT_STYLE_POSITION_MODE`
+- ✅ Two-file transaction: patch gui.rpy, identity screens.rpy
+- ✅ Never surface `XPOS_DUPLICATE` for missing inherited position
+- ✅ Use `STYLE_POSITION_*` lock codes with human reasons
+- ✅ Apply logical-pixel deltas to authored gui.scale ints
+- ✅ Extend `_command_undo_commit` for style position
+- ✅ Store previous/new GUI literals for undo/redo
+- ✅ Revalidate ownership before publish
+- ✅ Fail-closed: reject multi-file + other screen changes in V1
+
+**Implementation notes:**
+- `_apply_same_file_intents` skips say style position intents (continue)
+- gui.rpy transaction created separately when all intents are style position
+- screens.rpy stays unchanged (identity-only path for rebind)
+- Undo reverses say_style_position_previous/new values
+
+**Status:** Committed to branch `cursor/say-what-style-position-bd4b`
+
+### 2B: Coordinator unit tests (TODO)
+
+Test scenarios needed:
+- Capabilities unlock for say.what with valid gui.rpy
+- Lock codes propagated when gui.rpy has variants/expressions
+- Two-file write succeeds for pure say.what move
+- Multi-file write rejected when combined with other changes
+- Undo/redo cycle restores correct GUI literals
+- Stale gui.rpy baseline detection
+
+**Blocked by:** Bridge preview implementation (need end-to-end flow)
 
 ### Multi-file write-path design
 
@@ -155,74 +190,99 @@ def _commit_say_what_style_position(intent):
     # 8. Store undo payload (previous + new gui literals)
 ```
 
-## Phase 3: Bridge preview (TODO)
+## Phase 3: Bridge preview (TODO — CRITICAL for unlock)
 
 ### Safe preview without say rebuild
 
-DO NOT call `renpy.show_screen("say", ...)` with empty who/what.
+⚠️ **Critical finding #4**: DO NOT call `renpy.show_screen("say", ...)` with empty who/what.
 
-**Option A: Direct gui mutation (recommended)**
+**Required implementation:**
 ```python
-# In bridge preview command:
-import gui
-gui.dialogue_xpos = new_x  # Mutate live
-gui.dialogue_ypos = new_y
-renpy.restart_interaction()  # Redraw without advancing
+# In _renforge_editor_show_target_overrides:
+def _renforge_editor_show_target_overrides(screen):
+    state = _renforge_editor_state()
+    target_key = state.selected_target_key
+    target = state.targets.get(target_key)
+    source_key = target.get("source_key") if target else None
+    position_mode = source_key.get("position_mode") if source_key else None
+    
+    # Critical: say.what style position uses live GUI mutation, not _widget_properties
+    if position_mode == "style_gui_dialogue":  # SAY_WHAT_STYLE_POSITION_MODE
+        # Mutate live style properties without rebuilding say screen
+        position = target.get("position")
+        if position and len(position) == 2:
+            renpy.style.say_dialogue.xpos = int(position[0])
+            renpy.style.say_dialogue.ypos = int(position[1])
+        renpy.restart_interaction()
+        return
+    
+    # Standard path: _widget_properties for other widgets
+    _renforge_editor_prepare_anonymous_target_overrides(screen)
+    properties = _renforge_editor_widget_properties(screen)
+    if properties:
+        renpy.show_screen(screen, _layer="screens", _widget_properties=properties)
+    else:
+        renpy.show_screen(screen, _layer="screens")
 ```
 
-**Option B: Style property override**
+**Reset path:**
 ```python
-# Override style properties directly
-renpy.style.say_dialogue.xpos = new_x
-renpy.style.say_dialogue.ypos = new_y
-renpy.restart_interaction()
+# In _renforge_editor_restore_preview:
+if position_mode == "style_gui_dialogue":
+    # Restore original GUI values from runtime_baseline
+    baseline = target.get("runtime_baseline") or []
+    if len(baseline) == 2:
+        renpy.style.say_dialogue.xpos = int(baseline[0])
+        renpy.style.say_dialogue.ypos = int(baseline[1])
+    renpy.restart_interaction()
+    return {"ok": True, "restored": True, "method": "style_mutation"}
 ```
 
-Must preserve current `who` and `what` values. Must NOT advance/dismiss dialogue.
+**Must preserve:**
+- Current `who` and `what` dialogue text
+- Dialogue state (must NOT advance or dismiss)
+- All other say.what style properties
 
-### Reset path
+**Status:** Not started — BLOCKS product unlock
 
-```python
-# Reset restores original gui values
-gui.dialogue_xpos = original_x
-gui.dialogue_ypos = original_y
-renpy.restart_interaction()
-```
+## Phase 4: Product undo (✓ COORDINATOR IMPL, tests pending)
 
-## Phase 4: Product undo (TODO)
-
-### Extend undo allowlist
+### Extend undo allowlist (✓ IMPLEMENTED)
 
 ```python
-# In _command_undo_commit:
-if original_intent["position_mode"] == "style_gui_dialogue":
-    # Reverse gui.rpy write
-    gui_path = original_intent["write_target_file"]
-    # Stored undo payload has previous literals
-    undo_patch = apply_say_what_style_position_patch(
-        current_gui_bytes,
-        ...,
-        x=undo_payload["previous_xpos"],
-        y=undo_payload["previous_ypos"],
-    )
-    # Atomic publish + reload + rebind
-    ...
+# In _command_undo_commit (IMPLEMENTED):
+is_say_style_position_tx = bool(prior.expected_targets) and all(
+    target.get("say_style_position_previous_x") is not None
+    and target.get("say_style_position_previous_y") is not None
+    and target.get("say_style_position_new_x") is not None
+    and target.get("say_style_position_new_y") is not None
+    for target in prior.expected_targets
+)
+
+# Reversal logic:
+elif is_say_style_position_tx:
+    prev_x = target.get("say_style_position_previous_x")
+    prev_y = target.get("say_style_position_previous_y")
+    new_x = target.get("say_style_position_new_x")
+    new_y = target.get("say_style_position_new_y")
+    reversed_target["say_style_position_previous_x"] = new_x
+    reversed_target["say_style_position_previous_y"] = new_y
+    reversed_target["say_style_position_new_x"] = prev_x
+    reversed_target["say_style_position_new_y"] = prev_y
 ```
 
-### Undo payload structure
+### Undo payload structure (✓ IMPLEMENTED)
 
 ```python
 {
-    "position_mode": "style_gui_dialogue",
-    "write_target_file": "game/gui.rpy",
-    "identity_file": "game/screens.rpy",
-    "previous_xpos": 268,
-    "previous_ypos": 50,
-    "new_xpos": 300,
-    "new_ypos": 100,
-    "style_position_statement": <original parsed>,
+    "say_style_position_previous_x": 268,
+    "say_style_position_previous_y": 50,
+    "say_style_position_new_x": 300,
+    "say_style_position_new_y": 100,
 }
 ```
+
+**Status:** Coordinator implementation complete, needs unit + live tests
 
 ## Phase 5: Bridge UI + i18n (TODO)
 
@@ -292,18 +352,30 @@ RENFORGE_SAY_WHAT_STYLE_POSITION_LIVE=1 pytest tests/test_editor_say_what_style_
 
 ## Acceptance criteria mapping
 
-- [ ] Two-file write-path: gui.rpy patched, screens.rpy rebind
-- [ ] No `XPOS_DUPLICATE` for missing inherited position
-- [ ] Variant detection prevents unsafe unlock
-- [ ] Preview without say rebuild / TypeError
-- [ ] Product undo/redo with GUI literal storage
-- [ ] Coordinator tests for new position_mode
+### Phase 1 (✓ COMPLETE)
+- [x] Source analyzer for gui.dialogue_xpos/ypos
+- [x] Source patcher preserving gui.scale() wrapper
+- [x] Variant detection and lock code
+- [x] 16 unit tests, UTF-8 safe, byte-span correct
+
+### Phase 2A Coordinator (✓ COMPLETE)
+- [x] Two-file write-path: gui.rpy patched, screens.rpy rebind
+- [x] No `XPOS_DUPLICATE` for missing inherited position
+- [x] Variant detection prevents unsafe unlock
+- [x] Product undo/redo with GUI literal storage (implemented, not tested)
+- [x] Fail-closed: reject multi-file + other changes
+
+### Phase 2B+ (TODO — BLOCKS issue close)
+- [ ] Bridge preview without say rebuild / TypeError
+- [ ] Coordinator unit tests for new position_mode
 - [ ] Bridge capabilities + ownership chain UI
 - [ ] Global-scope notice displayed
 - [ ] Live test: select, drag, save, reload, rebind, undo, redo
 - [ ] Live test: geometry agreement ≤1px
 - [ ] Live test: second dialogue line at new position
 - [ ] Live test: byte-identical undo
+
+**Critical path:** Bridge preview (Phase 3) blocks all remaining validation
 
 ## Out of scope
 
