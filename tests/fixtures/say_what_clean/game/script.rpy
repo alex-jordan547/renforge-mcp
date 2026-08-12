@@ -1,6 +1,6 @@
-## Minimal script for #81 live tests
+## #81 say.what style position live test script
 
 label start:
-    "Test dialogue for RenForge #81 say.what style position."
-    "Second dialogue line to verify global scope."
+    "First dialogue line for RenForge #81 say.what style position test."
+    "Second dialogue line to verify global scope - both lines should move together."
     return

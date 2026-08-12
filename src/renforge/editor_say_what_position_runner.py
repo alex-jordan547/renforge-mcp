@@ -38,32 +38,54 @@ def run_editor_say_what_style_position_live_scenario(
     gui_source_initial = gui_path.read_bytes()
     screens_source_initial = fixture_path.read_bytes()
     
-    # 1. Show dialogue, select say.what
-    client.eval_expr('renpy.jump_out_of_context("start")')
+    # 1. Show dialogue screen directly (avoid jump exception)
+    # Use renpy.show_screen with dummy dialogue args
+    client.eval_expr(
+        'renpy.show_screen("say", who=None, what="Test dialogue for RenForge #81", _layer="screens")'
+    )
     
     # Wait for say screen
     say_active = client.inspect_screen("say")
     report["say_screen_active"] = say_active.get("active") is True
     
-    # Get say.what bounds
-    widgets = client.eval_expr('renpy.display.behavior.get_scene_tree().get("what")')
-    if not widgets or len(widgets) == 0:
+    # Get say.what bounds using scene_tree
+    tree = client.scene_tree(types=["text"], detail="semantic")
+    nodes = tree.get("nodes") if isinstance(tree, dict) else []
+    
+    # Find the "what" widget by looking for the text widget inside "say" screen
+    what_bounds = None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        # Look for the node that has our test text
+        if "Test dialogue for RenForge #81" in str(node.get("text") or ""):
+            bounds = node.get("bounds")
+            if isinstance(bounds, dict):
+                what_bounds = {
+                    "x": int(bounds["x"]),
+                    "y": int(bounds["y"]),
+                    "width": int(bounds["width"]),
+                    "height": int(bounds["height"]),
+                }
+                break
+    
+    report["what_bounds"] = what_bounds
+    if not what_bounds:
         report["verdict"] = "fail"
         report["error"] = "say.what not found in scene tree"
         return report
     
-    what_rect = widgets[0].get("rect", [0, 0, 100, 50])
-    select_x = int(what_rect[0]) + 10
-    select_y = int(what_rect[1]) + 10
+    select_x = what_bounds["x"] + 10
+    select_y = what_bounds["y"] + 10
     
     # Select
     select_result = client.eval_expr(
-        f'_renforge_editor_select_target({select_x}, {select_y})'
+        f'_renforge_editor_select({select_x}, {select_y})'
     )
     report["select"] = select_result
     
     # 2. Verify unlock: position_mode = style_gui_dialogue, move = true
-    status = client.eval_expr('_renforge_editor_task0_status()')
+    status = client.request("editor_task0_status", {})
     report["unlock"] = {
         "position_mode": status.get("position_mode"),
         "capabilities": status.get("capabilities"),
@@ -100,7 +122,7 @@ def run_editor_say_what_style_position_live_scenario(
     
     # Wait for commit to complete
     for _ in range(40):
-        status = client.eval_expr('_renforge_editor_task0_status()')
+        status = client.request("editor_task0_status", {})
         if status.get("save_button_state") == "saved":
             break
     else:
@@ -137,15 +159,14 @@ def run_editor_say_what_style_position_live_scenario(
             break
     
     # 7. Rebind to second dialogue line, verify global scope
-    client.eval_expr('renpy.jump_out_of_context("start")')
-    client.eval_expr('renpy.call_screen("say", "Test", "Second line")')
+    client.eval_expr('renpy.show_screen("say", who="Test", what="Second line", _layer="screens")')
     
     # Select again
     select_result_2 = client.eval_expr(
-        f'_renforge_editor_select_target({select_x}, {select_y})'
+        f'_renforge_editor_select({select_x}, {select_y})'
     )
     
-    status_2 = client.eval_expr('_renforge_editor_task0_status()')
+    status_2 = client.request("editor_task0_status", {})
     report["rebind"] = {
         "position_mode": status_2.get("position_mode"),
         "position": status_2.get("position"),
@@ -157,7 +178,7 @@ def run_editor_say_what_style_position_live_scenario(
     
     # Wait for undo
     for _ in range(40):
-        status = client.eval_expr('_renforge_editor_task0_status()')
+        status = client.request("editor_task0_status", {})
         if status.get("save_button_state") == "saved":
             break
     
