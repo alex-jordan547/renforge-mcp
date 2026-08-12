@@ -2624,26 +2624,30 @@ init 1100 python:
             return
         
         try:
-            # Find RenForge transaction directory
-            # project.root / ".renforge" / "editor-transactions" / transaction_id
+            # Find RenForge transaction directory and manifest
             transaction_root = os.path.join(renpy.config.basedir, ".renforge", "editor-transactions")
             transaction_dir = os.path.join(transaction_root, str(transaction_id))
+            manifest_path = os.path.join(transaction_dir, "manifest.json")
             
-            if not os.path.exists(transaction_dir):
+            if not os.path.exists(manifest_path):
                 return
             
-            # Create .restart_expected flag file
-            flag_path = os.path.join(transaction_dir, ".restart_expected")
-            with open(flag_path, "w") as f:
-                f.write(json.dumps({"created_at": time.time()}))
-                # CRITICAL: fsync to ensure flag is on disk before restart
-                # renpy.reload_script() is SYNCHRONOUS and starts new coordinator immediately
-                # Without fsync, new coordinator may read dir before flag is written
+            # CRITICAL: Patch manifest.json to add handshake_expected flag
+            # This is race-free because we modify the manifest directly
+            # Coordinator reads manifest during recovery
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+            
+            manifest["handshake_expected"] = True
+            
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, separators=(",", ":"), ensure_ascii=False)
+                # fsync to ensure manifest is on disk before restart
                 f.flush()
                 os.fsync(f.fileno())
-        except (OSError, IOError):
-            # Fail-open: if we can't mark it, coordinator will rollback, but that's
-            # better than blocking the restart
+                
+        except (OSError, IOError, ValueError, KeyError):
+            # Fail-open: if we can't mark it, coordinator will rollback
             pass
     
     # ────────────────────────────────────────────────────────────────────────────

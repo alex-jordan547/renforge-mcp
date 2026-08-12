@@ -1644,13 +1644,19 @@ class EditorCoordinator:
             record.state = "committed"
             self._script_generation = script_generation
         
-        # Clean up .restart_expected flag if it exists
-        tx_dir = self._transaction_root / transaction_id
-        restart_flag = tx_dir / ".restart_expected"
-        if restart_flag.exists():
+        # Clean up handshake_expected flag from manifest if it exists
+        # (added by bridge before restart to prevent rollback)
+        manifest_path = self._transaction_root / transaction_id / "manifest.json"
+        if manifest_path.exists():
             try:
-                restart_flag.unlink()
-            except OSError:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if "handshake_expected" in manifest:
+                    del manifest["handshake_expected"]
+                    atomic_write_file(
+                        manifest_path,
+                        json.dumps(manifest, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+                    )
+            except (OSError, json.JSONDecodeError, KeyError):
                 pass
         
         self._persist_transaction(record)
@@ -2395,6 +2401,9 @@ class EditorCoordinator:
             uncertain_paths = manifest.get("uncertain_paths")
             if not isinstance(uncertain_paths, list):
                 uncertain_paths = []
+            handshake_expected = manifest.get("handshake_expected")
+            if not isinstance(handshake_expected, bool):
+                handshake_expected = False
 
             record = _TransactionRecord(
                 transaction_id=transaction_id,
@@ -2412,32 +2421,10 @@ class EditorCoordinator:
             )
             self._transactions[transaction_id] = record
             
-            # CRITICAL: Check for .restart_expected flag to prevent rollback
-            # When gui.rpy commits cause full Ren'Py restart, the bridge marks
-            # the transaction to prevent coordinator from rolling it back on recovery
-            restart_expected_path = child / ".restart_expected"
-            restart_expected = restart_expected_path.exists()
-            
-            # CRITICAL: Grace period for recent published transactions
-            # renpy.reload_script() starts new coordinator SO FAST that flag file
-            # may not exist yet even with fsync. Don't rollback recent published txs.
-            # Bridge has 10s to send handshake after publish.
-            # Use "displaced" file mtime (created at publish, never modified)
-            recent_publish = False
-            if state == "published" and not restart_expected:
-                try:
-                    exchange_dir = child / "exchange"
-                    if exchange_dir.exists():
-                        displaced_files = list(exchange_dir.glob("displaced-*"))
-                        if displaced_files:
-                            displaced_mtime = max(f.stat().st_mtime for f in displaced_files)
-                            age_seconds = time.time() - displaced_mtime
-                            if age_seconds < 10.0:
-                                recent_publish = True
-                except OSError:
-                    pass
-            
-            if state in {"staged", "publishing", "published"} and manifest_intact and not restart_expected and not recent_publish:
+            # CRITICAL: Check manifest handshake_expected flag to prevent rollback
+            # Bridge patches manifest.json before restart to mark handshake expected
+            # This is race-free because manifest is already on disk when read
+            if state in {"staged", "publishing", "published"} and manifest_intact and not handshake_expected:
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
