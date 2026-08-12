@@ -2546,15 +2546,9 @@ init 1100 python:
     
     def _renforge_editor_get_handshake_persist_path():
         """Get path to handshake persistence file (survives Ren'Py restart)."""
-        import renpy
-        # Use Ren'Py's config directory which persists across restarts
-        persist_dir = renpy.config.savedir or os.path.join(renpy.config.renpy_base, "saves")
-        if not os.path.exists(persist_dir):
-            try:
-                os.makedirs(persist_dir)
-            except OSError:
-                pass
-        return os.path.join(persist_dir, "renforge_handshake_state.json")
+        # Use project base directory for persistence (survives restart)
+        # Cannot rely on renpy.config.savedir being set early enough
+        return os.path.join(renpy.config.basedir, ".renforge_handshake_state.json")
     
     def _renforge_editor_save_handshake_state(state):
         """Save pending handshake state to survive gui.rpy restart."""
