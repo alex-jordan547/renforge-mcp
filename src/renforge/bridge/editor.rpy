@@ -2625,7 +2625,8 @@ init 1100 python:
         
         try:
             # Find RenForge transaction directory
-            transaction_root = os.path.join(renpy.config.basedir, "game", ".renforge", "transactions")
+            # project.root / ".renforge" / "editor-transactions" / transaction_id
+            transaction_root = os.path.join(renpy.config.basedir, ".renforge", "editor-transactions")
             transaction_dir = os.path.join(transaction_root, str(transaction_id))
             
             if not os.path.exists(transaction_dir):
