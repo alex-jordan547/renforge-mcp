@@ -262,7 +262,7 @@ class SayWhatStylePositionStatement:
     authored form: ``define gui.dialogue_xpos = gui.scale(<int>)``.
     Inherited, expression, ambiguous, and unsupported forms leave
     ``position_mode`` empty and set a stable lock code. Spans are absolute
-    character offsets in the full source file.
+    UTF-8 byte offsets in the full source file.
     """
 
     xpos: int | None = None
@@ -2520,10 +2520,20 @@ def analyze_say_what_style_position(
                         has_expression_error = True
         
         # Check for variant assignments inside variant functions
-        if in_variant and xpos_var in line and "=" in line:
-            has_variant_writer = True
-        if in_variant and ypos_var in line and "=" in line:
-            has_variant_writer = True
+        # Ignore comment-only lines to avoid false positives like # gui.dialogue_xpos = ...
+        if in_variant and not stripped.startswith("#"):
+            if xpos_var in line and "=" in line:
+                # Check that variable appears before any comment
+                comment_pos = line.find("#")
+                var_pos = line.find(xpos_var)
+                if comment_pos == -1 or var_pos < comment_pos:
+                    has_variant_writer = True
+            if ypos_var in line and "=" in line:
+                # Check that variable appears before any comment
+                comment_pos = line.find("#")
+                var_pos = line.find(ypos_var)
+                if comment_pos == -1 or var_pos < comment_pos:
+                    has_variant_writer = True
         
         offset += len(line.encode("utf-8"))
     

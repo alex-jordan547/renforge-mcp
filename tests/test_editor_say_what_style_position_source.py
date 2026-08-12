@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from renforge.editor.source import (
+    SAY_WHAT_STYLE_POSITION_MODE,
     EditorSourceError,
     analyze_say_what_style_position,
     apply_say_what_style_position_patch,
@@ -186,6 +187,31 @@ init python:
     )
     assert parsed.position_mode is None
     assert parsed.position_lock_code == "STYLE_POSITION_VARIANT_UNSUPPORTED"
+
+
+def test_analyze_say_what_style_position_ignores_variant_comments() -> None:
+    """Test that comments inside variant don't trigger false positive (polish #2)."""
+    gui_file = """\
+define gui.dialogue_xpos = gui.scale(268)
+define gui.dialogue_ypos = gui.scale(50)
+
+init python:
+    @gui.variant
+    def small():
+        # Note: gui.dialogue_xpos = gui.scale(100) would override for phones
+        # Similarly, gui.dialogue_ypos = gui.scale(20) would set vertical position
+        pass
+"""
+    parsed = analyze_say_what_style_position(
+        gui_file,
+        xpos_var="gui.dialogue_xpos",
+        ypos_var="gui.dialogue_ypos",
+    )
+    # Should unlock: comments don't count as variant writers
+    assert parsed.xpos == 268
+    assert parsed.ypos == 50
+    assert parsed.position_mode == SAY_WHAT_STYLE_POSITION_MODE
+    assert parsed.position_lock_code is None
 
 
 def test_apply_say_what_style_position_patch_refuses_locked_statement() -> None:
