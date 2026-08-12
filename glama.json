@@ -1,0 +1,16 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "alex-jordan547"
+  ],
+  "name": "RenForge MCP",
+  "description": "Inspect, launch, test, and visually edit Ren'Py projects through MCP, a CLI, and a web dashboard.",
+  "keywords": [
+    "renpy",
+    "visual-novel",
+    "game-development",
+    "live-editor",
+    "testing",
+    "mcp"
+  ]
+}
