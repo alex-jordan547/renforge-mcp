@@ -631,13 +631,22 @@ class EditorCoordinator:
                     and widget_id == "what"
                     and runtime_key.get("screen") == "say"
                 ):
-                    # Ownership proof: screens.rpy must have `text ... id "what"`
+                    # Ownership proof part 1: screens.rpy must have `text ... id "what"`
                     # RuntimeProbe gave us widget_id == "what", but verify source identity
                     if 'id "what"' not in header_line and "id 'what'" not in header_line:
                         if move_lock_reason is None:
                             move_lock_reason = self._lock_reason(
                                 "STYLE_POSITION_SOURCE_UNRESOLVED",
                                 "say.what widget ID not found in source (screens.rpy)",
+                            )
+                        say_style_position = None
+                    # Ownership proof part 2: screens.rpy must NOT have inline xpos/ypos
+                    # (fail-closed: if xpos/ypos keywords present, reject even if in comments)
+                    elif "xpos" in header_line or "ypos" in header_line:
+                        if move_lock_reason is None:
+                            move_lock_reason = self._lock_reason(
+                                "STYLE_POSITION_SOURCE_AMBIGUOUS",
+                                "say.what has inline position; style-backed ownership unclear",
                             )
                         say_style_position = None
                     else:
