@@ -39,6 +39,16 @@ def run_editor_say_what_style_position_live_scenario(
     screens_source_initial = fixture_path.read_bytes()
     
     # 1. Verify say screen is active (shown by harness before editor opened)
+    # FIRST: Clean any stale transactions from previous runs
+    transaction_root = fixture_path.parent.parent / ".renforge" / "editor-transactions"
+    if transaction_root.exists():
+        import shutil
+        try:
+            shutil.rmtree(transaction_root)
+            print(f"   Cleaned stale transactions from {transaction_root}")
+        except OSError:
+            pass
+    
     say_active = client.inspect_screen("say")
     report["say_screen_active"] = say_active.get("active") is True
     if not report["say_screen_active"]:
