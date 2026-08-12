@@ -2422,13 +2422,18 @@ class EditorCoordinator:
             # renpy.reload_script() starts new coordinator SO FAST that flag file
             # may not exist yet even with fsync. Don't rollback recent published txs.
             # Bridge has 10s to send handshake after publish.
+            # Use "displaced" file mtime (created at publish, never modified)
             recent_publish = False
             if state == "published" and not restart_expected:
                 try:
-                    manifest_mtime = manifest_path.stat().st_mtime
-                    age_seconds = time.time() - manifest_mtime
-                    if age_seconds < 10.0:
-                        recent_publish = True
+                    exchange_dir = child / "exchange"
+                    if exchange_dir.exists():
+                        displaced_files = list(exchange_dir.glob("displaced-*"))
+                        if displaced_files:
+                            displaced_mtime = max(f.stat().st_mtime for f in displaced_files)
+                            age_seconds = time.time() - displaced_mtime
+                            if age_seconds < 10.0:
+                                recent_publish = True
                 except OSError:
                     pass
             
