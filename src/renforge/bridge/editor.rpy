@@ -6599,6 +6599,19 @@ init 1100 python:
             "history_length": len(state.history_entries),
             "current_analysis_id": state.current_analysis_id,
             "current_source_key": state.current_source_key,
+            "position_mode": (
+                state.current_source_key.get("position_mode")
+                if state.current_source_key is not None
+                else None
+            ),
+            "position": (
+                state.current_source_key.get("original_position") if state.current_source_key else None
+            ),
+            "capabilities": (
+                builtins.dict(state.current_capabilities)
+                if state.current_analysis_id is not None
+                else {}
+            ),
             "current_capabilities": (
                 builtins.dict(state.current_capabilities)
                 if state.current_analysis_id is not None

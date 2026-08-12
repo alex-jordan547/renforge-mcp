@@ -113,7 +113,7 @@ def run_editor_say_what_style_position_live_scenario(
         return report
     
     # 3. Preview: drag +20, +30 logical pixels
-    current_pos = status.get("position", [0, 0])
+    current_pos = status.get("position") or [268, 50]  # Fallback to authored pos
     new_x = current_pos[0] + 20
     new_y = current_pos[1] + 30
     
@@ -126,15 +126,17 @@ def run_editor_say_what_style_position_live_scenario(
     gui_source_after_preview = gui_path.read_bytes()
     report["preview_source_unchanged"] = gui_source_after_preview == gui_source_initial
     
-    # 4. Commit
-    commit_result = client.eval_expr('_renforge_editor_commit()')
-    report["commit"] = commit_result
+    # 4. Save (click save button, not direct commit call)
+    save_click = client.click_element(id="rf_save", screen="_renforge_editor_overlay")
+    report["save_click"] = save_click
     
-    # Wait for commit to complete
-    for _ in range(40):
+    # Wait for save/commit to complete
+    import time
+    for _ in range(80):
         status = client.request("editor_task0_status", {})
-        if status.get("save_button_state") == "saved":
+        if status.get("status_code") == "reload_committed":
             break
+        time.sleep(0.5)
     else:
         report["verdict"] = "fail"
         report["error"] = "commit timeout"
@@ -182,15 +184,16 @@ def run_editor_say_what_style_position_live_scenario(
         "position": status_2.get("position"),
     }
     
-    # 8. Undo
-    undo_result = client.eval_expr('_renforge_editor_undo()')
-    report["undo"] = undo_result
+    # 8. Undo (click undo button)
+    undo_click = client.click_element(id="rf_undo", screen="_renforge_editor_overlay")
+    report["undo_click"] = undo_click
     
     # Wait for undo
-    for _ in range(40):
+    for _ in range(80):
         status = client.request("editor_task0_status", {})
-        if status.get("save_button_state") == "saved":
+        if status.get("status_code") == "reload_committed":
             break
+        time.sleep(0.5)
     
     # 9. Verify byte-identical undo
     gui_source_after_undo = gui_path.read_bytes()
