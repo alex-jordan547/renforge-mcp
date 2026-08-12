@@ -171,6 +171,11 @@ class EditorCoordinator:
         self._transaction_root.mkdir(parents=True, exist_ok=True)
         fsync_directory(self._transaction_root.parent)
         fsync_directory(self._transaction_root)
+        
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[COORDINATOR {os.getpid()}] {now} INIT coordinator, transaction_root={self._transaction_root}", file=sys.stderr)
+        
         self._recover_transactions()
 
     def start(self) -> EditorEndpoint:
@@ -1596,6 +1601,10 @@ class EditorCoordinator:
         }
 
     def _command_reload_handshake(self, payload: dict[str, Any]) -> dict[str, Any]:
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[HANDSHAKE {os.getpid()}] {now} RECEIVED reload_handshake payload={payload}", file=sys.stderr)
+        
         transaction_id = self._require_string(payload, "transaction_id")
         script_generation = payload.get("script_generation")
         if not isinstance(script_generation, int):
@@ -2190,6 +2199,10 @@ class EditorCoordinator:
             "operation": "publish",
         }
         self._persist_transaction(transaction)
+        
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[PUBLISH {os.getpid()}] {now} BEGIN CAS for transaction {transaction.transaction_id[:8]}, state=publishing", file=sys.stderr)
 
         try:
             result = conditional_replace_file(
@@ -2231,6 +2244,10 @@ class EditorCoordinator:
             "source_mode": result.source_mode,
         }
         self._persist_transaction(transaction)
+        
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[PUBLISH {os.getpid()}] {now} CAS SUCCESS transaction {transaction.transaction_id[:8]}, state=published, persisted", file=sys.stderr)
 
     def _conditional_rollback(self, transaction: _TransactionRecord, *, allow_staged: bool = False) -> None:
         # DEBUG: Log ALL rollback attempts with PID and timestamp
@@ -2352,9 +2369,17 @@ class EditorCoordinator:
         fsync_directory(tx_dir)
 
     def _recover_transactions(self) -> None:
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[RECOVERY {os.getpid()}] {now} ENTER _recover_transactions", file=sys.stderr)
         if not self._transaction_root.exists():
+            print(f"[RECOVERY {os.getpid()}] {now} transaction_root does not exist: {self._transaction_root}", file=sys.stderr)
             return
         for child in sorted(self._transaction_root.iterdir()):
+            import sys, os, datetime
+            now = datetime.datetime.now().isoformat()
+            print(f"[RECOVERY {os.getpid()}] {now} Checking child: {child.name}, is_dir={child.is_dir()}", file=sys.stderr)
+            
             if not child.is_dir():
                 continue
             manifest_path = child / "manifest.json"
