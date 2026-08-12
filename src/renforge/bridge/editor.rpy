@@ -6030,6 +6030,16 @@ init 1100 python:
             renpy.restart_interaction()
             return
         _renforge_editor_apply_coordinator_results()
+        
+        # DEBUG: Log reload state machine to understand why reload_script not triggering
+        import sys
+        sys.stderr.write("[BRIDGE-PERIODIC] save_in_progress=%s pending_transaction_id=%s pending_reload_requested=%s pending_reload_started=%s\n" % (
+            state.save_in_progress,
+            state.pending_transaction_id,
+            state.pending_reload_requested,
+            state.pending_reload_started
+        ))
+        
         if not state.save_in_progress or state.pending_transaction_id is None:
             return
         if not state.pending_reload_requested:
