@@ -2177,6 +2177,16 @@ class EditorCoordinator:
         timer.start()
 
     def _on_attestation_timeout(self, transaction_id: str) -> None:
+        # CRITICAL: Don't rollback if coordinator is shutting down
+        # For gui.rpy commits requiring reload_script, close() is called BEFORE
+        # new coordinator starts. If timer fires during shutdown window, rollback
+        # would persist rolled_back state that new coordinator recovery cannot fix.
+        if self._stop_event.is_set():
+            import sys, os, datetime
+            now = datetime.datetime.now().isoformat()
+            print(f"[ATTESTATION-TIMEOUT-SKIPPED-SHUTDOWN {os.getpid()}] {now} transaction={transaction_id[:8]}", file=sys.stderr)
+            return
+        
         with self._lock:
             record = self._transactions.get(transaction_id)
         if record is None:
