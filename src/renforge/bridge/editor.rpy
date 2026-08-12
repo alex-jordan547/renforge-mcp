@@ -790,13 +790,10 @@ init 1100 python:
         if not hasattr(state, "status_expires_at"):
             state.status_expires_at = None
         
-        # CRITICAL: Restore handshake state after gui.rpy restart
-        # If editor was active during restart, we need to restore pending handshake
-        if not hasattr(state, "handshake_restored"):
-            state.handshake_restored = False
-        if not state.handshake_restored:
-            _renforge_editor_restore_handshake_state(state)
-            state.handshake_restored = True
+        # CRITICAL: Always check for handshake persistence file after gui.rpy restart
+        # Cannot rely on a flag because _renforge_runtime_module persists across restarts
+        # Only the attributes are cleared, so we must check the filesystem every time
+        _renforge_editor_restore_handshake_state(state)
         
         return state
 
@@ -6071,15 +6068,8 @@ init 1100 python:
         state.last_commit_status = None
         state.pending_transaction_id = None
         state.pending_analysis_key = None
-        
-        # Restore handshake state from persistent file if it exists (gui.rpy restart recovery)
-        # This will set pending_handshake_generation and related state if a commit was in progress
-        _renforge_editor_restore_handshake_state(state)
-        
-        # Only clear handshake state if nothing was restored
-        if state.pending_handshake_generation is None:
-            state.pending_handshake_sent = False
-        
+        state.pending_handshake_generation = None
+        state.pending_handshake_sent = False
         state.save_button_state = "idle"
         state.pending_reload_requested = False
         state.opacity = 0.9
