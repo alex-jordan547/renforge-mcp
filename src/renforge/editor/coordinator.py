@@ -2418,7 +2418,21 @@ class EditorCoordinator:
             restart_expected_path = child / ".restart_expected"
             restart_expected = restart_expected_path.exists()
             
-            if state in {"staged", "publishing", "published"} and manifest_intact and not restart_expected:
+            # CRITICAL: Grace period for recent published transactions
+            # renpy.reload_script() starts new coordinator SO FAST that flag file
+            # may not exist yet even with fsync. Don't rollback recent published txs.
+            # Bridge has 10s to send handshake after publish.
+            recent_publish = False
+            if state == "published" and not restart_expected:
+                try:
+                    manifest_mtime = manifest_path.stat().st_mtime
+                    age_seconds = time.time() - manifest_mtime
+                    if age_seconds < 10.0:
+                        recent_publish = True
+                except OSError:
+                    pass
+            
+            if state in {"staged", "publishing", "published"} and manifest_intact and not restart_expected and not recent_publish:
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
