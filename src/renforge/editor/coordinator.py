@@ -255,8 +255,13 @@ class EditorCoordinator:
                 if record.timer is not None:
                     record.timer.cancel()
                     record.timer = None
+            # CRITICAL: Don't rollback "published" transactions on coordinator shutdown
+            # For gui.rpy commits, Ren'Py does full restart: bridge stops OLD coordinator,
+            # new coordinator starts. If we rollback here, new coordinator sees "rolled_back"
+            # and can't complete handshake. Let new coordinator's recovery logic handle it.
+            # Only rollback "publishing" (incomplete writes) to ensure clean shutdown.
             for record in self._transactions.values():
-                if record.state == "published":
+                if record.state == "publishing":
                     self._conditional_rollback(record)
             states = {txid: record.state for txid, record in self._transactions.items()}
             return {"session_id": self._session_id, "transactions": states, "recovered": list(self._recovered)}
