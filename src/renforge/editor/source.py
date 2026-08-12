@@ -2474,33 +2474,71 @@ def analyze_say_what_style_position(
     xpos_matches: list[tuple[int, tuple[int, int]]] = []
     ypos_matches: list[tuple[int, tuple[int, int]]] = []
     has_expression_error = False
+    has_variant_writer = False
+    
+    # Track if we're inside a variant function
+    in_variant = False
     
     offset = 0
     for line in lines:
         # Simple pattern matching for the supported form
         stripped = line.strip()
+        
+        # Detect variant function definitions
+        if "@gui.variant" in line or "def small():" in line or "def touch():" in line:
+            in_variant = True
+        
+        # Check if we're exiting a variant (dedent back to module level)
+        if in_variant and stripped and not line.startswith((" ", "\t")) and not stripped.startswith("#"):
+            in_variant = False
+        
         if stripped.startswith("define "):
             rest = stripped[7:].strip()  # after "define "
             
             # Check xpos_var
             if rest.startswith(f"{xpos_var} ="):
-                result = _parse_gui_scale_define(line, offset, xpos_var)
-                if result[0] == "ok":
-                    xpos_matches.append((result[1], result[2]))
-                elif result[0] in ("expression", "non_gui_scale"):
-                    has_expression_error = True
+                if in_variant:
+                    # Variant override detected
+                    has_variant_writer = True
+                else:
+                    result = _parse_gui_scale_define(line, offset, xpos_var)
+                    if result[0] == "ok":
+                        xpos_matches.append((result[1], result[2]))
+                    elif result[0] in ("expression", "non_gui_scale"):
+                        has_expression_error = True
             
             # Check ypos_var
             if rest.startswith(f"{ypos_var} ="):
-                result = _parse_gui_scale_define(line, offset, ypos_var)
-                if result[0] == "ok":
-                    ypos_matches.append((result[1], result[2]))
-                elif result[0] in ("expression", "non_gui_scale"):
-                    has_expression_error = True
+                if in_variant:
+                    # Variant override detected
+                    has_variant_writer = True
+                else:
+                    result = _parse_gui_scale_define(line, offset, ypos_var)
+                    if result[0] == "ok":
+                        ypos_matches.append((result[1], result[2]))
+                    elif result[0] in ("expression", "non_gui_scale"):
+                        has_expression_error = True
+        
+        # Check for variant assignments inside variant functions
+        if in_variant and xpos_var in line and "=" in line:
+            has_variant_writer = True
+        if in_variant and ypos_var in line and "=" in line:
+            has_variant_writer = True
         
         offset += len(line.encode("utf-8"))
     
-    # Check for expression/non-gui.scale errors first (more specific)
+    # Check for variant writers first (most restrictive)
+    if has_variant_writer:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_VARIANT_UNSUPPORTED",
+            "gui.dialogue_xpos or gui.dialogue_ypos has phone/small variant overrides",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+    
+    # Check for expression/non-gui.scale errors (more specific than missing)
     if has_expression_error:
         code, message = _style_position_lock(
             "STYLE_POSITION_EXPRESSION_UNSUPPORTED",

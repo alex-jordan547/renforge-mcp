@@ -168,7 +168,7 @@ define gui.dialogue_ypos = gui.scale(50)
 
 
 def test_analyze_say_what_style_position_rejects_variant_override() -> None:
-    """Test that phone/small variants remain locked unless proven."""
+    """Test that phone/small variant overrides remain locked (issue #81 critical finding #3)."""
     gui_file = """\
 define gui.dialogue_xpos = gui.scale(268)
 define gui.dialogue_ypos = gui.scale(50)
@@ -177,17 +177,15 @@ init python:
     @gui.variant
     def small():
         gui.dialogue_xpos = gui.scale(90)
+        gui.dialogue_width = gui.scale(1100)
 """
-    # For now, variants remain locked; a full variant resolver is out of scope.
     parsed = analyze_say_what_style_position(
         gui_file,
         xpos_var="gui.dialogue_xpos",
         ypos_var="gui.dialogue_ypos",
     )
-    # The initial test may pass; a more sophisticated check would detect variants.
-    # For the bounded adapter, we only support the simplest case.
-    # A more thorough variant detection may be added later; this test documents the expected lock.
-    assert parsed.position_mode == "style_gui_dialogue" or parsed.position_lock_code == "STYLE_POSITION_VARIANT_UNSUPPORTED"
+    assert parsed.position_mode is None
+    assert parsed.position_lock_code == "STYLE_POSITION_VARIANT_UNSUPPORTED"
 
 
 def test_apply_say_what_style_position_patch_refuses_locked_statement() -> None:
