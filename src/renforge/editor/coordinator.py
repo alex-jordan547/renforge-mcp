@@ -1313,16 +1313,17 @@ class EditorCoordinator:
             authored_x = gui_intents[0].source_key.get("say_style_position_xpos")
             authored_y = gui_intents[0].source_key.get("say_style_position_ypos")
             
-            # Runtime baseline is the original rendered position
-            record = gui_intents[0].record
-            runtime_baseline_x = int(record.original_position[0])
-            runtime_baseline_y = int(record.original_position[1])
+            # CRITICAL: For style-backed position, baseline is AUTHORED values (window-relative)
+            # NOT original_position (which is screen-absolute including window offset)
+            # Intent x/y from preview are ALSO window-relative (preview mutates style, not screen coords)
+            runtime_baseline_x = authored_x
+            runtime_baseline_y = authored_y
             
-            # New position from intent (after drag)
+            # New position from intent (after drag, window-relative from preview)
             intent_x = gui_intents[0].x
             intent_y = gui_intents[0].y
             
-            # Calculate logical-pixel delta
+            # Calculate logical-pixel delta (both in window-relative space)
             delta_x = intent_x - runtime_baseline_x
             delta_y = intent_y - runtime_baseline_y
             
@@ -2421,10 +2422,20 @@ class EditorCoordinator:
             )
             self._transactions[transaction_id] = record
             
-            # CRITICAL: Check manifest handshake_expected flag to prevent rollback
-            # Bridge patches manifest.json before restart to mark handshake expected
-            # This is race-free because manifest is already on disk when read
-            if state in {"staged", "publishing", "published"} and manifest_intact and not handshake_expected:
+            # CRITICAL: Two-phase commit for gui.rpy restart resilience
+            # "published" means file successfully written, waiting for reload handshake.
+            # Don't rollback "published" on recovery - it may be in-flight across restart.
+            # Set a new timer (30s) to rollback if handshake never arrives (crash/bug).
+            # Rollback "staged" and "publishing" immediately (incomplete writes).
+            if state == "published" and manifest_intact:
+                # Transaction is published and waiting for handshake
+                # Set recovery timer to rollback if handshake doesn't arrive
+                timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
+                record.timer = timer
+                timer.start()
+                self._recovered.append(transaction_id)
+            elif state in {"staged", "publishing"} and manifest_intact:
+                # Incomplete transaction - rollback immediately
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
