@@ -2636,6 +2636,11 @@ init 1100 python:
             flag_path = os.path.join(transaction_dir, ".restart_expected")
             with open(flag_path, "w") as f:
                 f.write(json.dumps({"created_at": time.time()}))
+                # CRITICAL: fsync to ensure flag is on disk before restart
+                # renpy.reload_script() is SYNCHRONOUS and starts new coordinator immediately
+                # Without fsync, new coordinator may read dir before flag is written
+                f.flush()
+                os.fsync(f.fileno())
         except (OSError, IOError):
             # Fail-open: if we can't mark it, coordinator will rollback, but that's
             # better than blocking the restart
