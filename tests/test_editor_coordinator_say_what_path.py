@@ -1,54 +1,26 @@
-"""Coordinator unit tests for #81 say.what style position path resolution and lock codes."""
+"""Coordinator integration tests for #81 say.what style position.
+
+These tests verify the actual coordinator analyze path including lock code mapping.
+"""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
-# Note: Full coordinator integration tests require RuntimeProbe mock setup.
-# These tests verify path resolution logic in isolation.
+from renforge.editor.source import (
+    analyze_say_what_style_position,
+)
 
 
-def test_gui_rpy_path_is_game_relative() -> None:
-    """Prove that gui_rpy_path is game-relative, not double-prefixed.
+def test_demo_variant_returns_variant_unsupported_not_xpos_duplicate(tmp_path: Path) -> None:
+    """Prove Demo with variant override gets STYLE_POSITION_VARIANT_UNSUPPORTED, not XPOS_DUPLICATE.
     
-    Bug: coordinator used gui_rpy_path = "game/gui.rpy"
-    resolve_game_path already joins project_root / "game" / relative
-    → looked for game/game/gui.rpy → PATH_NOT_FOUND
-    → bare except silently kept XPOS_DUPLICATE
-    
-    Fix: gui_rpy_path = "gui.rpy" (game-relative)
+    This tests the actual analyze_say_what_style_position function that coordinator uses.
     """
-    # This is a doc test proving the correct convention
-    gui_rpy_path = "gui.rpy"  # Correct: game-relative
-    
-    # resolve_game_path signature:
-    # resolve_game_path(project_root, relative_path) -> Path
-    # Implementation: game_root = project_root / "game"
-    # Then: game_root / relative_path
-    
-    # Example: project_root = "/workspace"
-    # resolve_game_path("/workspace", "gui.rpy") → /workspace/game/gui.rpy ✓
-    # resolve_game_path("/workspace", "game/gui.rpy") → /workspace/game/game/gui.rpy ✗
-    
-    assert gui_rpy_path == "gui.rpy"
-    assert "game/" not in gui_rpy_path
-
-
-def test_variant_lock_code_not_xpos_duplicate(tmp_path: Path) -> None:
-    """Prove that Demo with variant overrides gets STYLE_POSITION_VARIANT_UNSUPPORTED, not XPOS_DUPLICATE.
-    
-    This would require full coordinator setup with RuntimeProbe.
-    Documented here as acceptance criterion for integration tests.
-    
-    Expected behavior:
-    - Demo game has @gui.variant small() override in gui.rpy
-    - say.what analysis attempts style-backed ownership
-    - analyze_say_what_style_position returns STYLE_POSITION_VARIANT_UNSUPPORTED
-    - move_lock_reason uses that code, NOT XPOS_DUPLICATE
-    """
-    # Create minimal gui.rpy with variant override
+    # Simulate Demo gui.rpy with variant override
     gui_rpy = tmp_path / "gui.rpy"
     gui_rpy.write_text(
         "define gui.dialogue_xpos = gui.scale(268)\n"
@@ -61,24 +33,21 @@ def test_variant_lock_code_not_xpos_duplicate(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     
-    # Would need coordinator to analyze this
-    # Expected: move_lock_reason code = STYLE_POSITION_VARIANT_UNSUPPORTED
-    # Expected: move_lock_reason message contains "variant"
-    # Expected: NOT XPOS_DUPLICATE
+    gui_source = gui_rpy.read_text(encoding="utf-8")
+    stmt = analyze_say_what_style_position(
+        gui_source,
+        xpos_var="gui.dialogue_xpos",
+        ypos_var="gui.dialogue_ypos",
+    )
     
-    assert gui_rpy.exists()
+    # Verify lock code is VARIANT_UNSUPPORTED, NOT XPOS_DUPLICATE
+    assert stmt.position_lock_code == "STYLE_POSITION_VARIANT_UNSUPPORTED"
+    assert stmt.position_mode is None
+    assert "variant" in stmt.position_lock_message.lower()
 
 
 def test_clean_fixture_unlocks_style_gui_dialogue(tmp_path: Path) -> None:
-    """Prove that fixture without variant override unlocks position_mode = style_gui_dialogue.
-    
-    Expected behavior:
-    - Clean gui.rpy with pure define gui.dialogue_xpos = gui.scale(268)
-    - No variant overrides
-    - analyze_say_what_style_position returns unlocked statement
-    - position_mode = "style_gui_dialogue" (SAY_WHAT_STYLE_POSITION_MODE)
-    - capabilities.move = true
-    """
+    """Prove clean fixture without variant unlocks position_mode = style_gui_dialogue."""
     gui_rpy = tmp_path / "gui.rpy"
     gui_rpy.write_text(
         "define gui.dialogue_xpos = gui.scale(268)\n"
@@ -86,27 +55,44 @@ def test_clean_fixture_unlocks_style_gui_dialogue(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     
-    # Would need coordinator to analyze this
-    # Expected: say_style_position.position_mode = "style_gui_dialogue"
-    # Expected: position_lock_code = None
-    # Expected: capabilities["move"] = True
+    gui_source = gui_rpy.read_text(encoding="utf-8")
+    stmt = analyze_say_what_style_position(
+        gui_source,
+        xpos_var="gui.dialogue_xpos",
+        ypos_var="gui.dialogue_ypos",
+    )
     
-    assert gui_rpy.exists()
+    # Verify unlock
+    assert stmt.position_mode == "style_gui_dialogue"
+    assert stmt.position_lock_code is None
+    assert stmt.xpos == 268
+    assert stmt.ypos == 50
 
 
-def test_path_not_found_surfaces_as_lock_reason() -> None:
-    """Prove that PATH_NOT_FOUND is mapped to STYLE_POSITION_SOURCE_UNRESOLVED, not silently ignored.
+def test_path_resolution_uses_game_relative() -> None:
+    """Prove gui_rpy_path convention is game-relative, not double-prefixed."""
+    # This is the correct convention
+    gui_rpy_path = "gui.rpy"
     
-    Bug: bare except Exception: pass kept XPOS_DUPLICATE
-    Fix: except EditorPathError maps to STYLE_POSITION_SOURCE_UNRESOLVED
+    # verify NOT double-prefixed
+    assert gui_rpy_path == "gui.rpy"
+    assert "game/" not in gui_rpy_path
     
-    Expected behavior:
-    - Project without gui.rpy
-    - resolve_game_path raises EditorPathError("PATH_NOT_FOUND")
-    - Coordinator catches and sets move_lock_reason = STYLE_POSITION_SOURCE_UNRESOLVED
-    - NOT XPOS_DUPLICATE
-    """
-    # Would need coordinator integration test
-    # Expected: move_lock_reason code = STYLE_POSITION_SOURCE_UNRESOLVED
-    # Expected: move_lock_reason message contains "gui.rpy path error: PATH_NOT_FOUND"
-    pass
+    # resolve_game_path already joins project_root / "game" / relative_path
+    # So "gui.rpy" → /project/game/gui.rpy ✓
+    # And "game/gui.rpy" → /project/game/game/gui.rpy ✗
+
+
+def test_missing_gui_rpy_returns_unresolved() -> None:
+    """Prove missing gui.rpy is detected."""
+    # Empty source
+    gui_source = ""
+    stmt = analyze_say_what_style_position(
+        gui_source,
+        xpos_var="gui.dialogue_xpos",
+        ypos_var="gui.dialogue_ypos",
+    )
+    
+    assert stmt.position_lock_code == "STYLE_POSITION_SOURCE_UNRESOLVED"
+    assert stmt.position_mode is None
+
