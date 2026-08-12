@@ -2594,6 +2594,10 @@ init 1100 python:
             state.pending_reload_requested = True
             state.pending_reload_started = True
             
+            # CRITICAL: Set pending_reload_draw_generation to current script_generation
+            # Otherwise the check at line 6014 will always pass and handshake won't be sent
+            state.pending_reload_draw_generation = int(state.script_generation)
+            
             # CRITICAL: Reactivate editor to allow handshake sending in _renforge_editor_periodic
             state.active = True
             
