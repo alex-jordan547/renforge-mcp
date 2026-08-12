@@ -89,5 +89,12 @@
   "status.reload_failed": "Reload failed",
   "status.reload_handshake_failed": "Reload handshake failed",
   "status.invalid_result": "Invalid result",
-  "status.locked": "Locked"
+  "status.locked": "Locked",
+  "lock.reason.style_position_source_unresolved": "Dialogue position source could not be resolved.",
+  "lock.reason.style_position_source_ambiguous": "Dialogue position has multiple definitions.",
+  "lock.reason.style_position_expression_unsupported": "This dialogue position expression is not editable yet.",
+  "lock.reason.style_position_variant_unsupported": "Phone/small variant overrides prevent desktop editing.",
+  "inspector.ownership_chain": "OWNERSHIP",
+  "inspector.ownership_style_position": "say.what → style say_dialogue → gui.dialogue_xpos/ypos",
+  "inspector.global_scope_notice": "⚠ This change affects all standard dialogue lines"
 }
