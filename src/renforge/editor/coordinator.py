@@ -631,27 +631,41 @@ class EditorCoordinator:
                     and widget_id == "what"
                     and runtime_key.get("screen") == "say"
                 ):
+                    # Use game-relative path: resolve_game_path already joins project_root/game/
+                    gui_rpy_path = "gui.rpy"
+                    
                     try:
                         # Load gui.rpy to analyze style-backed position
-                        gui_rpy_path = "game/gui.rpy"
                         gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
-                        if gui_absolute.exists() and gui_absolute.is_file():
-                            gui_source = gui_absolute.read_text(encoding="utf-8")
-                            say_style_position = analyze_say_what_style_position(
-                                gui_source,
-                                xpos_var="gui.dialogue_xpos",
-                                ypos_var="gui.dialogue_ypos",
+                        gui_source = gui_absolute.read_text(encoding="utf-8")
+                        say_style_position = analyze_say_what_style_position(
+                            gui_source,
+                            xpos_var="gui.dialogue_xpos",
+                            ypos_var="gui.dialogue_ypos",
+                        )
+                        if say_style_position.position_lock_code is not None:
+                            # Style position locked - use its reason instead of misleading XPOS_DUPLICATE
+                            move_lock_reason = self._lock_reason(
+                                say_style_position.position_lock_code,
+                                say_style_position.position_lock_message or say_style_position.position_lock_code,
                             )
-                            if say_style_position.position_lock_code is not None:
-                                # Style position locked - use its reason instead of misleading XPOS_DUPLICATE
-                                move_lock_reason = self._lock_reason(
-                                    say_style_position.position_lock_code,
-                                    say_style_position.position_lock_message or say_style_position.position_lock_code,
-                                )
-                                say_style_position = None  # Don't unlock
-                    except Exception:
-                        # gui.rpy not found or malformed - keep original lock reason
-                        pass
+                            say_style_position = None  # Don't unlock
+                    except EditorPathError as exc:
+                        # gui.rpy not found or path error - keep original lock reason but don't use XPOS_DUPLICATE
+                        if move_lock_reason is None:
+                            move_lock_reason = self._lock_reason(
+                                "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                f"gui.rpy path error: {exc.code}",
+                            )
+                        say_style_position = None
+                    except Exception as exc:
+                        # Malformed gui.rpy or analysis error - surface as lock reason
+                        if move_lock_reason is None:
+                            move_lock_reason = self._lock_reason(
+                                "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                f"gui.rpy analysis failed: {str(exc)}",
+                            )
+                        say_style_position = None
                 
                 statement = text_position or text_style or say_style_position
                 if statement is None:
