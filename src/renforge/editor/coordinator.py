@@ -2364,6 +2364,11 @@ class EditorCoordinator:
                 continue
             if transaction_id != child.name:
                 continue
+            
+            # DEBUG: Log ALL recovered transactions to trace recovery path
+            import sys
+            print(f"[RECOVERY] Found transaction {transaction_id[:8]} state={state} path={relative_path}", file=sys.stderr)
+            
             try:
                 source_path = resolve_game_path(self._project.root, relative_path)
                 original_path = child / "original" / Path(relative_path)
