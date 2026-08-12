@@ -639,9 +639,7 @@ class EditorCoordinator:
                     
                     # Ownership proof part 1: screens.rpy must have `text ... id "what"`
                     # RuntimeProbe gave us widget_id == "what", but verify source identity
-                    _debug_say_style = {"part": 1, "header_line": header_line[:100]}  # TEMP DEBUG
                     if 'id "what"' not in header_line and "id 'what'" not in header_line:
-                        _debug_say_style["part1_failed"] = True  # TEMP DEBUG
                         if move_lock_reason is None:
                             move_lock_reason = self._lock_reason(
                                 "STYLE_POSITION_SOURCE_UNRESOLVED",
@@ -651,9 +649,6 @@ class EditorCoordinator:
                     # Ownership proof part 2: screens.rpy must NOT have inline xpos/ypos
                     # (fail-closed: if xpos/ypos keywords present, reject even if in comments)
                     elif "xpos" in header_line or "ypos" in header_line:
-                        _debug_say_style["part2_failed"] = True  # TEMP DEBUG
-                        _debug_say_style["has_xpos"] = "xpos" in header_line  # TEMP DEBUG
-                        _debug_say_style["has_ypos"] = "ypos" in header_line  # TEMP DEBUG
                         if move_lock_reason is None:
                             move_lock_reason = self._lock_reason(
                                 "STYLE_POSITION_SOURCE_AMBIGUOUS",
@@ -661,7 +656,6 @@ class EditorCoordinator:
                             )
                         say_style_position = None
                     else:
-                        _debug_say_style["part1_part2_pass"] = True  # TEMP DEBUG
                         # Ownership proof part 3: screens.rpy must have style say_dialogue binding
                         # xpos/ypos to gui.dialogue_xpos/ypos (fail-closed if missing/ambiguous/expressions)
                         try:
@@ -670,8 +664,6 @@ class EditorCoordinator:
                                 xpos_var="gui.dialogue_xpos",
                                 ypos_var="gui.dialogue_ypos",
                             )
-                            _debug_say_style["binding_proven"] = style_binding.binding_proven
-                            _debug_say_style["lock_code"] = style_binding.lock_code
                             if not style_binding.binding_proven:
                                 if move_lock_reason is None:
                                     move_lock_reason = self._lock_reason(
@@ -680,7 +672,6 @@ class EditorCoordinator:
                                     )
                                 say_style_position = None
                         except Exception as exc:
-                            _debug_say_style["exception"] = str(exc)
                             if move_lock_reason is None:
                                 move_lock_reason = self._lock_reason(
                                     "STYLE_POSITION_SOURCE_UNRESOLVED",
@@ -692,24 +683,16 @@ class EditorCoordinator:
                         # Use game-relative path: resolve_game_path already joins project_root/game/
                         if move_lock_reason is None:
                             gui_rpy_path = "gui.rpy"
-                            _debug_say_style["gui_rpy_path"] = gui_rpy_path  # TEMP DEBUG
                             
                             try:
                                 # Load gui.rpy to analyze style-backed position
                                 gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
-                                _debug_say_style["gui_absolute"] = str(gui_absolute)  # TEMP DEBUG
-                                _debug_say_style["gui_exists"] = gui_absolute.exists()  # TEMP DEBUG
                                 gui_source = gui_absolute.read_text(encoding="utf-8")
-                                _debug_say_style["gui_source_len"] = len(gui_source)  # TEMP DEBUG
                                 say_style_position = analyze_say_what_style_position(
                                     gui_source,
                                     xpos_var="gui.dialogue_xpos",
                                     ypos_var="gui.dialogue_ypos",
                                 )
-                                _debug_say_style["gui_xpos"] = say_style_position.xpos  # TEMP DEBUG
-                                _debug_say_style["gui_ypos"] = say_style_position.ypos  # TEMP DEBUG
-                                _debug_say_style["gui_position_mode"] = say_style_position.position_mode  # TEMP DEBUG
-                                _debug_say_style["gui_lock_code"] = say_style_position.position_lock_code  # TEMP DEBUG
                                 if say_style_position.position_lock_code is not None:
                                     # Style position locked - use its reason instead of misleading XPOS_DUPLICATE
                                     move_lock_reason = self._lock_reason(
@@ -718,7 +701,6 @@ class EditorCoordinator:
                                     )
                                     say_style_position = None  # Don't unlock
                             except EditorPathError as exc:
-                                _debug_say_style["path_error"] = f"{exc.code}: {str(exc)}"  # TEMP DEBUG
                                 # gui.rpy not found or path error - keep original lock reason but don't use XPOS_DUPLICATE
                                 if move_lock_reason is None:
                                     move_lock_reason = self._lock_reason(
@@ -727,7 +709,6 @@ class EditorCoordinator:
                                     )
                                 say_style_position = None
                             except Exception as exc:
-                                _debug_say_style["gui_exception"] = str(exc)  # TEMP DEBUG
                                 # Malformed gui.rpy or analysis error - surface as lock reason
                                 if move_lock_reason is None:
                                     move_lock_reason = self._lock_reason(
@@ -735,14 +716,6 @@ class EditorCoordinator:
                                         f"gui.rpy analysis failed: {str(exc)}",
                                     )
                                 say_style_position = None
-                        else:
-                            _debug_say_style["part4_skipped"] = f"move_lock_reason already set: {move_lock_reason}"  # TEMP DEBUG
-                    
-                    # TEMP DEBUG: Log debug info (after all parts)
-                    if _debug_say_style:
-                        import sys
-                        _debug_say_style["say_style_position_final"] = f"{say_style_position}"  # TEMP DEBUG
-                        print(f"[COORDINATOR DEBUG say.what] {_debug_say_style}", file=sys.stderr, flush=True)
                 
                 statement = text_position or text_style or say_style_position
                 if statement is None:
@@ -760,9 +733,6 @@ class EditorCoordinator:
                     # Style-backed position unlocked
                     position_mode = say_style_position.position_mode
                     original_position = [int(say_style_position.xpos), int(say_style_position.ypos)]
-                    # TEMP DEBUG
-                    import sys
-                    print(f"[COORDINATOR DEBUG position_mode set] position_mode={position_mode}, original_position={original_position}", file=sys.stderr, flush=True)
                 else:
                     # Style color only, no position
                     position_mode = None
