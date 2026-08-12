@@ -2409,22 +2409,66 @@ class EditorCoordinator:
             )
             self._transactions[transaction_id] = record
             
-            # CRITICAL: Two-phase commit for gui.rpy restart resilience
-            # "published" means file successfully written, waiting for reload handshake.
-            # Don't rollback "published" on recovery - it may be in-flight across restart.
-            # Set a new timer (30s) to rollback if handshake never arrives (crash/bug).
-            # Rollback "staged" and "publishing" immediately (incomplete writes).
+            # CRITICAL: Durable two-phase commit for restart resilience
+            # CAS write can complete between state="publishing" and state="published".
+            # If restart happens in this window, new coordinator must PROMOTE not rollback.
+            #
+            # Recovery logic:
+            # 1. publishing/published + disk==staged → PROMOTE to published + arm timer
+            # 2. publishing + disk==original → rollback (CAS never happened)
+            # 3. staged → rollback immediately (incomplete)
+            
             if state == "published" and manifest_intact:
-                # Transaction is published and waiting for handshake
-                # Set recovery timer to rollback if handshake doesn't arrive
-                timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
-                record.timer = timer
-                timer.start()
-                self._recovered.append(transaction_id)
-            elif state in {"staged", "publishing"} and manifest_intact:
+                # Already published and waiting for handshake
+                # Verify disk still has staged content
+                try:
+                    current_sha = hash_file_nofollow(source_path)
+                except (EditorPathError, OSError):
+                    current_sha = None
+                
+                if current_sha == actual_staged_sha256:
+                    # Disk has staged content - arm attestation timer
+                    timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
+                    record.timer = timer
+                    timer.start()
+                    self._recovered.append(transaction_id)
+                else:
+                    # Disk doesn't match staged - rollback
+                    self._conditional_rollback(record, allow_staged=False)
+                    self._recovered.append(transaction_id)
+                    
+            elif state == "publishing" and manifest_intact:
+                # Transaction was publishing when restart happened
+                # Check if CAS completed (disk == staged) or not (disk == original)
+                try:
+                    current_sha = hash_file_nofollow(source_path)
+                except (EditorPathError, OSError):
+                    current_sha = None
+                
+                if current_sha == actual_staged_sha256:
+                    # CAS completed! PROMOTE to published and arm timer
+                    record.state = "published"
+                    self._persist_transaction(record)
+                    timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
+                    record.timer = timer
+                    timer.start()
+                    self._recovered.append(transaction_id)
+                elif current_sha == actual_original_sha256:
+                    # CAS never happened - rollback to clean state
+                    self._conditional_rollback(record, allow_staged=True)
+                    self._recovered.append(transaction_id)
+                else:
+                    # Unknown state - mark conflict
+                    record.state = "rollback_conflict"
+                    record.uncertain_paths = [relative_path]
+                    self._recovered.append(transaction_id)
+                    self._persist_transaction(record)
+                    
+            elif state == "staged" and manifest_intact:
                 # Incomplete transaction - rollback immediately
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
+                
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
                 record.state = "rollback_conflict"
                 record.uncertain_paths = [relative_path]
