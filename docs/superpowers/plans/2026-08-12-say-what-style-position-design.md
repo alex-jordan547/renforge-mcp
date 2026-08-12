@@ -62,15 +62,19 @@ define gui.dialogue_ypos = gui.scale(50)
 - Follow `TextColorStyleStatement` contract shape
 - Not a generic resolver
 
-## Phase 1: Source ownership (✓ COMPLETE)
+## Phase 1: Source ownership (✓ COMPLETE — polished per external review)
 
 **Deliverables:**
 - ✅ `SayWhatStylePositionStatement` dataclass
 - ✅ `analyze_say_what_style_position()` parser
 - ✅ `apply_say_what_style_position_patch()` rewriter
-- ✅ 16 unit tests covering all lock codes
+- ✅ 17 unit tests covering all lock codes (16 original + 1 variant-comment polish)
 - ✅ Variant detection and rejection
 - ✅ UTF-8 safety, byte-span correctness
+
+**Polish fixes (external review):**
+1. ✅ Docstring corrected: spans are UTF-8 byte offsets
+2. ✅ Variant detection: ignore comment-only lines (avoid `# gui.dialogue_xpos = ...` false positives)
 
 **Lock codes:**
 - `STYLE_POSITION_SOURCE_UNRESOLVED` — missing or malformed
@@ -78,24 +82,38 @@ define gui.dialogue_ypos = gui.scale(50)
 - `STYLE_POSITION_EXPRESSION_UNSUPPORTED` — expressions, arithmetic, non-gui.scale
 - `STYLE_POSITION_VARIANT_UNSUPPORTED` — phone/small overrides present
 
-**Status:** Ready for PR A
+**Demo lock behavior (polish #3):**
+- Stock `examples/demo_game/game/gui.rpy` has `@gui.variant small()` override at ~446
+- Phase-1 analyzer correctly returns `STYLE_POSITION_VARIANT_UNSUPPORTED` for Demo
+- Live proof requires dedicated fixture **without** variant overrides
+- Default: fail-closed on present variant writers; unlock only on games without them
+
+**Status:** Ready for Phase 2 product wiring
 
 ## Phase 2: Coordinator integration (✓ PARTIAL — 2A complete, 2B pending)
 
-### 2A: Two-file write-path (✓ COMPLETE)
+### 2A: Two-file write-path (✓ COMPLETE — polished per external review)
 
 **Deliverables:**
 - ✅ Analyze flow detects say.what when direct xpos fails
 - ✅ Load and analyze gui.rpy for style-backed ownership
 - ✅ New `position_mode = SAY_WHAT_STYLE_POSITION_MODE`
 - ✅ Two-file transaction: patch gui.rpy, identity screens.rpy
-- ✅ Never surface `XPOS_DUPLICATE` for missing inherited position
+- ✅ Never surface `XPOS_DUPLICATE` for missing inherited position (polish #5 ✅)
 - ✅ Use `STYLE_POSITION_*` lock codes with human reasons
 - ✅ Apply logical-pixel deltas to authored gui.scale ints
 - ✅ Extend `_command_undo_commit` for style position
 - ✅ Store previous/new GUI literals for undo/redo
 - ✅ Revalidate ownership before publish
 - ✅ Fail-closed: reject multi-file + other screen changes in V1
+
+**Polish notes (external review):**
+- Polish #5 (XPOS_DUPLICATE): Already implemented — coordinator attempts style-position ownership after direct xpos fails, never surfaces `XPOS_DUPLICATE` for inherited position
+- Polish #4 (ownership chain): Before `capabilities.move=true`, should prove:
+  - Identity: `screen say` + `text what id "what"` in screens.rpy
+  - Style link: `style say_dialogue` xpos/ypos → `gui.dialogue_*`
+  - Write target: `define gui.dialogue_xpos/ypos = gui.scale(<int>)` in gui.rpy
+  - **Status:** Deferred to avoid scope widening; current unlock based on gui.rpy parse only
 
 **Implementation notes:**
 - `_apply_same_file_intents` skips say style position intents (continue)
