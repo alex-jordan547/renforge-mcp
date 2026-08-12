@@ -2562,6 +2562,7 @@ init 1100 python:
             "pending_operation": state.pending_operation,
             "pending_handshake_sent": bool(state.pending_handshake_sent),
             "saved_at_generation": int(state.script_generation),
+            "editor_session_screen": state.editor_session_screen,
         }
         
         try:
@@ -2588,12 +2589,17 @@ init 1100 python:
             state.pending_transaction_id = handshake_data.get("pending_transaction_id")
             state.pending_operation = handshake_data.get("pending_operation")
             state.pending_handshake_sent = False  # Always reset this - we need to resend after restart
+            state.editor_session_screen = handshake_data.get("editor_session_screen")
             
             # Restore save state to continue the commit process
             state.save_in_progress = True
             state.save_requested = True
             state.pending_reload_requested = True
             state.pending_reload_started = True
+            
+            # CRITICAL: Reactivate editor to allow handshake sending in _renforge_editor_periodic
+            state.active = True
+            
             _renforge_editor_set_status("commit_queued")
             
             # Clean up persistence file
