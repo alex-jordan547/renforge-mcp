@@ -2735,3 +2735,153 @@ def apply_say_what_style_position_patch(
     
     return patched
 
+
+@dataclass(frozen=True)
+class SayDialogueStyleBinding:
+    """Ownership proof: style say_dialogue in screens.rpy binds xpos/ypos to gui vars.
+    
+    This proves the read-only identity chain: say.what → style say_dialogue → gui.dialogue_*.
+    Write path remains gui.rpy only (via SayWhatStylePositionStatement).
+    """
+    
+    # Unlocked when unique style say_dialogue with xpos/ypos → gui.dialogue_xpos/ypos
+    binding_proven: bool
+    
+    # Lock codes when binding cannot be proven
+    lock_code: str | None = None
+    lock_message: str | None = None
+
+
+def analyze_say_dialogue_style_binding(
+    source_text: str,
+    *,
+    xpos_var: str,
+    ypos_var: str,
+) -> SayDialogueStyleBinding:
+    """Prove screens.rpy style say_dialogue binds xpos/ypos to gui.dialogue_* vars.
+    
+    Unlocks only if:
+    - Exactly one `style say_dialogue` block found
+    - Block contains `xpos <xpos_var>` (no arithmetic/expressions)
+    - Block contains `ypos <ypos_var>` (no arithmetic/expressions)
+    
+    Lock codes:
+    - STYLE_POSITION_SOURCE_UNRESOLVED: style say_dialogue not found
+    - STYLE_POSITION_SOURCE_AMBIGUOUS: multiple style say_dialogue blocks
+    - STYLE_POSITION_EXPRESSION_UNSUPPORTED: xpos/ypos uses expressions
+    
+    Args:
+        source_text: screens.rpy contents
+        xpos_var: Expected xpos variable (e.g., "gui.dialogue_xpos")
+        ypos_var: Expected ypos variable (e.g., "gui.dialogue_ypos")
+    
+    Returns:
+        SayDialogueStyleBinding with proven/locked status
+    """
+    lines = source_text.splitlines()
+    
+    # Find all style say_dialogue blocks
+    style_blocks: list[tuple[int, int]] = []  # (start_line, end_line)
+    in_style_block = False
+    block_start = -1
+    base_indent = 0
+    
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        
+        # Detect style say_dialogue start
+        if "style say_dialogue" in stripped and stripped.startswith("style say_dialogue"):
+            # Close previous block if still open
+            if in_style_block:
+                style_blocks.append((block_start, i - 1))
+            
+            if ":" in stripped:
+                in_style_block = True
+                block_start = i
+                base_indent = len(line) - len(stripped)
+                continue
+        
+        # Track block end (dedent or blank line after content)
+        if in_style_block:
+            if stripped and not stripped.startswith("#"):
+                current_indent = len(line) - len(stripped)
+                if current_indent <= base_indent:
+                    # Dedented - end of block
+                    style_blocks.append((block_start, i - 1))
+                    in_style_block = False
+    
+    # Close last block if still open
+    if in_style_block:
+        style_blocks.append((block_start, len(lines) - 1))
+    
+    # Require exactly one style say_dialogue block
+    if len(style_blocks) == 0:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_UNRESOLVED",
+            lock_message=f"style say_dialogue not found in screens.rpy",
+        )
+    
+    if len(style_blocks) > 1:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_AMBIGUOUS",
+            lock_message=f"multiple style say_dialogue blocks found ({len(style_blocks)} total)",
+        )
+    
+    # Analyze the single block
+    start_line, end_line = style_blocks[0]
+    block_lines = lines[start_line + 1 : end_line + 1]
+    
+    xpos_found = False
+    ypos_found = False
+    
+    for line in block_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        
+        # Check xpos binding
+        if "xpos" in stripped:
+            # Fail-closed: reject if any operators/expressions present
+            if any(op in stripped for op in ["+", "-", "*", "/", "(", ")", "[", "]"]):
+                return SayDialogueStyleBinding(
+                    binding_proven=False,
+                    lock_code="STYLE_POSITION_EXPRESSION_UNSUPPORTED",
+                    lock_message="style say_dialogue xpos uses expressions (not simple variable reference)",
+                )
+            # Must be exactly "xpos <var>"
+            if f"xpos {xpos_var}" in stripped or f"xpos={xpos_var}" in stripped:
+                xpos_found = True
+        
+        # Check ypos binding
+        if "ypos" in stripped:
+            # Fail-closed: reject if any operators/expressions present
+            if any(op in stripped for op in ["+", "-", "*", "/", "(", ")", "[", "]"]):
+                return SayDialogueStyleBinding(
+                    binding_proven=False,
+                    lock_code="STYLE_POSITION_EXPRESSION_UNSUPPORTED",
+                    lock_message="style say_dialogue ypos uses expressions (not simple variable reference)",
+                )
+            # Must be exactly "ypos <var>"
+            if f"ypos {ypos_var}" in stripped or f"ypos={ypos_var}" in stripped:
+                ypos_found = True
+    
+    # Both xpos and ypos must reference the expected gui vars
+    if not xpos_found:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_UNRESOLVED",
+            lock_message=f"style say_dialogue does not bind xpos to {xpos_var}",
+        )
+    
+    if not ypos_found:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_UNRESOLVED",
+            lock_message=f"style say_dialogue does not bind ypos to {ypos_var}",
+        )
+    
+    # Ownership proven: style say_dialogue → gui.dialogue_xpos/ypos
+    return SayDialogueStyleBinding(binding_proven=True)
+

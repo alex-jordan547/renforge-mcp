@@ -13,3 +13,7 @@ screen say(who, what):
                 text who id "who"
 
         text what id "what"
+
+style say_dialogue:
+    xpos gui.dialogue_xpos
+    ypos gui.dialogue_ypos
