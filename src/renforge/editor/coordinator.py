@@ -1645,21 +1645,6 @@ class EditorCoordinator:
             record.state = "committed"
             self._script_generation = script_generation
         
-        # Clean up handshake_expected flag from manifest if it exists
-        # (added by bridge before restart to prevent rollback)
-        manifest_path = self._transaction_root / transaction_id / "manifest.json"
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if "handshake_expected" in manifest:
-                    del manifest["handshake_expected"]
-                    atomic_write_file(
-                        manifest_path,
-                        json.dumps(manifest, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
-                    )
-            except (OSError, json.JSONDecodeError, KeyError):
-                pass
-        
         self._persist_transaction(record)
         return {"transaction_id": transaction_id, "state": "committed"}
 
@@ -2402,9 +2387,6 @@ class EditorCoordinator:
             uncertain_paths = manifest.get("uncertain_paths")
             if not isinstance(uncertain_paths, list):
                 uncertain_paths = []
-            handshake_expected = manifest.get("handshake_expected")
-            if not isinstance(handshake_expected, bool):
-                handshake_expected = False
 
             record = _TransactionRecord(
                 transaction_id=transaction_id,

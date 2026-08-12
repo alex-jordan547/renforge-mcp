@@ -5886,11 +5886,6 @@ init 1100 python:
                         # If this commit will cause a full Ren'Py restart (gui.rpy changes),
                         # we need to save handshake state to survive the restart
                         _renforge_editor_save_handshake_state(state)
-                        
-                        # CRITICAL: Mark coordinator transaction as restart-pending IMMEDIATELY
-                        # Must happen BEFORE reload starts, not after (race condition fix)
-                        # The reload will be triggered in next _renforge_editor_periodic() cycle
-                        _renforge_editor_mark_transaction_restart_pending(state.pending_transaction_id)
                 elif command == "commit_status":
                     state.last_commit_status = result
                     state.pending_transaction_state = result.get("state")
@@ -6045,12 +6040,6 @@ init 1100 python:
             return
         if not state.pending_reload_started:
             state.pending_reload_started = True
-            
-            # CRITICAL: Ensure restart flag is set before stopping coordinator
-            # In case coordinator result arrived late, create flag now as last resort
-            if state.pending_transaction_id is not None:
-                _renforge_editor_mark_transaction_restart_pending(state.pending_transaction_id)
-            
             _renforge_editor_stop_coordinator()
             _renforge_invoke(renpy.reload_script)
             return
