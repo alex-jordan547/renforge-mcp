@@ -1643,6 +1643,16 @@ class EditorCoordinator:
                 record.timer = None
             record.state = "committed"
             self._script_generation = script_generation
+        
+        # Clean up .restart_expected flag if it exists
+        tx_dir = self._transaction_root / transaction_id
+        restart_flag = tx_dir / ".restart_expected"
+        if restart_flag.exists():
+            try:
+                restart_flag.unlink()
+            except OSError:
+                pass
+        
         self._persist_transaction(record)
         return {"transaction_id": transaction_id, "state": "committed"}
 
@@ -2401,7 +2411,14 @@ class EditorCoordinator:
                 uncertain_paths=list(uncertain_paths),
             )
             self._transactions[transaction_id] = record
-            if state in {"staged", "publishing", "published"} and manifest_intact:
+            
+            # CRITICAL: Check for .restart_expected flag to prevent rollback
+            # When gui.rpy commits cause full Ren'Py restart, the bridge marks
+            # the transaction to prevent coordinator from rolling it back on recovery
+            restart_expected_path = child / ".restart_expected"
+            restart_expected = restart_expected_path.exists()
+            
+            if state in {"staged", "publishing", "published"} and manifest_intact and not restart_expected:
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
             elif state in {"staged", "publishing", "published"} and not manifest_intact:

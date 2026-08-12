@@ -2618,6 +2618,28 @@ init 1100 python:
             except OSError:
                 pass
     
+    def _renforge_editor_mark_transaction_restart_pending(transaction_id):
+        """Mark coordinator transaction as restart-pending to prevent rollback on recovery."""
+        if transaction_id is None:
+            return
+        
+        try:
+            # Find RenForge transaction directory
+            transaction_root = os.path.join(renpy.config.basedir, "game", ".renforge", "transactions")
+            transaction_dir = os.path.join(transaction_root, str(transaction_id))
+            
+            if not os.path.exists(transaction_dir):
+                return
+            
+            # Create .restart_expected flag file
+            flag_path = os.path.join(transaction_dir, ".restart_expected")
+            with open(flag_path, "w") as f:
+                f.write(json.dumps({"created_at": time.time()}))
+        except (OSError, IOError):
+            # Fail-open: if we can't mark it, coordinator will rollback, but that's
+            # better than blocking the restart
+            pass
+    
     # ────────────────────────────────────────────────────────────────────────────
 
     def _renforge_editor_ensure_coordinator():
@@ -5854,6 +5876,10 @@ init 1100 python:
                         # If this commit will cause a full Ren'Py restart (gui.rpy changes),
                         # we need to save handshake state to survive the restart
                         _renforge_editor_save_handshake_state(state)
+                        
+                        # CRITICAL: Mark coordinator transaction as restart-pending
+                        # Prevent coordinator from rolling back this transaction on recovery
+                        _renforge_editor_mark_transaction_restart_pending(state.pending_transaction_id)
                 elif command == "commit_status":
                     state.last_commit_status = result
                     state.pending_transaction_state = result.get("state")
