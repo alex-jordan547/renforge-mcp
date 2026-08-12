@@ -59,8 +59,26 @@ def prepare_fixture() -> Path:
     print("\n2. Injecting RenForge editor...")
     inject_renforge_editor(fixture_copy)
     
-    print("\n3. Verifying fixture structure...")
+    # CRITICAL: Clear all Ren'Py cache to prevent stale .rpyc issues
+    print("\n3. Clearing Ren'Py cache...")
+    cache_dir = fixture_copy / ".renpy" / "cache"
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+        print(f"   ✓ Cleared {cache_dir}")
+    else:
+        print(f"   ✓ No cache dir (fresh fixture)")
+    
+    # Also remove any .rpyc files in game/
     game_dir = fixture_copy / "game"
+    rpyc_files = list(game_dir.glob("**/*.rpyc"))
+    for rpyc in rpyc_files:
+        rpyc.unlink()
+    if rpyc_files:
+        print(f"   ✓ Removed {len(rpyc_files)} stale .rpyc file(s)")
+    else:
+        print("   ✓ No stale .rpyc files")
+    
+    print("\n4. Verifying fixture structure...")
     required_files = ["gui.rpy", "screens.rpy", "script.rpy", "options.rpy", "editor.rpy"]
     for file in required_files:
         path = game_dir / file

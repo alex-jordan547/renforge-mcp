@@ -132,14 +132,33 @@ def run_editor_say_what_style_position_live_scenario(
     
     # Wait for save/commit to complete
     import time
-    for _ in range(80):
+    last_status = None
+    for i in range(80):
         status = client.request("editor_task0_status", {})
-        if status.get("status_code") == "reload_committed":
+        last_status = status
+        status_code = status.get("status_code")
+        
+        # Log progress every 10 iterations
+        if i % 10 == 0:
+            print(f"   Waiting for commit... status_code={status_code}, save_in_progress={status.get('save_in_progress')}")
+        
+        if status_code == "reload_committed":
+            print(f"   ✓ Commit completed (after {i * 0.5:.1f}s)")
             break
+        elif status_code in ("reload_failed", "commit_failed"):
+            report["verdict"] = "fail"
+            report["error"] = f"commit failed: {status_code}"
+            report["save_error"] = status.get("save_error")
+            report["last_status"] = status
+            return report
+        
         time.sleep(0.5)
     else:
         report["verdict"] = "fail"
         report["error"] = "commit timeout"
+        report["last_status_code"] = last_status.get("status_code") if last_status else None
+        report["save_in_progress"] = last_status.get("save_in_progress") if last_status else None
+        report["save_error"] = last_status.get("save_error") if last_status else None
         return report
     
     # 5. Verify gui.rpy patched with delta, NOT absolute screen coords
