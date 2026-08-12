@@ -106,7 +106,20 @@ def run_say_what_live_test(fixture_path: Path) -> dict:
             print("   ✓ Ren'Py launched")
             report["renpy_launched"] = True
             
-            print("\n3. Opening editor...")
+            print("\n3. Showing say screen (before opening editor)...")
+            # Show say screen BEFORE opening editor so coordinator can analyze it
+            session.client.eval_expr(
+                'renpy.show_screen("say", who=None, what="Test dialogue for RenForge #81", _layer="screens")'
+            )
+            # Verify say screen is active
+            say_active = session.client.inspect_screen("say").get("active")
+            if not say_active:
+                report["verdict"] = "fail"
+                report["error"] = "say screen failed to show"
+                return report
+            print("   ✓ Say screen active")
+            
+            print("\n4. Opening editor...")
             # Wait for editor launcher
             for _ in range(40):
                 if session.client.inspect_screen("_renforge_editor_launcher").get("active") is True:
@@ -137,7 +150,7 @@ def run_say_what_live_test(fixture_path: Path) -> dict:
             print("   ✓ Editor opened")
             report["editor_opened"] = True
             
-            print("\n4. Running full say.what style position scenario...")
+            print("\n5. Running full say.what style position scenario...")
             scenario_report = run_editor_say_what_style_position_live_scenario(
                 session.client,
                 fixture_path=screens_path,

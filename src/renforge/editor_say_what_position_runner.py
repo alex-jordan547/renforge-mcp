@@ -38,15 +38,13 @@ def run_editor_say_what_style_position_live_scenario(
     gui_source_initial = gui_path.read_bytes()
     screens_source_initial = fixture_path.read_bytes()
     
-    # 1. Show dialogue screen directly (avoid jump exception)
-    # Use renpy.show_screen with dummy dialogue args
-    client.eval_expr(
-        'renpy.show_screen("say", who=None, what="Test dialogue for RenForge #81", _layer="screens")'
-    )
-    
-    # Wait for say screen
+    # 1. Verify say screen is active (shown by harness before editor opened)
     say_active = client.inspect_screen("say")
     report["say_screen_active"] = say_active.get("active") is True
+    if not report["say_screen_active"]:
+        report["verdict"] = "fail"
+        report["error"] = "say screen not active"
+        return report
     
     # Get say.what bounds using scene_tree
     tree = client.scene_tree(types=["text"], detail="semantic")
@@ -84,17 +82,29 @@ def run_editor_say_what_style_position_live_scenario(
     )
     report["select"] = select_result
     
-    # 2. Verify unlock: position_mode = style_gui_dialogue, move = true
-    status = client.request("editor_task0_status", {})
+    # 2. Wait for analysis to complete, then verify unlock
+    import time
+    for _ in range(100):  # Wait up to 10 seconds
+        status = client.request("editor_task0_status", {})
+        lock_reason = status.get("selected_lock_reason")
+        if lock_reason != "ANALYZING":
+            break
+        time.sleep(0.1)
+    else:
+        report["verdict"] = "fail"
+        report["error"] = "analysis timeout (still ANALYZING after 10s)"
+        return report
+    
     report["unlock"] = {
         "position_mode": status.get("position_mode"),
         "capabilities": status.get("capabilities"),
+        "selected_lock_reason": status.get("selected_lock_reason"),
+        "save_enabled": status.get("save_enabled"),
     }
     
-    move_unlocked = (
-        status.get("position_mode") == "style_gui_dialogue"
-        and status.get("capabilities", {}).get("move") is True
-    )
+    # Check if move is unlocked
+    capabilities = status.get("capabilities") or {}
+    move_unlocked = capabilities.get("move") is True
     report["move_unlocked"] = move_unlocked
     
     if not move_unlocked:

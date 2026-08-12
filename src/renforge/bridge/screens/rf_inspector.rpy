@@ -292,25 +292,8 @@ screen _rf_editor_inspector_panel():
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(17)
 
-                    # Ownership chain for style_gui_dialogue position mode
-                    $ _rf_status = _renforge_editor_task0_status()
-                    $ _rf_position_mode = _rf_status.get("position_mode") if _rf_status else None
-                    if _rf_position_mode == "style_gui_dialogue":
-                        text _renforge_editor_t("inspector.ownership_chain"):
-                            color _renforge_editor_ui_color("meta")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(16)
-                            yoffset _renforge_editor_ui_px(12)
-                        text _renforge_editor_t("inspector.ownership_style_position"):
-                            color _renforge_editor_ui_color("surface")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(15)
-                            yoffset _renforge_editor_ui_px(4)
-                        text _renforge_editor_t("inspector.global_scope_notice"):
-                            color _renforge_editor_ui_color("accent")
-                            font _renforge_editor_ui_font()
-                            size _renforge_editor_ui_px(14)
-                            yoffset _renforge_editor_ui_px(8)
+                    # TODO: Display ownership chain for style_gui_dialogue mode
+                    # (requires Python-side status accessor, not bridge request)
 
                     text _renforge_editor_t("inspector.read_only"):
                         id "rf_inspector_read_only"

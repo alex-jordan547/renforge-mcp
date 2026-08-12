@@ -1,72 +1,85 @@
-# Issue #81 Live Test Status - INCOMPLETE
+# Live Test Status for #81
 
-## Environment Verification
+## État: BLOQUÉ (diagnostic en cours)
 
-✅ **Ren'Py 8.5.3 SDK**: Successfully installed and available at `/home/ubuntu/.cache/renforge/sdks/8.5.3`
+### Ce qui fonctionne ✓
 
-✅ **Display**: Virtual display available (DISPLAY=:1, Xvfb present)
+1. **Fixture bootable**: `tests/fixtures/say_what_clean` boot proprement sous Ren'Py 8.5.3
+   - Copié `guisupport.rpy` depuis demo → `gui.scale()` disponible
+   - Ajouté `style "say_dialogue"` explicite sur `text what id "what"`
+   - Pas de `@gui.variant small()` override sur `gui.dialogue_xpos/ypos`
 
-✅ **Test Harness**: Real executable test created at `/workspace/run_say_what_live_test.py` (NOT pytest skip stubs)
+2. **Ownership proof hors-ligne** (via `debug_ownership.py`):
+   ```
+   ✓ Style binding proven (screens.rpy)
+   ✓ GUI vars found: xpos=268, ypos=50
+   ✓ position_mode = "style_gui_dialogue"
+   ✓ No lock codes
+   ```
 
-## Blocker: Fixture Configuration
+3. **Runner API corrigé**:
+   - `renpy.show_screen()` au lieu de `jump_out_of_context` (pas de JumpOutException)
+   - `client.scene_tree()` pour bounds (pas `get_scene_tree`)
+   - `client.request("editor_task0_status")` au lieu de `eval_expr(_renforge_editor_task0_status())`
+   - `_renforge_editor_select(x,y)` au lieu de `_select_target`
 
-❌ **Current Status**: Ren'Py fails to start due to incomplete fixture
+### Blocker actuel ❌
 
-**Error**: `AttributeError: 'StoreModule' object has no attribute 'scale'`
+**Symptôme**: `position_mode: None` dans live test (attendu: `style_gui_dialogue`)
 
-**Root Cause**: The minimal clean fixture at `tests/fixtures/say_what_clean/` lacks the complete Ren'Py project structure needed to run. Specifically:
+**Cause diagnostiquée**: Ordre d'opérations editor/say screen incompatible
 
-1. `gui.scale()` function not properly initialized despite calling `gui.init(1280, 720)`
-2. Possible missing dependencies in the game structure
-3. Minimal fixture approach insufficient for actual Ren'Py execution
-
-## What Was Attempted
-
-1. Created `tests/fixtures/say_what_clean/` with:
-   - `game/gui.rpy` with `gui.init()` and dialogue position defines
-   - `game/screens.rpy` with say screen and style bindings
-   - `game/script.rpy` with test dialogue
-   - `game/options.rpy` with basic config
-
-2. Created real test runner at `run_say_what_live_test.py`:
-   - Prepares fixture copy
-   - Injects RenForge editor
-   - Launches Ren'Py with bridge
-   - Executes full #81 scenario
-
-3. Multiple attempts with different init configurations:
-   - `init python: gui.init()`
-   - `init -1 python: gui.init()`  
-   - Both failed with same error
-
-## Next Steps Required
-
-To complete live validation:
-
-1. **Option A - Use Demo**: Modify test to use `examples/demo_game` (but Demo has `@gui.variant small()` override, so it should remain locked per #81 requirements)
-
-2. **Option B - Complete Fixture**: Copy more structure from Demo to make `say_what_clean` a complete runnable project:
-   - Full gui.rpy with all standard definitions
-   - Complete screens.rpy with all standard screens
-   - Any additional init files needed
-
-3. **Option C - Simplified Approach**: Create a truly minimal Ren'Py 8.5.3 project from scratch using `renpy launcher` and then add only say.what test content
-
-## Commands to Reproduce
-
-```bash
-# Environment works:
-python3 test_renpy_env.py  # ✓ PASS - SDK available
-
-# Live test fails on fixture:
-python3 run_say_what_live_test.py  # ✗ FAIL - Bridge timeout (Ren'Py won't start)
-
-# Check error:
-cat /tmp/say_what_live_*/say_what_clean/traceback.txt
+Le harness actuel:
+```python
+1. Launch Ren'Py + inject editor
+2. Click RF button → ouvre editor overlay
+3. Runner: renpy.show_screen("say", ...) → montre dialogue
+4. Runner: client.scene_tree() → cherche widget "what"
+5. Runner: _renforge_editor_select(x,y)
 ```
 
-## Recommendation
+**Problème**: Quand editor overlay est ouvert (#2), le say screen montré après (#3) n'est pas analysé par le coordinator.
 
-Issue #81 should remain OPEN until one of the above options successfully runs the full live scenario with real Ren'Py 8.5.3 execution and produces pass/fail evidence for all acceptance criteria.
+**Tentatives**:
+- ✗ Appeler `editor_task0_start({"screen": "say"})` → cache le say screen, widget "what" invisible
+- ✗ Montrer say screen avant d'ouvrir editor → pas testé car harness ouvre editor avant scenario
 
-**Status**: Live validation BLOCKED on fixture configuration, not on environment capabilities.
+### Options pour débloquer
+
+**Option A**: Montrer say screen AVANT d'ouvrir editor
+- Modifier `run_say_what_live_test.py` pour `renpy.show_screen("say")` avant `click RF`
+- Coordinator analyserait say à la sélection (screen déjà présent)
+
+**Option B**: Ne PAS ouvrir editor overlay, utiliser direct select API
+- Pas de click RF, juste appeler `_renforge_editor_select()` directement
+- Mais violera "product path" requirement (pas de visual UI)
+
+**Option C**: Montrer say screen dynamiquement après editor ouvert
+- Dans runner, après confirmation editor ouvert
+- Besoin de trigger refresh/analysis du coordinator
+
+**Recommandation**: Option A (reorder harness)
+
+### Commits récents
+
+- `93e7ccd`: Fix live fixture (guisupport + explicit style) + runner API fixes
+- Pushed to PR #83 branch `cursor/say-what-style-position-bd4b`
+
+### Prochaines étapes
+
+1. Implémenter Option A dans `run_say_what_live_test.py`
+2. Re-run live test
+3. Si unlock réussit → continuer scénario complet (drag/preview/save/reload/undo)
+4. Si encore bloqué → documenter hard blocker + laisser #81 ouvert
+
+## Test Command
+
+```bash
+cd /workspace && RENFORGE_SAY_WHAT_STYLE_POSITION_LIVE=1 python3 run_say_what_live_test.py
+```
+
+## Debug Command
+
+```bash
+cd /workspace && python3 debug_ownership.py
+```
