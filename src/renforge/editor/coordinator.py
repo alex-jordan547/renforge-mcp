@@ -1245,16 +1245,32 @@ class EditorCoordinator:
                 )
             
             # Calculate logical-pixel deltas: apply to authored gui.scale ints
+            # NEVER write absolute screen coords into gui.dialogue_xpos/ypos
             authored_x = gui_intents[0].source_key.get("say_style_position_xpos")
             authored_y = gui_intents[0].source_key.get("say_style_position_ypos")
-            new_x = gui_intents[0].x
-            new_y = gui_intents[0].y
+            
+            # Runtime baseline is the original rendered position
+            record = gui_intents[0].record
+            runtime_baseline_x = int(record.original_position[0])
+            runtime_baseline_y = int(record.original_position[1])
+            
+            # New position from intent (after drag)
+            intent_x = gui_intents[0].x
+            intent_y = gui_intents[0].y
+            
+            # Calculate logical-pixel delta
+            delta_x = intent_x - runtime_baseline_x
+            delta_y = intent_y - runtime_baseline_y
+            
+            # Apply delta to authored values (window-relative coords)
+            patched_x = authored_x + delta_x
+            patched_y = authored_y + delta_y
             
             gui_staged_bytes = apply_say_what_style_position_patch(
                 gui_current_bytes,
                 say_statement,
-                x=new_x,
-                y=new_y,
+                x=patched_x,
+                y=patched_y,
             )
             
             transaction_id = uuid.uuid4().hex
@@ -1272,8 +1288,8 @@ class EditorCoordinator:
                         **self._expected_target_for_intent(sel, None),
                         "say_style_position_previous_x": authored_x,
                         "say_style_position_previous_y": authored_y,
-                        "say_style_position_new_x": new_x,
-                        "say_style_position_new_y": new_y,
+                        "say_style_position_new_x": patched_x,
+                        "say_style_position_new_y": patched_y,
                     }
                     for sel in gui_intents
                 ],
