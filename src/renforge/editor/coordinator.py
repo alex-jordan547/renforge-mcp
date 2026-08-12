@@ -2233,6 +2233,15 @@ class EditorCoordinator:
         self._persist_transaction(transaction)
 
     def _conditional_rollback(self, transaction: _TransactionRecord, *, allow_staged: bool = False) -> None:
+        # DEBUG: Log ALL rollback attempts with PID and timestamp
+        import sys
+        import os
+        import datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[ROLLBACK {os.getpid()}] {now} transaction={transaction.transaction_id[:8]} state={transaction.state} allow_staged={allow_staged}", file=sys.stderr)
+        import traceback
+        traceback.print_stack(file=sys.stderr, limit=10)
+        
         allowed_states = {"published", "publishing", "staged"} if allow_staged else {"published", "publishing"}
         with self._lock:
             if transaction.state not in allowed_states:
