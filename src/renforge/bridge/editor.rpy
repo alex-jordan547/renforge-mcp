@@ -789,6 +789,15 @@ init 1100 python:
             state.status_code = "ready"
         if not hasattr(state, "status_expires_at"):
             state.status_expires_at = None
+        
+        # CRITICAL: Restore handshake state after gui.rpy restart
+        # If editor was active during restart, we need to restore pending handshake
+        if not hasattr(state, "handshake_restored"):
+            state.handshake_restored = False
+        if not state.handshake_restored:
+            _renforge_editor_restore_handshake_state(state)
+            state.handshake_restored = True
+        
         return state
 
 
@@ -2530,6 +2539,88 @@ init 1100 python:
                     break
             return items
 
+
+    def _renforge_editor_ensure_coordinator():
+
+
+    # ── Handshake persistence across gui.rpy restart ──────────────────────────
+    # When gui.rpy changes, Ren'Py does a FULL restart that wipes non-persistent
+    # editor state. We must persist pending handshake state to survive the restart.
+    
+    def _renforge_editor_get_handshake_persist_path():
+        """Get path to handshake persistence file (survives Ren'Py restart)."""
+        import renpy
+        # Use Ren'Py's config directory which persists across restarts
+        persist_dir = renpy.config.savedir or os.path.join(renpy.config.renpy_base, "saves")
+        if not os.path.exists(persist_dir):
+            try:
+                os.makedirs(persist_dir)
+            except OSError:
+                pass
+        return os.path.join(persist_dir, "renforge_handshake_state.json")
+    
+    def _renforge_editor_save_handshake_state(state):
+        """Save pending handshake state to survive gui.rpy restart."""
+        if state.pending_handshake_generation is None:
+            return
+        
+        persist_path = _renforge_editor_get_handshake_persist_path()
+        handshake_data = {
+            "pending_handshake_generation": int(state.pending_handshake_generation),
+            "pending_transaction_id": state.pending_transaction_id,
+            "pending_operation": state.pending_operation,
+            "pending_handshake_sent": bool(state.pending_handshake_sent),
+            "saved_at_generation": int(state.script_generation),
+        }
+        
+        try:
+            with open(persist_path, "w") as f:
+                json.dump(handshake_data, f)
+        except (OSError, IOError):
+            pass
+    
+    def _renforge_editor_restore_handshake_state(state):
+        """Restore pending handshake state after gui.rpy restart."""
+        persist_path = _renforge_editor_get_handshake_persist_path()
+        
+        if not os.path.exists(persist_path):
+            state.pending_handshake_generation = None
+            state.pending_handshake_sent = False
+            return
+        
+        try:
+            with open(persist_path, "r") as f:
+                handshake_data = json.load(f)
+            
+            # Restore handshake state
+            state.pending_handshake_generation = handshake_data.get("pending_handshake_generation")
+            state.pending_transaction_id = handshake_data.get("pending_transaction_id")
+            state.pending_operation = handshake_data.get("pending_operation")
+            state.pending_handshake_sent = False  # Always reset this - we need to resend after restart
+            
+            # Restore save state to continue the commit process
+            state.save_in_progress = True
+            state.save_requested = True
+            state.pending_reload_requested = True
+            state.pending_reload_started = True
+            _renforge_editor_set_status("commit_queued")
+            
+            # Clean up persistence file
+            try:
+                os.remove(persist_path)
+            except OSError:
+                pass
+            
+        except (OSError, IOError, ValueError, KeyError):
+            # Fail-closed: if restore fails, clear handshake state
+            state.pending_handshake_generation = None
+            state.pending_handshake_sent = False
+            try:
+                os.remove(persist_path)
+            except OSError:
+                pass
+    
+    # ────────────────────────────────────────────────────────────────────────────
 
     def _renforge_editor_ensure_coordinator():
         state = _renforge_editor_state()
@@ -5760,6 +5851,11 @@ init 1100 python:
                         state.save_error = None
                         state.save_last_error = None
                         _renforge_editor_set_status("undo_queued" if command == "undo_commit" else "commit_queued")
+                        
+                        # CRITICAL: Persist handshake state before gui.rpy restart
+                        # If this commit will cause a full Ren'Py restart (gui.rpy changes),
+                        # we need to save handshake state to survive the restart
+                        _renforge_editor_save_handshake_state(state)
                 elif command == "commit_status":
                     state.last_commit_status = result
                     state.pending_transaction_state = result.get("state")
@@ -5978,8 +6074,15 @@ init 1100 python:
         state.last_commit_status = None
         state.pending_transaction_id = None
         state.pending_analysis_key = None
-        state.pending_handshake_generation = None
-        state.pending_handshake_sent = False
+        
+        # Restore handshake state from persistent file if it exists (gui.rpy restart recovery)
+        # This will set pending_handshake_generation and related state if a commit was in progress
+        _renforge_editor_restore_handshake_state(state)
+        
+        # Only clear handshake state if nothing was restored
+        if state.pending_handshake_generation is None:
+            state.pending_handshake_sent = False
+        
         state.save_button_state = "idle"
         state.pending_reload_requested = False
         state.opacity = 0.9
