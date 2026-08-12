@@ -6010,6 +6010,14 @@ init 1100 python:
 
     def _renforge_editor_periodic():
         state = _renforge_editor_state()
+        
+        # DEBUG: Log ALL periodic calls to understand if/why it stops
+        import sys
+        sys.stderr.write("[BRIDGE-PERIODIC-ENTER] active=%s reload_slot=%s\n" % (
+            state.active,
+            renpy.session.get("_reload_slot")
+        ))
+        
         if renpy.session.get("_reload_slot"):
             return
         if not state.active:
