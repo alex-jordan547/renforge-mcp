@@ -2540,9 +2540,6 @@ init 1100 python:
             return items
 
 
-    def _renforge_editor_ensure_coordinator():
-
-
     # ── Handshake persistence across gui.rpy restart ──────────────────────────
     # When gui.rpy changes, Ren'Py does a FULL restart that wipes non-persistent
     # editor state. We must persist pending handshake state to survive the restart.
