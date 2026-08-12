@@ -2447,8 +2447,18 @@ class EditorCoordinator:
                 except (EditorPathError, OSError):
                     current_sha = None
                 
+                # DEBUG: Log recovery decision for publishing transactions
+                import sys
+                print(f"[RECOVERY DEBUG] publishing transaction {transaction_id[:8]}", file=sys.stderr)
+                print(f"  current_sha: {current_sha}", file=sys.stderr)
+                print(f"  staged_sha:  {actual_staged_sha256}", file=sys.stderr)
+                print(f"  original_sha: {actual_original_sha256}", file=sys.stderr)
+                print(f"  match staged: {current_sha == actual_staged_sha256}", file=sys.stderr)
+                print(f"  match original: {current_sha == actual_original_sha256}", file=sys.stderr)
+                
                 if current_sha == actual_staged_sha256:
                     # CAS completed! PROMOTE to published and arm timer
+                    print(f"  -> PROMOTING to published", file=sys.stderr)
                     record.state = "published"
                     self._persist_transaction(record)
                     timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
@@ -2457,10 +2467,12 @@ class EditorCoordinator:
                     self._recovered.append(transaction_id)
                 elif current_sha == actual_original_sha256:
                     # CAS never happened - rollback to clean state
+                    print(f"  -> ROLLING BACK (CAS never happened)", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=True)
                     self._recovered.append(transaction_id)
                 else:
                     # Unknown state - mark conflict
+                    print(f"  -> CONFLICT (disk matches neither)", file=sys.stderr)
                     record.state = "rollback_conflict"
                     record.uncertain_paths = [relative_path]
                     self._recovered.append(transaction_id)
