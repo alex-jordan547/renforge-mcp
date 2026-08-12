@@ -132,25 +132,33 @@ def run_editor_say_what_style_position_live_scenario(
     
     # Wait for save/commit to complete
     import time
+    from renforge.bridge.client import BridgeProtocolError
+    
     last_status = None
-    for i in range(80):
-        status = client.request("editor_task0_status", {})
-        last_status = status
-        status_code = status.get("status_code")
-        
-        # Log progress every 10 iterations
-        if i % 10 == 0:
-            print(f"   Waiting for commit... status_code={status_code}, save_in_progress={status.get('save_in_progress')}")
-        
-        if status_code == "reload_committed":
-            print(f"   ✓ Commit completed (after {i * 0.5:.1f}s)")
-            break
-        elif status_code in ("reload_failed", "commit_failed"):
-            report["verdict"] = "fail"
-            report["error"] = f"commit failed: {status_code}"
-            report["save_error"] = status.get("save_error")
-            report["last_status"] = status
-            return report
+    for i in range(120):  # 60s total (120 * 0.5s)
+        try:
+            status = client.request("editor_task0_status", {})
+            last_status = status
+            status_code = status.get("status_code")
+            
+            # Log progress every 10 iterations
+            if i % 10 == 0:
+                print(f"   Waiting for commit... status_code={status_code}, save_in_progress={status.get('save_in_progress')}")
+            
+            if status_code == "reload_committed":
+                print(f"   ✓ Commit completed (after {i * 0.5:.1f}s)")
+                break
+            elif status_code in ("reload_failed", "commit_failed"):
+                report["verdict"] = "fail"
+                report["error"] = f"commit failed: {status_code}"
+                report["save_error"] = status.get("save_error")
+                report["last_status"] = status
+                return report
+        except BridgeProtocolError:
+            # Ren'Py is reloading - this is expected during commit
+            if i % 10 == 0:
+                print(f"   Ren'Py reloading (iteration {i})...")
+            pass
         
         time.sleep(0.5)
     else:
@@ -208,10 +216,18 @@ def run_editor_say_what_style_position_live_scenario(
     report["undo_click"] = undo_click
     
     # Wait for undo
-    for _ in range(80):
-        status = client.request("editor_task0_status", {})
-        if status.get("status_code") == "reload_committed":
-            break
+    for i in range(120):  # 60s total
+        try:
+            status = client.request("editor_task0_status", {})
+            if status.get("status_code") == "reload_committed":
+                print(f"   ✓ Undo completed (after {i * 0.5:.1f}s)")
+                break
+        except BridgeProtocolError:
+            # Ren'Py reloading during undo
+            if i % 10 == 0:
+                print(f"   Ren'Py reloading during undo (iteration {i})...")
+            pass
+        
         time.sleep(0.5)
     
     # 9. Verify byte-identical undo
