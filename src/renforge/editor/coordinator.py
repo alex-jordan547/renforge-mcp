@@ -269,6 +269,9 @@ class EditorCoordinator:
             # Only rollback "staged" (no CAS attempted) to ensure clean shutdown.
             for record in self._transactions.values():
                 if record.state == "staged":
+                    import sys, os, datetime
+                    now = datetime.datetime.now().isoformat()
+                    print(f"[ROLLBACK-CALLER-CLOSE-STAGED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=True)
             states = {txid: record.state for txid, record in self._transactions.items()}
             return {"session_id": self._session_id, "transactions": states, "recovered": list(self._recovered)}
@@ -1634,6 +1637,9 @@ class EditorCoordinator:
             # falsy reply, so the rollbacks below were unreachable for it. Left
             # alone, the published bytes stayed in the author's file until the
             # attestation timer fired seconds later.
+            import sys, os, datetime
+            now = datetime.datetime.now().isoformat()
+            print(f"[ROLLBACK-CALLER-HANDSHAKE-ERROR {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             # Game already reloaded; forget the pre-reload generation so later
             # analyses can re-lock to the live script_generation (including any
@@ -1642,11 +1648,17 @@ class EditorCoordinator:
                 self._script_generation = -1
             raise
         if not isinstance(result, dict):
+            import sys, os, datetime
+            now = datetime.datetime.now().isoformat()
+            print(f"[ROLLBACK-CALLER-HANDSHAKE-INVALID-RESULT {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             with self._lock:
                 self._script_generation = -1
             raise EditorError("ATTESTATION_FAILED", "runtime probe returned invalid attestation payload")
         if result.get("ok") is not True or result.get("state") != "all_targets_attested":
+            import sys, os, datetime
+            now = datetime.datetime.now().isoformat()
+            print(f"[ROLLBACK-CALLER-HANDSHAKE-NOT-ATTESTED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             with self._lock:
                 self._script_generation = -1
@@ -2171,6 +2183,9 @@ class EditorCoordinator:
             return
         if record.state != "published":
             return
+        import sys, os, datetime
+        now = datetime.datetime.now().isoformat()
+        print(f"[ROLLBACK-CALLER-ATTESTATION-TIMEOUT {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
         self._conditional_rollback(record)
 
     def _publish_transaction_bytes(self, transaction: _TransactionRecord) -> None:
@@ -2475,6 +2490,9 @@ class EditorCoordinator:
                     self._recovered.append(transaction_id)
                 else:
                     # Disk doesn't match staged - rollback
+                    import sys, os, datetime
+                    now = datetime.datetime.now().isoformat()
+                    print(f"[ROLLBACK-CALLER-RECOVERY-PUBLISHED-DISK-MISMATCH {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=False)
                     self._recovered.append(transaction_id)
                     
@@ -2507,6 +2525,9 @@ class EditorCoordinator:
                 elif current_sha == actual_original_sha256:
                     # CAS never happened - rollback to clean state
                     print(f"  -> ROLLING BACK (CAS never happened)", file=sys.stderr)
+                    import sys, os, datetime
+                    now = datetime.datetime.now().isoformat()
+                    print(f"[ROLLBACK-CALLER-RECOVERY-PUBLISHING-CAS-NEVER {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=True)
                     self._recovered.append(transaction_id)
                 else:
@@ -2519,6 +2540,9 @@ class EditorCoordinator:
                     
             elif state == "staged" and manifest_intact:
                 # Incomplete transaction - rollback immediately
+                import sys, os, datetime
+                now = datetime.datetime.now().isoformat()
+                print(f"[ROLLBACK-CALLER-RECOVERY-STAGED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
                 
