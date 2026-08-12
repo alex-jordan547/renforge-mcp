@@ -3851,6 +3851,36 @@ init 1100 python:
 
 
     def _renforge_editor_show_target_overrides(screen):
+        """Show screen with position/style overrides, safe for say.what style position."""
+        state = _renforge_editor_state()
+        target_key = state.selected_target_key
+        target = state.targets.get(target_key) if target_key else None
+        
+        # Critical finding #4: say.what style position must NOT rebuild say screen
+        # Position comes from style properties; mutate them directly without advancing dialogue
+        if isinstance(target, builtins.dict):
+            source_key = target.get("source_key")
+            if isinstance(source_key, builtins.dict):
+                position_mode = source_key.get("position_mode")
+                
+                # style_gui_dialogue = SAY_WHAT_STYLE_POSITION_MODE from coordinator
+                if position_mode == "style_gui_dialogue":
+                    # Mutate live style properties without rebuilding say screen
+                    # This avoids TypeError: missing a required argument: 'who'
+                    position = target.get("position")
+                    if position and len(position) == 2:
+                        try:
+                            # Directly mutate style properties
+                            renpy.style.say_dialogue.xpos = int(position[0])
+                            renpy.style.say_dialogue.ypos = int(position[1])
+                            renpy.restart_interaction()
+                            return
+                        except Exception as e:
+                            # Fallback if style mutation fails
+                            renpy.notify("Preview failed: " + str(e))
+                            return
+        
+        # Standard path: _widget_properties for other widgets
         _renforge_editor_prepare_anonymous_target_overrides(screen)
         properties = _renforge_editor_widget_properties(screen)
         if properties:
@@ -3888,6 +3918,12 @@ init 1100 python:
                     int(state.selected_rect[3]),
                 ]
             _renforge_editor_set_label(state.pointer[0], state.pointer[1])
+            
+            # Track preview method for say.what style position
+            source_key = target.get("source_key")
+            if isinstance(source_key, builtins.dict) and source_key.get("position_mode") == "style_gui_dialogue":
+                state.last_preview_method = "style_mutation"
+            
         return {"ok": True, "x": next_position[0], "y": next_position[1]}
 
 
@@ -4693,14 +4729,24 @@ init 1100 python:
         )
         if result.get("ok") is not True:
             return result
-        state.last_preview_method = "_widget_properties"
+        
+        # Track preview method: style_mutation for say.what, _widget_properties for others
+        preview_method = "_widget_properties"
+        if state.selected_target_key:
+            target = state.targets.get(state.selected_target_key)
+            if isinstance(target, builtins.dict):
+                source_key = target.get("source_key")
+                if isinstance(source_key, builtins.dict) and source_key.get("position_mode") == "style_gui_dialogue":
+                    preview_method = "style_mutation"
+        
+        state.last_preview_method = preview_method
         _renforge_editor_refresh_save_enabled()
         renpy.restart_interaction()
         return {
             "ok": True,
             "x": int(snapped_x),
             "y": int(snapped_y),
-            "method": "_widget_properties",
+            "method": preview_method,
             "snap": snap_detail,
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
@@ -4719,10 +4765,34 @@ init 1100 python:
                 return {"ok": True, "restored": True, "method": "history_reset", "reset": reply}
             if reply.get("error") not in (None, "RESET_UNAVAILABLE"):
                 return reply
+        
+        # Check if this is say.what style position before rebuilding screen
+        target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
+        if isinstance(target, builtins.dict):
+            source_key = target.get("source_key")
+            if isinstance(source_key, builtins.dict):
+                position_mode = source_key.get("position_mode")
+                
+                # style_gui_dialogue: restore by mutating style, not rebuilding say screen
+                if position_mode == "style_gui_dialogue":
+                    baseline = list(target.get("runtime_baseline") or [])
+                    if len(baseline) == 2:
+                        try:
+                            renpy.style.say_dialogue.xpos = int(baseline[0])
+                            renpy.style.say_dialogue.ypos = int(baseline[1])
+                            target["position"] = list(baseline)
+                            state.preview_position = list(baseline)
+                            state.selected_original_position = list(baseline)
+                            target["dirty"] = False
+                            renpy.restart_interaction()
+                            state.last_restore_method = "style_mutation"
+                            return {"ok": True, "restored": True, "method": "style_mutation"}
+                        except Exception as e:
+                            return {"ok": False, "error": "RESTORE_FAILED", "details": str(e)}
+        
         # Clean baseline: re-show screen without overrides and clear preview mirrors.
         if state.selected_screen:
             renpy.show_screen(state.selected_screen, _layer="screens")
-        target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
         if isinstance(target, builtins.dict):
             baseline = list(target.get("runtime_baseline") or [])
             baseline_size = list(target.get("runtime_size") or [])
