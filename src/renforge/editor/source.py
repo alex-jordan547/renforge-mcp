@@ -23,6 +23,8 @@ RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
 BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
 # Issue #50: pure hex string-literal ``color`` on a single-line ``text`` statement.
 TEXT_STYLE_COLOR_MODE_LITERAL = "literal_hex"
+# Issue #81: style-backed gui.dialogue_xpos/ypos for say.what movement.
+SAY_WHAT_STYLE_POSITION_MODE = "style_gui_dialogue"
 
 
 class _BarSizeModel(TypedDict):
@@ -250,6 +252,27 @@ class TextColorStyleStatement:
     style_mode: str | None = None
     style_lock_code: str | None = None
     style_lock_message: str | None = None
+
+
+@dataclass(frozen=True)
+class SayWhatStylePositionStatement:
+    """Style-position ownership for say.what via gui.dialogue_xpos/ypos.
+
+    Unlocked only when both gui variables resolve to exactly one supported
+    authored form: ``define gui.dialogue_xpos = gui.scale(<int>)``.
+    Inherited, expression, ambiguous, and unsupported forms leave
+    ``position_mode`` empty and set a stable lock code. Spans are absolute
+    character offsets in the full source file.
+    """
+
+    xpos: int | None = None
+    ypos: int | None = None
+    xpos_span: tuple[int, int] | None = None
+    ypos_span: tuple[int, int] | None = None
+    baseline_sha256: str | None = None
+    position_mode: str | None = None
+    position_lock_code: str | None = None
+    position_lock_message: str | None = None
 
 
 _StatementT = TypeVar(
@@ -2418,3 +2441,249 @@ def apply_text_color_patch(
         )
     patched = f"{source_text[:start]}{replacement}{source_text[end:]}"
     return patched.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Issue #81 — dedicated style-position source contract (say.what only)
+# ---------------------------------------------------------------------------
+
+
+def _style_position_lock(code: str, message: str) -> tuple[str, str]:
+    return code, message
+
+
+def analyze_say_what_style_position(
+    source_text: str,
+    *,
+    xpos_var: str,
+    ypos_var: str,
+) -> SayWhatStylePositionStatement:
+    """Analyze ownership of gui.dialogue_xpos/ypos for say.what movement.
+
+    This is a dedicated style-position contract for ONE bounded adapter.
+    Unlocked form: ``define gui.dialogue_xpos = gui.scale(<int>)`` where
+    ``<int>`` is a pure decimal literal (negative values supported).
+
+    Missing, duplicate, expression-based, arithmetic, non-gui.scale, variant,
+    or malformed definitions remain locked with stable codes.
+    """
+    # Parse the Ren'Py source to find define statements.
+    # We look for lines like: define gui.dialogue_xpos = gui.scale(268)
+    lines = source_text.splitlines(keepends=True)
+    
+    xpos_matches: list[tuple[int, tuple[int, int]]] = []
+    ypos_matches: list[tuple[int, tuple[int, int]]] = []
+    has_expression_error = False
+    
+    offset = 0
+    for line in lines:
+        # Simple pattern matching for the supported form
+        stripped = line.strip()
+        if stripped.startswith("define "):
+            rest = stripped[7:].strip()  # after "define "
+            
+            # Check xpos_var
+            if rest.startswith(f"{xpos_var} ="):
+                result = _parse_gui_scale_define(line, offset, xpos_var)
+                if result[0] == "ok":
+                    xpos_matches.append((result[1], result[2]))
+                elif result[0] in ("expression", "non_gui_scale"):
+                    has_expression_error = True
+            
+            # Check ypos_var
+            if rest.startswith(f"{ypos_var} ="):
+                result = _parse_gui_scale_define(line, offset, ypos_var)
+                if result[0] == "ok":
+                    ypos_matches.append((result[1], result[2]))
+                elif result[0] in ("expression", "non_gui_scale"):
+                    has_expression_error = True
+        
+        offset += len(line.encode("utf-8"))
+    
+    # Check for expression/non-gui.scale errors first (more specific)
+    if has_expression_error:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_EXPRESSION_UNSUPPORTED",
+            "gui.dialogue_xpos or gui.dialogue_ypos uses an unsupported expression",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+    
+    # Check for missing
+    if not xpos_matches or not ypos_matches:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_SOURCE_UNRESOLVED",
+            "gui.dialogue_xpos or gui.dialogue_ypos not found or malformed",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+    
+    # Check for duplicates
+    if len(xpos_matches) > 1 or len(ypos_matches) > 1:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_SOURCE_AMBIGUOUS",
+            "gui.dialogue_xpos or gui.dialogue_ypos has multiple definitions",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+    
+    xpos_value, xpos_span = xpos_matches[0]
+    ypos_value, ypos_span = ypos_matches[0]
+    
+    return SayWhatStylePositionStatement(
+        xpos=xpos_value,
+        ypos=ypos_value,
+        xpos_span=xpos_span,
+        ypos_span=ypos_span,
+        baseline_sha256=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        position_mode=SAY_WHAT_STYLE_POSITION_MODE,
+        position_lock_code=None,
+        position_lock_message=None,
+    )
+
+
+def _parse_gui_scale_define(
+    line: str, offset: int, var_name: str
+) -> tuple[str, int, tuple[int, int]] | tuple[str, None, None]:
+    """Parse ``define <var_name> = gui.scale(<int>)`` and return status.
+
+    Returns ("ok", value, span) on success, or (error_code, None, None) on failure.
+    Error codes: "expression", "non_gui_scale", "not_found".
+    """
+    try:
+        # Find the assignment
+        if "=" not in line:
+            return ("not_found", None, None)
+        
+        parts = line.split("=", 1)
+        if len(parts) != 2:
+            return ("not_found", None, None)
+        
+        left, right = parts
+        
+        # Check that left side is "define <var_name>"
+        if not left.strip().endswith(var_name):
+            return ("not_found", None, None)
+        
+        # Check that right side is "gui.scale(<int>)"
+        right_stripped = right.strip()
+        
+        # Remove trailing comment if any
+        if "#" in right_stripped:
+            comment_pos = right_stripped.find("#")
+            right_stripped = right_stripped[:comment_pos].strip()
+        
+        # Check for "if", "else", "or", "and" - expression keywords
+        for keyword in ["if", "else", "or", "and"]:
+            if f" {keyword} " in right_stripped or right_stripped.endswith(f" {keyword}"):
+                return ("expression", None, None)
+        
+        if not right_stripped.startswith("gui.scale("):
+            # Not gui.scale form - direct literal or other call
+            return ("non_gui_scale", None, None)
+        
+        if not right_stripped.endswith(")"):
+            # Incomplete or expression
+            return ("expression", None, None)
+        
+        # Extract the content inside parentheses
+        inner = right_stripped[10:-1].strip()  # Remove "gui.scale(" and ")"
+        
+        # Check for expressions, arithmetic, or non-integer
+        # We only support pure integer literals (including negative)
+        if not inner or not _is_pure_integer_literal(inner):
+            # Could be arithmetic like 268 + 10
+            return ("expression", None, None)
+        
+        value = int(inner)
+        
+        # Find the span of the integer in the original line using byte offsets
+        # We need to work with bytes to handle UTF-8 correctly
+        left_bytes = parts[0].encode("utf-8")
+        
+        # Find position of inner in right (before encoding)
+        inner_start_in_right = right.find(inner)
+        if inner_start_in_right == -1:
+            return ("not_found", None, None)
+        
+        # Encode the portion of right before inner to get byte offset
+        right_prefix = right[:inner_start_in_right]
+        right_prefix_bytes = right_prefix.encode("utf-8")
+        inner_bytes = inner.encode("utf-8")
+        
+        abs_start = offset + len(left_bytes) + 1 + len(right_prefix_bytes)  # +1 for "="
+        abs_end = abs_start + len(inner_bytes)
+        
+        return ("ok", value, (abs_start, abs_end))
+    
+    except (ValueError, IndexError, AttributeError):
+        return ("not_found", None, None)
+
+
+def _is_pure_integer_literal(s: str) -> bool:
+    """Return True if s is a pure integer literal (including negative)."""
+    s = s.strip()
+    if not s:
+        return False
+    
+    # Check for negative
+    if s.startswith("-"):
+        s = s[1:]
+    
+    # Check that all remaining characters are digits
+    return s.isdigit()
+
+
+def apply_say_what_style_position_patch(
+    source_bytes: bytes,
+    statement: SayWhatStylePositionStatement,
+    *,
+    x: int,
+    y: int,
+) -> bytes:
+    """Rewrite only the gui.scale() integer literals for xpos/ypos.
+
+    Spans are absolute byte offsets in the full source. Unrelated bytes,
+    the gui.scale(...) wrapper, whitespace, and comments are preserved.
+    """
+    if (
+        statement.position_mode != SAY_WHAT_STYLE_POSITION_MODE
+        or statement.xpos_span is None
+        or statement.ypos_span is None
+        or statement.baseline_sha256 is None
+        or statement.xpos is None
+        or statement.ypos is None
+    ):
+        code = statement.position_lock_code or "STYLE_POSITION_SOURCE_UNRESOLVED"
+        message = (
+            statement.position_lock_message
+            or "say.what style position patch requires an unlocked gui.scale() form"
+        )
+        raise EditorSourceError(code, message)
+    
+    if hashlib.sha256(source_bytes).hexdigest() != statement.baseline_sha256:
+        raise EditorSourceError(
+            "STALE_SOURCE",
+            "source changed since say.what style position analysis",
+        )
+    
+    # Work with bytes to handle UTF-8 correctly
+    # Replace both spans, processing in reverse order to maintain offsets
+    replacements = [
+        (statement.xpos_span[0], statement.xpos_span[1], str(int(x)).encode("utf-8")),
+        (statement.ypos_span[0], statement.ypos_span[1], str(int(y)).encode("utf-8")),
+    ]
+    replacements.sort(key=lambda item: item[0], reverse=True)
+    
+    patched = source_bytes
+    for start, end, replacement_bytes in replacements:
+        patched = patched[:start] + replacement_bytes + patched[end:]
+    
+    return patched
+
