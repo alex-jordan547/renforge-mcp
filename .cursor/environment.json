@@ -1,0 +1,6 @@
+{
+  "name": "renforge",
+  "description": "RenForge development environment with Ren'Py SDK 8.5.3, Xvfb, and all dependencies",
+  "install": "bash scripts/setup_cloud_env.sh",
+  "start": "# RenForge environment is ready\necho 'Display: '$DISPLAY\necho 'Python: '$(python3 --version)\necho ''\necho 'Run smoke test: bash scripts/smoke_renpy_env.sh'\necho 'Run tests: pytest'\necho 'Run live tests: bash scripts/run_live_editor_suites.sh'\n"
+}
