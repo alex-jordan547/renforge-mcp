@@ -13,6 +13,15 @@ versioning.
   blocks destructive and open-world operations unless `authorize=true` or an
   allowlist permits them. See [docs/POLICY.md](docs/POLICY.md).
 
+### Changed
+
+- Graph inspection no longer rewrites `renpy/dump.py` inside a discovered or
+  cached Ren'Py SDK. `compile --json-dump` injects an isolated `.rpe.py`
+  adapter via `RENPY_SEARCHPATH` so Node-keyed `script.namemap` labels on
+  Ren'Py 8.5 are emitted without mutating shared or read-only SDK files.
+  String-keyed dumps stay unchanged. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## [0.7.0] - 2026-08-11
 
 ### Added

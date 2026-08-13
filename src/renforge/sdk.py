@@ -27,54 +27,6 @@ _VERSION_IDENTIFIER_RE: Final = re.compile(
     r"\d+\.\d+\.\d+(?:[._+-][A-Za-z0-9]+)*\Z"
 )
 
-# Ren'Py 8.5 keyed Script.namemap by Node (Node.__hash__/__eq__ use .name) but
-# left dump.py filtering with ``isinstance(name, str)``, which drops every
-# label from --json-dump. Unwrap Node keys before the type check.
-_DUMP_NAMEMAP_LOOP = (
-    "    for name, n in renpy.game.script.namemap.items():\n"
-    "        filename = n.filename\n"
-    "        line = n.linenumber\n"
-    "\n"
-    "        if not isinstance(name, str):\n"
-    "            continue\n"
-)
-_DUMP_NAMEMAP_LOOP_FIXED = (
-    "    for name, n in renpy.game.script.namemap.items():\n"
-    "        # renforge: unwrap Node-keyed namemap (Ren'Py 8.5+)\n"
-    "        if not isinstance(name, str):\n"
-    "            name = getattr(name, \"name\", name)\n"
-    "        filename = n.filename\n"
-    "        line = n.linenumber\n"
-    "\n"
-    "        if not isinstance(name, str):\n"
-    "            continue\n"
-)
-
-
-def _patch_sdk_json_dump(root: Path) -> bool:
-    """Repair label emission in a cached/downloaded Ren'Py SDK dump.py.
-
-    Returns True when the file was modified.
-    """
-    dump_path = root / "renpy" / "dump.py"
-    if not dump_path.is_file():
-        return False
-    try:
-        text = dump_path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    if "renforge: unwrap Node-keyed namemap" in text:
-        return False
-    if _DUMP_NAMEMAP_LOOP not in text:
-        return False
-    try:
-        dump_path.write_text(
-            text.replace(_DUMP_NAMEMAP_LOOP, _DUMP_NAMEMAP_LOOP_FIXED, 1),
-            encoding="utf-8",
-        )
-    except OSError:
-        return False
-    return True
 
 def _resolve_version(version: str) -> str:
     if version == "stable" or not version:
@@ -464,10 +416,13 @@ def get_or_install_sdk(
     version: str = "stable",
     *,
     project_root: Path | None = None,
-    patch_json_dump: bool = False,
 ) -> RenpySdk:
     """
     Discover or prepare a Ren'Py SDK directory.
+
+    Discovery never rewrites files under the chosen SDK root. Graph inspection
+    injects an isolated dump adapter into the ``compile --json-dump``
+    subprocess instead of patching ``renpy/dump.py``.
     """
     resolved_version = _validate_version_identifier(_resolve_version(version))
     if project_root is not None:
@@ -476,8 +431,6 @@ def get_or_install_sdk(
             resolved_version,
         )
         if local_root is not None:
-            if patch_json_dump:
-                _patch_sdk_json_dump(local_root)
             return RenpySdk(version=resolved_version, root=local_root)
 
     explicit_root = _first_valid_sdk(
@@ -485,21 +438,15 @@ def get_or_install_sdk(
         resolved_version,
     )
     if explicit_root is not None:
-        if patch_json_dump:
-            _patch_sdk_json_dump(explicit_root)
         return RenpySdk(version=resolved_version, root=explicit_root)
 
     cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
     if cached_root is not None:
-        if patch_json_dump:
-            _patch_sdk_json_dump(cached_root)
         return RenpySdk(version=resolved_version, root=cached_root)
 
     with _sdk_install_lock(resolved_version):
         cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
         if cached_root is not None:
-            if patch_json_dump:
-                _patch_sdk_json_dump(cached_root)
             return RenpySdk(version=resolved_version, root=cached_root)
 
         cache_root = _managed_cache_child(_cache_version_dir(resolved_version))
@@ -518,8 +465,6 @@ def get_or_install_sdk(
                 raise ValueError(
                     f"Downloaded Ren'Py SDK is invalid or incompatible with {resolved_version}."
                 )
-            if patch_json_dump:
-                _patch_sdk_json_dump(discovered_root)
 
             quarantine = _managed_cache_child(
                 cache_root.with_name(

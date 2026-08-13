@@ -78,3 +78,19 @@ def test_public_god_mode_tools_and_workflow_are_documented() -> None:
     assert 'include=["metrics", "audio"]' in docs
     assert "docs/MCP.md" in readme
     assert "full tool catalogue" in readme.lower()
+
+
+def test_json_dump_compatibility_strategy_is_documented() -> None:
+    root = Path(__file__).parents[1]
+    architecture = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "compile --json-dump" in architecture
+    assert "RENPY_SEARCHPATH" in architecture
+    assert ".rpe.py" in architecture
+    assert "8.5.3" in architecture
+    assert "Node" in architecture
+    assert "read-only" in architecture
+    assert "dump.py" in architecture
+    assert "RENPY_SEARCHPATH" in changelog
+    assert "dump.py" in changelog

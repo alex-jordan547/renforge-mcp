@@ -7,12 +7,23 @@ and similar attributes that are only wired up during a full display+audio init,
 which raises ``AttributeError`` before our command runs.
 
 Ren'Py's built-in ``compile --json-dump`` instead introspects the *parsed*
-script without executing init code, so it works in any headless environment. It
-yields exact ``file:line`` locations for labels, defines, screens, transforms
-and callables. The narrative *flow* graph (jumps / menus / says) comes from the
-fast regex scanner (see :mod:`renforge.scanner`); exact AST-level flow is a
-runtime concern handled later through the in-game bridge, where every
-``renpy.*`` module is fully loaded.
+script without executing a full display+audio init, so it works in any
+headless environment. It yields exact ``file:line`` locations for labels,
+defines, screens, transforms and callables. The narrative *flow* graph
+(jumps / menus / says) comes from the fast regex scanner (see
+:mod:`renforge.scanner`); exact AST-level flow is a runtime concern handled
+later through the in-game bridge, where every ``renpy.*`` module is fully
+loaded.
+
+Ren'Py 8.5 keyed ``Script.namemap`` by ``Node`` (``Node.__hash__`` /
+``__eq__`` use ``.name``) while 8.5.3 ``dump.py`` still filters with
+``isinstance(name, str)``, which drops every label. Upstream master unwraps
+``Node`` keys before that check. RenForge follows that fix in the dump
+subprocess instead of rewriting installed or cached SDK files: each
+``compile --json-dump`` injects a temporary ``.rpe.py`` adapter via
+``RENPY_SEARCHPATH``. String-keyed namemaps (Ren'Py 8.4 and earlier, and
+SDKs that already unwrap) are left unchanged. The pinned default SDK is
+8.5.3; compatible 8.5.x installs and older string-keyed SDKs are supported.
 """
 
 from __future__ import annotations
@@ -29,6 +40,60 @@ from .util.subprocess import run_command
 
 _DEFINITION_CATEGORIES = ("label", "define", "screen", "transform", "callable")
 
+JSON_DUMP_ADAPTER_FILENAME = "renforge_json_dump.rpe.py"
+
+# Executed inside the Ren'Py dump subprocess (bundled Python, no renforge
+# import). Keep this self-contained and compatible with Ren'Py 8.4+.
+JSON_DUMP_ADAPTER_SOURCE = '''# renforge json-dump adapter — unwrap Node-keyed namemap without editing SDK files
+import renpy.dump as _renforge_dump_mod
+
+if not getattr(_renforge_dump_mod.dump, "_renforge_json_dump_adapter", False):
+    _renforge_original_dump = _renforge_dump_mod.dump
+
+    def _renforge_unwrap_namemap_key(name):
+        if isinstance(name, str):
+            return name
+        return getattr(name, "name", name)
+
+    def _renforge_adapted_dump(error):
+        import renpy
+
+        script = getattr(renpy.game, "script", None)
+        namemap = getattr(script, "namemap", None) if script is not None else None
+        if not namemap:
+            return _renforge_original_dump(error)
+
+        unwrapped = {}
+        needs_unwrap = False
+        for name, node in namemap.items():
+            key = _renforge_unwrap_namemap_key(name)
+            if key is not name:
+                needs_unwrap = True
+            if isinstance(key, str):
+                unwrapped[key] = node
+
+        if not needs_unwrap:
+            return _renforge_original_dump(error)
+
+        original = script.namemap
+        script.namemap = unwrapped
+        try:
+            return _renforge_original_dump(error)
+        finally:
+            script.namemap = original
+
+    _renforge_adapted_dump._renforge_json_dump_adapter = True
+    _renforge_dump_mod.dump = _renforge_adapted_dump
+'''
+
+
+def _json_dump_searchpath_env(adapter_dir: Path) -> dict[str, str]:
+    adapter = str(adapter_dir)
+    existing = os.environ.get("RENPY_SEARCHPATH", "")
+    if existing:
+        return {"RENPY_SEARCHPATH": f"{adapter}::{existing}"}
+    return {"RENPY_SEARCHPATH": adapter}
+
 
 def run_native_dump(sdk: RenpySdk, project: RenpyProject, *, timeout: int = 180) -> dict[str, Any]:
     """Return Ren'Py's native JSON dump for ``project``.
@@ -36,25 +101,38 @@ def run_native_dump(sdk: RenpySdk, project: RenpyProject, *, timeout: int = 180)
     This compiles the project (writing ``.rpyc`` next to sources, as Ren'Py
     normally does) and introspects the parsed script. Raises ``RuntimeError``
     if Ren'Py produced no dump file.
+
+    The dump subprocess receives an isolated ``.rpe.py`` adapter on
+    ``RENPY_SEARCHPATH``. SDK files under ``sdk.root`` are never modified.
     """
-    out_fd, out_name = tempfile.mkstemp(prefix="renforge-jsondump-", suffix=".json")
-    os.close(out_fd)
-    out_path = Path(out_name)
-    out_path.unlink(missing_ok=True)  # Ren'Py writes <file>.new then renames into place.
+    with tempfile.TemporaryDirectory(prefix="renforge-dump-adapter-") as adapter_home:
+        adapter_dir = Path(adapter_home)
+        (adapter_dir / JSON_DUMP_ADAPTER_FILENAME).write_text(
+            JSON_DUMP_ADAPTER_SOURCE,
+            encoding="utf-8",
+        )
+        out_fd, out_name = tempfile.mkstemp(prefix="renforge-jsondump-", suffix=".json")
+        os.close(out_fd)
+        out_path = Path(out_name)
+        out_path.unlink(missing_ok=True)  # Ren'Py writes <file>.new then renames into place.
 
-    try:
-        command = project.renpy_command(sdk, ("compile", "--json-dump", str(out_path)))
-        result = run_command(command, timeout=timeout)
-
-        if not out_path.exists() or out_path.stat().st_size == 0:
-            raise RuntimeError(
-                "Ren'Py produced no JSON dump "
-                f"(returncode={result.returncode}, timed_out={result.timed_out}).\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        try:
+            command = project.renpy_command(sdk, ("compile", "--json-dump", str(out_path)))
+            result = run_command(
+                command,
+                timeout=timeout,
+                env=_json_dump_searchpath_env(adapter_dir),
             )
-        return json.loads(out_path.read_text(encoding="utf-8"))
-    finally:
-        out_path.unlink(missing_ok=True)
+
+            if not out_path.exists() or out_path.stat().st_size == 0:
+                raise RuntimeError(
+                    "Ren'Py produced no JSON dump "
+                    f"(returncode={result.returncode}, timed_out={result.timed_out}).\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
+            return json.loads(out_path.read_text(encoding="utf-8"))
+        finally:
+            out_path.unlink(missing_ok=True)
 
 
 def normalize_definitions(raw_dump: dict[str, Any]) -> list[dict[str, Any]]:
@@ -77,4 +155,9 @@ def normalize_definitions(raw_dump: dict[str, Any]) -> list[dict[str, Any]]:
     return definitions
 
 
-__all__ = ["run_native_dump", "normalize_definitions"]
+__all__ = [
+    "JSON_DUMP_ADAPTER_FILENAME",
+    "JSON_DUMP_ADAPTER_SOURCE",
+    "run_native_dump",
+    "normalize_definitions",
+]

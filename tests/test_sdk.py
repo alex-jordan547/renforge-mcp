@@ -1,3 +1,4 @@
+import inspect
 import io
 import os
 import tarfile
@@ -112,53 +113,46 @@ def test_project_local_compatible_sdk_has_priority_without_download(
     assert discovered.root == local_sdk
 
 
-def test_project_local_sdk_is_not_patched(
+def test_project_local_sdk_dump_py_is_never_rewritten(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
     local_sdk = _write_fake_sdk(project / "renpy-sdk", "8.5.3")
     dump = local_sdk / "renpy" / "dump.py"
-    dump.write_text(sdk._DUMP_NAMEMAP_LOOP)
+    original = "unpatched dump.py\n"
+    dump.write_text(original)
+    dump.chmod(0o444)
     monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(tmp_path / "cache"))
     monkeypatch.delenv(sdk.RENPY_SDK_ENV, raising=False)
 
     discovered = sdk.get_or_install_sdk("8.5.3", project_root=project)
 
     assert discovered.root == local_sdk
-    assert "renforge: unwrap Node-keyed namemap" not in dump.read_text()
+    assert dump.read_text() == original
 
 
-def test_explicit_sdk_is_not_patched_during_plain_discovery(
+def test_explicit_sdk_dump_py_is_never_rewritten(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     explicit_sdk = _write_fake_sdk(tmp_path / "explicit-sdk", "8.5.3")
     dump = explicit_sdk / "renpy" / "dump.py"
-    dump.write_text(sdk._DUMP_NAMEMAP_LOOP)
+    original = "unpatched dump.py\n"
+    dump.write_text(original)
+    dump.chmod(0o444)
     monkeypatch.setenv(sdk.RENPY_SDK_ENV, str(explicit_sdk))
     monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(tmp_path / "cache"))
 
     discovered = sdk.get_or_install_sdk("8.5.3")
 
     assert discovered.root == explicit_sdk
-    assert "renforge: unwrap Node-keyed namemap" not in dump.read_text()
+    assert dump.read_text() == original
 
 
-def test_explicit_sdk_dump_patch_requires_explicit_opt_in(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    explicit_sdk = _write_fake_sdk(tmp_path / "explicit-sdk", "8.5.3")
-    dump = explicit_sdk / "renpy" / "dump.py"
-    dump.write_text(sdk._DUMP_NAMEMAP_LOOP)
-    monkeypatch.setenv(sdk.RENPY_SDK_ENV, str(explicit_sdk))
-    monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(tmp_path / "cache"))
-
-    discovered = sdk.get_or_install_sdk("8.5.3", patch_json_dump=True)
-
-    assert discovered.root == explicit_sdk
-    assert "renforge: unwrap Node-keyed namemap" in dump.read_text()
+def test_get_or_install_sdk_has_no_sdk_source_patch_flag() -> None:
+    assert "patch_json_dump" not in inspect.signature(sdk.get_or_install_sdk).parameters
+    assert not hasattr(sdk, "_patch_sdk_json_dump")
 
 
 def test_incompatible_project_sdk_falls_back_to_compatible_cache(
@@ -341,32 +335,6 @@ def test_sdk_install_rechecks_cache_after_acquiring_lock(
     discovered = sdk.get_or_install_sdk(version)
 
     assert discovered.root == cache_dir / version
-
-
-def test_patch_sdk_json_dump_unwraps_node_keyed_namemap(tmp_path: Path) -> None:
-    dump = tmp_path / "renpy" / "dump.py"
-    dump.parent.mkdir(parents=True)
-    dump.write_text(
-        "def dump(error):\n"
-        "    label = location[\"label\"] = {}\n"
-        "\n"
-        "    for name, n in renpy.game.script.namemap.items():\n"
-        "        filename = n.filename\n"
-        "        line = n.linenumber\n"
-        "\n"
-        "        if not isinstance(name, str):\n"
-        "            continue\n"
-        "\n"
-        "        label[name] = [filename, line]\n",
-        encoding="utf-8",
-    )
-
-    assert sdk._patch_sdk_json_dump(tmp_path) is True
-    patched = dump.read_text(encoding="utf-8")
-    assert "renforge: unwrap Node-keyed namemap" in patched
-    assert "name = getattr(name, \"name\", name)" in patched
-    # Idempotent.
-    assert sdk._patch_sdk_json_dump(tmp_path) is False
 
 
 def test_default_renpy_version_tracks_current_stable() -> None:

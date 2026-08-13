@@ -60,7 +60,30 @@ its launcher and version are compatible. It then checks the explicit
 `RENPY_SDK_HOME` override before falling back to the managed
 `~/.cache/renforge/sdks/` cache. Missing or invalid cached SDKs are installed
 under an inter-process lock and published atomically. Override the stable
-version with `RENPY_SDK_STABLE_VERSION`.
+version with `RENPY_SDK_STABLE_VERSION`. Discovery and graph inspection never
+rewrite files under an existing or shared SDK root, including read-only
+installations.
+
+## Graph inspection and `--json-dump`
+
+Story Map uses Ren'Py's `compile --json-dump` for authoritative label
+locations. The pinned default SDK is **8.5.3**. Ren'Py 8.5 keys
+`Script.namemap` by `Node`, while 8.5.3 `renpy/dump.py` still filters with
+`isinstance(name, str)`, which drops every label. Upstream master unwraps
+`Node` keys before that check.
+
+RenForge follows that upstream fix without waiting on a new SDK release and
+without patching installed `dump.py`. Each dump subprocess loads a temporary
+`.rpe.py` adapter from `RENPY_SEARCHPATH` that wraps `renpy.dump.dump` and,
+only when keys are not already strings, presents a string-keyed namemap for
+the duration of the dump. Concurrent inspections use separate adapter
+directories and cannot race on SDK source contents.
+
+Supported dump shapes:
+
+- Ren'Py **8.5.x** Node-keyed `namemap` (including the default 8.5.3 SDK)
+- Older string-keyed dumps (Ren'Py 8.4 and earlier)
+- Future SDKs that already unwrap `Node` keys, where the adapter is a no-op
 
 ## Packaging
 
