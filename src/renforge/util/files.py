@@ -1319,7 +1319,7 @@ _WIN_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
 _WIN_FILE_NON_DIRECTORY_FILE = 0x00000040
 _WIN_FILE_OPEN_REPARSE_POINT = 0x00200000
 _WIN_OBJ_CASE_INSENSITIVE = 0x00000040
-_WIN_FILE_RENAME_INFO = 3
+_WIN_FILE_RENAME_INFORMATION = 10
 _WIN_INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
 
 
@@ -1548,17 +1548,34 @@ def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
             ("FileName", wintypes.WCHAR * (len(name) + 1)),
         ]
 
-    kernel32, _advapi32 = _win_advapi_kernel()
-    set_info = kernel32.SetFileInformationByHandle
-    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-    set_info.restype = wintypes.BOOL
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_void_p)]
+
+    ntdll = _win_ntdll()
+    set_info = ntdll.NtSetInformationFile
+    set_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_int,
+    ]
+    set_info.restype = ctypes.c_long
     info = FILE_RENAME_INFO()
     info.ReplaceIfExists = 1
     info.RootDirectory = dir_handle
-    info.FileNameLength = len(name) * 2
+    info.FileNameLength = len(name) * ctypes.sizeof(wintypes.WCHAR)
     info.FileName = name
-    if not set_info(file_handle, _WIN_FILE_RENAME_INFO, ctypes.byref(info), ctypes.sizeof(info)):
-        raise OSError(ctypes.get_last_error(), "SetFileInformationByHandle rename failed")
+    iosb = IO_STATUS_BLOCK()
+    status = set_info(
+        file_handle,
+        ctypes.byref(iosb),
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        _WIN_FILE_RENAME_INFORMATION,
+    )
+    if status < 0:
+        raise OSError(status, "NtSetInformationFile rename failed")
 
 
 def _win_leaf_is_reparse(dir_handle: int, name: str, destination: Path) -> None:
