@@ -1344,7 +1344,7 @@ def _win_unicode_string(name: str) -> tuple[Any, Any]:
     us = UNICODE_STRING()
     us.Length = len(name) * 2
     us.MaximumLength = (len(name) + 1) * 2
-    us.Buffer = buf
+    us.Buffer = ctypes.cast(buf, wintypes.LPWSTR)
     return us, buf
 
 
