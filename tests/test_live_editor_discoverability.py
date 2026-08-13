@@ -45,6 +45,8 @@ PRIVATE_HANDLERS = (
 
 
 class _ToolRegistry:
+    _renforge_testing_registry = True
+
     def __init__(self) -> None:
         self.tools = {}
 

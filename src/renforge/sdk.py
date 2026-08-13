@@ -464,6 +464,7 @@ def get_or_install_sdk(
     version: str = "stable",
     *,
     project_root: Path | None = None,
+    patch_json_dump: bool = False,
 ) -> RenpySdk:
     """
     Discover or prepare a Ren'Py SDK directory.
@@ -475,6 +476,8 @@ def get_or_install_sdk(
             resolved_version,
         )
         if local_root is not None:
+            if patch_json_dump:
+                _patch_sdk_json_dump(local_root)
             return RenpySdk(version=resolved_version, root=local_root)
 
     explicit_root = _first_valid_sdk(
@@ -482,18 +485,21 @@ def get_or_install_sdk(
         resolved_version,
     )
     if explicit_root is not None:
-        _patch_sdk_json_dump(explicit_root)
+        if patch_json_dump:
+            _patch_sdk_json_dump(explicit_root)
         return RenpySdk(version=resolved_version, root=explicit_root)
 
     cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
     if cached_root is not None:
-        _patch_sdk_json_dump(cached_root)
+        if patch_json_dump:
+            _patch_sdk_json_dump(cached_root)
         return RenpySdk(version=resolved_version, root=cached_root)
 
     with _sdk_install_lock(resolved_version):
         cached_root = _first_valid_sdk(_cache_candidates(resolved_version), resolved_version)
         if cached_root is not None:
-            _patch_sdk_json_dump(cached_root)
+            if patch_json_dump:
+                _patch_sdk_json_dump(cached_root)
             return RenpySdk(version=resolved_version, root=cached_root)
 
         cache_root = _managed_cache_child(_cache_version_dir(resolved_version))
@@ -512,7 +518,8 @@ def get_or_install_sdk(
                 raise ValueError(
                     f"Downloaded Ren'Py SDK is invalid or incompatible with {resolved_version}."
                 )
-            _patch_sdk_json_dump(discovered_root)
+            if patch_json_dump:
+                _patch_sdk_json_dump(discovered_root)
 
             quarantine = _managed_cache_child(
                 cache_root.with_name(

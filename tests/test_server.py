@@ -10,6 +10,8 @@ from renforge.server import _FallbackServer, _register_tools, create_app
 
 
 class _ToolRegistry:
+    _renforge_testing_registry = True
+
     def __init__(self) -> None:
         self.tools = {}
 
@@ -19,6 +21,34 @@ class _ToolRegistry:
             return fn
 
         return register
+
+
+class _MetadataToolRegistry:
+    def __init__(self, *, fail_registration: bool = False) -> None:
+        self.tools = {}
+        self.metadata = {}
+        self.registration_calls = 0
+        self.fail_registration = fail_registration
+
+    def tool(self, *, description=None, annotations=None):
+        self.registration_calls += 1
+
+        def register(fn):
+            if self.fail_registration:
+                raise TypeError("internal registration failure")
+            self.tools[fn.__name__] = fn
+            self.metadata[fn.__name__] = {
+                "description": description,
+                "annotations": annotations,
+            }
+            return fn
+
+        return register
+
+
+class _MetadataDroppingBackend:
+    def tool(self):
+        return lambda fn: fn
 
 EXPECTED_TOOLS = {
     # static
@@ -81,6 +111,116 @@ EXPECTED_TOOLS = {
 
 def test_fallback_server_runs_cleanly() -> None:
     assert _FallbackServer().run() == 0
+
+
+def test_register_tools_forwards_metadata_to_compatible_backends() -> None:
+    from renforge.tool_definitions import TOOL_DEFINITIONS
+
+    app = _MetadataToolRegistry()
+
+    _register_tools(app)
+
+    assert set(app.tools) == set(TOOL_DEFINITIONS)
+    metadata = app.metadata["renforge_eval"]
+    assert metadata["description"] == TOOL_DEFINITIONS["renforge_eval"].description
+    assert metadata["annotations"].destructiveHint is True
+
+
+def test_register_tools_preserves_metadata_on_mcp_fastmcp_backend() -> None:
+    fastmcp_module = pytest.importorskip("mcp.server.fastmcp", reason="MCP FastMCP unavailable")
+    from renforge.tool_definitions import TOOL_DEFINITIONS
+
+    app = fastmcp_module.FastMCP("renforge-test")
+    _register_tools(app)
+
+    tool = app._tool_manager._tools["renforge_saves"]
+    assert tool.description == TOOL_DEFINITIONS["renforge_saves"].description
+    assert tool.annotations.destructiveHint is True
+    assert tool.parameters["properties"]["action"]["enum"] == ["save", "load", "list"]
+    assert len(tool.parameters["oneOf"]) == 3
+
+
+def test_register_tools_does_not_retry_internal_decorator_type_errors() -> None:
+    app = _MetadataToolRegistry(fail_registration=True)
+
+    with pytest.raises(TypeError, match="internal registration failure"):
+        _register_tools(app)
+
+    assert app.registration_calls == 1
+
+
+def test_register_tools_fails_closed_when_backend_cannot_accept_metadata() -> None:
+    with pytest.raises(RuntimeError, match="description.*annotations"):
+        _register_tools(_MetadataDroppingBackend())
+
+
+def test_read_only_tool_call_does_not_create_project_activity_log(tmp_path, monkeypatch) -> None:
+    from renforge.tools import live
+
+    monkeypatch.setattr(live, "get_var", lambda project_path, name: {"ok": True, "value": 7})
+    app = _MetadataToolRegistry()
+    _register_tools(app)
+
+    result = app.tools["renforge_get_var"](str(tmp_path), "score")
+
+    assert result == {"ok": True, "value": 7}
+    assert not (tmp_path / ".renforge" / "activity.jsonl").exists()
+
+
+def test_mutable_tool_call_logs_bounded_redacted_activity(tmp_path, monkeypatch) -> None:
+    from renforge.tools import live
+
+    secret = "private-value-" + ("x" * 20_000)
+    monkeypatch.setattr(
+        live,
+        "set_var",
+        lambda project_path, name, value: {"ok": True, "value": value, "debug": secret},
+    )
+    app = _MetadataToolRegistry()
+    _register_tools(app)
+
+    result = app.tools["renforge_set_var"](str(tmp_path), "api_token", secret)
+
+    assert result["ok"] is True
+    raw = (tmp_path / ".renforge" / "activity.jsonl").read_text(encoding="utf-8")
+    assert len(raw.encode("utf-8")) <= 8192
+    assert secret not in raw
+    entry = json.loads(raw)
+    assert entry["name"] == "renforge_set_var"
+    assert entry["params"]["value"] == "[redacted]"
+    assert entry["result"] == {"ok": True, "keys": ["debug", "ok", "value"]}
+
+
+def test_game_state_compact_prefix_selection_enforces_all_output_limits(
+    tmp_path, monkeypatch
+) -> None:
+    from renforge.tools import live
+
+    variables = {
+        f"large_{index}": {"nested": {"payload": "x" * 2_000}}
+        for index in range(20)
+    }
+    monkeypatch.setattr(
+        live,
+        "game_state",
+        lambda project_path: {"ok": True, "current_label": "start", "variables": variables},
+    )
+    app = _MetadataToolRegistry()
+    _register_tools(app)
+
+    result = app.tools["renforge_game_state_compact"](
+        str(tmp_path),
+        variable_prefix="large_",
+        state_profile="full",
+        max_depth=2,
+        max_items=2,
+        max_output_bytes=256,
+    )
+
+    assert len(json.dumps(result).encode("utf-8")) <= 256
+    assert len([key for key in result.get("variables", {}) if not key.startswith("__")]) <= 2
+    assert "x" * 2_000 not in json.dumps(result)
+    assert "__truncated__" in json.dumps(result)
 
 
 def test_create_app_registers_expected_tools() -> None:
@@ -761,17 +901,15 @@ def test_saves_tool_validates_action_and_required_slot(tmp_path) -> None:
             payload = {"project_path": str(tmp_path), "action": action}
             if slot is not None:
                 payload["slot"] = slot
-            result = await client.call_tool("renforge_saves", payload)
-        return json.loads(next(block.text for block in result.content if block.type == "text"))
+            return await client.call_tool("renforge_saves", payload, raise_on_error=False)
 
     invalid_action = asyncio.run(_call("archive"))
     missing_slot = asyncio.run(_call("save"))
 
-    assert invalid_action == {
-        "ok": False,
-        "error": "action must be one of: save, load, list",
-    }
-    assert missing_slot == {
+    assert invalid_action.is_error is True
+    assert "Input should be 'save', 'load' or 'list'" in invalid_action.content[0].text
+    missing_payload = json.loads(next(block.text for block in missing_slot.content if block.type == "text"))
+    assert missing_payload == {
         "ok": False,
         "error": "slot is required for action 'save'",
     }
@@ -997,12 +1135,12 @@ def test_wait_until_tool_enforces_maximum_timeout(tmp_path, monkeypatch) -> None
             return await client.call_tool(
                 "renforge_wait_until",
                 {"project_path": str(tmp_path), "label": "chapter_two", "timeout": 121},
+                raise_on_error=False,
             )
 
     result = asyncio.run(_call())
-    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
-
-    assert payload == {"ok": False, "error": "timeout must be <= 120 seconds"}
+    assert result.is_error is True
+    assert "less than or equal to 120" in result.content[0].text
 
 
 def test_wait_until_tool_schema_covers_conditions_and_polling() -> None:
@@ -1280,12 +1418,12 @@ def test_screenshot_rejects_negative_dimensions(tmp_path, monkeypatch) -> None:
             return await client.call_tool(
                 "renforge_screenshot",
                 {"project_path": str(tmp_path), "width": -1},
+                raise_on_error=False,
             )
 
     result = asyncio.run(_call())
-    payload = json.loads(next(block.text for block in result.content if block.type == "text"))
-    assert payload["ok"] is False
-    assert "non-negative" in payload["error"]
+    assert result.is_error is True
+    assert "greater than or equal to 0" in result.content[0].text
 
 
 def test_find_references_tool_reports_unused_definitions(tmp_path) -> None:

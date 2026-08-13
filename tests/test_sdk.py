@@ -129,7 +129,7 @@ def test_project_local_sdk_is_not_patched(
     assert "renforge: unwrap Node-keyed namemap" not in dump.read_text()
 
 
-def test_explicit_sdk_is_patched(
+def test_explicit_sdk_is_not_patched_during_plain_discovery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -140,6 +140,22 @@ def test_explicit_sdk_is_patched(
     monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(tmp_path / "cache"))
 
     discovered = sdk.get_or_install_sdk("8.5.3")
+
+    assert discovered.root == explicit_sdk
+    assert "renforge: unwrap Node-keyed namemap" not in dump.read_text()
+
+
+def test_explicit_sdk_dump_patch_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    explicit_sdk = _write_fake_sdk(tmp_path / "explicit-sdk", "8.5.3")
+    dump = explicit_sdk / "renpy" / "dump.py"
+    dump.write_text(sdk._DUMP_NAMEMAP_LOOP)
+    monkeypatch.setenv(sdk.RENPY_SDK_ENV, str(explicit_sdk))
+    monkeypatch.setenv(sdk.RENPY_SDK_CACHE_ENV, str(tmp_path / "cache"))
+
+    discovered = sdk.get_or_install_sdk("8.5.3", patch_json_dump=True)
 
     assert discovered.root == explicit_sdk
     assert "renforge: unwrap Node-keyed namemap" in dump.read_text()

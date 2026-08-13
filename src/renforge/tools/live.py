@@ -28,6 +28,7 @@ from ..bridge.launcher import (
     BridgeSession,
     launch_with_bridge,
 )
+from ..captures import validate_capture_name, write_project_capture
 from ..effect_wait import expected_events_for_action
 from ..effect_wait import wait_for_effect as _wait_for_business_effect
 from ..launch_env import LaunchError
@@ -50,8 +51,6 @@ _LAUNCH_CANCEL_WAIT_SECONDS = 5.0
 _LAUNCH_RESULT_TTL_SECONDS = 300.0
 _LAUNCHES: dict[str, "_LaunchTask"] = {}
 _LAUNCH_LOCK = threading.Lock()
-
-
 class _LaunchTask:
     """One project launch attempt with an explicit lifecycle.
 
@@ -1619,11 +1618,11 @@ def _scenario_collect_failure(
         pass
     try:
         png = screenshot_png(project_path)
-        path = Path(project_path).expanduser().resolve() / ".renforge" / (
-            "scenario-failure-step-%s.png" % step_index
+        _, path = write_project_capture(
+            project_path,
+            "scenario-failure-step-%s" % step_index,
+            png,
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(png)
         diag["screenshot"] = str(path)
     except Exception as exc:
         diag["screenshot_error"] = f"{type(exc).__name__}: {exc}"
@@ -1831,15 +1830,14 @@ def run_scenario(
                 step_result["status"] = "passed"
                 last_action = "select_choice"
             elif action == "capture":
-                png = screenshot_png(project_path)
                 label = "scenario-capture"
                 if isinstance(payload, dict) and payload.get("name"):
                     label = str(payload["name"])
                 elif isinstance(payload, str) and payload:
                     label = payload
-                path = Path(project_path).expanduser().resolve() / ".renforge" / ("%s.png" % label)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(png)
+                label = validate_capture_name(label)
+                png = screenshot_png(project_path)
+                _, path = write_project_capture(project_path, label, png)
                 step_result["status"] = "passed"
                 step_result["path"] = str(path)
                 last_action = "capture"

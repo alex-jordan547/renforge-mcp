@@ -1,6 +1,6 @@
 """Utility helpers for RenForge."""
 
-from .files import write_atomic, write_json_atomic
+from .files import ensure_nofollow_directory, write_atomic, write_json_atomic
 from .subprocess import CommandResult, run_command
 
 __all__ = [
@@ -8,4 +8,5 @@ __all__ = [
     "run_command",
     "write_atomic",
     "write_json_atomic",
+    "ensure_nofollow_directory",
 ]

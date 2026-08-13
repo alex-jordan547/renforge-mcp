@@ -7,12 +7,16 @@ import hashlib
 import math
 import threading
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Optional
+from typing import Annotated, Any, Callable, Literal, Optional, get_args, get_origin, get_type_hints
+
+from pydantic import Field
 
 from . import __version__, session_registry
 from .project import discover_project_from
+from .tool_definitions import TOOL_DEFINITIONS
 
 
 @dataclass
@@ -63,7 +67,9 @@ def _log_tool_call(
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     duration_ms = round((perf_counter() - started) * 1000, 2)
-    if project_root is not None:
+    definition = TOOL_DEFINITIONS.get(name)
+    should_log = definition is None or not definition.annotations["readOnlyHint"]
+    if project_root is not None and should_log:
         summary = activity_log.summarize_result(result)
         try:
             activity_log.log_tool_call(
@@ -97,6 +103,145 @@ def _register_tools(app: Any) -> None:
 
     from .tools import live, project_ops
     from .tools.static import inspect_project, parse_lint_text, scan_project_index
+
+    try:
+        from mcp.types import ToolAnnotations
+    except Exception:  # pragma: no cover - compatibility with older backend module layouts
+        ToolAnnotations = None
+
+    registered_tools: dict[str, bool] = {}
+
+    def _to_annotations(raw: dict[str, bool]) -> Any:
+        if ToolAnnotations is None:
+            return raw
+        return ToolAnnotations(
+            readOnlyHint=raw["readOnlyHint"],
+            idempotentHint=raw["idempotentHint"],
+            destructiveHint=raw["destructiveHint"],
+            openWorldHint=raw["openWorldHint"],
+        )
+
+    def _annotate_parameters(
+        fn: Callable[..., Any],
+        metadata: Any,
+    ) -> Callable[..., Any]:
+        resolved_hints = get_type_hints(fn, include_extras=True)
+        decorated_annotations: dict[str, Any] = {}
+        for param, annotation in resolved_hints.items():
+            if param == "return":
+                continue
+            annotation = metadata.parameter_types.get(param, annotation)
+            schema = metadata.parameter_schemas.get(param, {})
+            enum_values = schema.get("enum")
+            if enum_values:
+                literal = Literal.__getitem__(tuple(enum_values))
+                if type(None) in get_args(annotation):
+                    annotation = literal | None
+                else:
+                    annotation = literal
+            item_enum = (schema.get("items") or {}).get("enum")
+            if item_enum:
+                literal_item = Literal.__getitem__(tuple(item_enum))
+                origin = get_origin(annotation)
+                args = get_args(annotation)
+                if origin is list:
+                    annotation = list[literal_item]
+                elif type(None) in args:
+                    annotation = list[literal_item] | None
+            decorated_annotations[param] = Annotated[
+                annotation,
+                Field(
+                    description=metadata.parameters[param],
+                    ge=schema.get("minimum"),
+                    le=schema.get("maximum"),
+                    pattern=schema.get("pattern"),
+                    json_schema_extra=schema or None,
+                ),
+            ]
+        if "return" in resolved_hints:
+            decorated_annotations["return"] = resolved_hints["return"]
+        fn.__annotations__ = decorated_annotations
+        return fn
+
+    def _register_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+        name = fn.__name__
+        metadata = TOOL_DEFINITIONS.get(name)
+        if metadata is None:
+            raise RuntimeError(f"Missing tool definition for {name}")
+
+        sig = signature(fn)
+        expected_parameters = set(sig.parameters)
+        documented_parameters = set(metadata.parameters)
+        if expected_parameters != documented_parameters:
+            missing = sorted(expected_parameters - documented_parameters)
+            extra = sorted(documented_parameters - expected_parameters)
+            raise RuntimeError(
+                f"Tool definition drift for {name}: params mismatch "
+                f"missing={missing} extra={extra}"
+            )
+
+        annotated_tool = _annotate_parameters(fn, metadata)
+        annotated_tool.__doc__ = metadata.description
+
+        registered_tools[name] = True
+        decorator_kwargs = {
+            "description": metadata.description,
+            "annotations": _to_annotations(metadata.annotations),
+        }
+        try:
+            decorator_signature = signature(tool_decorator)
+        except (TypeError, ValueError):
+            if not getattr(app, "_renforge_testing_registry", False):
+                raise RuntimeError(
+                    "MCP tool backend cannot prove support for required description and annotations metadata"
+                )
+            supported_kwargs = {}
+        else:
+            accepts_arbitrary_kwargs = any(
+                p.kind == p.VAR_KEYWORD for p in decorator_signature.parameters.values()
+            )
+            if accepts_arbitrary_kwargs:
+                supported_kwargs = decorator_kwargs
+            else:
+                supported_kwargs = {
+                    key: value
+                    for key, value in decorator_kwargs.items()
+                    if key in decorator_signature.parameters
+                }
+            missing_metadata = set(decorator_kwargs) - set(supported_kwargs)
+            if missing_metadata and not getattr(app, "_renforge_testing_registry", False):
+                raise RuntimeError(
+                    "MCP tool backend cannot accept required description and annotations metadata"
+                )
+        registered = tool_decorator(**supported_kwargs)(annotated_tool)
+        component = None
+        local_provider = getattr(app, "_local_provider", None)
+        components = getattr(local_provider, "_components", None)
+        if isinstance(components, dict):
+            component = next(
+                (item for item in components.values() if getattr(item, "name", None) == name),
+                None,
+            )
+        tool_manager = getattr(app, "_tool_manager", None)
+        managed_tools = getattr(tool_manager, "_tools", None)
+        if component is None and isinstance(managed_tools, dict):
+            component = managed_tools.get(name)
+        parameters = getattr(component, "parameters", None)
+        if isinstance(parameters, dict):
+            for param, schema in metadata.parameter_schemas.items():
+                if schema.get("type") != "object":
+                    continue
+                property_schema = parameters.get("properties", {}).get(param)
+                if not isinstance(property_schema, dict) or "anyOf" not in property_schema:
+                    continue
+                description = property_schema.get("description")
+                default = property_schema.get("default")
+                property_schema.clear()
+                property_schema["anyOf"] = [schema, {"type": "null"}]
+                property_schema["default"] = default
+                property_schema["description"] = description
+            parameters.update(metadata.input_schema)
+        return registered
 
     def _launch_game(
         project_path: str,
@@ -267,7 +412,7 @@ def _register_tools(app: Any) -> None:
             )
         return payload
 
-    @tool_decorator()
+    @_register_tool
     def renforge_info() -> dict:
         """Call first: report RenForge version and the active project.
 
@@ -279,12 +424,12 @@ def _register_tools(app: Any) -> None:
         """
         return _context_payload()
 
-    @tool_decorator()
+    @_register_tool
     def renforge_context() -> dict:
         """Discover the active Ren'Py project (dashboard, serve default, or cwd)."""
         return _context_payload()
 
-    @tool_decorator()
+    @_register_tool
     def renforge_inspect_image(
         image_path: str,
         crop_x: int = 0,
@@ -321,7 +466,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_inspect_project(project_path: str) -> dict:
         return _log_tool_call(
             name="renforge_inspect_project",
@@ -332,7 +477,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_scan_project(
         project_path: str,
         sections: list[str] | None = None,
@@ -365,7 +510,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_find_references(
         project_path: str,
         symbol: str,
@@ -391,7 +536,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"file_glob": file_glob, "offset": offset, "limit": limit},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_parse_lint(text: str) -> dict:
         return _log_tool_call(
             name="renforge_parse_lint",
@@ -404,7 +549,7 @@ def _register_tools(app: Any) -> None:
 
     # --- live game control (requires a display; under WSLg it works directly) ---
 
-    @tool_decorator()
+    @_register_tool
     def renforge_launch(
         project_path: str,
         warp: str = "",
@@ -466,7 +611,7 @@ def _register_tools(app: Any) -> None:
             kwargs=kwargs,
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_launch_status(project_path: str) -> dict:
         """Return starting, ready, failed, or idle for a background launch."""
         return _log_tool_call(
@@ -478,7 +623,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_jump(project_path: str, target: str, version: str = "stable") -> dict:
         """Restart at a label or file:line; poll launch status when still starting."""
         from .navigation import resolve_warp_target
@@ -502,7 +647,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_new_game(project_path: str, version: str = "stable") -> dict:
         """Start at the ``start`` label; poll launch status when still starting."""
         from .navigation import resolve_warp_target
@@ -526,7 +671,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_stop(project_path: str) -> dict:
         """Stop a running game or cancel its in-progress launch, then clean up."""
         return _log_tool_call(
@@ -538,7 +683,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_game_state(
         project_path: str,
         include: list[str] | None = None,
@@ -559,7 +704,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_game_state_compact(
         project_path: str,
         variable_names: list[str] | None = None,
@@ -575,7 +720,12 @@ def _register_tools(app: Any) -> None:
         returned in the payload unless state_profile='full' is requested.
         """
         def _state() -> dict:
-            from .state_compact import compact_state, normalize_state_profile, validate_limit_args
+            from .state_compact import (
+                apply_serialization_limits,
+                compact_state,
+                normalize_state_profile,
+                validate_limit_args,
+            )
 
             state = live.game_state(project_path)
             if not state.get("ok"):
@@ -606,7 +756,7 @@ def _register_tools(app: Any) -> None:
             # Rebuild a state object for compact_state with the filtered vars.
             source = dict(state)
             source["variables"] = variables
-            include = list(variable_names or [])
+            include = list(variables) if (requested or variable_prefix) else list(variable_names or [])
             compacted = compact_state(
                 source,
                 profile=profile if profile != "full" else "full",
@@ -615,14 +765,16 @@ def _register_tools(app: Any) -> None:
                 max_items=items,
                 max_output_bytes=budget,
             )
-            # Historical callers always receive the selected variables map when
-            # variable_names/prefix were provided, even under interaction profile.
-            if requested or variable_prefix:
-                compacted["variables"] = variables
             result = {"ok": True, "state_profile": profile, "variable_count": variable_count}
             result.update(compacted)
             result["variable_count"] = variable_count
-            return result
+            limited_result = apply_serialization_limits(
+                result,
+                max_depth=depth,
+                max_items=items,
+                max_output_bytes=budget,
+            )
+            return limited_result if isinstance(limited_result, dict) else {"value": limited_result}
 
         return _log_tool_call(
             name="renforge_game_state_compact",
@@ -641,7 +793,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_inspect_screen(project_path: str, name: str) -> dict:
         """Inspect an active screen's layer, JSON-safe scope, and arguments."""
         return _log_tool_call(
@@ -653,7 +805,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_advance(project_path: str) -> dict:
         """Advance the current dialogue."""
         return _log_tool_call(
@@ -665,7 +817,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_control(
         project_path: str,
         action: str,
@@ -699,7 +851,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_send_input(
         project_path: str,
         text: str | None = None,
@@ -737,7 +889,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_saves(
         project_path: str,
         action: str,
@@ -761,7 +913,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"slot": slot, "extra_info": extra_info, "regexp": regexp},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_list_choices(project_path: str) -> dict:
         """List the on-screen menu choices (text + index)."""
         return _log_tool_call(
@@ -773,7 +925,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_select_choice(project_path: str, text: str = "", index: int = -1) -> dict:
         """Select a menu choice by visible text (preferred) or by index."""
         return _log_tool_call(
@@ -785,7 +937,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"text": text or None, "index": index if index >= 0 else None},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_list_ui_elements(
         project_path: str,
         screen: str = "",
@@ -811,7 +963,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_click_element(
         project_path: str,
         text: str = "",
@@ -857,7 +1009,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_hover_element(
         project_path: str,
         text: str = "",
@@ -889,7 +1041,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_get_ui_element_bounds(
         project_path: str,
         text: str = "",
@@ -921,7 +1073,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_click_at(
         project_path: str,
         x: float,
@@ -951,7 +1103,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_get_displayable_bounds(
         project_path: str,
         tag: str,
@@ -967,7 +1119,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"layer": layer or None},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_position_element(
         project_path: str,
         tag: str,
@@ -1013,7 +1165,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"layer": layer or None, **placement},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_diff_screenshots(
         project_path: str,
         before_path: str,
@@ -1057,7 +1209,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_eval(project_path: str, expr: str) -> dict:
         """Evaluate a Python expression in the running game's store namespace."""
         return _log_tool_call(
@@ -1069,7 +1221,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_set_var(project_path: str, name: str, value: Any) -> dict:
         """Set a variable in the running game's store namespace."""
         return _log_tool_call(
@@ -1081,7 +1233,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_get_var(project_path: str, name: str) -> dict:
         """Read a variable from the running game's store."""
         return _log_tool_call(
@@ -1093,7 +1245,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_poll_events(project_path: str, since: int = 0) -> dict:
         """Return pushed events (dialogue, labels, exceptions) newer than `since`."""
         return _log_tool_call(
@@ -1105,7 +1257,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"since": since},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_get_errors(project_path: str, since: int = 0) -> dict:
         """Return recent bridge exceptions or bounded crash-file diagnostics."""
         return _log_tool_call(
@@ -1117,7 +1269,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"since": since},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_wait_until(
         project_path: str,
         label: str | None = None,
@@ -1179,7 +1331,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_hit_test(
         project_path: str,
         x: float,
@@ -1205,7 +1357,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"coordinate_space": coordinate_space},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_scene_tree(
         project_path: str,
         detail: str = "semantic",
@@ -1269,7 +1421,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_measure(
         project_path: str,
         action: str,
@@ -1307,7 +1459,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_run_scenario(
         project_path: str,
         steps: list[dict[str, Any]],
@@ -1347,7 +1499,7 @@ def _register_tools(app: Any) -> None:
             },
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_autopilot(project_path: str, max_runs: int = 16, max_steps: int = 60) -> dict:
         """Auto-play the game across all branches; report label coverage and crashes."""
         return _log_tool_call(
@@ -1361,7 +1513,7 @@ def _register_tools(app: Any) -> None:
 
     # --- assets / translation / build / docs (SDK-backed, static) ---
 
-    @tool_decorator()
+    @_register_tool
     def renforge_assets(project_path: str) -> dict:
         """Find orphaned and missing image/audio assets in the project."""
         return _log_tool_call(
@@ -1373,7 +1525,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_languages(project_path: str) -> dict:
         """List translation languages present under game/tl/."""
         return _log_tool_call(
@@ -1385,7 +1537,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_translation_stats(project_path: str, language: str) -> dict:
         """Report missing dialogue/string translation counts for a language."""
         return _log_tool_call(
@@ -1397,7 +1549,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_generate_translations(project_path: str, language: str) -> dict:
         """Generate/update translation files for a language (writes game/tl/<language>/)."""
         return _log_tool_call(
@@ -1409,7 +1561,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_export_dialogue(project_path: str, language: str = "None") -> dict:
         """Export the game's dialogue as plain text."""
         return _log_tool_call(
@@ -1421,7 +1573,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_web_build(project_path: str, destination: str = "") -> dict:
         """Package the project as a browser-playable build (needs the web DLC)."""
         return _log_tool_call(
@@ -1433,7 +1585,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"destination": destination},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_distribute(project_path: str, package: str = "", destination: str = "") -> dict:
         """Build desktop distributions (e.g. package='pc', 'mac', 'linux')."""
         return _log_tool_call(
@@ -1445,7 +1597,7 @@ def _register_tools(app: Any) -> None:
             kwargs={"package": package, "destination": destination},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_search_docs(query: str) -> dict:
         """Search Ren'Py's offline documentation for a keyword."""
         return _log_tool_call(
@@ -1457,7 +1609,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_get_doc(topic: str) -> dict:
         """Read a Ren'Py documentation page as plain text (e.g. topic='cli')."""
         return _log_tool_call(
@@ -1469,7 +1621,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_list_docs() -> dict:
         """List available Ren'Py documentation topics."""
         return _log_tool_call(
@@ -1481,7 +1633,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_screenshot(
         project_path: str,
         width: int = 0,
@@ -1567,7 +1719,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_capture_screenshot(
         project_path: str,
         name: str = "capture",
@@ -1585,14 +1737,11 @@ def _register_tools(app: Any) -> None:
     ) -> dict:
         """Persist a screenshot under the project's controlled capture directory."""
         def _capture() -> dict:
-            import os
-            import re
-            import tempfile
             from io import BytesIO
             from PIL import Image
+            from .captures import validate_capture_name, write_project_capture
 
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
-                raise ValueError("name must contain only letters, digits, dot, dash, or underscore")
+            validate_capture_name(name)
             if width < 0 or height < 0:
                 raise ValueError("width and height must be non-negative")
             if (crosshair_x < 0) != (crosshair_y < 0):
@@ -1607,20 +1756,7 @@ def _register_tools(app: Any) -> None:
                 from .image_ops import annotate_png
                 png = annotate_png(png, grid=grid, rulers=rulers,
                                    crosshair=(crosshair_x, crosshair_y) if crosshair_x >= 0 else None)
-            project_root = Path(project_path).expanduser().resolve()
-            capture_dir = project_root / ".renforge" / "captures"
-            capture_dir.mkdir(parents=True, exist_ok=True)
-            target = (capture_dir / (name + ".png")).resolve()
-            capture_relative = target.relative_to(capture_dir.resolve())
-            if capture_relative.name != f"{name}.png":
-                raise ValueError("capture path escaped capture directory")
-            with tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".tmp", delete=False) as handle:
-                temporary = Path(handle.name)
-                handle.write(png)
-            try:
-                os.replace(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
+            project_root, target = write_project_capture(project_path, name, png)
             with Image.open(BytesIO(png)) as image:
                 size = {"width": image.width, "height": image.height}
             return {"ok": True, "name": name, "path": str(target),
@@ -1632,7 +1768,7 @@ def _register_tools(app: Any) -> None:
             params={"project_path": project_path, "name": name, "width": width, "height": height},
             project_root=project_path, fn=_capture, args=(), kwargs={})
 
-    @tool_decorator()
+    @_register_tool
     def renforge_estimate_translation(
         before_path: str,
         after_path: str,
@@ -1666,7 +1802,7 @@ def _register_tools(app: Any) -> None:
             kwargs={},
         )
 
-    @tool_decorator()
+    @_register_tool
     def renforge_find_image_on_screen(
         project_path: str,
         template_path: str,
@@ -1725,6 +1861,15 @@ def _register_tools(app: Any) -> None:
             fn=_find,
             args=(),
             kwargs={},
+        )
+
+    expected_tool_names = set(TOOL_DEFINITIONS)
+    registered_names = set(registered_tools)
+    if expected_tool_names != registered_names:
+        missing = sorted(expected_tool_names - registered_names)
+        extra = sorted(registered_names - expected_tool_names)
+        raise RuntimeError(
+            f"Tool registration drift: missing={missing} extra={extra}"
         )
 
 

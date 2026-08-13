@@ -230,6 +230,34 @@ def ensure_private_directory(path: Path) -> Path:
     return _ensure_private_directory_posix(target)
 
 
+def ensure_nofollow_directory(path: Path) -> Path:
+    """Create a directory without traversing symlink/reparse-point components."""
+    target = _reject_link_components(
+        Path(path).expanduser(),
+        code="PRIVATE_DIRECTORY_UNSAFE",
+        include_leaf=True,
+    )
+    _materialize_ancestor_dirs(target / ".leaf", code="PRIVATE_DIRECTORY_UNSAFE")
+    try:
+        st = target.lstat()
+    except FileNotFoundError:
+        raise PrivatePathError(
+            "PRIVATE_DIRECTORY_UNSAFE",
+            "directory was not created: %s" % target,
+        )
+    if _component_is_link(target):
+        raise PrivatePathError(
+            "PRIVATE_DIRECTORY_UNSAFE",
+            "directory must not be a symlink or reparse point: %s" % target,
+        )
+    if not stat.S_ISDIR(st.st_mode):
+        raise PrivatePathError(
+            "PRIVATE_DIRECTORY_UNSAFE",
+            "path is not a directory: %s" % target,
+        )
+    return target
+
+
 def read_regular_file_nofollow(path: Path, *, max_bytes: int) -> bytes:
     """Read a private regular file without following links."""
     if not isinstance(max_bytes, int) or max_bytes < 0:

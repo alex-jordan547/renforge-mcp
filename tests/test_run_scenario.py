@@ -72,3 +72,77 @@ def test_run_scenario_failure_collects_diagnostics(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert result["failed_step"] == 0
     assert "diagnostics" in result["steps"][0] or "screenshot" in result
+
+
+def test_run_scenario_capture_rejects_parent_traversal(monkeypatch, tmp_path):
+    monkeypatch.setattr(live, "screenshot_png", lambda path: b"png")
+
+    result = live.run_scenario(
+        str(tmp_path),
+        steps=[{"capture": {"name": "../outside"}}],
+        capture_on_failure=False,
+    )
+
+    assert result["ok"] is False
+    assert "name" in result["steps"][0]["error"]
+    assert not (tmp_path / "outside.png").exists()
+
+
+def test_run_scenario_capture_rejects_symlinked_capture_directory(monkeypatch, tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / ".renforge").mkdir()
+    (tmp_path / ".renforge" / "captures").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(live, "screenshot_png", lambda path: b"png")
+
+    result = live.run_scenario(
+        str(tmp_path),
+        steps=[{"capture": {"name": "frame"}}],
+        capture_on_failure=False,
+    )
+
+    assert result["ok"] is False
+    assert "symlink" in result["steps"][0]["error"]
+    assert not (outside / "frame.png").exists()
+
+
+def test_run_scenario_capture_overwrites_only_named_file_in_capture_directory(
+    monkeypatch, tmp_path
+):
+    capture_dir = tmp_path / ".renforge" / "captures"
+    capture_dir.mkdir(parents=True)
+    target = capture_dir / "frame.png"
+    target.write_bytes(b"old")
+    sibling = capture_dir / "other.png"
+    sibling.write_bytes(b"keep")
+    monkeypatch.setattr(live, "screenshot_png", lambda path: b"new")
+
+    result = live.run_scenario(
+        str(tmp_path),
+        steps=[{"capture": {"name": "frame"}}],
+        capture_on_failure=False,
+    )
+
+    assert result["ok"] is True
+    assert result["steps"][0]["path"] == str(target)
+    assert target.read_bytes() == b"new"
+    assert sibling.read_bytes() == b"keep"
+
+
+def test_run_scenario_capture_rejects_symlinked_destination(monkeypatch, tmp_path):
+    capture_dir = tmp_path / ".renforge" / "captures"
+    capture_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"keep")
+    (capture_dir / "frame.png").symlink_to(outside)
+    monkeypatch.setattr(live, "screenshot_png", lambda path: b"new")
+
+    result = live.run_scenario(
+        str(tmp_path),
+        steps=[{"capture": {"name": "frame"}}],
+        capture_on_failure=False,
+    )
+
+    assert result["ok"] is False
+    assert "symlink" in result["steps"][0]["error"]
+    assert outside.read_bytes() == b"keep"
