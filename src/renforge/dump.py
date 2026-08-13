@@ -15,15 +15,18 @@ defines, screens, transforms and callables. The narrative *flow* graph
 later through the in-game bridge, where every ``renpy.*`` module is fully
 loaded.
 
-Ren'Py 8.5 keyed ``Script.namemap`` by ``Node`` (``Node.__hash__`` /
-``__eq__`` use ``.name``) while 8.5.3 ``dump.py`` still filters with
-``isinstance(name, str)``, which drops every label. Upstream master unwraps
-``Node`` keys before that check. RenForge follows that fix in the dump
-subprocess instead of rewriting installed or cached SDK files: each
+From at least Ren'Py 8.4.1, ``Script.namemap`` is keyed by ``Node``
+(``self.namemap[node] = node``; ``Node.__hash__`` / ``__eq__`` use
+``.name``) while 8.5.3 ``dump.py`` still filters with
+``isinstance(name, str)``, which drops every label. Upstream master
+``dump.py`` unwraps ``Node`` keys before that check; the namemap itself
+stays Node-keyed. RenForge follows that dump unwrap in the dump subprocess
+instead of rewriting installed or cached SDK files: each
 ``compile --json-dump`` injects a temporary ``.rpe.py`` adapter via
-``RENPY_SEARCHPATH``. String-keyed namemaps (Ren'Py 8.4 and earlier, and
-SDKs that already unwrap) are left unchanged. The pinned default SDK is
-8.5.3; compatible 8.5.x installs and older string-keyed SDKs are supported.
+``RENPY_SEARCHPATH``. The adapter still normalizes Node-keyed namemaps
+even when ``dump.py`` already unwraps; it is a no-op only when keys are
+already strings. The pinned default SDK is 8.5.3; compatible 8.4.1+ and
+8.5.x installs are supported.
 """
 
 from __future__ import annotations

@@ -84,13 +84,22 @@ def test_json_dump_compatibility_strategy_is_documented() -> None:
     root = Path(__file__).parents[1]
     architecture = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    dump_docs = (root / "src" / "renforge" / "dump.py").read_text(encoding="utf-8")
 
     assert "compile --json-dump" in architecture
     assert "RENPY_SEARCHPATH" in architecture
     assert ".rpe.py" in architecture
     assert "8.5.3" in architecture
+    assert "8.4.1" in architecture
     assert "Node" in architecture
     assert "read-only" in architecture
     assert "dump.py" in architecture
+    assert "namemap itself stays Node-keyed" in architecture
+    assert "adapter still normalizes" in architecture
+    assert "Older string-keyed dumps (Ren'Py 8.4 and earlier)" not in architecture
+    assert "where the adapter is a no-op" not in architecture
+    assert "8.4.1" in dump_docs
+    assert "namemap itself" in dump_docs and "stays Node-keyed" in dump_docs
+    assert "String-keyed namemaps (Ren'Py 8.4 and earlier" not in dump_docs
     assert "RENPY_SEARCHPATH" in changelog
     assert "dump.py" in changelog

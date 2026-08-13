@@ -94,23 +94,30 @@ installations.
 ## Graph inspection and `--json-dump`
 
 Story Map uses Ren'Py's `compile --json-dump` for authoritative label
-locations. The pinned default SDK is **8.5.3**. Ren'Py 8.5 keys
-`Script.namemap` by `Node`, while 8.5.3 `renpy/dump.py` still filters with
-`isinstance(name, str)`, which drops every label. Upstream master unwraps
-`Node` keys before that check.
+locations. The pinned default SDK is **8.5.3**. From at least Ren'Py **8.4.1**
+through **8.5.x** and upstream master, `Script.namemap` is keyed by `Node`
+(`self.namemap[node] = node`; `Node.__hash__` / `__eq__` use `.name`).
+Released 8.5.3 `renpy/dump.py` still filters with `isinstance(name, str)`,
+which drops every label. Upstream master `dump.py` unwraps `Node` keys
+before that check; the namemap itself stays Node-keyed.
 
-RenForge follows that upstream fix without waiting on a new SDK release and
+RenForge follows that dump unwrap without waiting on a new SDK release and
 without patching installed `dump.py`. Each dump subprocess loads a temporary
 `.rpe.py` adapter from `RENPY_SEARCHPATH` that wraps `renpy.dump.dump` and,
 only when keys are not already strings, presents a string-keyed namemap for
-the duration of the dump. Concurrent inspections use separate adapter
-directories and cannot race on SDK source contents.
+the duration of the dump. Because namemap keys remain `Node` objects even
+after upstream `dump.py` is fixed, the adapter still normalizes the map on
+those SDKs. It is a no-op only when keys are already strings. Concurrent
+inspections use separate adapter directories and cannot race on SDK source
+contents.
 
 Supported dump shapes:
 
-- Ren'Py **8.5.x** Node-keyed `namemap` (including the default 8.5.3 SDK)
-- Older string-keyed dumps (Ren'Py 8.4 and earlier)
-- Future SDKs that already unwrap `Node` keys, where the adapter is a no-op
+- Node-keyed `namemap` on Ren'Py **8.4.1+** and **8.5.x** (including the
+  default 8.5.3 SDK): the adapter presents a string-keyed copy for the dump
+- String-keyed namemaps, if present: the adapter leaves the map unchanged
+- Future SDKs whose `dump.py` already unwraps `Node` keys: namemap stays
+  Node-keyed, so the adapter still normalizes it
 
 ## Packaging
 

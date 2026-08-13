@@ -17,9 +17,10 @@ versioning.
 
 - Graph inspection no longer rewrites `renpy/dump.py` inside a discovered or
   cached Ren'Py SDK. `compile --json-dump` injects an isolated `.rpe.py`
-  adapter via `RENPY_SEARCHPATH` so Node-keyed `script.namemap` labels on
-  Ren'Py 8.5 are emitted without mutating shared or read-only SDK files.
-  String-keyed dumps stay unchanged. See
+  adapter via `RENPY_SEARCHPATH` so Node-keyed `script.namemap` labels
+  (Ren'Py 8.4.1+ / 8.5.x) are emitted without mutating shared or read-only
+  SDK files. The adapter still normalizes Node keys when upstream `dump.py`
+  already unwraps them; string-keyed namemaps stay unchanged. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - MCP tool registration is split into domain modules under
   `src/renforge/tool_registration/`. `server.py` only bootstraps the app;

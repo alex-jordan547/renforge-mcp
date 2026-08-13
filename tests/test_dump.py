@@ -92,6 +92,38 @@ def test_adapter_leaves_string_keyed_namemap_unchanged(restore_renpy_modules) ->
     assert sys.modules["renpy"].game.script.namemap is namemap
 
 
+def test_adapter_still_normalizes_when_dump_already_unwraps(restore_renpy_modules) -> None:
+    """Upstream dump.py may unwrap Node keys; namemap itself stays Node-keyed."""
+    start = _FakeNode("start", "game/script.rpy", 10)
+    namemap = {start: start}
+    captured: dict[str, object] = {}
+    renpy = types.ModuleType("renpy")
+    dump_module = types.ModuleType("renpy.dump")
+    renpy.game = SimpleNamespace(script=SimpleNamespace(namemap=namemap))
+
+    def dump_fn(error: object) -> None:
+        labels: dict[str, list[object]] = {}
+        for name, node in renpy.game.script.namemap.items():
+            if not isinstance(name, str):
+                name = getattr(name, "name", name)
+            if isinstance(name, str):
+                labels[name] = [node.filename, node.linenumber]
+        captured["labels"] = labels
+        captured["namemap_during_dump"] = renpy.game.script.namemap
+        captured["error"] = error
+
+    dump_module.dump = dump_fn
+    sys.modules["renpy"] = renpy
+    sys.modules["renpy.dump"] = dump_module
+
+    _exec_adapter()
+    sys.modules["renpy.dump"].dump(False)
+
+    assert captured["labels"] == {"start": ["game/script.rpy", 10]}
+    assert captured["namemap_during_dump"] is not namemap
+    assert sys.modules["renpy"].game.script.namemap is namemap
+
+
 def test_adapter_follows_upstream_node_attribute_unwrap(restore_renpy_modules) -> None:
     """Match upstream dump.py: `if isinstance(name, Node): name = name.name`."""
     village = _FakeNode("village_gate", "game/script.rpy", 42)
