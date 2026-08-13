@@ -13,6 +13,13 @@ versioning.
   blocks destructive and open-world operations unless `authorize=true` or an
   allowlist permits them. See [docs/POLICY.md](docs/POLICY.md).
 
+### Changed
+
+- MCP tool registration is split into domain modules under
+  `src/renforge/tool_registration/`. `server.py` only bootstraps the app;
+  wrappers, contract metadata, and fail-closed registration live next to each
+  other by domain. The public 54-tool MCP API is unchanged.
+
 ## [0.7.0] - 2026-08-11
 
 ### Added

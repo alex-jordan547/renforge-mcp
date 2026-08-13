@@ -5,7 +5,19 @@
 ```
 src/renforge/
   cli.py            # argparse entrypoint (inspect / serve / ui)
-  server.py         # MCP app bootstrap + fallback + tool registration
+  server.py         # MCP app bootstrap + FastMCP/fallback; delegates tool registration
+  tool_definitions.py # canonical 54-tool public contract (names, schemas, annotations)
+  tool_schema.py    # shared JSON Schema fragments used by the contract catalog
+  tool_registration/
+    registry.py     # backend-aware ToolRegistrar; clones wrappers before annotating
+    wrappers.py     # shared context, activity logging, PNG content helper
+    project_analysis.py  # info, inspect, scan, lint, references
+    lifecycle.py    # launch, jump, new_game, stop
+    runtime_state.py # game state, eval, vars, wait, errors
+    interaction.py  # control, input, saves, choices, clicks
+    inspection.py   # screenshots, scene tree, measure
+    scenarios.py    # run_scenario, autopilot
+    content_build.py # assets, translations, builds, docs
   bridge/           # in-game .rpy bridge, launcher, and client
   tools/
     live.py         # running-game control (launch, eval, screenshot, ...)
@@ -31,6 +43,21 @@ build into `src/renforge/ui/static/`. CI/release regenerates this directory
 with `npm --prefix ui ci && npm --prefix ui run build`, then validates bundled
 assets before packaging. Generated static files stay ignored in source checkouts
 and are included in wheel/sdist artifacts so PyPI and `uvx` users never need Node.
+
+## MCP tool registration
+
+`server.py` only constructs the FastMCP (or compatibility) app and calls
+`tool_registration.register_all_tools`. Each domain module owns a disjoint
+`TOOL_NAMES` tuple and the corresponding wrapper bodies. `ToolRegistrar`
+looks up the matching `ToolDefinition`, clones the wrapper so registration
+never mutates shared `__annotations__` or `__doc__`, then applies description,
+`ToolAnnotations`, and JSON Schema metadata. Registration is fail-closed:
+unknown names, parameter drift, duplicate registrations, and backends that
+cannot accept required metadata raise instead of shipping a partial catalog.
+
+The public 54-tool contract is snapshotted in
+`tests/snapshots/mcp_public_tool_contract.json`. Intentional API changes must
+update that file; accidental ones fail CI.
 
 ## Live control flow
 
