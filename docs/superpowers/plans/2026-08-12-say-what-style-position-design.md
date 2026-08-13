@@ -1,8 +1,8 @@
 # Issue #81 — say.what style-position adapter design
 
-**Status:** In progress  
-**Target:** Ren'Py 8.5.3  
-**Surface:** In-game bridge  
+**Status:** In progress
+**Target:** Ren'Py 8.5.3
+**Surface:** In-game bridge
 **Scope:** ONE bounded adapter only (say.what via gui.dialogue_xpos/ypos)
 
 ## Context
@@ -182,12 +182,12 @@ if statement_kind == "text" and widget_id == "what" and screen_name == "say":
 def _commit_say_what_style_position(intent):
     # 1. Read current gui.rpy
     gui_bytes = read_file(intent["write_target_file"])
-    
+
     # 2. Revalidate ownership (fail if gui.rpy changed)
     reanalyzed = analyze_say_what_style_position(...)
     if reanalyzed.baseline_sha256 != intent["style_position_statement"].baseline_sha256:
         raise EditorSourceError("STALE_SOURCE", "gui.rpy changed")
-    
+
     # 3. Apply patch
     patched = apply_say_what_style_position_patch(
         gui_bytes,
@@ -195,13 +195,13 @@ def _commit_say_what_style_position(intent):
         x=intent["x"],
         y=intent["y"],
     )
-    
+
     # 4. Atomic multi-file publish
     staged_files = {
         intent["write_target_file"]: patched,
         # identity_file unchanged
     }
-    
+
     # 5. Reload Ren'Py
     # 6. Rebind via screens.rpy identity (text what id "what")
     # 7. Attest runtime geometry
@@ -288,7 +288,7 @@ elif is_say_style_position_tx:
 ### Capabilities update (COORDINATOR IMPLEMENTED)
 
 Position unlocked when:
-- Runtime identity: `screen == "say"` AND `widget_id == "what"` 
+- Runtime identity: `screen == "say"` AND `widget_id == "what"`
 - Source ownership: `analyze_say_what_style_position` succeeds
 - No variant overrides detected
 
@@ -399,7 +399,7 @@ Real integration tests using actual `analyze_say_what_style_position`:
 - [x] **P0 FIX**: Logical-pixel deltas (not absolute screen coords) — commit `466af11`
 - [x] **P0 FIX**: Path resolution (game-relative, not double-prefix) — commit `46bfba5`
 
-### Phase 2B (✓ SIGNIFICANT PROGRESS — real tests, pending inspector UX + live runtime)
+### Phase 2B (✓ COMPLETE — inspector UX and Ren'Py 8.5.3 live gate)
 - [x] Bridge preview without say rebuild / TypeError — commit `50a6694`
 - [x] I18n lock codes (en + zh-CN) — commit `3aef444`
 - [x] Real opt-in live harness with runner — commit `9b6bd93`
@@ -408,17 +408,19 @@ Real integration tests using actual `analyze_say_what_style_position`:
 - [x] Path resolution tests (4/4 real assertions, not stubs)
 - [x] Ownership proof: screens.rpy `id "what"` verification — commit `5d8ac9a`
 - [x] Clean fixture without variant overrides — commit `9b6bd93`
-- [ ] Inspector ownership chain UI (i18n keys ready, wiring deferred)
-- [ ] Live test: Requires Ren'Py 8.5.3 runtime environment (executable tests ready)
+- [x] Inspector ownership chain and persistent global-scope notice
+- [x] Ren'Py 8.5.3 live test: preview, Save/reload/rebind, second line, undo, redo
 
-**Critical path:** Live Ren'Py 8.5.3 tests block issue close
+**Critical path:** Covered by the opt-in Ren'Py 8.5.3 product-path gate
 
 ### Phase 2B+ Status Summary
-✅ **Implementation complete:** Source, coordinator, bridge, i18n, real test structure  
-✅ **Unit tests proven:** Delta math, path resolution, variant detection  
-⏸️ **Live validation pending:** Ren'Py 8.5.3 runtime environment setup  
-⏸️ **Inspector UI pending:** Ownership chain display + global-scope notice wiring  
-📋 **Issue #81:** Will NOT close until live proof attached
+✅ **Implementation complete:** Source, coordinator, bridge, i18n, real test structure
+✅ **Unit tests proven:** Delta math, path resolution, variant detection
+✅ **Live validation proven:** Preview, transaction, reload/rebind, global scope, undo and redo
+✅ **Inspector UI complete:** Ownership chain and global-scope notice are visible
+📋 **Issue #81:** Live screenshot evidence is captured by the final gate
+
+![Ren'Py 8.5.3 say.what live evidence](../../evidence/pr-83-say-what-live.png)
 
 ## Out of scope
 

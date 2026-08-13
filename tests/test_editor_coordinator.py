@@ -814,6 +814,87 @@ def test_reload_handshake_rolls_back_when_rebind_is_ambiguous(tmp_path: Path) ->
         coordinator.close()
 
 
+def test_say_what_style_position_commit_preserves_crlf_gui_source(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    screens = game_dir / "screens.rpy"
+    screens.write_text(
+        'screen say(who, what):\n'
+        '    text what id "what" style "say_dialogue"\n'
+        '\n'
+        'style say_dialogue:\n'
+        '    xpos gui.dialogue_xpos\n'
+        '    ypos gui.dialogue_ypos\n',
+        encoding="utf-8",
+    )
+    gui = game_dir / "gui.rpy"
+    original = (
+        b"define gui.dialogue_xpos = gui.scale(268)\r\n"
+        b"define gui.dialogue_ypos = gui.scale(50)\r\n"
+    )
+    gui.write_bytes(original)
+    observation = {
+        "runtime_key": {
+            "screen": "say",
+            "invocation_path": "say",
+            "widget_id": "what",
+            "source_location": ["screens.rpy", 2],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["screens.rpy", 1],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Text",
+                    "source_location": ["screens.rpy", 2],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+        "rect": [268, 585, 500, 30],
+        "measurement_method": "scene_tree_text",
+        "frame_id": "say-frame",
+        "script_generation": 4,
+        "object_id": "say-what",
+    }
+    probe = _Probe(observe_reply={**observation, "frame_id": "say-independent"})
+    coordinator = EditorCoordinator(
+        RenpyProject(root),
+        _make_sdk(tmp_path),
+        attestation_timeout=2.0,
+    )
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-say-crlf")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"]["move"] is True
+
+            commit = _commit(
+                sock,
+                auth,
+                analysis,
+                x=288,
+                y=80,
+                request_id="co-say-crlf",
+            )
+            assert commit["ok"] is True
+            assert gui.read_bytes() == original.replace(b"268", b"288").replace(b"50", b"80")
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize(
     "crop_state,expected_code",
     [
@@ -1362,6 +1443,17 @@ def test_send_json_swallows_closed_peer_errors(tmp_path: Path, error: OSError) -
 
     # Must not raise: closed-peer errors are expected after a client timeout.
     coordinator._send_json(_ClosedPeer(), {"ok": True})  # type: ignore[arg-type]
+
+
+def test_read_frame_treats_connection_reset_as_eof(tmp_path: Path) -> None:
+    project, _ = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+
+    class _ResetPeer:
+        def readline(self, _limit: int) -> bytes:
+            raise ConnectionResetError(54, "Connection reset by peer")
+
+    assert coordinator._read_frame(_ResetPeer(), 1024) == (None, "EOF")
 
 
 def test_send_json_propagates_unexpected_oserror(tmp_path: Path) -> None:

@@ -225,6 +225,25 @@ screen _rf_editor_inspector_panel():
                             use _rf_editor_field("xpos", str(_rf_facts["rect"]["x"]))
                             use _rf_editor_field("ypos", str(_rf_facts["rect"]["y"]))
 
+                        if _rf_facts.get("position_mode") == "style_gui_dialogue":
+                            text _renforge_editor_t("inspector.ownership_chain"):
+                                color _renforge_editor_ui_color("meta")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(14)
+                                yoffset _renforge_editor_ui_px(6)
+                            text _renforge_editor_t("inspector.ownership_style_position"):
+                                id "rf_inspector_ownership_style_position"
+                                color _renforge_editor_ui_color("surface")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(14)
+                                xmaximum _rf_inspector_text_w
+                            text _renforge_editor_t("inspector.global_scope_notice"):
+                                id "rf_inspector_global_scope_notice"
+                                color _renforge_editor_ui_color("lock_locked")
+                                font _renforge_editor_ui_font()
+                                size _renforge_editor_ui_px(14)
+                                xmaximum _rf_inspector_text_w
+
                         text _renforge_editor_t("inspector.offset"):
                             color _renforge_editor_ui_color("meta")
                             font _renforge_editor_ui_font()
@@ -291,9 +310,6 @@ screen _rf_editor_inspector_panel():
                             color _renforge_editor_ui_color("meta")
                             font _renforge_editor_ui_font()
                             size _renforge_editor_ui_px(17)
-
-                    # TODO: Display ownership chain for style_gui_dialogue mode
-                    # (requires Python-side status accessor, not bridge request)
 
                     text _renforge_editor_t("inspector.read_only"):
                         id "rf_inspector_read_only"

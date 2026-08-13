@@ -70,6 +70,7 @@ from .source import (
     is_slider_style_bar_line,
     is_textbutton_block_header,
     peek_statement_kind,
+    prove_say_what_text_binding,
     textbutton_patch_kwargs,
     uses_runtime_delta_position,
 )
@@ -171,11 +172,7 @@ class EditorCoordinator:
         self._transaction_root.mkdir(parents=True, exist_ok=True)
         fsync_directory(self._transaction_root.parent)
         fsync_directory(self._transaction_root)
-        
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[COORDINATOR {os.getpid()}] {now} INIT coordinator, transaction_root={self._transaction_root}", file=sys.stderr)
-        
+
         self._recover_transactions()
 
     def start(self) -> EditorEndpoint:
@@ -269,9 +266,6 @@ class EditorCoordinator:
             # Only rollback "staged" (no CAS attempted) to ensure clean shutdown.
             for record in self._transactions.values():
                 if record.state == "staged":
-                    import sys, os, datetime
-                    now = datetime.datetime.now().isoformat()
-                    print(f"[ROLLBACK-CALLER-CLOSE-STAGED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=True)
             states = {txid: record.state for txid, record in self._transactions.items()}
             return {"session_id": self._session_id, "transactions": states, "recovered": list(self._recovered)}
@@ -379,7 +373,10 @@ class EditorCoordinator:
                 pass
 
     def _read_frame(self, file_obj: Any, limit: int) -> tuple[bytes | None, str | None]:
-        data = file_obj.readline(limit + 1)
+        try:
+            data = file_obj.readline(limit + 1)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return None, "EOF"
         if not data:
             return None, "EOF"
         if len(data) > limit:
@@ -616,7 +613,7 @@ class EditorCoordinator:
             move_lock_reason: dict[str, Any] | None = None
             style_lock_reason: dict[str, Any] | None = None
             gui_rpy_path: str | None = None
-            
+
             if header_kind == "text":
                 # Try direct position first
                 try:
@@ -626,7 +623,7 @@ class EditorCoordinator:
                     )
                 except EditorSourceError as exc:
                     move_lock_reason = self._lock_reason(exc.code, str(exc))
-                
+
                 # Try style color
                 try:
                     text_style = analyze_text_color_style(
@@ -640,7 +637,7 @@ class EditorCoordinator:
                         )
                 except EditorSourceError as exc:
                     style_lock_reason = self._lock_reason(exc.code, str(exc))
-                
+
                 # Critical finding #1/#2: If direct position failed for say.what,
                 # attempt style-backed ownership resolution
                 if (
@@ -651,24 +648,11 @@ class EditorCoordinator:
                     # CRITICAL: Clear move_lock_reason from direct position failure
                     # say.what has separate ownership path via gui.rpy
                     move_lock_reason = None
-                    
-                    # Ownership proof part 1: screens.rpy must have `text ... id "what"`
-                    # RuntimeProbe gave us widget_id == "what", but verify source identity
-                    if 'id "what"' not in header_line and "id 'what'" not in header_line:
-                        if move_lock_reason is None:
-                            move_lock_reason = self._lock_reason(
-                                "STYLE_POSITION_SOURCE_UNRESOLVED",
-                                "say.what widget ID not found in source (screens.rpy)",
-                            )
-                        say_style_position = None
-                    # Ownership proof part 2: screens.rpy must NOT have inline xpos/ypos
-                    # (fail-closed: if xpos/ypos keywords present, reject even if in comments)
-                    elif "xpos" in header_line or "ypos" in header_line:
-                        if move_lock_reason is None:
-                            move_lock_reason = self._lock_reason(
-                                "STYLE_POSITION_SOURCE_AMBIGUOUS",
-                                "say.what has inline position; style-backed ownership unclear",
-                            )
+
+                    try:
+                        prove_say_what_text_binding(header_line)
+                    except EditorSourceError as exc:
+                        move_lock_reason = self._lock_reason(exc.code, str(exc))
                         say_style_position = None
                     else:
                         # Ownership proof part 3: screens.rpy must have style say_dialogue binding
@@ -693,16 +677,16 @@ class EditorCoordinator:
                                     f"screens.rpy style binding analysis failed: {str(exc)}",
                                 )
                             say_style_position = None
-                        
+
                         # Ownership proof part 4: gui.rpy must have unlocked gui.dialogue_xpos/ypos
                         # Use game-relative path: resolve_game_path already joins project_root/game/
                         if move_lock_reason is None:
                             gui_rpy_path = "gui.rpy"
-                            
+
                             try:
                                 # Load gui.rpy to analyze style-backed position
                                 gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
-                                gui_source = gui_absolute.read_text(encoding="utf-8")
+                                gui_source = gui_absolute.read_bytes().decode("utf-8")
                                 say_style_position = analyze_say_what_style_position(
                                     gui_source,
                                     xpos_var="gui.dialogue_xpos",
@@ -731,7 +715,7 @@ class EditorCoordinator:
                                         f"gui.rpy analysis failed: {str(exc)}",
                                     )
                                 say_style_position = None
-                
+
                 statement = text_position or text_style or say_style_position
                 if statement is None:
                     reason = move_lock_reason or style_lock_reason
@@ -740,7 +724,7 @@ class EditorCoordinator:
                         (reason or {}).get("message", "text source is not writable"),
                     )
                 statement_kind = "text"
-                
+
                 if text_position is not None:
                     position_mode = "xy"
                     original_position = [int(text_position.xpos), int(text_position.ypos)]
@@ -812,7 +796,7 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
-            
+
             # For say.what style position: store gui.rpy path and parsed statement
             if say_style_position is not None and say_style_position.position_mode:
                 source_key["gui_rpy_path"] = gui_rpy_path
@@ -824,6 +808,12 @@ class EditorCoordinator:
                 source_key["style_lock_reason"] = style_lock_reason
                 source_key["style_mode"] = text_style.style_mode if text_style is not None else None
                 source_key["style_color"] = text_style.color if text_style is not None else None
+                if (
+                    lock_reason is None
+                    and position_mode is None
+                    and source_key["style_mode"] is None
+                ):
+                    lock_reason = move_lock_reason or style_lock_reason
             # Issue #47: bar-only resize capability from pure xsize/ysize.
             if statement_kind == "bar" and isinstance(statement, BarStatement):
                 if (
@@ -1271,7 +1261,7 @@ class EditorCoordinator:
             staged_bytes, swap_locations = self._apply_same_file_intents(current_bytes, selected_records)
         except EditorSourceError as exc:
             raise EditorError(exc.code, str(exc)) from exc
-        
+
         # Critical finding #1: Two-file write path for say.what style position
         # Detect gui.rpy intents (position lives in gui.rpy, identity in screens.rpy)
         gui_intents = [
@@ -1280,7 +1270,7 @@ class EditorCoordinator:
             and sel.x is not None
             and sel.y is not None
         ]
-        
+
         if gui_intents:
             # Verify screens.rpy unchanged (identity-only path)
             if staged_bytes != current_bytes:
@@ -1288,28 +1278,28 @@ class EditorCoordinator:
                     "MULTI_FILE_WRITE_UNSUPPORTED",
                     "say.what style position cannot be combined with other screen changes in V1",
                 )
-            
+
             # Create gui.rpy transaction
             if len(gui_intents) != len(selected_records):
                 raise EditorError(
                     "MULTI_FILE_WRITE_UNSUPPORTED",
                     "say.what style position cannot be combined with other intents in V1",
                 )
-            
+
             # All intents are gui.rpy - create gui transaction
             gui_rpy_path = gui_intents[0].source_key.get("gui_rpy_path")
             if not gui_rpy_path:
                 raise EditorError("GUI_RPY_PATH_MISSING", "gui.rpy path is missing from source_key")
-            
+
             gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
             gui_current_bytes = gui_absolute.read_bytes()
             gui_current_sha = sha256_bytes(gui_current_bytes)
-            
+
             # Verify gui.rpy baseline
             gui_baseline = gui_intents[0].source_key.get("say_style_position_baseline_sha256")
             if gui_current_sha != gui_baseline:
                 raise EditorError("STALE_SOURCE", "gui.rpy has changed since analysis")
-            
+
             # Apply gui.rpy patch
             gui_source_text = gui_current_bytes.decode("utf-8")
             say_statement = analyze_say_what_style_position(
@@ -1322,37 +1312,37 @@ class EditorCoordinator:
                     say_statement.position_lock_code,
                     say_statement.position_lock_message or "say.what style position is locked",
                 )
-            
+
             # Calculate logical-pixel deltas: apply to authored gui.scale ints
             # NEVER write absolute screen coords into gui.dialogue_xpos/ypos
             authored_x = gui_intents[0].source_key.get("say_style_position_xpos")
             authored_y = gui_intents[0].source_key.get("say_style_position_ypos")
-            
+
             # CRITICAL: For style-backed position, baseline is AUTHORED values (window-relative)
             # NOT original_position (which is screen-absolute including window offset)
             # Intent x/y from preview are ALSO window-relative (preview mutates style, not screen coords)
             runtime_baseline_x = authored_x
             runtime_baseline_y = authored_y
-            
+
             # New position from intent (after drag, window-relative from preview)
             intent_x = gui_intents[0].x
             intent_y = gui_intents[0].y
-            
+
             # Calculate logical-pixel delta (both in window-relative space)
             delta_x = intent_x - runtime_baseline_x
             delta_y = intent_y - runtime_baseline_y
-            
+
             # Apply delta to authored values (window-relative coords)
             patched_x = authored_x + delta_x
             patched_y = authored_y + delta_y
-            
+
             gui_staged_bytes = apply_say_what_style_position_patch(
                 gui_current_bytes,
                 say_statement,
                 x=patched_x,
                 y=patched_y,
             )
-            
+
             transaction_id = uuid.uuid4().hex
             transaction = _TransactionRecord(
                 transaction_id=transaction_id,
@@ -1548,6 +1538,12 @@ class EditorCoordinator:
                 reversed_target["say_style_position_previous_y"] = new_y
                 reversed_target["say_style_position_new_x"] = prev_x
                 reversed_target["say_style_position_new_y"] = prev_y
+                position = target.get("position")
+                if isinstance(position, list) and len(position) == 2:
+                    reversed_target["position"] = [
+                        int(position[0]) - (int(new_x) - int(prev_x)),
+                        int(position[1]) - (int(new_y) - int(prev_y)),
+                    ]
             expected_targets.append(reversed_target)
 
         transaction_id = uuid.uuid4().hex
@@ -1604,10 +1600,6 @@ class EditorCoordinator:
         }
 
     def _command_reload_handshake(self, payload: dict[str, Any]) -> dict[str, Any]:
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[HANDSHAKE {os.getpid()}] {now} RECEIVED reload_handshake payload={payload}", file=sys.stderr)
-        
         transaction_id = self._require_string(payload, "transaction_id")
         script_generation = payload.get("script_generation")
         if not isinstance(script_generation, int):
@@ -1637,9 +1629,6 @@ class EditorCoordinator:
             # falsy reply, so the rollbacks below were unreachable for it. Left
             # alone, the published bytes stayed in the author's file until the
             # attestation timer fired seconds later.
-            import sys, os, datetime
-            now = datetime.datetime.now().isoformat()
-            print(f"[ROLLBACK-CALLER-HANDSHAKE-ERROR {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             # Game already reloaded; forget the pre-reload generation so later
             # analyses can re-lock to the live script_generation (including any
@@ -1648,17 +1637,11 @@ class EditorCoordinator:
                 self._script_generation = -1
             raise
         if not isinstance(result, dict):
-            import sys, os, datetime
-            now = datetime.datetime.now().isoformat()
-            print(f"[ROLLBACK-CALLER-HANDSHAKE-INVALID-RESULT {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             with self._lock:
                 self._script_generation = -1
             raise EditorError("ATTESTATION_FAILED", "runtime probe returned invalid attestation payload")
         if result.get("ok") is not True or result.get("state") != "all_targets_attested":
-            import sys, os, datetime
-            now = datetime.datetime.now().isoformat()
-            print(f"[ROLLBACK-CALLER-HANDSHAKE-NOT-ATTESTED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
             self._conditional_rollback(record)
             with self._lock:
                 self._script_generation = -1
@@ -1672,7 +1655,7 @@ class EditorCoordinator:
                 record.timer = None
             record.state = "committed"
             self._script_generation = script_generation
-        
+
         self._persist_transaction(record)
         return {"transaction_id": transaction_id, "state": "committed"}
 
@@ -2010,9 +1993,9 @@ class EditorCoordinator:
             if actual_kind == "text":
                 if width is not None or height is not None:
                     raise EditorError("ANALYSIS_RESIZE_UNSUPPORTED", "text resize is not supported")
-                
+
                 # Critical finding #1: Two-file write path for say.what style position
-                # Position lives in gui.rpy, identity stays in screens.rpy  
+                # Position lives in gui.rpy, identity stays in screens.rpy
                 position_mode = source_key.get("position_mode")
                 if (
                     x is not None
@@ -2021,7 +2004,7 @@ class EditorCoordinator:
                 ):
                     # Skip patching screens.rpy - will be handled as gui.rpy transaction
                     continue
-                
+
                 if x is not None or y is not None:
                     if x is None or y is None:
                         raise EditorError("INTENT_POSITION_INVALID", "text position intent shape is invalid")
@@ -2182,20 +2165,14 @@ class EditorCoordinator:
         # new coordinator starts. If timer fires during shutdown window, rollback
         # would persist rolled_back state that new coordinator recovery cannot fix.
         if self._stop_event.is_set():
-            import sys, os, datetime
-            now = datetime.datetime.now().isoformat()
-            print(f"[ATTESTATION-TIMEOUT-SKIPPED-SHUTDOWN {os.getpid()}] {now} transaction={transaction_id[:8]}", file=sys.stderr)
             return
-        
+
         with self._lock:
             record = self._transactions.get(transaction_id)
         if record is None:
             return
         if record.state != "published":
             return
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[ROLLBACK-CALLER-ATTESTATION-TIMEOUT {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
         self._conditional_rollback(record)
 
     def _publish_transaction_bytes(self, transaction: _TransactionRecord) -> None:
@@ -2224,10 +2201,6 @@ class EditorCoordinator:
             "operation": "publish",
         }
         self._persist_transaction(transaction)
-        
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[PUBLISH {os.getpid()}] {now} BEGIN CAS for transaction {transaction.transaction_id[:8]}, state=publishing", file=sys.stderr)
 
         try:
             result = conditional_replace_file(
@@ -2269,21 +2242,8 @@ class EditorCoordinator:
             "source_mode": result.source_mode,
         }
         self._persist_transaction(transaction)
-        
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[PUBLISH {os.getpid()}] {now} CAS SUCCESS transaction {transaction.transaction_id[:8]}, state=published, persisted", file=sys.stderr)
 
     def _conditional_rollback(self, transaction: _TransactionRecord, *, allow_staged: bool = False) -> None:
-        # DEBUG: Log ALL rollback attempts with PID and timestamp
-        import sys
-        import os
-        import datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[ROLLBACK {os.getpid()}] {now} transaction={transaction.transaction_id[:8]} state={transaction.state} allow_staged={allow_staged}", file=sys.stderr)
-        import traceback
-        traceback.print_stack(file=sys.stderr, limit=10)
-        
         allowed_states = {"published", "publishing", "staged"} if allow_staged else {"published", "publishing"}
         with self._lock:
             if transaction.state not in allowed_states:
@@ -2394,17 +2354,9 @@ class EditorCoordinator:
         fsync_directory(tx_dir)
 
     def _recover_transactions(self) -> None:
-        import sys, os, datetime
-        now = datetime.datetime.now().isoformat()
-        print(f"[RECOVERY {os.getpid()}] {now} ENTER _recover_transactions", file=sys.stderr)
         if not self._transaction_root.exists():
-            print(f"[RECOVERY {os.getpid()}] {now} transaction_root does not exist: {self._transaction_root}", file=sys.stderr)
             return
         for child in sorted(self._transaction_root.iterdir()):
-            import sys, os, datetime
-            now = datetime.datetime.now().isoformat()
-            print(f"[RECOVERY {os.getpid()}] {now} Checking child: {child.name}, is_dir={child.is_dir()}", file=sys.stderr)
-            
             if not child.is_dir():
                 continue
             manifest_path = child / "manifest.json"
@@ -2423,11 +2375,6 @@ class EditorCoordinator:
                 continue
             if transaction_id != child.name:
                 continue
-            
-            # DEBUG: Log ALL recovered transactions to trace recovery path
-            import sys
-            print(f"[RECOVERY] Found transaction {transaction_id[:8]} state={state} path={relative_path}", file=sys.stderr)
-            
             try:
                 source_path = resolve_game_path(self._project.root, relative_path)
                 original_path = child / "original" / Path(relative_path)
@@ -2474,7 +2421,7 @@ class EditorCoordinator:
                 uncertain_paths=list(uncertain_paths),
             )
             self._transactions[transaction_id] = record
-            
+
             # CRITICAL: Durable two-phase commit for restart resilience
             # CAS write can complete between state="publishing" and state="published".
             # If restart happens in this window, new coordinator must PROMOTE not rollback.
@@ -2483,7 +2430,7 @@ class EditorCoordinator:
             # 1. publishing/published + disk==staged → PROMOTE to published + arm timer
             # 2. publishing + disk==original → rollback (CAS never happened)
             # 3. staged → rollback immediately (incomplete)
-            
+
             if state == "published" and manifest_intact:
                 # Already published and waiting for handshake
                 # Verify disk still has staged content
@@ -2491,7 +2438,7 @@ class EditorCoordinator:
                     current_sha = hash_file_nofollow(source_path)
                 except (EditorPathError, OSError):
                     current_sha = None
-                
+
                 if current_sha == actual_staged_sha256:
                     # Disk has staged content - arm attestation timer
                     timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
@@ -2500,12 +2447,9 @@ class EditorCoordinator:
                     self._recovered.append(transaction_id)
                 else:
                     # Disk doesn't match staged - rollback
-                    import sys, os, datetime
-                    now = datetime.datetime.now().isoformat()
-                    print(f"[ROLLBACK-CALLER-RECOVERY-PUBLISHED-DISK-MISMATCH {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=False)
                     self._recovered.append(transaction_id)
-                    
+
             elif state == "publishing" and manifest_intact:
                 # Transaction was publishing when restart happened
                 # Check if CAS completed (disk == staged) or not (disk == original)
@@ -2513,19 +2457,8 @@ class EditorCoordinator:
                     current_sha = hash_file_nofollow(source_path)
                 except (EditorPathError, OSError):
                     current_sha = None
-                
-                # DEBUG: Log recovery decision for publishing transactions
-                import sys
-                print(f"[RECOVERY DEBUG] publishing transaction {transaction_id[:8]}", file=sys.stderr)
-                print(f"  current_sha: {current_sha}", file=sys.stderr)
-                print(f"  staged_sha:  {actual_staged_sha256}", file=sys.stderr)
-                print(f"  original_sha: {actual_original_sha256}", file=sys.stderr)
-                print(f"  match staged: {current_sha == actual_staged_sha256}", file=sys.stderr)
-                print(f"  match original: {current_sha == actual_original_sha256}", file=sys.stderr)
-                
                 if current_sha == actual_staged_sha256:
                     # CAS completed! PROMOTE to published and arm timer
-                    print(f"  -> PROMOTING to published", file=sys.stderr)
                     record.state = "published"
                     self._persist_transaction(record)
                     timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
@@ -2534,28 +2467,20 @@ class EditorCoordinator:
                     self._recovered.append(transaction_id)
                 elif current_sha == actual_original_sha256:
                     # CAS never happened - rollback to clean state
-                    print(f"  -> ROLLING BACK (CAS never happened)", file=sys.stderr)
-                    import sys, os, datetime
-                    now = datetime.datetime.now().isoformat()
-                    print(f"[ROLLBACK-CALLER-RECOVERY-PUBLISHING-CAS-NEVER {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                     self._conditional_rollback(record, allow_staged=True)
                     self._recovered.append(transaction_id)
                 else:
                     # Unknown state - mark conflict
-                    print(f"  -> CONFLICT (disk matches neither)", file=sys.stderr)
                     record.state = "rollback_conflict"
                     record.uncertain_paths = [relative_path]
                     self._recovered.append(transaction_id)
                     self._persist_transaction(record)
-                    
+
             elif state == "staged" and manifest_intact:
                 # Incomplete transaction - rollback immediately
-                import sys, os, datetime
-                now = datetime.datetime.now().isoformat()
-                print(f"[ROLLBACK-CALLER-RECOVERY-STAGED {os.getpid()}] {now} transaction={record.transaction_id[:8]}", file=sys.stderr)
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
-                
+
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
                 record.state = "rollback_conflict"
                 record.uncertain_paths = [relative_path]
