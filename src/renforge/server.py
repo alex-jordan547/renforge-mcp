@@ -926,7 +926,11 @@ def _register_tools(app: Any) -> None:
         )
 
     @_register_tool
-    def renforge_select_choice(project_path: str, text: str = "", index: int = -1) -> dict:
+    def renforge_select_choice(
+        project_path: str,
+        text: str | None = None,
+        index: int | None = None,
+    ) -> dict:
         """Select a menu choice by visible text (preferred) or by index."""
         return _log_tool_call(
             name="renforge_select_choice",
@@ -934,7 +938,10 @@ def _register_tools(app: Any) -> None:
             project_root=project_path,
             fn=live.select_choice,
             args=(project_path,),
-            kwargs={"text": text or None, "index": index if index >= 0 else None},
+            kwargs={
+                "text": text or None,
+                "index": index if isinstance(index, int) and index >= 0 else None,
+            },
         )
 
     @_register_tool

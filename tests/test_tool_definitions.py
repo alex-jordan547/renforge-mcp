@@ -102,15 +102,182 @@ def test_emitted_tool_schemas_encode_options_limits_and_required_relationships()
     assert scroll_object["additionalProperties"] is False
     assert scroll_object["properties"]["direction"]["enum"] == ["up", "down"]
     assert len(send_input["oneOf"]) == 3
+    assert send_input["oneOf"][0]["properties"]["key"] == {"type": "null"}
+    assert send_input["oneOf"][0]["properties"]["scroll"] == {"type": "null"}
+    assert "not" not in send_input["oneOf"][0]
 
     wait_schema = schemas["renforge_wait_until"]
     assert len(wait_schema["oneOf"]) == 3
+    assert wait_schema["oneOf"][0]["properties"]["screen"] == {"type": "null"}
+    assert wait_schema["oneOf"][0]["properties"]["expr"] == {"type": "null"}
     assert wait_schema["properties"]["timeout"]["maximum"] == 120
+
+    saves_schema = schemas["renforge_saves"]
+    assert saves_schema["oneOf"][0]["properties"]["regexp"] == {"type": "null"}
+    assert "not" not in saves_schema["oneOf"][0]
+
+    select_schema = schemas["renforge_select_choice"]
+    assert select_schema["oneOf"][0]["properties"]["index"] == {"type": "null"}
+    assert select_schema["oneOf"][1]["properties"]["text"] == {"type": "null"}
+    assert any(
+        item.get("type") == "null"
+        for item in select_schema["properties"]["index"].get("anyOf", [])
+    )
 
     scenario_steps = schemas["renforge_run_scenario"]["properties"]["steps"]
     assert len(scenario_steps["items"]["oneOf"]) == 14
     assert scenario_steps["items"]["oneOf"][0]["additionalProperties"] is False
     assert scenario_steps["items"]["oneOf"][0]["required"] == ["set"]
+
+
+def test_exclusive_input_schemas_accept_null_inactive_fields() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    jsonschema = pytest.importorskip("jsonschema")
+
+    tools = asyncio.run(create_app().list_tools())
+    schemas = {
+        tool.name: tool.parameters
+        for tool in tools
+        if tool.name.startswith("renforge_")
+    }
+
+    valid = [
+        (
+            "renforge_send_input",
+            {"project_path": "/tmp/p", "text": "hello", "key": None, "scroll": None},
+        ),
+        (
+            "renforge_wait_until",
+            {"project_path": "/tmp/p", "label": "start", "screen": None, "expr": None},
+        ),
+        (
+            "renforge_saves",
+            {"project_path": "/tmp/p", "action": "save", "slot": "a", "regexp": None},
+        ),
+        (
+            "renforge_saves",
+            {"project_path": "/tmp/p", "action": "list", "slot": None, "extra_info": None},
+        ),
+        (
+            "renforge_select_choice",
+            {"project_path": "/tmp/p", "text": "Yes", "index": None},
+        ),
+        (
+            "renforge_select_choice",
+            {"project_path": "/tmp/p", "text": None, "index": 0},
+        ),
+    ]
+    invalid = [
+        (
+            "renforge_send_input",
+            {"project_path": "/tmp/p", "text": "hello", "key": "enter"},
+        ),
+        (
+            "renforge_wait_until",
+            {"project_path": "/tmp/p", "label": "start", "screen": "say"},
+        ),
+        (
+            "renforge_saves",
+            {"project_path": "/tmp/p", "action": "save", "slot": "a", "regexp": "branch"},
+        ),
+        (
+            "renforge_select_choice",
+            {"project_path": "/tmp/p", "text": "Yes", "index": 0},
+        ),
+    ]
+
+    for name, payload in valid:
+        jsonschema.validate(payload, schemas[name])
+    for name, payload in invalid:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(payload, schemas[name])
+
+
+def test_null_exclusive_arguments_reach_tool_implementation(monkeypatch, tmp_path) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+    from renforge.tools import live
+
+    send_calls: list[dict] = []
+    wait_calls: list[dict] = []
+    save_calls: list[dict] = []
+    choice_calls: list[dict] = []
+    monkeypatch.setattr(
+        live,
+        "send_input",
+        lambda project_path, **kwargs: send_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        live,
+        "wait_until",
+        lambda project_path, **kwargs: wait_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        live,
+        "saves",
+        lambda project_path, action, **kwargs: save_calls.append({"action": action, **kwargs})
+        or {"ok": True},
+    )
+    monkeypatch.setattr(
+        live,
+        "select_choice",
+        lambda project_path, **kwargs: choice_calls.append(kwargs) or {"ok": True},
+    )
+
+    async def _call(name: str, payload: dict):
+        async with Client(create_app()) as client:
+            return await client.call_tool(name, payload, raise_on_error=False)
+
+    send = asyncio.run(
+        _call(
+            "renforge_send_input",
+            {
+                "project_path": str(tmp_path),
+                "text": "hello",
+                "key": None,
+                "scroll": None,
+            },
+        )
+    )
+    wait = asyncio.run(
+        _call(
+            "renforge_wait_until",
+            {
+                "project_path": str(tmp_path),
+                "label": "start",
+                "screen": None,
+                "expr": None,
+            },
+        )
+    )
+    saved = asyncio.run(
+        _call(
+            "renforge_saves",
+            {
+                "project_path": str(tmp_path),
+                "action": "save",
+                "slot": "a",
+                "regexp": None,
+            },
+        )
+    )
+    choice = asyncio.run(
+        _call(
+            "renforge_select_choice",
+            {"project_path": str(tmp_path), "text": "Yes", "index": None},
+        )
+    )
+
+    assert send.is_error is False
+    assert wait.is_error is False
+    assert saved.is_error is False
+    assert choice.is_error is False
+    assert send_calls == [{"text": "hello", "key": None, "scroll": None, "submit": False}]
+    assert wait_calls[0]["label"] == "start"
+    assert wait_calls[0]["screen"] is None
+    assert wait_calls[0]["expr"] is None
+    assert save_calls == [{"action": "save", "slot": "a", "extra_info": None, "regexp": None}]
+    assert choice_calls == [{"text": "Yes", "index": None}]
 
 
 def test_invalid_enum_is_rejected_before_tool_implementation(monkeypatch, tmp_path) -> None:

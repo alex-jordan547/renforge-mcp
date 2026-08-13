@@ -415,8 +415,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         ),
         parameters={
             "project_path": "Project root of the running live session.",
-            "text": "Visible text to match; preferred over index.",
-            "index": "Zero-based choice index fallback when text is omitted.",
+            "text": "Visible text to match; preferred over index. Unused exclusive fields may be omitted or null.",
+            "index": "Zero-based choice index fallback when text is omitted or null.",
         },
     ),
     "renforge_list_ui_elements": ToolDefinition(
@@ -1097,6 +1097,26 @@ def _limits(minimum: int | float, maximum: int | float) -> dict[str, Any]:
     return {"minimum": minimum, "maximum": maximum}
 
 
+def _inactive(*names: str) -> dict[str, Any]:
+    """Allow schema-driven clients to serialize unused exclusive fields as JSON null."""
+    return {name: {"type": "null"} for name in names}
+
+
+def _exclusive_branches(
+    options: dict[str, dict[str, Any]],
+    extras: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    extras = extras or {}
+    names = tuple(options)
+    branches: list[dict[str, Any]] = []
+    for name, schema in options.items():
+        properties = _inactive(*(other for other in names if other != name))
+        properties[name] = schema
+        properties.update(extras.get(name, {}))
+        branches.append({"required": [name], "properties": properties})
+    return branches
+
+
 def _scenario_step_schema(action: str) -> dict[str, Any]:
     payloads: dict[str, dict[str, Any]] = {
         "set": {"type": "object", "minProperties": 1},
@@ -1291,51 +1311,56 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
 
 _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "renforge_send_input": {
-        "oneOf": [
-            {"required": ["text"], "properties": {"text": {"type": "string"}}, "not": {"anyOf": [{"required": ["key"]}, {"required": ["scroll"]}]}},
-            {"required": ["key"], "properties": {"key": {"type": "string", "minLength": 1}, "submit": {"const": False}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["scroll"]}]}},
-            {"required": ["scroll"], "properties": {"scroll": _SCROLL_SCHEMA, "submit": {"const": False}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["key"]}]}},
-        ]
+        "oneOf": _exclusive_branches(
+            {
+                "text": {"type": "string"},
+                "key": {"type": "string", "minLength": 1},
+                "scroll": _SCROLL_SCHEMA,
+            },
+            extras={
+                "key": {"submit": {"const": False}},
+                "scroll": {"submit": {"const": False}},
+            },
+        )
     },
     "renforge_wait_until": {
-        "oneOf": [
-            {"required": ["label"], "properties": {"label": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["screen"]}, {"required": ["expr"]}]}},
-            {"required": ["screen"], "properties": {"screen": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["label"]}, {"required": ["expr"]}]}},
-            {"required": ["expr"], "properties": {"expr": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["label"]}, {"required": ["screen"]}]}},
-        ]
+        "oneOf": _exclusive_branches(
+            {
+                "label": {"type": "string", "minLength": 1},
+                "screen": {"type": "string", "minLength": 1},
+                "expr": {"type": "string", "minLength": 1},
+            }
+        )
     },
     "renforge_saves": {
         "oneOf": [
             {
-                "properties": {"action": {"const": "save"}},
+                "properties": {"action": {"const": "save"}, **_inactive("regexp")},
                 "required": ["action", "slot"],
-                "not": {"required": ["regexp"]},
             },
             {
-                "properties": {"action": {"const": "load"}},
+                "properties": {
+                    "action": {"const": "load"},
+                    **_inactive("extra_info", "regexp"),
+                },
                 "required": ["action", "slot"],
-                "not": {"anyOf": [{"required": ["extra_info"]}, {"required": ["regexp"]}]},
             },
             {
-                "properties": {"action": {"const": "list"}},
+                "properties": {
+                    "action": {"const": "list"},
+                    **_inactive("slot", "extra_info"),
+                },
                 "required": ["action"],
-                "not": {"anyOf": [{"required": ["slot"]}, {"required": ["extra_info"]}]},
             },
         ]
     },
     "renforge_select_choice": {
-        "oneOf": [
+        "oneOf": _exclusive_branches(
             {
-                "required": ["text"],
-                "properties": {"text": {"type": "string", "minLength": 1}},
-                "not": {"required": ["index"]},
-            },
-            {
-                "required": ["index"],
-                "properties": {"index": {"type": "integer", "minimum": 0}},
-                "not": {"required": ["text"]},
-            },
-        ]
+                "text": {"type": "string", "minLength": 1},
+                "index": {"type": "integer", "minimum": 0},
+            }
+        )
     },
 }
 
