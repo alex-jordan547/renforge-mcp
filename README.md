@@ -219,6 +219,7 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
 - **[Architecture](docs/ARCHITECTURE.md)** — code layout, live-control flow,
   Ren'Py SDK resolution, packaging.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, frontend build, PRs.
+- **[Cloud / CI environment](docs/CLOUD_ENVIRONMENT.md)** — Cursor Cloud Agents, Xvfb, Ren'Py SDK bootstrap, and env smoke.
 - **[Changelog](CHANGELOG.md)** — release history.
 - `examples/demo_game/` — small sample Ren'Py project to try everything on.
 

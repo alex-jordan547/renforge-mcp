@@ -18,6 +18,18 @@ pip install -e ".[fastmcp,ui,test]"
 pytest
 ```
 
+For **Cursor Cloud Agents** and other headless VMs (Ren'Py 8.5.3 + Xvfb + live
+editor smoke), use the committed bootstrap instead of repeating those steps by
+hand:
+
+```bash
+bash scripts/setup_cloud_env.sh
+bash scripts/smoke_renpy_env.sh
+```
+
+Details, environment variables, and the Cursor environment named `renforge`:
+[docs/CLOUD_ENVIRONMENT.md](docs/CLOUD_ENVIRONMENT.md).
+
 The dashboard frontend lives in `ui/` (Vite + React + TypeScript):
 
 ```bash

@@ -15,12 +15,14 @@ bash scripts/setup_cloud_env.sh
 This script will:
 
 1. Install system dependencies (Xvfb, X11 utilities)
-2. Configure virtual display for headless Ren'Py testing
-3. Install Python dependencies
-4. Download and cache Ren'Py SDK 8.5.3
-5. Verify the installation
+2. Configure a virtual display for headless Ren'Py testing
+3. Persist `DISPLAY` in `~/.cache/renforge/cloud.env` so later shells can find it
+4. Install Python dependencies
+5. Download and cache Ren'Py SDK 8.5.3
+6. Verify the installation
 
-After setup completes, verify everything works:
+After setup completes, verify everything works (this rediscovers the display
+even if `DISPLAY` was not exported in your current shell):
 
 ```bash
 bash scripts/smoke_renpy_env.sh
@@ -31,21 +33,26 @@ bash scripts/smoke_renpy_env.sh
 For Cursor Cloud Agents, you can create a reusable environment that includes all
 necessary dependencies and setup.
 
-### Option 1: Using `environment.json` (Recommended)
+### Option 1: Using `.cursor/environment.json` (Recommended)
 
-Create a `.cursor/environment.json` file in your repository:
+This repository already ships `.cursor/environment.json`:
 
 ```json
 {
-  "name": "renforge",
   "install": "bash scripts/setup_cloud_env.sh",
-  "start": "echo 'RenForge environment ready. Run: bash scripts/smoke_renpy_env.sh'"
+  "start": "bash scripts/ensure_cloud_display.sh"
 }
 ```
 
-Cursor Cloud will automatically run the `install` script when creating the
-environment. The `start` script runs each time an agent boots in that
-environment.
+Cursor Cloud runs `install` when building the environment and `start` on each
+agent boot. `ensure_cloud_display.sh` starts Xvfb if needed and writes
+`DISPLAY` to `~/.cache/renforge/cloud.env`. Name the saved environment
+**renforge** in the dashboard, with this repo as the primary repository.
+
+Do not rely on `export DISPLAY=:99` inside `setup_cloud_env.sh` alone: that
+export dies with the install process. Later commands (`smoke_renpy_env.sh`,
+pytest live suites) rediscover the display from the env file or a running
+Xvfb on `:99` / `:1`.
 
 ### Option 2: Saved Environment (Dashboard)
 
@@ -60,15 +67,10 @@ If you prefer to configure via the Cursor Dashboard:
    bash scripts/setup_cloud_env.sh
    ```
 
-5. Configure the **Start Script** (optional):
+5. Configure the **Start Script**:
 
    ```bash
-   # Export environment variables for convenience
-   export DISPLAY=:99
-   export PYTHONPATH=/workspace/src
-   
-   echo "RenForge environment ready"
-   echo "Run smoke test: bash scripts/smoke_renpy_env.sh"
+   bash scripts/ensure_cloud_display.sh
    ```
 
 6. Save the environment
@@ -209,13 +211,21 @@ RENFORGE_TASK0_LIVE=1 pytest tests/test_editor_task0_live.py
 
 ### `DISPLAY` not set
 
-**Error:** `DISPLAY environment variable not set`
+**Error:** `DISPLAY environment variable not set` (older smoke script) or
+`xdpyinfo not found`
 
-**Solution:** Start Xvfb and export DISPLAY:
+**Solution:** Re-run setup, or let the smoke script start Xvfb itself:
 
 ```bash
-Xvfb :99 -screen 0 1920x1080x24 &
-export DISPLAY=:99
+bash scripts/setup_cloud_env.sh
+bash scripts/smoke_renpy_env.sh
+```
+
+`DISPLAY` is persisted in `~/.cache/renforge/cloud.env`. You can also source it:
+
+```bash
+. ~/.cache/renforge/cloud.env
+echo "$DISPLAY"
 ```
 
 ### Display not accessible
@@ -319,7 +329,11 @@ The Ren'Py SDK is ~500MB. For efficient cloud environments:
 ## Architecture Notes
 
 - The setup script is **idempotent** — safe to run multiple times
-- Xvfb runs in the background and doesn't block
+- Xvfb runs in the background; `DISPLAY` is persisted in
+  `~/.cache/renforge/cloud.env` so later shells do not need the install export
+- `scripts/smoke_renpy_env.sh` calls the committed
+  `scripts/smoke_renpy_launch.py` (demo path is the repo `examples/demo_game`,
+  not a `/tmp` copy of the launcher)
 - The SDK installer uses inter-process locks for concurrent safety
 - All live tests use a temporary copy of `examples/demo_game` to avoid
   cross-test contamination
