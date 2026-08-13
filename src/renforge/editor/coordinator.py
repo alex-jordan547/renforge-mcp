@@ -257,15 +257,12 @@ class EditorCoordinator:
                 if record.timer is not None:
                     record.timer.cancel()
                     record.timer = None
-            # CRITICAL: Don't rollback "publishing" OR "published" on coordinator shutdown
-            # For gui.rpy commits, Ren'Py does full restart: bridge stops OLD coordinator,
-            # new coordinator starts. Between CAS write and state="published" persist, a
-            # shutdown can happen leaving state="publishing" but disk==staged.
-            # Old close() would rollback, causing NEW coordinator to see disk==original.
-            # Let NEW coordinator's recovery SHA-check logic handle all in-flight transactions.
-            # Only rollback "staged" (no CAS attempted) to ensure clean shutdown.
+            # A clean close is terminal: no successor coordinator is guaranteed
+            # to attest a published edit, so restore every uncommitted state.
+            # Crash recovery remains handled by _recover_transactions(), because
+            # an interrupted process never reaches this cleanup path.
             for record in self._transactions.values():
-                if record.state == "staged":
+                if record.state in {"staged", "publishing", "published"}:
                     self._conditional_rollback(record, allow_staged=True)
             states = {txid: record.state for txid, record in self._transactions.items()}
             return {"session_id": self._session_id, "transactions": states, "recovered": list(self._recovered)}
@@ -2160,10 +2157,8 @@ class EditorCoordinator:
         timer.start()
 
     def _on_attestation_timeout(self, transaction_id: str) -> None:
-        # CRITICAL: Don't rollback if coordinator is shutting down
-        # For gui.rpy commits requiring reload_script, close() is called BEFORE
-        # new coordinator starts. If timer fires during shutdown window, rollback
-        # would persist rolled_back state that new coordinator recovery cannot fix.
+        # close() performs the terminal rollback itself while holding the lock.
+        # Avoid racing that cleanup after the timer has already been cancelled.
         if self._stop_event.is_set():
             return
 

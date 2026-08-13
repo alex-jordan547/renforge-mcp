@@ -663,6 +663,40 @@ def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -
         coordinator.close()
 
 
+def test_terminal_close_rolls_back_published_transaction(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation(script_generation=8)
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-frame-terminal-close",
+            "object_id": "obj-independent-terminal-close",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path), attestation_timeout=120.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    baseline = source.read_bytes()
+    closed = False
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-terminal-close")
+            commit = _commit(sock, auth, analysis, x=92, y=93, request_id="co-terminal-close")
+            assert commit["ok"] is True
+            transaction_id = commit["result"]["transaction_id"]
+            assert source.read_bytes() != baseline
+
+        status = coordinator.close()
+        closed = True
+
+        assert status["transactions"][transaction_id] == "rolled_back"
+        assert source.read_bytes() == baseline
+    finally:
+        if not closed:
+            coordinator.close()
+
+
 class _RaisingAttestProbe(_Probe):
     """Mirrors BridgeRuntimeProbe: a bridge refusal arrives as a raised error."""
 
