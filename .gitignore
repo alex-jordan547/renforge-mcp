@@ -73,6 +73,15 @@ screens
 # Superpowers visual brainstorming artifacts
 .superpowers/
 
+# Local live-editor verify / polish scratch (never commit proofs or demo copies)
+.rf_verify_out/
+.rf_verify_work/
+.rf_polish.pid
+.rf_polish_launch.py
+.rf_verify.py
+/out_2/
+marketing/remotion/out_2/
+
 
 # Local isolated development worktrees
 .worktrees/
