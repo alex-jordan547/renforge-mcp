@@ -46,6 +46,14 @@ def test_classify_control_saves_eval_and_scenario_operations() -> None:
     ) == ("renforge_run_scenario.eval", RISK_OPEN_WORLD)
     assert classify(
         "renforge_run_scenario",
+        {"steps": [{"wait": {"expr": "renpy.version"}}]},
+    ) == ("renforge_run_scenario.wait", RISK_OPEN_WORLD)
+    assert classify(
+        "renforge_run_scenario",
+        {"steps": [{"assert": {"expr": "renpy.version"}}]},
+    ) == ("renforge_run_scenario.assert", RISK_OPEN_WORLD)
+    assert classify(
+        "renforge_run_scenario",
         {"steps": [{"control": {"action": "quit"}}]},
     ) == ("renforge_run_scenario.control.quit", RISK_DESTRUCTIVE)
 
@@ -219,7 +227,7 @@ def test_policy_disabled_eval_reaches_implementation(monkeypatch, tmp_path) -> N
     assert payload == {"ok": True, "value": 2}
 
 
-def test_denied_scenario_eval_step_never_runs(monkeypatch, tmp_path) -> None:
+def test_denied_open_world_scenario_steps_never_run(monkeypatch, tmp_path) -> None:
     pytest.importorskip("fastmcp", reason="fastmcp not installed")
     from fastmcp import Client
     from renforge.tools import live
@@ -240,10 +248,18 @@ def test_denied_scenario_eval_step_never_runs(monkeypatch, tmp_path) -> None:
                 raise_on_error=False,
             )
 
-    denied = asyncio.run(_call([{"eval": "True"}]))
-    payload = json.loads(next(block.text for block in denied.content if block.type == "text"))
-    assert calls == []
-    assert payload["policy"]["operation"] == "renforge_run_scenario.eval"
+    for step, operation in (
+        ({"eval": "True"}, "renforge_run_scenario.eval"),
+        ({"wait": {"expr": "True"}}, "renforge_run_scenario.wait"),
+        ({"assert": {"expr": "True"}}, "renforge_run_scenario.assert"),
+    ):
+        denied = asyncio.run(_call([step]))
+        payload = json.loads(
+            next(block.text for block in denied.content if block.type == "text")
+        )
+        assert calls == []
+        assert payload["policy"]["operation"] == operation
+        assert payload["policy"]["risk"] == RISK_OPEN_WORLD
 
     allowed = asyncio.run(_call([{"wait": {"label": "start"}}]))
     allowed_payload = json.loads(

@@ -308,6 +308,19 @@ def _classify_scenario_step(step: Any) -> tuple[str, str]:
         if risk is None:
             return f"renforge_run_scenario.control.{control_action}", RISK_MALFORMED
         return f"renforge_run_scenario.control.{control_action}", risk
+    if action == "wait":
+        payload = step.get("wait")
+        if isinstance(payload, dict) and "expr" in payload:
+            expr = payload.get("expr")
+            if not isinstance(expr, str) or not expr.strip():
+                return "renforge_run_scenario.wait", RISK_MALFORMED
+            return "renforge_run_scenario.wait", RISK_OPEN_WORLD
+    if action == "assert":
+        payload = step.get("assert")
+        expr = payload.get("expr") if isinstance(payload, dict) else payload
+        if not isinstance(expr, str) or not expr.strip():
+            return "renforge_run_scenario.assert", RISK_MALFORMED
+        return "renforge_run_scenario.assert", RISK_OPEN_WORLD
     return f"renforge_run_scenario.{action}", SCENARIO_STEP_RISKS[action]
 
 
