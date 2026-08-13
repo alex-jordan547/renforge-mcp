@@ -21,6 +21,10 @@ versioning.
   Ren'Py 8.5 are emitted without mutating shared or read-only SDK files.
   String-keyed dumps stay unchanged. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- MCP tool registration is split into domain modules under
+  `src/renforge/tool_registration/`. `server.py` only bootstraps the app;
+  wrappers, contract metadata, and fail-closed registration live next to each
+  other by domain. The public 54-tool MCP API is unchanged.
 
 ## [0.7.0] - 2026-08-11
 

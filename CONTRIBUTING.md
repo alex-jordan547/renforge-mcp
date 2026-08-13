@@ -49,6 +49,30 @@ for local testing by running `npm run build` from `ui/`.
 - If you touch the frontend, run `npm run build`; generated static assets must be
   left uncommitted.
 
+## Adding or changing an MCP tool
+
+The public MCP API is a versioned tool contract (currently 54 tools). Keep
+registration, wrappers, and metadata in sync so names and schemas cannot
+drift silently.
+
+1. Add or update the `ToolDefinition` in `src/renforge/tool_definitions.py`
+   (description, annotations, parameter docs, and JSON Schema constraints).
+2. Add or update the wrapper in the matching domain module under
+   `src/renforge/tool_registration/` and include the name in that module's
+   `TOOL_NAMES`.
+3. Implement behavior in `src/renforge/tools/` (or an existing helper), not in
+   `server.py`.
+4. Update `tests/test_server.py` (`EXPECTED_TOOLS`) when adding a tool.
+5. Refresh `tests/snapshots/mcp_public_tool_contract.json` when the emitted
+   contract changes, then run:
+
+```bash
+python -m pytest -q tests/test_tool_definitions.py tests/test_tool_registration.py tests/test_server.py
+```
+
+Do not mutate shared wrapper `__annotations__` as a registration side effect;
+`ToolRegistrar` clones wrappers before applying MCP metadata.
+
 ## Locale and i18n integration
 
 - Canonical UI copy lives in `ui/src/i18n/locales/en.json`.

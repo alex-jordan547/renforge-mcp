@@ -1,13 +1,17 @@
 import asyncio
-import hashlib
 import inspect
 import json
+from pathlib import Path
 
 from renforge.server import create_app
 from renforge.tool_definitions import TOOL_DEFINITIONS
 from renforge.tool_registration import DOMAIN_MODULES
 from renforge.tool_registration.registry import ToolRegistrar
 from renforge.tool_registration.wrappers import build_tool_wrappers
+
+CONTRACT_SNAPSHOT = (
+    Path(__file__).resolve().parent / "snapshots" / "mcp_public_tool_contract.json"
+)
 
 
 class _MetadataToolRegistry:
@@ -79,13 +83,8 @@ def test_server_bootstrap_no_longer_owns_tool_wrapper_bodies() -> None:
 
 def test_public_tool_contract_matches_agent_safe_baseline() -> None:
     contract = _public_contract()
-    payload = json.dumps(
-        contract,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    snapshot = json.loads(CONTRACT_SNAPSHOT.read_text(encoding="utf-8"))
 
     assert len(contract) == 54
-    assert hashlib.sha256(payload).hexdigest() == (
-        "0fe4c481efd5f410ef2b5d6d934862349aef730e4439e10741e8737432b029cc"
-    )
+    assert set(contract) == set(TOOL_DEFINITIONS)
+    assert contract == snapshot

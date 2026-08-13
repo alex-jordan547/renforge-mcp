@@ -94,6 +94,8 @@ EXPECTED_TOOLS = {
     "renforge_diff_screenshots",
     "renforge_scene_tree",
     "renforge_measure",
+    "renforge_hit_test",
+    "renforge_run_scenario",
     "renforge_autopilot",
     # assets / translation / build / docs
     "renforge_assets",
@@ -230,13 +232,16 @@ def test_game_state_compact_prefix_selection_enforces_all_output_limits(
 
 
 def test_create_app_registers_expected_tools() -> None:
+    from renforge.tool_definitions import TOOL_DEFINITIONS
+
     app = create_app()
     if isinstance(app, _FallbackServer):
         pytest.skip("MCP backend (mcp/fastmcp) not installed")
 
     tools = asyncio.run(app.list_tools())
-    names = {tool.name for tool in tools}
-    assert EXPECTED_TOOLS <= names
+    names = {tool.name for tool in tools if tool.name.startswith("renforge_")}
+    assert len(EXPECTED_TOOLS) == 54
+    assert EXPECTED_TOOLS == set(TOOL_DEFINITIONS) == names
     instructions = getattr(app, "instructions", "") or ""
     assert "renforge_info" in instructions or not hasattr(app, "instructions")
     for tool in ("renforge_control", "renforge_wait_until", "renforge_get_errors"):
