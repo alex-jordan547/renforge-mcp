@@ -154,34 +154,255 @@ def _write_atomic_chunks(
     max_bytes: int | None = None,
 ) -> None:
     destination = Path(path).expanduser()
-    destination.parent.mkdir(parents=True, exist_ok=True)
     if follow_symlinks:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination = destination.resolve()
-    elif destination.is_symlink():
-        raise ValueError("atomic-write destination must not be a symlink: %s" % destination)
+        _write_atomic_chunks_follow(destination, chunks, encoding=encoding, mode=mode, max_bytes=max_bytes)
+        return
+    _write_atomic_anchored(
+        destination,
+        chunks,
+        encoding=encoding,
+        mode=mode,
+        max_bytes=max_bytes,
+    )
 
+
+def _write_atomic_chunks_follow(
+    destination: Path,
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    mode: int,
+    max_bytes: int | None,
+) -> None:
     fd, temp_name = tempfile.mkstemp(prefix=destination.name, suffix=".tmp", dir=str(destination.parent))
     try:
-        written = 0
-        with os.fdopen(fd, "wb") as handle:
-            for chunk in chunks:
-                encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
-                written += len(encoded)
-                if max_bytes is not None and written > max_bytes:
-                    raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
-                handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-            if hasattr(os, "fchmod"):
-                os.fchmod(handle.fileno(), mode)
+        owned = fd
+        fd = -1
+        _write_chunks_to_fd(owned, chunks, encoding=encoding, mode=mode, max_bytes=max_bytes, own_fd=True)
         if not hasattr(os, "fchmod"):
             os.chmod(temp_name, mode)
-        if not follow_symlinks and destination.is_symlink():
-            raise ValueError("atomic-write destination must not be a symlink: %s" % destination)
         os.replace(temp_name, destination)
     finally:
+        if fd >= 0:
+            os.close(fd)
         if os.path.exists(temp_name):
             os.remove(temp_name)
+
+
+def _leaf_name(path: Path) -> str:
+    name = path.name
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise ValueError("destination name must be a basename: %s" % path)
+    return name
+
+
+def _write_chunks_to_fd(
+    fd: int,
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    mode: int,
+    max_bytes: int | None,
+    own_fd: bool,
+) -> None:
+    written = 0
+    handle = os.fdopen(fd, "wb") if own_fd else os.fdopen(fd, "wb", closefd=False)
+    try:
+        for chunk in chunks:
+            encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
+            written += len(encoded)
+            if max_bytes is not None and written > max_bytes:
+                raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
+            handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+        if hasattr(os, "fchmod"):
+            os.fchmod(handle.fileno(), mode)
+    finally:
+        handle.close()
+
+
+def _symlink_error(path: Path | str, *, action: str) -> ValueError:
+    return ValueError("%s destination must not be a symlink: %s" % (action, path))
+
+
+def _is_loop_error(exc: OSError) -> bool:
+    return exc.errno in {errno.ELOOP, getattr(errno, "EMLINK", errno.ELOOP)}
+
+
+def _posix_dir_fd_supported() -> bool:
+    supported = getattr(os, "supports_dir_fd", set())
+    return os.open in supported and os.rename in supported and os.unlink in supported
+
+
+def _open_directory_nofollow_posix(path: Path, *, action: str = "atomic-write") -> int:
+    flags = _open_flags(os.O_RDONLY, getattr(os, "O_DIRECTORY", 0), getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        if _is_loop_error(exc) or path.is_symlink():
+            raise _symlink_error(path, action=action) from exc
+        raise
+    try:
+        opened = os.fstat(fd)
+        after = path.lstat()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or stat.S_ISLNK(after.st_mode)
+            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise _symlink_error(path, action=action)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _lstat_at_posix(dir_fd: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except TypeError:
+        try:
+            return os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+
+
+def _reject_leaf_symlink_posix(dir_fd: int, name: str, destination: Path) -> None:
+    st = _lstat_at_posix(dir_fd, name)
+    if st is not None and stat.S_ISLNK(st.st_mode):
+        raise _symlink_error(destination, action="atomic-write")
+
+
+def _write_atomic_anchored_posix(
+    destination: Path,
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    mode: int,
+    max_bytes: int | None,
+) -> None:
+    name = _leaf_name(destination)
+    parent = destination.parent
+    if not parent.is_symlink():
+        parent.mkdir(parents=True, exist_ok=True)
+    dir_fd = _open_directory_nofollow_posix(parent)
+    temp_name: str | None = None
+    fd = -1
+    try:
+        _reject_leaf_symlink_posix(dir_fd, name, destination)
+        flags = _open_flags(
+            os.O_WRONLY,
+            os.O_CREAT,
+            os.O_EXCL,
+            getattr(os, "O_NOFOLLOW", 0),
+            getattr(os, "O_BINARY", 0),
+        )
+        last_error: BaseException | None = None
+        for _ in range(_TEMP_ATTEMPTS):
+            candidate = ".%s.%s.tmp" % (name, secrets.token_hex(8))
+            try:
+                fd = os.open(candidate, flags, mode, dir_fd=dir_fd)
+                temp_name = candidate
+                break
+            except FileExistsError as exc:
+                last_error = exc
+                continue
+            except OSError as exc:
+                if _is_loop_error(exc):
+                    raise _symlink_error(parent / candidate, action="atomic-write") from exc
+                raise
+        else:
+            raise OSError("failed to allocate a nofollow temporary file in %s" % parent) from last_error
+        owned = fd
+        fd = -1
+        _write_chunks_to_fd(owned, chunks, encoding=encoding, mode=mode, max_bytes=max_bytes, own_fd=True)
+        if not hasattr(os, "fchmod"):
+            os.chmod(temp_name, mode, dir_fd=dir_fd)
+        _reject_leaf_symlink_posix(dir_fd, name, destination)
+        os.rename(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temp_name = None
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+        os.close(dir_fd)
+
+
+def _append_nofollow_posix(path: Path, data: bytes, *, mode: int) -> None:
+    name = _leaf_name(path)
+    dir_fd = _open_directory_nofollow_posix(path.parent, action="append")
+    try:
+        flags = _open_flags(
+            os.O_WRONLY,
+            os.O_CREAT,
+            os.O_APPEND,
+            getattr(os, "O_NOFOLLOW", 0),
+            getattr(os, "O_BINARY", 0),
+        )
+        try:
+            fd = os.open(name, flags, mode, dir_fd=dir_fd)
+        except OSError as exc:
+            if _is_loop_error(exc):
+                raise _symlink_error(path, action="append") from exc
+            raise
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("append destination is not a regular file: %s" % path)
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "could not append", str(path))
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _write_atomic_anchored(
+    destination: Path,
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    mode: int,
+    max_bytes: int | None,
+) -> None:
+    if os.name == "nt":
+        _write_atomic_anchored_windows(
+            destination, chunks, encoding=encoding, mode=mode, max_bytes=max_bytes
+        )
+        return
+    if not _posix_dir_fd_supported():
+        raise OSError("anchored nofollow writes require dir_fd support")
+    _write_atomic_anchored_posix(
+        destination, chunks, encoding=encoding, mode=mode, max_bytes=max_bytes
+    )
+
+
+def append_nofollow(path: str | os.PathLike[str], data: bytes, *, mode: int = 0o600) -> None:
+    """Append to a regular file through a nofollow directory descriptor."""
+    target = Path(path).expanduser()
+    if os.name == "nt":
+        _append_nofollow_windows(target, data, mode=mode)
+        return
+    if not _posix_dir_fd_supported():
+        raise OSError("anchored nofollow writes require dir_fd support")
+    _append_nofollow_posix(target, data, mode=mode)
 
 
 def write_atomic(
@@ -1071,3 +1292,411 @@ def _atomic_write_private_bytes_windows(path: Path, data: bytes) -> None:
             except OSError:
                 pass
     _file_unsafe("failed to allocate a private temporary file in %s" % parent, last_error)
+
+
+# --- Windows: directory-handle anchored create / rename / append ---
+
+_WIN_GENERIC_READ = 0x80000000
+_WIN_GENERIC_WRITE = 0x40000000
+_WIN_DELETE = 0x00010000
+_WIN_SYNCHRONIZE = 0x00100000
+_WIN_FILE_APPEND_DATA = 0x0004
+_WIN_FILE_LIST_DIRECTORY = 0x0001
+_WIN_FILE_ADD_FILE = 0x0002
+_WIN_FILE_TRAVERSE = 0x0020
+_WIN_FILE_READ_ATTRIBUTES = 0x0080
+_WIN_FILE_SHARE_ALL = 0x00000007
+_WIN_OPEN_EXISTING = 3
+_WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WIN_FILE_ATTRIBUTE_NORMAL = 0x80
+_WIN_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_WIN_FILE_OPEN = 1
+_WIN_FILE_CREATE = 2
+_WIN_FILE_OPEN_IF = 3
+_WIN_FILE_DIRECTORY_FILE = 0x00000001
+_WIN_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+_WIN_FILE_NON_DIRECTORY_FILE = 0x00000040
+_WIN_FILE_OPEN_REPARSE_POINT = 0x00200000
+_WIN_OBJ_CASE_INSENSITIVE = 0x00000040
+_WIN_FILE_RENAME_INFO = 3
+_WIN_INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
+
+
+def _win_ntdll() -> Any:
+    import ctypes
+
+    return ctypes.WinDLL("ntdll", use_last_error=True)  # type: ignore[attr-defined]
+
+
+def _win_unicode_string(name: str) -> tuple[Any, Any]:
+    import ctypes
+    from ctypes import wintypes
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    buf = ctypes.create_unicode_buffer(name)
+    us = UNICODE_STRING()
+    us.Length = len(name) * 2
+    us.MaximumLength = (len(name) + 1) * 2
+    us.Buffer = buf
+    return us, buf
+
+
+def _win_nt_create(
+    *,
+    root: int,
+    name: str,
+    access: int,
+    disposition: int,
+    options: int,
+    share: int = _WIN_FILE_SHARE_ALL,
+    attributes: int = _WIN_FILE_ATTRIBUTE_NORMAL,
+) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class OBJECT_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.c_void_p),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", ctypes.c_void_p),
+            ("SecurityQualityOfService", ctypes.c_void_p),
+        ]
+
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_void_p)]
+
+    ntdll = _win_ntdll()
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    ntdll.NtCreateFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+    ]
+    us, buf = _win_unicode_string(name)
+    oa = OBJECT_ATTRIBUTES()
+    oa.Length = ctypes.sizeof(OBJECT_ATTRIBUTES)
+    oa.RootDirectory = root
+    oa.ObjectName = ctypes.cast(ctypes.byref(us), ctypes.c_void_p)
+    oa.Attributes = _WIN_OBJ_CASE_INSENSITIVE
+    iosb = IO_STATUS_BLOCK()
+    handle = wintypes.HANDLE()
+    status = ntdll.NtCreateFile(
+        ctypes.byref(handle),
+        access,
+        ctypes.byref(oa),
+        ctypes.byref(iosb),
+        None,
+        attributes,
+        share,
+        disposition,
+        options,
+        None,
+        0,
+    )
+    _ = buf
+    if status < 0:
+        raise OSError(status, "NtCreateFile failed for %s" % name)
+    return int(handle.value or 0)
+
+
+def _win_close(handle: int) -> None:
+    if not handle:
+        return
+    kernel32, _advapi32 = _win_advapi_kernel()
+    kernel32.CloseHandle.argtypes = [__import__("ctypes").wintypes.HANDLE]  # type: ignore[attr-defined]
+    kernel32.CloseHandle.restype = __import__("ctypes").wintypes.BOOL  # type: ignore[attr-defined]
+    kernel32.CloseHandle(handle)
+
+
+def _win_handle_info(handle: int) -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32, _advapi32 = _win_advapi_kernel()
+    info = BY_HANDLE_FILE_INFORMATION()
+    get_info = kernel32.GetFileInformationByHandle
+    get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(BY_HANDLE_FILE_INFORMATION)]
+    get_info.restype = wintypes.BOOL
+    if not get_info(handle, ctypes.byref(info)):
+        raise OSError(ctypes.get_last_error(), "GetFileInformationByHandle failed")
+    return info
+
+
+def _win_reject_reparse_handle(handle: int, path: Path, *, action: str) -> Any:
+    info = _win_handle_info(handle)
+    if info.dwFileAttributes & _REPARSE_POINT:
+        raise _symlink_error(path, action=action)
+    return info
+
+
+def _open_directory_nofollow_windows(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, _advapi32 = _win_advapi_kernel()
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = wintypes.HANDLE
+    access = (
+        _WIN_FILE_LIST_DIRECTORY
+        | _WIN_FILE_ADD_FILE
+        | _WIN_FILE_TRAVERSE
+        | _WIN_FILE_READ_ATTRIBUTES
+        | _WIN_SYNCHRONIZE
+    )
+    handle = create_file(
+        str(path),
+        access,
+        _WIN_FILE_SHARE_ALL,
+        None,
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid or handle is None:
+        raise OSError(ctypes.get_last_error(), "CreateFileW failed for %s" % path)
+    try:
+        info = _win_reject_reparse_handle(handle, path, action="atomic-write")
+        if not (info.dwFileAttributes & _WIN_FILE_ATTRIBUTE_DIRECTORY):
+            raise ValueError("path is not a directory: %s" % path)
+        return int(handle)
+    except Exception:
+        _win_close(int(handle))
+        raise
+
+
+def _win_write_handle(handle: int, data: bytes) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, _advapi32 = _win_advapi_kernel()
+    write_file = kernel32.WriteFile
+    write_file.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    write_file.restype = wintypes.BOOL
+    flush = kernel32.FlushFileBuffers
+    flush.argtypes = [wintypes.HANDLE]
+    flush.restype = wintypes.BOOL
+    view = memoryview(data)
+    while view:
+        written = wintypes.DWORD(0)
+        chunk = bytes(view[:65536])
+        buf = ctypes.create_string_buffer(chunk, len(chunk))
+        if not write_file(handle, buf, len(chunk), ctypes.byref(written), None):
+            raise OSError(ctypes.get_last_error(), "WriteFile failed")
+        if written.value <= 0:
+            raise OSError(errno.EIO, "could not write file")
+        view = view[written.value :]
+    if not flush(handle):
+        raise OSError(ctypes.get_last_error(), "FlushFileBuffers failed")
+
+
+def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    class FILE_RENAME_INFO(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", wintypes.DWORD),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * (len(name) + 1)),
+        ]
+
+    kernel32, _advapi32 = _win_advapi_kernel()
+    set_info = kernel32.SetFileInformationByHandle
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    info = FILE_RENAME_INFO()
+    info.ReplaceIfExists = 1
+    info.RootDirectory = dir_handle
+    info.FileNameLength = len(name) * 2
+    info.FileName = name
+    if not set_info(file_handle, _WIN_FILE_RENAME_INFO, ctypes.byref(info), ctypes.sizeof(info)):
+        raise OSError(ctypes.get_last_error(), "SetFileInformationByHandle rename failed")
+
+
+def _win_leaf_is_reparse(dir_handle: int, name: str, destination: Path) -> None:
+    try:
+        handle = _win_nt_create(
+            root=dir_handle,
+            name=name,
+            access=_WIN_FILE_READ_ATTRIBUTES | _WIN_SYNCHRONIZE,
+            disposition=_WIN_FILE_OPEN,
+            options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+            | _WIN_FILE_OPEN_REPARSE_POINT
+            | _WIN_FILE_NON_DIRECTORY_FILE,
+        )
+    except OSError:
+        return
+    try:
+        _win_reject_reparse_handle(handle, destination, action="atomic-write")
+    finally:
+        _win_close(handle)
+
+
+def _encode_chunks(chunks: Iterable[str | bytes], *, encoding: str, max_bytes: int | None) -> bytes:
+    parts: list[bytes] = []
+    written = 0
+    for chunk in chunks:
+        encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
+        written += len(encoded)
+        if max_bytes is not None and written > max_bytes:
+            raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
+        parts.append(encoded)
+    return b"".join(parts)
+
+
+def _write_atomic_anchored_windows(
+    destination: Path,
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    mode: int,
+    max_bytes: int | None,
+) -> None:
+    del mode
+    name = _leaf_name(destination)
+    parent = destination.parent
+    if not parent.is_symlink():
+        parent.mkdir(parents=True, exist_ok=True)
+    dir_handle = _open_directory_nofollow_windows(parent)
+    temp_handle = 0
+    temp_name: str | None = None
+    try:
+        _win_leaf_is_reparse(dir_handle, name, destination)
+        payload = _encode_chunks(chunks, encoding=encoding, max_bytes=max_bytes)
+        last_error: BaseException | None = None
+        for _ in range(_TEMP_ATTEMPTS):
+            candidate = ".%s.%s.tmp" % (name, secrets.token_hex(8))
+            try:
+                temp_handle = _win_nt_create(
+                    root=dir_handle,
+                    name=candidate,
+                    access=_WIN_GENERIC_WRITE | _WIN_DELETE | _WIN_SYNCHRONIZE,
+                    disposition=_WIN_FILE_CREATE,
+                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WIN_FILE_NON_DIRECTORY_FILE
+                    | _WIN_FILE_OPEN_REPARSE_POINT,
+                )
+                temp_name = candidate
+                break
+            except OSError as exc:
+                last_error = exc
+                continue
+        else:
+            raise OSError("failed to allocate a nofollow temporary file in %s" % parent) from last_error
+        _win_write_handle(temp_handle, payload)
+        _win_leaf_is_reparse(dir_handle, name, destination)
+        _win_rename_at(temp_handle, dir_handle, name)
+        temp_name = None
+    finally:
+        if temp_handle:
+            _win_close(temp_handle)
+        if temp_name is not None:
+            try:
+                leftover = _win_nt_create(
+                    root=dir_handle,
+                    name=temp_name,
+                    access=_WIN_DELETE | _WIN_SYNCHRONIZE,
+                    disposition=_WIN_FILE_OPEN,
+                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WIN_FILE_NON_DIRECTORY_FILE
+                    | _WIN_FILE_OPEN_REPARSE_POINT,
+                )
+            except OSError:
+                leftover = 0
+            if leftover:
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+
+                    class FILE_DISPOSITION_INFO(ctypes.Structure):
+                        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+                    kernel32, _advapi32 = _win_advapi_kernel()
+                    info = FILE_DISPOSITION_INFO(True)
+                    set_info = kernel32.SetFileInformationByHandle
+                    set_info.argtypes = [
+                        wintypes.HANDLE,
+                        ctypes.c_int,
+                        ctypes.c_void_p,
+                        wintypes.DWORD,
+                    ]
+                    set_info.restype = wintypes.BOOL
+                    set_info(leftover, 4, ctypes.byref(info), ctypes.sizeof(info))
+                finally:
+                    _win_close(leftover)
+        _win_close(dir_handle)
+
+
+def _append_nofollow_windows(path: Path, data: bytes, *, mode: int) -> None:
+    del mode
+    name = _leaf_name(path)
+    dir_handle = _open_directory_nofollow_windows(path.parent)
+    handle = 0
+    try:
+        handle = _win_nt_create(
+            root=dir_handle,
+            name=name,
+            access=_WIN_FILE_APPEND_DATA | _WIN_FILE_READ_ATTRIBUTES | _WIN_SYNCHRONIZE,
+            disposition=_WIN_FILE_OPEN_IF,
+            options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+            | _WIN_FILE_NON_DIRECTORY_FILE
+            | _WIN_FILE_OPEN_REPARSE_POINT,
+        )
+        _win_reject_reparse_handle(handle, path, action="append")
+        info = _win_handle_info(handle)
+        if info.dwFileAttributes & _WIN_FILE_ATTRIBUTE_DIRECTORY:
+            raise OSError("append destination is not a regular file: %s" % path)
+        _win_write_handle(handle, data)
+    finally:
+        if handle:
+            _win_close(handle)
+        _win_close(dir_handle)
+

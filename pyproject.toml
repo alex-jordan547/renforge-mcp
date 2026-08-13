@@ -34,7 +34,7 @@ Issues = "https://github.com/alex-jordan547/renforge-mcp/issues"
 
 [project.optional-dependencies]
 fastmcp = []
-test = ["pytest>=8", "httpx2>=2.0.0"]
+test = ["pytest>=8", "httpx2>=2.0.0", "jsonschema>=4.0.0"]
 ui = ["starlette>=0.31", "uvicorn[standard]>=0.30", "watchfiles>=0.22"]
 
 [project.scripts]

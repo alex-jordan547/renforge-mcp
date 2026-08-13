@@ -103,15 +103,36 @@ init python:
             self.events.append(record)
             return record
 
+    def _renforge_type_label(value):
+        try:
+            name = type(value).__name__
+        except Exception:
+            return "object"
+        if not isinstance(name, str) or not name:
+            return "object"
+        if len(name) > 80:
+            return name[:80]
+        return name
+
     def _renforge_jsonable(value):
-        """Best-effort conversion of a Python value to something JSON-safe."""
+        """Best-effort conversion of a Python value to something JSON-safe.
+
+        Does not call user conversion hooks such as ``__repr__`` or ``__str__``.
+        """
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
         if isinstance(value, (list, tuple)):
             return [_renforge_jsonable(v) for v in value]
         if isinstance(value, builtins.dict):
-            return {str(k): _renforge_jsonable(v) for k, v in value.items()}
-        return repr(value)
+            out = {}
+            for k, v in value.items():
+                if k is None or isinstance(k, (bool, int, float, str)):
+                    key = str(k)
+                else:
+                    key = "<%s>" % _renforge_type_label(k)
+                out[key] = _renforge_jsonable(v)
+            return out
+        return "<%s>" % _renforge_type_label(value)
 
     def _renforge_store_snapshot():
         snapshot = {}

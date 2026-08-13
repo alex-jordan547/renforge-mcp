@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from typing_extensions import NotRequired, TypedDict
 
+from .captures import capture_name_json_schema
+
 
 class ScrollInput(TypedDict):
     x: float
@@ -618,8 +620,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     ),
     "renforge_get_var": ToolDefinition(
         description=(
-            "Read one variable from the live store safely. Prefer this over `renforge_eval` for plain reads because it does "
-            "not execute arbitrary user-defined code."
+            "Read one named variable from the live store. JSON-safe values are returned as-is; other objects are replaced "
+            "by a type label without calling conversion hooks such as `__repr__`. Resolving the name can still run a store "
+            "property getter. Prefer this over `renforge_eval` when you only need a named lookup."
         ),
         annotations=_ann(
             readOnlyHint=True,
@@ -1097,79 +1100,22 @@ def _limits(minimum: int | float, maximum: int | float) -> dict[str, Any]:
     return {"minimum": minimum, "maximum": maximum}
 
 
-def _scenario_step_schema(action: str) -> dict[str, Any]:
-    payloads: dict[str, dict[str, Any]] = {
-        "set": {"type": "object", "minProperties": 1},
-        "eval": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "object"}]},
-        "click": {"oneOf": [{"type": "string"}, {"type": "object"}]},
-        "click_at": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "coordinate_space": _enum("logical", "screenshot"),
-                "expected_frame_id": {"type": ["string", "null"]},
-            },
-            "required": ["x", "y"],
-            "additionalProperties": False,
-        },
-        "scroll": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "direction": _enum("up", "down"),
-                "amount": {"type": "integer", "minimum": 1},
-            },
-            "required": ["x", "y", "direction"],
-            "additionalProperties": False,
-        },
-        "wait": {"type": "object"},
-        "assert": {"oneOf": [{"type": "string"}, {"type": "object"}]},
-        "select_choice": {"oneOf": [{"type": "string"}, {"type": "object"}]},
-        "capture": {
-            "oneOf": [
-                {"type": "string", "pattern": r"^[A-Za-z0-9_.-]{1,80}$"},
-                {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "pattern": r"^[A-Za-z0-9_.-]{1,80}$",
-                        }
-                    },
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "save": {"oneOf": [{"type": "string"}, {"type": "object"}]},
-        "load": {"oneOf": [{"type": "string"}, {"type": "object"}]},
-        "control": {
-            "oneOf": [
-                _enum(*_CONTROL_ACTIONS),
-                {
-                    "type": "object",
-                    "properties": {"action": _enum(*_CONTROL_ACTIONS)},
-                    "required": ["action"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "send_input": {"type": "object"},
-        "advance": {},
-    }
-    return {
-        "type": "object",
-        "properties": {
-            action: payloads[action],
-            "timeout": {"type": "number", "minimum": 0},
-            "step_timeout": {"type": "number", "minimum": 0},
-        },
-        "required": [action],
-        "additionalProperties": False,
-    }
+def _oneof_present(
+    required_props: dict[str, Any],
+    *,
+    null: tuple[str, ...] = (),
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Match when required fields are present; omitted or JSON-null siblings are allowed."""
+    properties = dict(required_props)
+    for name in null:
+        properties[name] = {"type": "null"}
+    if extra:
+        properties.update(extra)
+    return {"required": list(required_props), "properties": properties}
 
 
+_CAPTURE_NAME_SCHEMA = capture_name_json_schema()
 _SCROLL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1181,6 +1127,206 @@ _SCROLL_SCHEMA = {
     "required": ["x", "y", "direction"],
     "additionalProperties": False,
 }
+_SEND_INPUT_ONEOF = [
+    _oneof_present({"text": {"type": "string"}}, null=("key", "scroll")),
+    _oneof_present(
+        {"key": {"type": "string", "minLength": 1}},
+        null=("text", "scroll"),
+        extra={"submit": {"const": False}},
+    ),
+    _oneof_present(
+        {"scroll": _SCROLL_SCHEMA},
+        null=("text", "key"),
+        extra={"submit": {"const": False}},
+    ),
+]
+_WAIT_UNTIL_ONEOF = [
+    _oneof_present(
+        {"label": {"type": "string", "minLength": 1}},
+        null=("screen", "expr"),
+    ),
+    _oneof_present(
+        {"screen": {"type": "string", "minLength": 1}},
+        null=("label", "expr"),
+    ),
+    _oneof_present(
+        {"expr": {"type": "string", "minLength": 1}},
+        null=("label", "screen"),
+    ),
+]
+
+
+def _scenario_step_schema(action: str) -> dict[str, Any]:
+    payloads: dict[str, dict[str, Any]] = {
+        "set": {"type": "object", "minProperties": 1},
+        "eval": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {"expr": {"type": "string", "minLength": 1}},
+                    "required": ["expr"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "click": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "id": {"type": "string"},
+                        "target": {"type": "string"},
+                        "screen": {"type": "string"},
+                        "exact": {"type": "boolean"},
+                        "element_id": {"type": "string"},
+                        "expected_frame_id": {"type": ["string", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "click_at": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "coordinate_space": _enum("logical", "screenshot"),
+                "expected_frame_id": {"type": ["string", "null"]},
+            },
+            "required": ["x", "y"],
+            "additionalProperties": False,
+        },
+        "scroll": _SCROLL_SCHEMA,
+        "wait": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "minLength": 1},
+                "screen": {"type": "string", "minLength": 1},
+                "expr": {"type": "string", "minLength": 1},
+                "interval": {"type": "number", "minimum": 0},
+                "state_profile": _enum(*_STATE_PROFILES),
+                "include": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+            "oneOf": _WAIT_UNTIL_ONEOF,
+        },
+        "assert": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {
+                        "expr": {"type": "string", "minLength": 1},
+                        "equals": {},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["expr"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "select_choice": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "minLength": 1},
+                        "index": {"type": "integer", "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                    "oneOf": [
+                        _oneof_present(
+                            {"text": {"type": "string", "minLength": 1}},
+                            extra={"index": {"anyOf": [{"type": "null"}, {"const": -1}]}},
+                        ),
+                        _oneof_present(
+                            {"index": {"type": "integer", "minimum": 0}},
+                            extra={"text": {"anyOf": [{"type": "null"}, {"const": ""}]}},
+                        ),
+                    ],
+                },
+            ]
+        },
+        "capture": {
+            "oneOf": [
+                _CAPTURE_NAME_SCHEMA,
+                {
+                    "type": "object",
+                    "properties": {"name": _CAPTURE_NAME_SCHEMA},
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "save": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {"slot": {"type": "string", "minLength": 1}},
+                    "required": ["slot"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "load": {
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                    "type": "object",
+                    "properties": {"slot": {"type": "string", "minLength": 1}},
+                    "required": ["slot"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "control": {
+            "oneOf": [
+                _enum(*_CONTROL_ACTIONS),
+                {
+                    "type": "object",
+                    "properties": {"action": _enum(*_CONTROL_ACTIONS)},
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        "send_input": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "key": {"type": "string", "minLength": 1},
+                "scroll": _SCROLL_SCHEMA,
+                "submit": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+            "oneOf": _SEND_INPUT_ONEOF,
+        },
+        "advance": {
+            "oneOf": [
+                {"type": "null"},
+                {"type": "integer", "minimum": 1},
+                {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer", "minimum": 1}},
+                    "additionalProperties": False,
+                },
+            ]
+        },
+    }
+    return {
+        "type": "object",
+        "properties": {
+            action: payloads[action],
+            "timeout": {"type": "number", "minimum": 0},
+            "step_timeout": {"type": "number", "minimum": 0},
+        },
+        "required": [action],
+        "additionalProperties": False,
+    }
 
 _PARAMETER_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     "renforge_inspect_image": {
@@ -1257,8 +1403,8 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     },
     "renforge_capture_screenshot": {
         "name": {
-            "pattern": r"^[A-Za-z0-9_.-]{1,80}$",
-            "not": {"enum": [".", ".."]},
+            "pattern": _CAPTURE_NAME_SCHEMA["pattern"],
+            "not": _CAPTURE_NAME_SCHEMA["not"],
         },
         "width": {"minimum": 0},
         "height": {"minimum": 0},
@@ -1290,51 +1436,45 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 _INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
-    "renforge_send_input": {
-        "oneOf": [
-            {"required": ["text"], "properties": {"text": {"type": "string"}}, "not": {"anyOf": [{"required": ["key"]}, {"required": ["scroll"]}]}},
-            {"required": ["key"], "properties": {"key": {"type": "string", "minLength": 1}, "submit": {"const": False}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["scroll"]}]}},
-            {"required": ["scroll"], "properties": {"scroll": _SCROLL_SCHEMA, "submit": {"const": False}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["key"]}]}},
-        ]
-    },
-    "renforge_wait_until": {
-        "oneOf": [
-            {"required": ["label"], "properties": {"label": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["screen"]}, {"required": ["expr"]}]}},
-            {"required": ["screen"], "properties": {"screen": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["label"]}, {"required": ["expr"]}]}},
-            {"required": ["expr"], "properties": {"expr": {"type": "string", "minLength": 1}}, "not": {"anyOf": [{"required": ["label"]}, {"required": ["screen"]}]}},
-        ]
-    },
+    "renforge_send_input": {"oneOf": _SEND_INPUT_ONEOF},
+    "renforge_wait_until": {"oneOf": _WAIT_UNTIL_ONEOF},
     "renforge_saves": {
         "oneOf": [
             {
-                "properties": {"action": {"const": "save"}},
+                "properties": {
+                    "action": {"const": "save"},
+                    "regexp": {"type": "null"},
+                },
                 "required": ["action", "slot"],
-                "not": {"required": ["regexp"]},
             },
             {
-                "properties": {"action": {"const": "load"}},
+                "properties": {
+                    "action": {"const": "load"},
+                    "extra_info": {"type": "null"},
+                    "regexp": {"type": "null"},
+                },
                 "required": ["action", "slot"],
-                "not": {"anyOf": [{"required": ["extra_info"]}, {"required": ["regexp"]}]},
             },
             {
-                "properties": {"action": {"const": "list"}},
+                "properties": {
+                    "action": {"const": "list"},
+                    "slot": {"type": "null"},
+                    "extra_info": {"type": "null"},
+                },
                 "required": ["action"],
-                "not": {"anyOf": [{"required": ["slot"]}, {"required": ["extra_info"]}]},
             },
         ]
     },
     "renforge_select_choice": {
         "oneOf": [
-            {
-                "required": ["text"],
-                "properties": {"text": {"type": "string", "minLength": 1}},
-                "not": {"required": ["index"]},
-            },
-            {
-                "required": ["index"],
-                "properties": {"index": {"type": "integer", "minimum": 0}},
-                "not": {"required": ["text"]},
-            },
+            _oneof_present(
+                {"text": {"type": "string", "minLength": 1}},
+                extra={"index": {"anyOf": [{"type": "null"}, {"const": -1}]}},
+            ),
+            _oneof_present(
+                {"index": {"type": "integer", "minimum": 0}},
+                extra={"text": {"anyOf": [{"type": "null"}, {"const": ""}]}},
+            ),
         ]
     },
 }

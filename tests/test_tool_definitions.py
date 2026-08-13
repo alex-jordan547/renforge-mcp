@@ -415,3 +415,146 @@ def test_catalog_states_exact_runtime_and_filesystem_contracts() -> None:
     web_build = definitions["renforge_web_build"].description.lower()
     assert "separately installed web dlc" in web_build
     assert "does not download external toolchains" in web_build
+
+
+def _step_payloads(schemas: dict[str, dict]) -> dict[str, dict]:
+    steps = schemas["renforge_run_scenario"]["properties"]["steps"]["items"]["oneOf"]
+    return {item["required"][0]: item["properties"][item["required"][0]] for item in steps}
+
+
+def test_optional_null_siblings_do_not_break_exclusive_tool_schemas(
+    monkeypatch, tmp_path
+) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    pytest.importorskip("jsonschema")
+    from fastmcp import Client
+    from jsonschema import Draft202012Validator
+    from renforge.tools import live
+
+    send_calls: list[dict] = []
+    wait_calls: list[dict] = []
+    monkeypatch.setattr(
+        live,
+        "send_input",
+        lambda project_path, **kwargs: send_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        live,
+        "wait_until",
+        lambda project_path, **kwargs: wait_calls.append(kwargs) or {"ok": True, "matched": {}},
+    )
+
+    async def _call():
+        async with Client(create_app()) as client:
+            send = await client.call_tool(
+                "renforge_send_input",
+                {
+                    "project_path": str(tmp_path),
+                    "text": "hello",
+                    "key": None,
+                    "scroll": None,
+                },
+                raise_on_error=False,
+            )
+            wait = await client.call_tool(
+                "renforge_wait_until",
+                {
+                    "project_path": str(tmp_path),
+                    "label": "start",
+                    "screen": None,
+                    "expr": None,
+                    "timeout": 1,
+                },
+                raise_on_error=False,
+            )
+            return send, wait
+
+    send, wait = asyncio.run(_call())
+    assert send.is_error is False, send.content
+    assert wait.is_error is False, wait.content
+    assert send_calls == [{"text": "hello", "key": None, "scroll": None, "submit": False}]
+    assert wait_calls[0]["label"] == "start"
+    assert wait_calls[0]["screen"] is None
+    assert wait_calls[0]["expr"] is None
+
+    tools = asyncio.run(create_app().list_tools())
+    schemas = {tool.name: tool.parameters for tool in tools}
+    send_schema = Draft202012Validator(schemas["renforge_send_input"])
+    wait_schema = Draft202012Validator(schemas["renforge_wait_until"])
+    send_schema.validate(
+        {"project_path": str(tmp_path), "text": "hello", "key": None, "scroll": None}
+    )
+    wait_schema.validate(
+        {"project_path": str(tmp_path), "label": "start", "screen": None, "expr": None}
+    )
+    Draft202012Validator(schemas["renforge_saves"]).validate(
+        {"project_path": str(tmp_path), "action": "list", "slot": None, "extra_info": None}
+    )
+    Draft202012Validator(schemas["renforge_select_choice"]).validate(
+        {"project_path": str(tmp_path), "text": "Go", "index": None}
+    )
+    assert not send_schema.is_valid(
+        {"project_path": str(tmp_path), "text": "hello", "key": "enter"}
+    )
+
+
+def test_scenario_step_schemas_match_runtime_contracts() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+
+    tools = asyncio.run(create_app().list_tools())
+    schemas = {
+        tool.name: tool.parameters
+        for tool in tools
+        if tool.name.startswith("renforge_")
+    }
+    payloads = _step_payloads(schemas)
+
+    wait = payloads["wait"]
+    assert wait["additionalProperties"] is False
+    assert len(wait["oneOf"]) == 3
+    assert {"label", "screen", "expr"} <= set(wait["properties"])
+
+    send_input = payloads["send_input"]
+    assert send_input["additionalProperties"] is False
+    assert len(send_input["oneOf"]) == 3
+
+    capture = payloads["capture"]
+    string_branch = next(item for item in capture["oneOf"] if item.get("type") == "string")
+    assert string_branch["not"]["enum"] == [".", ".."]
+    object_branch = next(item for item in capture["oneOf"] if item.get("type") == "object")
+    assert object_branch["properties"]["name"]["not"]["enum"] == [".", ".."]
+
+    assert payloads["eval"]["oneOf"][1]["required"] == ["expr"]
+    assert payloads["save"]["oneOf"][1]["required"] == ["slot"]
+    assert payloads["load"]["oneOf"][1]["required"] == ["slot"]
+
+
+def test_run_scenario_schema_rejects_payloads_runtime_rejects() -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    pytest.importorskip("jsonschema")
+    from jsonschema import Draft202012Validator
+
+    tools = asyncio.run(create_app().list_tools())
+    schema = next(tool.parameters for tool in tools if tool.name == "renforge_run_scenario")
+    validator = Draft202012Validator(schema)
+
+    def valid(steps: list[dict]) -> bool:
+        return validator.is_valid({"project_path": "/tmp/game", "steps": steps})
+
+    assert valid([{"wait": {"screen": "choice"}}])
+    assert valid([{"send_input": {"text": "hello"}}])
+    assert valid([{"capture": "frame"}])
+    assert not valid([{"wait": {}}])
+    assert not valid([{"send_input": {"text": "a", "key": "enter"}}])
+    assert not valid([{"capture": "."}])
+    assert not valid([{"capture": {"name": ".."}}])
+
+
+def test_get_var_description_does_not_promise_zero_user_code() -> None:
+    description = TOOL_DEFINITIONS["renforge_get_var"].description.lower()
+    assert "does not execute" not in description
+    assert "type label" in description
+    assert "repr" in description
+    assert "property" in description
+    assert TOOL_DEFINITIONS["renforge_get_var"].annotations["readOnlyHint"] is True
+

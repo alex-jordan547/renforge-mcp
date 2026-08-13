@@ -727,6 +727,18 @@ def test_eval_and_set_var_mutate_real_store(running_bridge):
     assert client.get_var("score") == 99
 
 
+def test_get_var_does_not_invoke_user_repr_or_str(running_bridge):
+    class Boom:
+        def __repr__(self):
+            raise AssertionError("repr-was-called")
+
+        def __str__(self):
+            raise AssertionError("str-was-called")
+
+    running_bridge.store.boom = Boom()
+    assert running_bridge.client.get_var("boom") == "<Boom>"
+
+
 def test_screenshot_returns_decoded_png_bytes(running_bridge):
     data = running_bridge.client.screenshot(320, 180)
     assert data.startswith(b"\x89PNG")

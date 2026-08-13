@@ -3,29 +3,58 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 from .util import ensure_nofollow_directory
+from .util.files import append_nofollow
 
 
 _MAX_ACTIVITY_BYTES = 8192
 _MAX_STRING_CHARS = 512
 _MAX_COLLECTION_ITEMS = 32
-_SENSITIVE_KEYS = {
-    "content",
-    "contents",
-    "expr",
-    "password",
-    "secret",
-    "steps",
-    "text",
-    "token",
-    "value",
-}
+_SENSITIVE_TOKENS = frozenset(
+    {
+        "authorization",
+        "auth",
+        "bearer",
+        "content",
+        "contents",
+        "cookie",
+        "cookies",
+        "credential",
+        "credentials",
+        "expr",
+        "key",
+        "passwd",
+        "password",
+        "private",
+        "secret",
+        "session",
+        "steps",
+        "text",
+        "token",
+        "value",
+    }
+)
+
+
+def _bound_text(value: str) -> str:
+    if len(value) > _MAX_STRING_CHARS:
+        return value[:_MAX_STRING_CHARS] + "...[truncated]"
+    return value
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lowered = key.lower()
+    parts = [part for part in re.split(r"[^a-z0-9]+", lowered) if part]
+    return any(part in _SENSITIVE_TOKENS for part in parts)
+
+
+def _encode_activity_entry(entry: dict[str, Any]) -> bytes:
+    return (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def _coerce_project_root(project_root: str | Path) -> Path:
@@ -44,20 +73,20 @@ def _coerce_result_payload(result: Any) -> dict[str, Any]:
     summary = summarize_result(result)
     payload: dict[str, Any] = {"ok": summary["ok"]}
     if isinstance(result, dict):
-        payload["keys"] = sorted(str(key) for key in result)[:_MAX_COLLECTION_ITEMS]
+        payload["keys"] = sorted(_bound_text(str(key)) for key in result)[:_MAX_COLLECTION_ITEMS]
     else:
-        payload["type"] = type(result).__name__
+        payload["type"] = _bound_text(type(result).__name__)
     return payload
 
 
 def _coerce_payload(value: Any, *, key: str = "", depth: int = 0) -> Any:
-    if key.lower() in _SENSITIVE_KEYS:
+    if key and _is_sensitive_key(key):
         return "[redacted]"
     if depth >= 4:
         return "[truncated]"
     if isinstance(value, (str, int, float, bool, type(None))):
         if isinstance(value, str) and len(value) > _MAX_STRING_CHARS:
-            return value[:_MAX_STRING_CHARS] + "...[truncated]"
+            return _bound_text(value)
         return value
     if isinstance(value, list):
         return [
@@ -66,18 +95,18 @@ def _coerce_payload(value: Any, *, key: str = "", depth: int = 0) -> Any:
         ]
     if isinstance(value, dict):
         return {
-            str(k): _coerce_payload(v, key=str(k), depth=depth + 1)
+            _bound_text(str(k)): _coerce_payload(v, key=str(k), depth=depth + 1)
             for k, v in list(value.items())[:_MAX_COLLECTION_ITEMS]
         }
     if isinstance(value, set):
-        return sorted(str(item) for item in value)[:_MAX_COLLECTION_ITEMS]
+        return sorted(_bound_text(str(item)) for item in value)[:_MAX_COLLECTION_ITEMS]
     if isinstance(value, tuple):
         return [
             _coerce_payload(item, depth=depth + 1)
             for item in value[:_MAX_COLLECTION_ITEMS]
         ]
     coerced = str(value)
-    return coerced[:_MAX_STRING_CHARS]
+    return _bound_text(coerced)
 
 
 def summarize_result(result: Any) -> dict[str, Any]:
@@ -108,7 +137,7 @@ def log_tool_call(
     summary = summarize_result(result)
     entry = {
         "ts": int(time.time() * 1000),
-        "name": name,
+        "name": _bound_text(str(name)),
         "params": _coerce_payload(params),
         "duration_ms": duration_ms,
         "ok": summary["ok"],
@@ -122,24 +151,18 @@ def log_tool_call(
     activity_dir = ensure_nofollow_directory(root / ".renforge")
     path = activity_dir / "activity.jsonl"
 
-    payload = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-    encoded = (payload + "\n").encode("utf-8")
+    encoded = _encode_activity_entry(entry)
     if len(encoded) > _MAX_ACTIVITY_BYTES:
         entry["params"] = {"truncated": True}
         entry["files_touched"] = []
-        encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
-            "utf-8"
-        )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(str(path), flags, 0o600)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError("activity log is not a regular file")
-        os.write(fd, encoded)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        entry["result"] = {"ok": bool(entry.get("ok")), "truncated": True}
+        encoded = _encode_activity_entry(entry)
+    if len(encoded) > _MAX_ACTIVITY_BYTES:
+        entry = {
+            "ts": entry["ts"],
+            "name": _bound_text(str(name)),
+            "ok": bool(entry.get("ok")),
+            "truncated": True,
+        }
+        encoded = _encode_activity_entry(entry)
+    append_nofollow(path, encoded, mode=0o600)
