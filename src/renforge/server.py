@@ -69,7 +69,10 @@ def create_app() -> Any:
         "renforge_control(action=\"reload_script\"); Live Editor Save already "
         "reloads and attests its own changes. Use renforge_wait_until for one "
         "bounded condition, and "
-        "renforge_get_errors after risky actions or a stopped process."
+        "renforge_get_errors after risky actions or a stopped process. "
+        "RENFORGE_POLICY defaults to off; when set to enforce, destructive and "
+        "open-world operations (eval, quit, load, reload_script, and matching "
+        "scenario steps) require authorize=true or an allowlist."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)

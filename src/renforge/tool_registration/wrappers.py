@@ -20,7 +20,20 @@ def _log_tool_call(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> Any:
-    from .. import activity_log
+    from .. import policy
+
+    decision = policy.evaluate(name, params, project_root=project_root)
+    if not decision.allowed:
+        result = decision.to_result()
+        _record_tool_activity(
+            project_root,
+            name,
+            policy.redact_params(params),
+            0.0,
+            result,
+            policy=decision.log_fields(),
+        )
+        return result
 
     started = perf_counter()
     try:
@@ -31,21 +44,47 @@ def _log_tool_call(
     duration_ms = round((perf_counter() - started) * 1000, 2)
     definition = TOOL_DEFINITIONS.get(name)
     should_log = definition is None or not definition.annotations["readOnlyHint"]
-    if project_root is not None and should_log:
-        summary = activity_log.summarize_result(result)
-        try:
-            activity_log.log_tool_call(
-                project_root,
-                name,
-                params,
-                duration_ms,
-                result,
-                files_touched=summary["files_touched"],
-            )
-        except Exception:
-            pass
+    if should_log:
+        logged_params = params
+        if decision.risk in {policy.RISK_OPEN_WORLD, policy.RISK_DESTRUCTIVE}:
+            logged_params = policy.redact_params(params)
+        _record_tool_activity(
+            project_root,
+            name,
+            logged_params,
+            duration_ms,
+            result,
+            policy=decision.log_fields(),
+        )
 
     return result
+
+
+def _record_tool_activity(
+    project_root: str | None,
+    name: str,
+    params: dict[str, Any],
+    duration_ms: float,
+    result: Any,
+    policy: dict[str, Any] | None = None,
+) -> None:
+    if project_root is None:
+        return
+    from .. import activity_log
+
+    summary = activity_log.summarize_result(result)
+    try:
+        activity_log.log_tool_call(
+            project_root,
+            name,
+            params,
+            duration_ms,
+            result,
+            files_touched=summary["files_touched"],
+            policy=policy,
+        )
+    except Exception:
+        pass
 
 
 def _png_content(png: bytes) -> Any:

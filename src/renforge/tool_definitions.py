@@ -375,7 +375,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Run a runtime control action (`advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, "
             "`hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, `quit`). "
             "Use `quick_load` with care: it replaces live state. `quit` stops the active game session. "
-            "`renforge_advance` is a narrower alternative for pure advance actions."
+            "`renforge_advance` is a narrower alternative for pure advance actions. Destructive actions require "
+            "`authorize=true` when `RENFORGE_POLICY=enforce`."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -389,6 +390,10 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "interaction_id": "Optional interaction correlation id used for safety checks and logs.",
             "wait_for_effect": "Wait until bridge reports visible state effect before returning.",
             "effect_timeout": "Maximum seconds to wait when `wait_for_effect` is enabled.",
+            "authorize": (
+                "Explicitly authorize destructive actions when `RENFORGE_POLICY=enforce`; "
+                "ignored for lower-risk actions."
+            ),
         },
         parameter_schemas={"action": _enum(*_CONTROL_ACTIONS)},
     ),
@@ -423,7 +428,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_saves": ToolDefinition(
         description=(
             "List, load, or save named slots in a single command family. `list` is read-only; `load` replaces live state "
-            "and `save` can overwrite the chosen slot. Verify slot names before mutating gameplay progress."
+            "and `save` can overwrite the chosen slot. Verify slot names before mutating gameplay progress. `load` requires "
+            "`authorize=true` when `RENFORGE_POLICY=enforce`."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -437,6 +443,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "slot": "Slot label used by save/load actions.",
             "extra_info": "Optional save metadata for save actions.",
             "regexp": "Optional regex filter for list only, selecting matching slots.",
+            "authorize": (
+                "Explicitly authorize `load` when `RENFORGE_POLICY=enforce`; ignored for list/save."
+            ),
         },
         parameter_schemas={"action": _enum("save", "load", "list")},
         input_schema={
@@ -680,7 +689,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         description=(
             "Evaluate an arbitrary Python expression in the running store namespace. This may call project functions and "
             "mutate runtime state or access the filesystem, start processes, and use the network with the game process's "
-            "permissions. Prefer `renforge_get_var` for plain reads and use this only for controlled diagnostics."
+            "permissions. Prefer `renforge_get_var` for plain reads and use this only for controlled diagnostics. Pass "
+            "`authorize=true` when `RENFORGE_POLICY=enforce`, unless this operation is allowlisted."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -691,6 +701,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         parameters={
             "project_path": "Project root with active live session.",
             "expr": "Python expression to evaluate in the store namespace.",
+            "authorize": (
+                "Explicitly authorize this open-world expression when `RENFORGE_POLICY=enforce`."
+            ),
         },
     ),
     "renforge_set_var": ToolDefinition(
@@ -879,7 +892,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         description=(
             "Run a scripted scenario pipeline of multiple interaction steps in one call and return grouped diagnostics. "
             "`eval`, `assert`, and expression-based `wait` steps execute arbitrary Python that may mutate state, access the "
-            "filesystem, start processes, or use the network. Validate expectations and review capture output on failure."
+            "filesystem, start processes, or use the network. Validate expectations and review capture output on failure. "
+            "Destructive or open-world steps require `authorize=true` when `RENFORGE_POLICY=enforce`."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -898,6 +912,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "stop_on_failure": "Abort remaining steps when one step fails.",
             "state_profile": "Compact state profile used for captures: `minimal`, `interaction`, `debug`, or `full`.",
             "capture_on_failure": "Capture diagnostics (including image) when step evaluation fails.",
+            "authorize": (
+                "Explicitly authorize a destructive or open-world step when `RENFORGE_POLICY=enforce`."
+            ),
         },
         parameter_schemas={
             "steps": {

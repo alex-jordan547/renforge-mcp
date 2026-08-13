@@ -43,8 +43,11 @@ from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
 from .source import (
     BAR_SIZE_MODE_XSIZE_YSIZE,
     DEFAULT_ALIGN_PARENT_SIZE,
+    SAY_WHAT_STYLE_POSITION_MODE,
     BarStatement,
     EditorSourceError,
+    SayDialogueStyleBinding,
+    SayWhatStylePositionStatement,
     TextColorStyleStatement,
     TextPositionStatement,
     align_geometry_matches_parent,
@@ -52,18 +55,22 @@ from .source import (
     analyze_button_statement,
     analyze_editable_statement,
     analyze_raise_adjacent_sibling,
+    analyze_say_dialogue_style_binding,
+    analyze_say_what_style_position,
     analyze_text_color_style,
     analyze_text_position_statement,
     analyze_textbutton_block_statement,
     apply_button_patch,
     apply_button_sibling_swap,
     apply_editable_statement_patch,
+    apply_say_what_style_position_patch,
     apply_text_color_patch,
     apply_text_position_patch,
     apply_textbutton_patch,
     is_slider_style_bar_line,
     is_textbutton_block_header,
     peek_statement_kind,
+    prove_say_what_text_binding,
     textbutton_patch_kwargs,
     uses_runtime_delta_position,
 )
@@ -165,6 +172,7 @@ class EditorCoordinator:
         self._transaction_root.mkdir(parents=True, exist_ok=True)
         fsync_directory(self._transaction_root.parent)
         fsync_directory(self._transaction_root)
+
         self._recover_transactions()
 
     def start(self) -> EditorEndpoint:
@@ -249,9 +257,13 @@ class EditorCoordinator:
                 if record.timer is not None:
                     record.timer.cancel()
                     record.timer = None
+            # A clean close is terminal: no successor coordinator is guaranteed
+            # to attest a published edit, so restore every uncommitted state.
+            # Crash recovery remains handled by _recover_transactions(), because
+            # an interrupted process never reaches this cleanup path.
             for record in self._transactions.values():
-                if record.state == "published":
-                    self._conditional_rollback(record)
+                if record.state in {"staged", "publishing", "published"}:
+                    self._conditional_rollback(record, allow_staged=True)
             states = {txid: record.state for txid, record in self._transactions.items()}
             return {"session_id": self._session_id, "transactions": states, "recovered": list(self._recovered)}
 
@@ -358,7 +370,10 @@ class EditorCoordinator:
                 pass
 
     def _read_frame(self, file_obj: Any, limit: int) -> tuple[bytes | None, str | None]:
-        data = file_obj.readline(limit + 1)
+        try:
+            data = file_obj.readline(limit + 1)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return None, "EOF"
         if not data:
             return None, "EOF"
         if len(data) > limit:
@@ -591,9 +606,13 @@ class EditorCoordinator:
             position_mode: str | None = None
             text_position: TextPositionStatement | None = None
             text_style: TextColorStyleStatement | None = None
+            say_style_position: SayWhatStylePositionStatement | None = None
             move_lock_reason: dict[str, Any] | None = None
             style_lock_reason: dict[str, Any] | None = None
+            gui_rpy_path: str | None = None
+
             if header_kind == "text":
+                # Try direct position first
                 try:
                     text_position = analyze_text_position_statement(
                         header_line,
@@ -601,6 +620,8 @@ class EditorCoordinator:
                     )
                 except EditorSourceError as exc:
                     move_lock_reason = self._lock_reason(exc.code, str(exc))
+
+                # Try style color
                 try:
                     text_style = analyze_text_color_style(
                         header_line,
@@ -613,7 +634,86 @@ class EditorCoordinator:
                         )
                 except EditorSourceError as exc:
                     style_lock_reason = self._lock_reason(exc.code, str(exc))
-                statement = text_position or text_style
+
+                # Critical finding #1/#2: If direct position failed for say.what,
+                # attempt style-backed ownership resolution
+                if (
+                    text_position is None
+                    and widget_id == "what"
+                    and runtime_key.get("screen") == "say"
+                ):
+                    # CRITICAL: Clear move_lock_reason from direct position failure
+                    # say.what has separate ownership path via gui.rpy
+                    move_lock_reason = None
+
+                    try:
+                        prove_say_what_text_binding(header_line)
+                    except EditorSourceError as exc:
+                        move_lock_reason = self._lock_reason(exc.code, str(exc))
+                        say_style_position = None
+                    else:
+                        # Ownership proof part 3: screens.rpy must have style say_dialogue binding
+                        # xpos/ypos to gui.dialogue_xpos/ypos (fail-closed if missing/ambiguous/expressions)
+                        try:
+                            style_binding = analyze_say_dialogue_style_binding(
+                                source_text,
+                                xpos_var="gui.dialogue_xpos",
+                                ypos_var="gui.dialogue_ypos",
+                            )
+                            if not style_binding.binding_proven:
+                                if move_lock_reason is None:
+                                    move_lock_reason = self._lock_reason(
+                                        style_binding.lock_code or "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                        style_binding.lock_message or "style say_dialogue binding not proven",
+                                    )
+                                say_style_position = None
+                        except Exception as exc:
+                            if move_lock_reason is None:
+                                move_lock_reason = self._lock_reason(
+                                    "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                    f"screens.rpy style binding analysis failed: {str(exc)}",
+                                )
+                            say_style_position = None
+
+                        # Ownership proof part 4: gui.rpy must have unlocked gui.dialogue_xpos/ypos
+                        # Use game-relative path: resolve_game_path already joins project_root/game/
+                        if move_lock_reason is None:
+                            gui_rpy_path = "gui.rpy"
+
+                            try:
+                                # Load gui.rpy to analyze style-backed position
+                                gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
+                                gui_source = gui_absolute.read_bytes().decode("utf-8")
+                                say_style_position = analyze_say_what_style_position(
+                                    gui_source,
+                                    xpos_var="gui.dialogue_xpos",
+                                    ypos_var="gui.dialogue_ypos",
+                                )
+                                if say_style_position.position_lock_code is not None:
+                                    # Style position locked - use its reason instead of misleading XPOS_DUPLICATE
+                                    move_lock_reason = self._lock_reason(
+                                        say_style_position.position_lock_code,
+                                        say_style_position.position_lock_message or say_style_position.position_lock_code,
+                                    )
+                                    say_style_position = None  # Don't unlock
+                            except EditorPathError as exc:
+                                # gui.rpy not found or path error - keep original lock reason but don't use XPOS_DUPLICATE
+                                if move_lock_reason is None:
+                                    move_lock_reason = self._lock_reason(
+                                        "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                        f"gui.rpy path error: {exc.code}",
+                                    )
+                                say_style_position = None
+                            except Exception as exc:
+                                # Malformed gui.rpy or analysis error - surface as lock reason
+                                if move_lock_reason is None:
+                                    move_lock_reason = self._lock_reason(
+                                        "STYLE_POSITION_SOURCE_UNRESOLVED",
+                                        f"gui.rpy analysis failed: {str(exc)}",
+                                    )
+                                say_style_position = None
+
+                statement = text_position or text_style or say_style_position
                 if statement is None:
                     reason = move_lock_reason or style_lock_reason
                     raise EditorError(
@@ -621,12 +721,18 @@ class EditorCoordinator:
                         (reason or {}).get("message", "text source is not writable"),
                     )
                 statement_kind = "text"
-                position_mode = "xy" if text_position is not None else None
-                original_position = (
-                    [int(text_position.xpos), int(text_position.ypos)]
-                    if text_position is not None
-                    else list(runtime_position)
-                )
+
+                if text_position is not None:
+                    position_mode = "xy"
+                    original_position = [int(text_position.xpos), int(text_position.ypos)]
+                elif say_style_position is not None and say_style_position.position_mode:
+                    # Style-backed position unlocked
+                    position_mode = say_style_position.position_mode
+                    original_position = [int(say_style_position.xpos), int(say_style_position.ypos)]
+                else:
+                    # Style color only, no position
+                    position_mode = None
+                    original_position = list(runtime_position)
             elif header_kind == "button":
                 statement = analyze_button_statement(
                     source_text,
@@ -687,11 +793,24 @@ class EditorCoordinator:
                 "baseline_sha256": source_sha,
                 "position_mode": position_mode,
             }
+
+            # For say.what style position: store gui.rpy path and parsed statement
+            if say_style_position is not None and say_style_position.position_mode:
+                source_key["gui_rpy_path"] = gui_rpy_path
+                source_key["say_style_position_xpos"] = say_style_position.xpos
+                source_key["say_style_position_ypos"] = say_style_position.ypos
+                source_key["say_style_position_baseline_sha256"] = say_style_position.baseline_sha256
             if statement_kind == "text":
                 source_key["move_lock_reason"] = move_lock_reason
                 source_key["style_lock_reason"] = style_lock_reason
                 source_key["style_mode"] = text_style.style_mode if text_style is not None else None
                 source_key["style_color"] = text_style.color if text_style is not None else None
+                if (
+                    lock_reason is None
+                    and position_mode is None
+                    and source_key["style_mode"] is None
+                ):
+                    lock_reason = move_lock_reason or style_lock_reason
             # Issue #47: bar-only resize capability from pure xsize/ysize.
             if statement_kind == "bar" and isinstance(statement, BarStatement):
                 if (
@@ -1139,19 +1258,125 @@ class EditorCoordinator:
             staged_bytes, swap_locations = self._apply_same_file_intents(current_bytes, selected_records)
         except EditorSourceError as exc:
             raise EditorError(exc.code, str(exc)) from exc
-        transaction_id = uuid.uuid4().hex
-        transaction = _TransactionRecord(
-            transaction_id=transaction_id,
-            source_relative_path=relative_path,
-            source_absolute_path=source_path,
-            original_bytes=current_bytes,
-            staged_bytes=staged_bytes,
-            original_sha256=current_sha,
-            staged_sha256=sha256_bytes(staged_bytes),
-            generation=generation,
-            expected_targets=[self._expected_target_for_intent(selected, swap_locations) for selected in selected_records],
-            state="staged",
-        )
+
+        # Critical finding #1: Two-file write path for say.what style position
+        # Detect gui.rpy intents (position lives in gui.rpy, identity in screens.rpy)
+        gui_intents = [
+            sel for sel in selected_records
+            if sel.source_key.get("position_mode") == SAY_WHAT_STYLE_POSITION_MODE
+            and sel.x is not None
+            and sel.y is not None
+        ]
+
+        if gui_intents:
+            # Verify screens.rpy unchanged (identity-only path)
+            if staged_bytes != current_bytes:
+                raise EditorError(
+                    "MULTI_FILE_WRITE_UNSUPPORTED",
+                    "say.what style position cannot be combined with other screen changes in V1",
+                )
+
+            # Create gui.rpy transaction
+            if len(gui_intents) != len(selected_records):
+                raise EditorError(
+                    "MULTI_FILE_WRITE_UNSUPPORTED",
+                    "say.what style position cannot be combined with other intents in V1",
+                )
+
+            # All intents are gui.rpy - create gui transaction
+            gui_rpy_path = gui_intents[0].source_key.get("gui_rpy_path")
+            if not gui_rpy_path:
+                raise EditorError("GUI_RPY_PATH_MISSING", "gui.rpy path is missing from source_key")
+
+            gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
+            gui_current_bytes = gui_absolute.read_bytes()
+            gui_current_sha = sha256_bytes(gui_current_bytes)
+
+            # Verify gui.rpy baseline
+            gui_baseline = gui_intents[0].source_key.get("say_style_position_baseline_sha256")
+            if gui_current_sha != gui_baseline:
+                raise EditorError("STALE_SOURCE", "gui.rpy has changed since analysis")
+
+            # Apply gui.rpy patch
+            gui_source_text = gui_current_bytes.decode("utf-8")
+            say_statement = analyze_say_what_style_position(
+                gui_source_text,
+                xpos_var="gui.dialogue_xpos",
+                ypos_var="gui.dialogue_ypos",
+            )
+            if say_statement.position_lock_code is not None:
+                raise EditorError(
+                    say_statement.position_lock_code,
+                    say_statement.position_lock_message or "say.what style position is locked",
+                )
+
+            # Calculate logical-pixel deltas: apply to authored gui.scale ints
+            # NEVER write absolute screen coords into gui.dialogue_xpos/ypos
+            authored_x = gui_intents[0].source_key.get("say_style_position_xpos")
+            authored_y = gui_intents[0].source_key.get("say_style_position_ypos")
+
+            # CRITICAL: For style-backed position, baseline is AUTHORED values (window-relative)
+            # NOT original_position (which is screen-absolute including window offset)
+            # Intent x/y from preview are ALSO window-relative (preview mutates style, not screen coords)
+            runtime_baseline_x = authored_x
+            runtime_baseline_y = authored_y
+
+            # New position from intent (after drag, window-relative from preview)
+            intent_x = gui_intents[0].x
+            intent_y = gui_intents[0].y
+
+            # Calculate logical-pixel delta (both in window-relative space)
+            delta_x = intent_x - runtime_baseline_x
+            delta_y = intent_y - runtime_baseline_y
+
+            # Apply delta to authored values (window-relative coords)
+            patched_x = authored_x + delta_x
+            patched_y = authored_y + delta_y
+
+            gui_staged_bytes = apply_say_what_style_position_patch(
+                gui_current_bytes,
+                say_statement,
+                x=patched_x,
+                y=patched_y,
+            )
+
+            transaction_id = uuid.uuid4().hex
+            transaction = _TransactionRecord(
+                transaction_id=transaction_id,
+                source_relative_path=gui_rpy_path,
+                source_absolute_path=gui_absolute,
+                original_bytes=gui_current_bytes,
+                staged_bytes=gui_staged_bytes,
+                original_sha256=gui_current_sha,
+                staged_sha256=sha256_bytes(gui_staged_bytes),
+                generation=generation,
+                expected_targets=[
+                    {
+                        **self._expected_target_for_intent(sel, None),
+                        "say_style_position_previous_x": authored_x,
+                        "say_style_position_previous_y": authored_y,
+                        "say_style_position_new_x": patched_x,
+                        "say_style_position_new_y": patched_y,
+                    }
+                    for sel in gui_intents
+                ],
+                state="staged",
+            )
+        else:
+            # Normal single-file transaction (screens.rpy)
+            transaction_id = uuid.uuid4().hex
+            transaction = _TransactionRecord(
+                transaction_id=transaction_id,
+                source_relative_path=relative_path,
+                source_absolute_path=source_path,
+                original_bytes=current_bytes,
+                staged_bytes=staged_bytes,
+                original_sha256=current_sha,
+                staged_sha256=sha256_bytes(staged_bytes),
+                generation=generation,
+                expected_targets=[self._expected_target_for_intent(selected, swap_locations) for selected in selected_records],
+                state="staged",
+            )
         with self._lock:
             self._transactions[transaction_id] = transaction
         self._persist_transaction(transaction)
@@ -1258,8 +1483,15 @@ class EditorCoordinator:
             isinstance(target.get("structural_swap"), dict)
             for target in prior.expected_targets
         )
-        if not (is_style_color_tx or is_structural_tx):
-            raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color and zorder structural swap")
+        is_say_style_position_tx = bool(prior.expected_targets) and all(
+            target.get("say_style_position_previous_x") is not None
+            and target.get("say_style_position_previous_y") is not None
+            and target.get("say_style_position_new_x") is not None
+            and target.get("say_style_position_new_y") is not None
+            for target in prior.expected_targets
+        )
+        if not (is_style_color_tx or is_structural_tx or is_say_style_position_tx):
+            raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color, zorder structural swap, and say.what style position")
 
         current_bytes = prior.source_absolute_path.read_bytes()
         current_sha = sha256_bytes(current_bytes)
@@ -1291,6 +1523,24 @@ class EditorCoordinator:
                     and len(reversed_target["runtime_key"]["source_location"]) == 2
                 ):
                     reversed_target["runtime_key"]["source_location"][1] = reversed_swap["target_line"]
+            elif is_say_style_position_tx:
+                # Swap current and previous positions for undo
+                prev_x = target.get("say_style_position_previous_x")
+                prev_y = target.get("say_style_position_previous_y")
+                new_x = target.get("say_style_position_new_x")
+                new_y = target.get("say_style_position_new_y")
+                if prev_x is None or prev_y is None or new_x is None or new_y is None:
+                    raise EditorError("UNDO_STYLE_COLOR_ONLY", "say style position undo target is missing position evidence")
+                reversed_target["say_style_position_previous_x"] = new_x
+                reversed_target["say_style_position_previous_y"] = new_y
+                reversed_target["say_style_position_new_x"] = prev_x
+                reversed_target["say_style_position_new_y"] = prev_y
+                position = target.get("position")
+                if isinstance(position, list) and len(position) == 2:
+                    reversed_target["position"] = [
+                        int(position[0]) - (int(new_x) - int(prev_x)),
+                        int(position[1]) - (int(new_y) - int(prev_y)),
+                    ]
             expected_targets.append(reversed_target)
 
         transaction_id = uuid.uuid4().hex
@@ -1402,6 +1652,7 @@ class EditorCoordinator:
                 record.timer = None
             record.state = "committed"
             self._script_generation = script_generation
+
         self._persist_transaction(record)
         return {"transaction_id": transaction_id, "state": "committed"}
 
@@ -1739,6 +1990,18 @@ class EditorCoordinator:
             if actual_kind == "text":
                 if width is not None or height is not None:
                     raise EditorError("ANALYSIS_RESIZE_UNSUPPORTED", "text resize is not supported")
+
+                # Critical finding #1: Two-file write path for say.what style position
+                # Position lives in gui.rpy, identity stays in screens.rpy
+                position_mode = source_key.get("position_mode")
+                if (
+                    x is not None
+                    and y is not None
+                    and position_mode == SAY_WHAT_STYLE_POSITION_MODE
+                ):
+                    # Skip patching screens.rpy - will be handled as gui.rpy transaction
+                    continue
+
                 if x is not None or y is not None:
                     if x is None or y is None:
                         raise EditorError("INTENT_POSITION_INVALID", "text position intent shape is invalid")
@@ -1894,6 +2157,11 @@ class EditorCoordinator:
         timer.start()
 
     def _on_attestation_timeout(self, transaction_id: str) -> None:
+        # close() performs the terminal rollback itself while holding the lock.
+        # Avoid racing that cleanup after the timer has already been cancelled.
+        if self._stop_event.is_set():
+            return
+
         with self._lock:
             record = self._transactions.get(transaction_id)
         if record is None:
@@ -2148,9 +2416,66 @@ class EditorCoordinator:
                 uncertain_paths=list(uncertain_paths),
             )
             self._transactions[transaction_id] = record
-            if state in {"staged", "publishing", "published"} and manifest_intact:
+
+            # CRITICAL: Durable two-phase commit for restart resilience
+            # CAS write can complete between state="publishing" and state="published".
+            # If restart happens in this window, new coordinator must PROMOTE not rollback.
+            #
+            # Recovery logic:
+            # 1. publishing/published + disk==staged → PROMOTE to published + arm timer
+            # 2. publishing + disk==original → rollback (CAS never happened)
+            # 3. staged → rollback immediately (incomplete)
+
+            if state == "published" and manifest_intact:
+                # Already published and waiting for handshake
+                # Verify disk still has staged content
+                try:
+                    current_sha = hash_file_nofollow(source_path)
+                except (EditorPathError, OSError):
+                    current_sha = None
+
+                if current_sha == actual_staged_sha256:
+                    # Disk has staged content - arm attestation timer
+                    timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
+                    record.timer = timer
+                    timer.start()
+                    self._recovered.append(transaction_id)
+                else:
+                    # Disk doesn't match staged - rollback
+                    self._conditional_rollback(record, allow_staged=False)
+                    self._recovered.append(transaction_id)
+
+            elif state == "publishing" and manifest_intact:
+                # Transaction was publishing when restart happened
+                # Check if CAS completed (disk == staged) or not (disk == original)
+                try:
+                    current_sha = hash_file_nofollow(source_path)
+                except (EditorPathError, OSError):
+                    current_sha = None
+                if current_sha == actual_staged_sha256:
+                    # CAS completed! PROMOTE to published and arm timer
+                    record.state = "published"
+                    self._persist_transaction(record)
+                    timer = threading.Timer(self._attestation_timeout, self._conditional_rollback, args=(record,))
+                    record.timer = timer
+                    timer.start()
+                    self._recovered.append(transaction_id)
+                elif current_sha == actual_original_sha256:
+                    # CAS never happened - rollback to clean state
+                    self._conditional_rollback(record, allow_staged=True)
+                    self._recovered.append(transaction_id)
+                else:
+                    # Unknown state - mark conflict
+                    record.state = "rollback_conflict"
+                    record.uncertain_paths = [relative_path]
+                    self._recovered.append(transaction_id)
+                    self._persist_transaction(record)
+
+            elif state == "staged" and manifest_intact:
+                # Incomplete transaction - rollback immediately
                 self._conditional_rollback(record, allow_staged=True)
                 self._recovered.append(transaction_id)
+
             elif state in {"staged", "publishing", "published"} and not manifest_intact:
                 record.state = "rollback_conflict"
                 record.uncertain_paths = [relative_path]

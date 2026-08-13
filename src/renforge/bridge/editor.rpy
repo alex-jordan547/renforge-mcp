@@ -437,10 +437,12 @@ init 1090 python:
         "status.undoing": "Undoing",
         "status.redo": "Redo",
         "status.redo_unavailable": "Redo unavailable",
+        "status.redoing": "Redoing",
         "status.reset": "Reset",
         "status.saving": "Saving",
         "status.commit_queued": "Commit queued",
         "status.undo_queued": "Undo queued",
+        "status.redo_queued": "Redo queued",
         "status.committed": "Committed",
         "status.reload_committed": "Reload committed",
         "status.analyze_failed": "Analyze failed",
@@ -450,6 +452,13 @@ init 1090 python:
         "status.reload_handshake_failed": "Reload handshake failed",
         "status.invalid_result": "Invalid result",
         "status.locked": "Locked",
+        "lock.reason.style_position_source_unresolved": "Dialogue position source could not be resolved.",
+        "lock.reason.style_position_source_ambiguous": "Dialogue position has multiple definitions.",
+        "lock.reason.style_position_expression_unsupported": "This dialogue position expression is not editable yet.",
+        "lock.reason.style_position_variant_unsupported": "Phone/small variant overrides prevent desktop editing.",
+        "inspector.ownership_chain": "OWNERSHIP",
+        "inspector.ownership_style_position": "say.what → style say_dialogue → gui.dialogue_xpos/ypos",
+        "inspector.global_scope_notice": "⚠ This change affects all standard dialogue lines",
     }
     _RF_UI_STRINGS_READY = []
 
@@ -630,6 +639,8 @@ init 1100 python:
             state.screen = None
             state.editor_injected = _renforge_editor_host_config() is not None
             state.editor_session_screen = None
+            state.pending_attestation_screen = None
+            state.pending_attestation_screen_kwargs = {}
             state.selected_runtime_key = None
             state.selected_widget_id = None
             state.selected_screen = None
@@ -694,8 +705,10 @@ init 1100 python:
             state.pending_transaction_state = None
             state.pending_operation = None
             state.last_committed_transaction_id = None
+            state.last_undone_transaction_id = None
             state.pending_commit_is_style_color = False
             state.pending_commit_is_zorder = False
+            state.pending_commit_is_say_style_position = False
             state.refuse_next_style_attestation = False
             state.pending_commit_request_id = None
             state.pending_status_request_id = None
@@ -767,10 +780,14 @@ init 1100 python:
             state.pending_operation = None
         if not hasattr(state, "last_committed_transaction_id"):
             state.last_committed_transaction_id = None
+        if not hasattr(state, "last_undone_transaction_id"):
+            state.last_undone_transaction_id = None
         if not hasattr(state, "pending_commit_is_style_color"):
             state.pending_commit_is_style_color = False
         if not hasattr(state, "pending_commit_is_zorder"):
             state.pending_commit_is_zorder = False
+        if not hasattr(state, "pending_commit_is_say_style_position"):
+            state.pending_commit_is_say_style_position = False
         if not hasattr(state, "refuse_next_style_attestation"):
             state.refuse_next_style_attestation = False
         if not hasattr(state, "resize_active"):
@@ -789,6 +806,10 @@ init 1100 python:
             state.status_code = "ready"
         if not hasattr(state, "status_expires_at"):
             state.status_expires_at = None
+        if not hasattr(state, "pending_attestation_screen"):
+            state.pending_attestation_screen = None
+        if not hasattr(state, "pending_attestation_screen_kwargs"):
+            state.pending_attestation_screen_kwargs = {}
         return state
 
 
@@ -850,9 +871,11 @@ init 1100 python:
     _RF_STATUS_ONGOING = frozenset({
         "analyzing",
         "undoing",
+        "redoing",
         "saving",
         "commit_queued",
         "undo_queued",
+        "redo_queued",
     })
     _RF_STATUS_TERMINAL = frozenset({
         "committed",
@@ -2068,6 +2091,11 @@ init 1100 python:
             "source": source,
             "rect": _renforge_editor_selection_snapshot(),
             "lock": _renforge_editor_selected_lock(),
+            "position_mode": (
+                state.current_source_key.get("position_mode")
+                if isinstance(state.current_source_key, builtins.dict)
+                else None
+            ),
         }
 
 
@@ -2097,6 +2125,10 @@ init 1100 python:
     _RF_LOCK_REASON_KEYS = {
         "XPOS_LITERAL_REQUIRED": "lock.reason.xpos_literal_required",
         "YPOS_LITERAL_REQUIRED": "lock.reason.ypos_literal_required",
+        "STYLE_POSITION_SOURCE_UNRESOLVED": "lock.reason.style_position_source_unresolved",
+        "STYLE_POSITION_SOURCE_AMBIGUOUS": "lock.reason.style_position_source_ambiguous",
+        "STYLE_POSITION_EXPRESSION_UNSUPPORTED": "lock.reason.style_position_expression_unsupported",
+        "STYLE_POSITION_VARIANT_UNSUPPORTED": "lock.reason.style_position_variant_unsupported",
     }
 
     def _renforge_editor_lock_level(code):
@@ -2201,7 +2233,13 @@ init 1100 python:
 
     def _renforge_editor_can_redo():
         state = _renforge_editor_state()
-        return state.history_index + 1 < len(state.history_entries)
+        return (
+            state.history_index + 1 < len(state.history_entries)
+            or (
+                bool(state.last_undone_transaction_id)
+                and not bool(state.save_in_progress)
+            )
+        )
 
 
     def _renforge_editor_normalize_style_color(value):
@@ -2530,6 +2568,125 @@ init 1100 python:
                     break
             return items
 
+
+    # ── Handshake persistence across gui.rpy restart ──────────────────────────
+    # When gui.rpy changes, Ren'Py does a FULL restart that wipes non-persistent
+    # editor state. We must persist pending handshake state to survive the restart.
+
+    def _renforge_editor_get_handshake_persist_path():
+        """Get path to handshake persistence file (survives Ren'Py restart)."""
+        # Use project base directory for persistence (survives restart)
+        # Cannot rely on renpy.config.savedir being set early enough
+        return os.path.join(renpy.config.basedir, ".renforge_handshake_state.json")
+
+    def _renforge_editor_save_handshake_state(state):
+        """Save pending handshake state to survive gui.rpy restart."""
+        if state.pending_handshake_generation is None:
+            return
+
+        persist_path = _renforge_editor_get_handshake_persist_path()
+        attestation_screen = (
+            state.selected_screen
+            or state.screen
+            or state.pending_attestation_screen
+        )
+        attestation_screen_kwargs = {}
+        if attestation_screen == "say":
+            screen_displayable = renpy.get_screen(attestation_screen)
+            screen_scope = getattr(screen_displayable, "scope", None)
+            if screen_scope is not None:
+                for key in ("who", "what"):
+                    try:
+                        value = screen_scope.get(key)
+                    except Exception:
+                        continue
+                    if value is None or isinstance(value, str):
+                        attestation_screen_kwargs[key] = value
+        handshake_data = {
+            "pending_handshake_generation": int(state.pending_handshake_generation),
+            "pending_transaction_id": state.pending_transaction_id,
+            "pending_operation": state.pending_operation,
+            "pending_commit_is_style_color": bool(state.pending_commit_is_style_color),
+            "pending_commit_is_zorder": bool(state.pending_commit_is_zorder),
+            "pending_commit_is_say_style_position": bool(state.pending_commit_is_say_style_position),
+            "pending_handshake_sent": bool(state.pending_handshake_sent),
+            "saved_at_generation": int(state.script_generation),
+            "editor_session_screen": state.editor_session_screen,
+            "attestation_screen": attestation_screen,
+            "attestation_screen_kwargs": attestation_screen_kwargs,
+        }
+
+        try:
+            with open(persist_path, "w") as f:
+                json.dump(handshake_data, f)
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, IOError):
+            pass
+
+    def _renforge_editor_restore_handshake_state(state):
+        """Restore pending handshake state after gui.rpy restart."""
+        persist_path = _renforge_editor_get_handshake_persist_path()
+
+        if not os.path.exists(persist_path):
+            state.pending_handshake_generation = None
+            state.pending_handshake_sent = False
+            return
+
+        try:
+            with open(persist_path, "r") as f:
+                handshake_data = json.load(f)
+
+            # Restore handshake state
+            state.pending_handshake_generation = handshake_data.get("pending_handshake_generation")
+            if isinstance(state.pending_handshake_generation, int):
+                state.script_generation = int(state.pending_handshake_generation)
+            state.pending_transaction_id = handshake_data.get("pending_transaction_id")
+            state.pending_operation = handshake_data.get("pending_operation")
+            state.pending_commit_is_style_color = bool(handshake_data.get("pending_commit_is_style_color"))
+            state.pending_commit_is_zorder = bool(handshake_data.get("pending_commit_is_zorder"))
+            state.pending_commit_is_say_style_position = bool(
+                handshake_data.get("pending_commit_is_say_style_position")
+            )
+            state.pending_handshake_sent = False  # Always reset this - we need to resend after restart
+            state.editor_session_screen = handshake_data.get("editor_session_screen")
+            state.pending_attestation_screen = handshake_data.get("attestation_screen")
+            screen_kwargs = handshake_data.get("attestation_screen_kwargs")
+            state.pending_attestation_screen_kwargs = (
+                builtins.dict(screen_kwargs)
+                if isinstance(screen_kwargs, builtins.dict)
+                else {}
+            )
+
+            # Restore save state to continue the commit process
+            state.save_in_progress = True
+            state.save_requested = True
+            state.pending_reload_requested = True
+            state.pending_reload_started = True
+
+            # CRITICAL: Set pending_reload_draw_generation to current script_generation
+            # Otherwise the check at line 6014 will always pass and handshake won't be sent
+            state.pending_reload_draw_generation = int(state.script_generation)
+
+            # CRITICAL: Reactivate editor to allow handshake sending in _renforge_editor_periodic
+            state.active = True
+
+            _renforge_editor_set_status("commit_queued")
+
+            # Clean up persistence file
+            try:
+                os.remove(persist_path)
+            except OSError:
+                pass
+
+        except (OSError, IOError, ValueError, KeyError):
+            # Fail-closed: if restore fails, clear handshake state
+            state.pending_handshake_generation = None
+            state.pending_handshake_sent = False
+            try:
+                os.remove(persist_path)
+            except OSError:
+                pass
 
     def _renforge_editor_ensure_coordinator():
         state = _renforge_editor_state()
@@ -3851,12 +4008,28 @@ init 1100 python:
 
 
     def _renforge_editor_show_target_overrides(screen):
+        """Rebuild a screen with pending overrides and its required say scope."""
         _renforge_editor_prepare_anonymous_target_overrides(screen)
         properties = _renforge_editor_widget_properties(screen)
+        kwargs = {"_layer": "screens"}
         if properties:
-            renpy.show_screen(screen, _layer="screens", _widget_properties=properties)
-        else:
-            renpy.show_screen(screen, _layer="screens")
+            kwargs["_widget_properties"] = properties
+        if screen == "say":
+            current = renpy.get_screen("say")
+            scope = getattr(current, "scope", None)
+            if scope is None or "who" not in scope or "what" not in scope:
+                renpy.notify("Preview failed: say screen scope is unavailable")
+                return
+            who = scope.get("who")
+            what = scope.get("what")
+            if not (who is None or isinstance(who, str)) or not (
+                what is None or isinstance(what, str)
+            ):
+                renpy.notify("Preview failed: say screen scope is unsupported")
+                return
+            kwargs["who"] = who
+            kwargs["what"] = what
+        renpy.show_screen(screen, **kwargs)
 
 
     def _renforge_editor_set_target_position(target_key, position):
@@ -3888,6 +4061,12 @@ init 1100 python:
                     int(state.selected_rect[3]),
                 ]
             _renforge_editor_set_label(state.pointer[0], state.pointer[1])
+
+            # Track preview method for say.what style position
+            source_key = target.get("source_key")
+            if isinstance(source_key, builtins.dict) and source_key.get("position_mode") == "style_gui_dialogue":
+                state.last_preview_method = "style_widget_override"
+
         return {"ok": True, "x": next_position[0], "y": next_position[1]}
 
 
@@ -4226,10 +4405,34 @@ init 1100 python:
         if not _renforge_editor_can_redo():
             _renforge_editor_set_status("redo_unavailable")
             return {"ok": False, "error": "REDO_UNAVAILABLE"}
-        state.history_index += 1
-        command = state.history_entries[state.history_index]
-        _renforge_editor_set_status("redo")
-        return _renforge_editor_apply_history_command(command, use_before=False)
+        if state.history_index + 1 < len(state.history_entries):
+            state.history_index += 1
+            command = state.history_entries[state.history_index]
+            _renforge_editor_set_status("redo")
+            return _renforge_editor_apply_history_command(command, use_before=False)
+        transaction_id = state.last_undone_transaction_id
+        if not transaction_id or state.save_in_progress:
+            _renforge_editor_set_status("redo_unavailable")
+            return {"ok": False, "error": "REDO_UNAVAILABLE"}
+        state.save_in_progress = True
+        state.save_button_state = "saving"
+        state.save_requested = True
+        state.save_error = None
+        state.save_last_error = None
+        state.pending_operation = "redo_commit"
+        _renforge_editor_set_status("redoing")
+        pending = _renforge_editor_ensure_coordinator().submit_host(
+            "undo_commit",
+            {"transaction_id": transaction_id},
+            {
+                "command": "undo_commit",
+                "operation": "redo_commit",
+                "transaction_id": transaction_id,
+            },
+        )
+        state.pending_commit_request_id = pending
+        renpy.restart_interaction()
+        return {"ok": True, "request_id": pending, "transaction_id": transaction_id, "kind": "product_redo"}
 
 
     def _renforge_editor_reset_selected():
@@ -4357,7 +4560,8 @@ init 1100 python:
     # Dialogue surfaces take required scope args (who/what). Jumping out of a
     # screen while they are still showing leaves them in the layer with an empty
     # scope; the next interact (often a `scene … with dissolve`) then dies with
-    # `TypeError: missing a required argument: 'who'`. Tear them down first.
+    # `TypeError: missing a required argument: 'who'`. Tear them down
+    # immediately so a hide transition cannot retain an empty-scope copy.
     _RF_JUMP_DISMISS_SCREENS = ("say", "nvl", "bubble", "choice")
 
     def _renforge_editor_jump_to(label):
@@ -4367,7 +4571,7 @@ init 1100 python:
         for name in _RF_JUMP_DISMISS_SCREENS:
             try:
                 if renpy.get_screen(name) is not None:
-                    renpy.hide_screen(name)
+                    renpy.hide_screen(name, immediately=True)
             except Exception:
                 pass
         renpy.jump(str(label))
@@ -4693,14 +4897,24 @@ init 1100 python:
         )
         if result.get("ok") is not True:
             return result
-        state.last_preview_method = "_widget_properties"
+
+        # Track preview method: scoped widget override for say.what.
+        preview_method = "_widget_properties"
+        if state.selected_target_key:
+            target = state.targets.get(state.selected_target_key)
+            if isinstance(target, builtins.dict):
+                source_key = target.get("source_key")
+                if isinstance(source_key, builtins.dict) and source_key.get("position_mode") == "style_gui_dialogue":
+                    preview_method = "style_widget_override"
+
+        state.last_preview_method = preview_method
         _renforge_editor_refresh_save_enabled()
         renpy.restart_interaction()
         return {
             "ok": True,
             "x": int(snapped_x),
             "y": int(snapped_y),
-            "method": "_widget_properties",
+            "method": preview_method,
             "snap": snap_detail,
             "guide_x": state.guide_x,
             "guide_y": state.guide_y,
@@ -4719,10 +4933,33 @@ init 1100 python:
                 return {"ok": True, "restored": True, "method": "history_reset", "reset": reply}
             if reply.get("error") not in (None, "RESET_UNAVAILABLE"):
                 return reply
+
+        # Check if this is say.what style position before rebuilding screen
+        target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
+        if isinstance(target, builtins.dict):
+            source_key = target.get("source_key")
+            if isinstance(source_key, builtins.dict):
+                position_mode = source_key.get("position_mode")
+
+                # style_gui_dialogue: restore by mutating style, not rebuilding say screen
+                if position_mode == "style_gui_dialogue":
+                    baseline = list(target.get("runtime_baseline") or [])
+                    if len(baseline) == 2:
+                        try:
+                            target["position"] = list(baseline)
+                            state.preview_position = list(baseline)
+                            state.selected_original_position = list(baseline)
+                            target["dirty"] = False
+                            _renforge_editor_show_target_overrides(target.get("screen"))
+                            renpy.restart_interaction()
+                            state.last_restore_method = "style_widget_override"
+                            return {"ok": True, "restored": True, "method": "style_widget_override"}
+                        except Exception as e:
+                            return {"ok": False, "error": "RESTORE_FAILED", "details": str(e)}
+
         # Clean baseline: re-show screen without overrides and clear preview mirrors.
         if state.selected_screen:
             renpy.show_screen(state.selected_screen, _layer="screens")
-        target = state.targets.get(state.selected_target_key) if state.selected_target_key else None
         if isinstance(target, builtins.dict):
             baseline = list(target.get("runtime_baseline") or [])
             baseline_size = list(target.get("runtime_size") or [])
@@ -5410,6 +5647,8 @@ init 1100 python:
         state.preview_position = None
         _renforge_editor_clear_current_analysis(state)
         state.pending_analysis_key = None
+        state.pending_attestation_screen = None
+        state.pending_attestation_screen_kwargs = {}
         state.history = []
         state.history_entries = []
         state.history_index = -1
@@ -5668,11 +5907,11 @@ init 1100 python:
                         state.selected_lock_reason = _renforge_editor_lock_code(lock_reason)
                         state.save_enabled = False
                         _renforge_editor_set_status("locked")
-                        _renforge_editor_clear_current_analysis(state)
                 elif command in ("commit", "undo_commit"):
+                    operation = str(context.get("operation") or command)
                     state.pending_transaction_id = result.get("transaction_id")
                     state.pending_transaction_state = result.get("state")
-                    state.pending_operation = command
+                    state.pending_operation = operation
                     if state.pending_transaction_id is None:
                         state.save_in_progress = False
                         state.save_enabled = False
@@ -5689,7 +5928,17 @@ init 1100 python:
                         state.save_in_progress = True
                         state.save_error = None
                         state.save_last_error = None
-                        _renforge_editor_set_status("undo_queued" if command == "undo_commit" else "commit_queued")
+                        if operation == "redo_commit":
+                            _renforge_editor_set_status("redo_queued")
+                        elif operation == "undo_commit":
+                            _renforge_editor_set_status("undo_queued")
+                        else:
+                            _renforge_editor_set_status("commit_queued")
+
+                        # CRITICAL: Persist handshake state before gui.rpy restart
+                        # If this commit will cause a full Ren'Py restart (gui.rpy changes),
+                        # we need to save handshake state to survive the restart
+                        _renforge_editor_save_handshake_state(state)
                 elif command == "commit_status":
                     state.last_commit_status = result
                     state.pending_transaction_state = result.get("state")
@@ -5720,12 +5969,25 @@ init 1100 python:
                         state.save_requested = False
                         if operation == "undo_commit":
                             state.last_committed_transaction_id = None
-                        elif bool(state.pending_commit_is_style_color) or bool(state.pending_commit_is_zorder):
+                            state.last_undone_transaction_id = committed_tx
+                        elif operation == "redo_commit":
                             state.last_committed_transaction_id = committed_tx
+                            state.last_undone_transaction_id = None
+                        elif (
+                            bool(state.pending_commit_is_style_color)
+                            or bool(state.pending_commit_is_zorder)
+                            or bool(state.pending_commit_is_say_style_position)
+                        ):
+                            state.last_committed_transaction_id = committed_tx
+                            state.last_undone_transaction_id = None
                         else:
                             state.last_committed_transaction_id = None
+                            state.last_undone_transaction_id = None
                         state.pending_commit_is_style_color = False
                         state.pending_commit_is_zorder = False
+                        state.pending_commit_is_say_style_position = False
+                        state.pending_attestation_screen = None
+                        state.pending_attestation_screen_kwargs = {}
                         state.pending_operation = None
                         selected_rect = list(state.selected_rect or [])
                         state.targets = {}
@@ -5748,6 +6010,8 @@ init 1100 python:
                         state.save_in_progress = False
                         state.pending_transaction_id = None
                         state.pending_handshake_generation = None
+                        state.pending_attestation_screen = None
+                        state.pending_attestation_screen_kwargs = {}
                         _renforge_editor_set_status("reload_handshake_failed")
                 else:
                     pass
@@ -5780,6 +6044,8 @@ init 1100 python:
                     state.pending_handshake_generation = None
                     state.pending_handshake_sent = False
                     state.pending_reload_requested = False
+                    state.pending_attestation_screen = None
+                    state.pending_attestation_screen_kwargs = {}
                 elif command == "commit_status":
                     state.save_in_progress = False
                     _renforge_editor_set_status("status_failed")
@@ -5795,6 +6061,8 @@ init 1100 python:
                     state.pending_handshake_generation = None
                     state.pending_handshake_sent = False
                     state.pending_reload_requested = False
+                    state.pending_attestation_screen = None
+                    state.pending_attestation_screen_kwargs = {}
             if command == "analyze_target":
                 _renforge_editor_set_label(state.pointer[0], state.pointer[1])
             applied.append(applied_item)
@@ -5814,14 +6082,36 @@ init 1100 python:
 
     def _renforge_editor_periodic():
         state = _renforge_editor_state()
+
         if renpy.session.get("_reload_slot"):
             return
+        # after_load callbacks run before Ren'Py finishes restoring the reload
+        # save. Consume the durable handoff on the first periodic tick after the
+        # reload slot clears, when the restored state can no longer overwrite it.
+        if (
+            state.pending_reload_started
+            and os.path.exists(_renforge_editor_get_handshake_persist_path())
+        ):
+            _renforge_editor_restore_handshake_state(state)
         if not state.active:
             if state.editor_injected and renpy.get_screen(_EDITOR_LAUNCHER_SCREEN) is None:
                 renpy.show_screen(_EDITOR_LAUNCHER_SCREEN, _layer=_EDITOR_LAYER)
                 renpy.restart_interaction()
             return
         editor_session_screen = state.editor_session_screen
+        attestation_screen = state.pending_attestation_screen
+        if (
+            state.pending_handshake_generation is not None
+            and isinstance(attestation_screen, str)
+            and renpy.get_screen(attestation_screen) is None
+        ):
+            renpy.show_screen(
+                attestation_screen,
+                _layer="screens",
+                **builtins.dict(state.pending_attestation_screen_kwargs or {})
+            )
+            renpy.restart_interaction()
+            return
         session_shown = True
         if editor_session_screen is not None:
             session_shown = renpy.get_screen(editor_session_screen) is not None
@@ -5834,6 +6124,7 @@ init 1100 python:
             renpy.restart_interaction()
             return
         _renforge_editor_apply_coordinator_results()
+
         if not state.save_in_progress or state.pending_transaction_id is None:
             return
         if not state.pending_reload_requested:
@@ -5849,12 +6140,20 @@ init 1100 python:
             return
         if state.pending_handshake_generation is None:
             return
+        # Loading Ren'Py's temporary reload save can restore the pre-reload
+        # counter even though the new script is already running. The durable
+        # handoff is authoritative once the reload slot has cleared.
         if int(state.script_generation) != int(state.pending_handshake_generation):
-            return
+            state.script_generation = int(state.pending_handshake_generation)
         if state.pending_reload_draw_generation != state.script_generation:
             state.pending_reload_draw_generation = int(state.script_generation)
             renpy.restart_interaction()
             return
+        if isinstance(state.selected_runtime_key, builtins.dict):
+            candidate, _error = _renforge_editor_resolve_selected_candidate()
+            if candidate is None:
+                renpy.restart_interaction()
+                return
         if not state.pending_handshake_sent:
             state.pending_handshake_sent = True
             state.pending_status_request_id = _renforge_editor_ensure_coordinator().submit_host(
@@ -5910,6 +6209,8 @@ init 1100 python:
         state.pending_analysis_key = None
         state.pending_handshake_generation = None
         state.pending_handshake_sent = False
+        state.pending_attestation_screen = None
+        state.pending_attestation_screen_kwargs = {}
         state.save_button_state = "idle"
         state.pending_reload_requested = False
         state.opacity = 0.9
@@ -5959,6 +6260,17 @@ init 1100 python:
             and all(
                 isinstance(intent, builtins.dict)
                 and intent.get("operation") == "raise_adjacent_sibling"
+                for intent in intents
+            )
+        )
+        state.pending_commit_is_say_style_position = bool(
+            intents
+            and all(
+                isinstance(intent, builtins.dict)
+                and intent.get("x") is not None
+                and intent.get("y") is not None
+                and isinstance(intent.get("source_key"), builtins.dict)
+                and intent["source_key"].get("position_mode") == "style_gui_dialogue"
                 for intent in intents
             )
         )
@@ -6529,6 +6841,19 @@ init 1100 python:
             "history_length": len(state.history_entries),
             "current_analysis_id": state.current_analysis_id,
             "current_source_key": state.current_source_key,
+            "position_mode": (
+                state.current_source_key.get("position_mode")
+                if state.current_source_key is not None
+                else None
+            ),
+            "position": (
+                state.current_source_key.get("original_position") if state.current_source_key else None
+            ),
+            "capabilities": (
+                builtins.dict(state.current_capabilities)
+                if state.current_analysis_id is not None
+                else {}
+            ),
             "current_capabilities": (
                 builtins.dict(state.current_capabilities)
                 if state.current_analysis_id is not None
@@ -6537,6 +6862,7 @@ init 1100 python:
             "pending_transaction_id": state.pending_transaction_id,
             "pending_operation": state.pending_operation,
             "last_committed_transaction_id": state.last_committed_transaction_id,
+            "last_undone_transaction_id": state.last_undone_transaction_id,
             "style_color_input": state.style_color_input,
             "refuse_next_style_attestation": bool(state.refuse_next_style_attestation),
             "pending_handshake_generation": state.pending_handshake_generation,

@@ -64,6 +64,12 @@ The command is the same for every client. Example JSON configuration:
 }
 ```
 
+High-risk live tools are classified at invocation time. The default is
+`RENFORGE_POLICY=off` (record only). To enforce denials, set
+`RENFORGE_POLICY=enforce` in the MCP server environment and pass
+`authorize=true` on destructive or open-world calls, or see
+[POLICY.md](POLICY.md).
+
 For Codex CLI:
 
 ```bash
@@ -409,7 +415,7 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_eval` | Evaluate a Python expression in `store`. Use for diagnosis and development only. |
+| `renforge_eval` | Evaluate a Python expression in `store`. Use for diagnosis and development only. Open-world: requires `authorize=true` when `RENFORGE_POLICY=enforce`. |
 | `renforge_inspect_screen` | Inspect whether a screen is active and, when shown, return its layer, JSON-safe scope, and passed arguments. |
 | `renforge_get_var` | Read a store variable. |
 | `renforge_set_var` | Write a store variable. |
@@ -462,7 +468,11 @@ the requested screen is not shown. There is intentionally no separate style
 tool yet: use `renforge_eval` as the controlled style-introspection escape
 hatch when the active screen's resolved style needs investigation. Treat
 `renforge_eval` as arbitrary Python execution and use it only on a trusted
-local project.
+local project. When `RENFORGE_POLICY=enforce`, `renforge_eval`, destructive
+`renforge_control` / `renforge_saves` actions, and matching
+`renforge_run_scenario` steps are denied unless `authorize=true` or an
+allowlist permits them. See [POLICY.md](POLICY.md) for the operation-level
+model, its relationship to MCP `ToolAnnotations`, and the compatibility plan.
 
 `renforge_scene_tree` is read-mostly: it never changes game state, but `save_as`
 writes a JSON snapshot under `<project>/.renforge/scenes/` for later diffing.

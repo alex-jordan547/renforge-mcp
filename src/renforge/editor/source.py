@@ -23,6 +23,8 @@ RUNTIME_DELTA_POSITION_MODES = frozenset({"align", "offset"})
 BAR_SIZE_MODE_XSIZE_YSIZE = "xsize_ysize"
 # Issue #50: pure hex string-literal ``color`` on a single-line ``text`` statement.
 TEXT_STYLE_COLOR_MODE_LITERAL = "literal_hex"
+# Issue #81: style-backed gui.dialogue_xpos/ypos for say.what movement.
+SAY_WHAT_STYLE_POSITION_MODE = "style_gui_dialogue"
 
 
 class _BarSizeModel(TypedDict):
@@ -250,6 +252,27 @@ class TextColorStyleStatement:
     style_mode: str | None = None
     style_lock_code: str | None = None
     style_lock_message: str | None = None
+
+
+@dataclass(frozen=True)
+class SayWhatStylePositionStatement:
+    """Style-position ownership for say.what via gui.dialogue_xpos/ypos.
+
+    Unlocked only when both gui variables resolve to exactly one supported
+    authored form: ``define gui.dialogue_xpos = gui.scale(<int>)``.
+    Inherited, expression, ambiguous, and unsupported forms leave
+    ``position_mode`` empty and set a stable lock code. Spans are absolute
+    UTF-8 byte offsets in the full source file.
+    """
+
+    xpos: int | None = None
+    ypos: int | None = None
+    xpos_span: tuple[int, int] | None = None
+    ypos_span: tuple[int, int] | None = None
+    baseline_sha256: str | None = None
+    position_mode: str | None = None
+    position_lock_code: str | None = None
+    position_lock_message: str | None = None
 
 
 _StatementT = TypeVar(
@@ -2418,3 +2441,469 @@ def apply_text_color_patch(
         )
     patched = f"{source_text[:start]}{replacement}{source_text[end:]}"
     return patched.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Issue #81 — dedicated style-position source contract (say.what only)
+# ---------------------------------------------------------------------------
+
+
+def _style_position_lock(code: str, message: str) -> tuple[str, str]:
+    return code, message
+
+
+def analyze_say_what_style_position(
+    source_text: str,
+    *,
+    xpos_var: str,
+    ypos_var: str,
+) -> SayWhatStylePositionStatement:
+    """Analyze ownership of gui.dialogue_xpos/ypos for say.what movement.
+
+    This is a dedicated style-position contract for ONE bounded adapter.
+    Unlocked form: ``define gui.dialogue_xpos = gui.scale(<int>)`` where
+    ``<int>`` is a pure decimal literal (negative values supported).
+
+    Missing, duplicate, expression-based, arithmetic, non-gui.scale, variant,
+    or malformed definitions remain locked with stable codes.
+    """
+    # Parse the Ren'Py source to find define statements.
+    # We look for lines like: define gui.dialogue_xpos = gui.scale(268)
+    lines = source_text.splitlines(keepends=True)
+
+    xpos_matches: list[tuple[int, tuple[int, int]]] = []
+    ypos_matches: list[tuple[int, tuple[int, int]]] = []
+    has_expression_error = False
+    has_variant_writer = False
+
+    # Track if we're inside a variant function
+    in_variant = False
+
+    offset = 0
+    for line in lines:
+        # Simple pattern matching for the supported form
+        stripped = line.strip()
+
+        # Detect variant function definitions
+        if "@gui.variant" in line or "def small():" in line or "def touch():" in line:
+            in_variant = True
+
+        # Check if we're exiting a variant (dedent back to module level)
+        if in_variant and stripped and not line.startswith((" ", "\t")) and not stripped.startswith("#"):
+            in_variant = False
+
+        if stripped.startswith("define "):
+            rest = stripped[7:].strip()  # after "define "
+
+            # Check xpos_var
+            if rest.startswith(f"{xpos_var} ="):
+                if in_variant:
+                    # Variant override detected
+                    has_variant_writer = True
+                else:
+                    result = _parse_gui_scale_define(line, offset, xpos_var)
+                    if result[0] == "ok":
+                        xpos_matches.append((result[1], result[2]))
+                    elif result[0] in ("expression", "non_gui_scale"):
+                        has_expression_error = True
+
+            # Check ypos_var
+            if rest.startswith(f"{ypos_var} ="):
+                if in_variant:
+                    # Variant override detected
+                    has_variant_writer = True
+                else:
+                    result = _parse_gui_scale_define(line, offset, ypos_var)
+                    if result[0] == "ok":
+                        ypos_matches.append((result[1], result[2]))
+                    elif result[0] in ("expression", "non_gui_scale"):
+                        has_expression_error = True
+
+        # Check for variant assignments inside variant functions
+        # Ignore comment-only lines to avoid false positives like # gui.dialogue_xpos = ...
+        if in_variant and not stripped.startswith("#"):
+            if xpos_var in line and "=" in line:
+                # Check that variable appears before any comment
+                comment_pos = line.find("#")
+                var_pos = line.find(xpos_var)
+                if comment_pos == -1 or var_pos < comment_pos:
+                    has_variant_writer = True
+            if ypos_var in line and "=" in line:
+                # Check that variable appears before any comment
+                comment_pos = line.find("#")
+                var_pos = line.find(ypos_var)
+                if comment_pos == -1 or var_pos < comment_pos:
+                    has_variant_writer = True
+
+        offset += len(line.encode("utf-8"))
+
+    # Check for variant writers first (most restrictive)
+    if has_variant_writer:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_VARIANT_UNSUPPORTED",
+            "gui.dialogue_xpos or gui.dialogue_ypos has phone/small variant overrides",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+
+    # Check for expression/non-gui.scale errors (more specific than missing)
+    if has_expression_error:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_EXPRESSION_UNSUPPORTED",
+            "gui.dialogue_xpos or gui.dialogue_ypos uses an unsupported expression",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+
+    # Check for missing
+    if not xpos_matches or not ypos_matches:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_SOURCE_UNRESOLVED",
+            "gui.dialogue_xpos or gui.dialogue_ypos not found or malformed",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+
+    # Check for duplicates
+    if len(xpos_matches) > 1 or len(ypos_matches) > 1:
+        code, message = _style_position_lock(
+            "STYLE_POSITION_SOURCE_AMBIGUOUS",
+            "gui.dialogue_xpos or gui.dialogue_ypos has multiple definitions",
+        )
+        return SayWhatStylePositionStatement(
+            position_lock_code=code,
+            position_lock_message=message,
+        )
+
+    xpos_value, xpos_span = xpos_matches[0]
+    ypos_value, ypos_span = ypos_matches[0]
+
+    return SayWhatStylePositionStatement(
+        xpos=xpos_value,
+        ypos=ypos_value,
+        xpos_span=xpos_span,
+        ypos_span=ypos_span,
+        baseline_sha256=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        position_mode=SAY_WHAT_STYLE_POSITION_MODE,
+        position_lock_code=None,
+        position_lock_message=None,
+    )
+
+
+def _parse_gui_scale_define(
+    line: str, offset: int, var_name: str
+) -> tuple[str, int, tuple[int, int]] | tuple[str, None, None]:
+    """Parse ``define <var_name> = gui.scale(<int>)`` and return status.
+
+    Returns ("ok", value, span) on success, or (error_code, None, None) on failure.
+    Error codes: "expression", "non_gui_scale", "not_found".
+    """
+    try:
+        # Find the assignment
+        if "=" not in line:
+            return ("not_found", None, None)
+
+        parts = line.split("=", 1)
+        if len(parts) != 2:
+            return ("not_found", None, None)
+
+        left, right = parts
+
+        # Check that left side is "define <var_name>"
+        if not left.strip().endswith(var_name):
+            return ("not_found", None, None)
+
+        # Check that right side is "gui.scale(<int>)"
+        right_stripped = right.strip()
+
+        # Remove trailing comment if any
+        if "#" in right_stripped:
+            comment_pos = right_stripped.find("#")
+            right_stripped = right_stripped[:comment_pos].strip()
+
+        # Check for "if", "else", "or", "and" - expression keywords
+        for keyword in ["if", "else", "or", "and"]:
+            if f" {keyword} " in right_stripped or right_stripped.endswith(f" {keyword}"):
+                return ("expression", None, None)
+
+        if not right_stripped.startswith("gui.scale("):
+            # Not gui.scale form - direct literal or other call
+            return ("non_gui_scale", None, None)
+
+        if not right_stripped.endswith(")"):
+            # Incomplete or expression
+            return ("expression", None, None)
+
+        # Extract the content inside parentheses
+        inner = right_stripped[10:-1].strip()  # Remove "gui.scale(" and ")"
+
+        # Check for expressions, arithmetic, or non-integer
+        # We only support pure integer literals (including negative)
+        if not inner or not _is_pure_integer_literal(inner):
+            # Could be arithmetic like 268 + 10
+            return ("expression", None, None)
+
+        value = int(inner)
+
+        # Find the span of the integer in the original line using byte offsets
+        # We need to work with bytes to handle UTF-8 correctly
+        left_bytes = parts[0].encode("utf-8")
+
+        # Find position of inner in right (before encoding)
+        inner_start_in_right = right.find(inner)
+        if inner_start_in_right == -1:
+            return ("not_found", None, None)
+
+        # Encode the portion of right before inner to get byte offset
+        right_prefix = right[:inner_start_in_right]
+        right_prefix_bytes = right_prefix.encode("utf-8")
+        inner_bytes = inner.encode("utf-8")
+
+        abs_start = offset + len(left_bytes) + 1 + len(right_prefix_bytes)  # +1 for "="
+        abs_end = abs_start + len(inner_bytes)
+
+        return ("ok", value, (abs_start, abs_end))
+
+    except (ValueError, IndexError, AttributeError):
+        return ("not_found", None, None)
+
+
+def _is_pure_integer_literal(s: str) -> bool:
+    """Return True if s is a pure integer literal (including negative)."""
+    s = s.strip()
+    if not s:
+        return False
+
+    # Check for negative
+    if s.startswith("-"):
+        s = s[1:]
+
+    # Check that all remaining characters are digits
+    return s.isdigit()
+
+
+def apply_say_what_style_position_patch(
+    source_bytes: bytes,
+    statement: SayWhatStylePositionStatement,
+    *,
+    x: int,
+    y: int,
+) -> bytes:
+    """Rewrite only the gui.scale() integer literals for xpos/ypos.
+
+    Spans are absolute byte offsets in the full source. Unrelated bytes,
+    the gui.scale(...) wrapper, whitespace, and comments are preserved.
+    """
+    if (
+        statement.position_mode != SAY_WHAT_STYLE_POSITION_MODE
+        or statement.xpos_span is None
+        or statement.ypos_span is None
+        or statement.baseline_sha256 is None
+        or statement.xpos is None
+        or statement.ypos is None
+    ):
+        code = statement.position_lock_code or "STYLE_POSITION_SOURCE_UNRESOLVED"
+        message = (
+            statement.position_lock_message
+            or "say.what style position patch requires an unlocked gui.scale() form"
+        )
+        raise EditorSourceError(code, message)
+
+    if hashlib.sha256(source_bytes).hexdigest() != statement.baseline_sha256:
+        raise EditorSourceError(
+            "STALE_SOURCE",
+            "source changed since say.what style position analysis",
+        )
+
+    # Work with bytes to handle UTF-8 correctly
+    # Replace both spans, processing in reverse order to maintain offsets
+    replacements = [
+        (statement.xpos_span[0], statement.xpos_span[1], str(int(x)).encode("utf-8")),
+        (statement.ypos_span[0], statement.ypos_span[1], str(int(y)).encode("utf-8")),
+    ]
+    replacements.sort(key=lambda item: item[0], reverse=True)
+
+    patched = source_bytes
+    for start, end, replacement_bytes in replacements:
+        patched = patched[:start] + replacement_bytes + patched[end:]
+
+    return patched
+
+
+@dataclass(frozen=True)
+class SayDialogueStyleBinding:
+    """Ownership proof: style say_dialogue in screens.rpy binds xpos/ypos to gui vars.
+
+    This proves the read-only identity chain: say.what → style say_dialogue → gui.dialogue_*.
+    Write path remains gui.rpy only (via SayWhatStylePositionStatement).
+    """
+
+    # Unlocked when unique style say_dialogue with xpos/ypos → gui.dialogue_xpos/ypos
+    binding_proven: bool
+
+    # Lock codes when binding cannot be proven
+    lock_code: str | None = None
+    lock_message: str | None = None
+
+
+def prove_say_what_text_binding(line: str) -> None:
+    """Require the bounded standard ``say.what`` source statement."""
+    tokens = [token for token in _lex_single_line(_statement_text(line)) if token.depth == 0]
+    if len(tokens) not in (4, 6):
+        raise EditorSourceError(
+            "STYLE_POSITION_SOURCE_UNRESOLVED",
+            "say.what must use the canonical text statement",
+        )
+    if not (
+        tokens[0].kind == "WORD"
+        and tokens[0].text == "text"
+        and tokens[1].kind == "WORD"
+        and tokens[1].text == "what"
+        and tokens[2].kind == "WORD"
+        and tokens[2].text == "id"
+        and tokens[3].kind == "STRING"
+        and _parse_string_token(tokens[3]) == "what"
+    ):
+        raise EditorSourceError(
+            "STYLE_POSITION_SOURCE_UNRESOLVED",
+            "source statement is not the canonical text what id \"what\" target",
+        )
+    if len(tokens) == 6 and not (
+        tokens[4].kind == "WORD"
+        and tokens[4].text == "style"
+        and tokens[5].kind == "STRING"
+        and _parse_string_token(tokens[5]) == "say_dialogue"
+    ):
+        raise EditorSourceError(
+            "STYLE_POSITION_SOURCE_UNRESOLVED",
+            "say.what uses a custom or unresolved style",
+        )
+
+
+def analyze_say_dialogue_style_binding(
+    source_text: str,
+    *,
+    xpos_var: str,
+    ypos_var: str,
+) -> SayDialogueStyleBinding:
+    """Prove screens.rpy style say_dialogue binds xpos/ypos to gui.dialogue_* vars.
+
+    Unlocks only if:
+    - Exactly one `style say_dialogue` block found
+    - Block contains `xpos <xpos_var>` (no arithmetic/expressions)
+    - Block contains `ypos <ypos_var>` (no arithmetic/expressions)
+
+    Lock codes:
+    - STYLE_POSITION_SOURCE_UNRESOLVED: style say_dialogue not found
+    - STYLE_POSITION_SOURCE_AMBIGUOUS: multiple style say_dialogue blocks
+    - STYLE_POSITION_EXPRESSION_UNSUPPORTED: xpos/ypos uses expressions
+
+    Args:
+        source_text: screens.rpy contents
+        xpos_var: Expected xpos variable (e.g., "gui.dialogue_xpos")
+        ypos_var: Expected ypos variable (e.g., "gui.dialogue_ypos")
+
+    Returns:
+        SayDialogueStyleBinding with proven/locked status
+    """
+    lines = source_text.splitlines()
+
+    style_blocks: list[tuple[int, int]] = []  # (start_line, end_line)
+    in_style_block = False
+    block_start = -1
+    base_indent = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        header_tokens = [
+            token for token in _lex_single_line(stripped) if token.depth == 0
+        ]
+        is_style_header = (
+            len(header_tokens) == 3
+            and header_tokens[0].kind == "WORD"
+            and header_tokens[0].text == "style"
+            and header_tokens[1].kind == "WORD"
+            and header_tokens[1].text == "say_dialogue"
+            and header_tokens[2].kind == "SYMBOL"
+            and header_tokens[2].text == ":"
+        )
+        if is_style_header:
+            if in_style_block:
+                style_blocks.append((block_start, i - 1))
+            in_style_block = True
+            block_start = i
+            base_indent = len(line) - len(stripped)
+            continue
+
+        if in_style_block:
+            if stripped and not stripped.startswith("#"):
+                current_indent = len(line) - len(stripped)
+                if current_indent <= base_indent:
+                    style_blocks.append((block_start, i - 1))
+                    in_style_block = False
+
+    if in_style_block:
+        style_blocks.append((block_start, len(lines) - 1))
+
+    if len(style_blocks) == 0:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_UNRESOLVED",
+            lock_message="style say_dialogue not found in screens.rpy",
+        )
+
+    if len(style_blocks) > 1:
+        return SayDialogueStyleBinding(
+            binding_proven=False,
+            lock_code="STYLE_POSITION_SOURCE_AMBIGUOUS",
+            lock_message=f"multiple style say_dialogue blocks found ({len(style_blocks)} total)",
+        )
+
+    start_line, end_line = style_blocks[0]
+    block_lines = lines[start_line + 1 : end_line + 1]
+    property_values: dict[str, list[list[_Token]]] = {"xpos": [], "ypos": []}
+
+    for line in block_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        tokens = [token for token in _lex_single_line(stripped) if token.depth == 0]
+        if not tokens or tokens[0].kind != "WORD" or tokens[0].text not in property_values:
+            continue
+        value_tokens = tokens[1:]
+        if value_tokens and value_tokens[0].kind == "SYMBOL" and value_tokens[0].text == "=":
+            value_tokens = value_tokens[1:]
+        property_values[tokens[0].text].append(value_tokens)
+
+    for property_name, expected_var in (("xpos", xpos_var), ("ypos", ypos_var)):
+        values = property_values[property_name]
+        if len(values) > 1:
+            return SayDialogueStyleBinding(
+                binding_proven=False,
+                lock_code="STYLE_POSITION_SOURCE_AMBIGUOUS",
+                lock_message=f"style say_dialogue defines {property_name} multiple times",
+            )
+        expected_tokens = [
+            (token.kind, token.text)
+            for token in _lex_single_line(expected_var)
+            if token.depth == 0
+        ]
+        actual_tokens = [(token.kind, token.text) for token in values[0]] if values else []
+        if actual_tokens != expected_tokens:
+            return SayDialogueStyleBinding(
+                binding_proven=False,
+                lock_code=(
+                    "STYLE_POSITION_EXPRESSION_UNSUPPORTED"
+                    if values and len(actual_tokens) > len(expected_tokens)
+                    else "STYLE_POSITION_SOURCE_UNRESOLVED"
+                ),
+                lock_message=f"style say_dialogue does not bind {property_name} exactly to {expected_var}",
+            )
+
+    return SayDialogueStyleBinding(binding_proven=True)

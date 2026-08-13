@@ -77,10 +77,12 @@
   "status.undoing": "正在撤销",
   "status.redo": "重做",
   "status.redo_unavailable": "无法重做",
+  "status.redoing": "正在重做",
   "status.reset": "重置",
   "status.saving": "正在保存",
   "status.commit_queued": "提交已排队",
   "status.undo_queued": "撤销已排队",
+  "status.redo_queued": "重做已排队",
   "status.committed": "已提交",
   "status.reload_committed": "重新加载已提交",
   "status.analyze_failed": "分析失败",
@@ -89,5 +91,12 @@
   "status.reload_failed": "重新加载失败",
   "status.reload_handshake_failed": "重新加载握手失败",
   "status.invalid_result": "结果无效",
-  "status.locked": "已锁定"
+  "status.locked": "已锁定",
+  "lock.reason.style_position_source_unresolved": "无法解析对话框位置源。",
+  "lock.reason.style_position_source_ambiguous": "对话框位置有多个定义。",
+  "lock.reason.style_position_expression_unsupported": "此对话框位置表达式尚不可编辑。",
+  "lock.reason.style_position_variant_unsupported": "手机/小屏幕变体覆盖阻止桌面编辑。",
+  "inspector.ownership_chain": "所有权",
+  "inspector.ownership_style_position": "say.what → 样式 say_dialogue → gui.dialogue_xpos/ypos",
+  "inspector.global_scope_notice": "⚠ 此更改影响所有标准对话行"
 }

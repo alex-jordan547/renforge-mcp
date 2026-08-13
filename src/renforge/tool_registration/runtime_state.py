@@ -144,11 +144,19 @@ def build_wrappers(context):
         )
 
 
-    def renforge_eval(project_path: str, expr: str) -> dict:
-        """Evaluate a Python expression in the running game's store namespace."""
+    def renforge_eval(project_path: str, expr: str, authorize: bool = False) -> dict:
+        """Evaluate a Python expression in the running game's store namespace.
+
+        This open-world operation requires authorize=true when
+        RENFORGE_POLICY=enforce unless it is allowlisted.
+        """
         return _log_tool_call(
             name="renforge_eval",
-            params={"project_path": project_path, "expr": expr},
+            params={
+                "project_path": project_path,
+                "expr": expr,
+                "authorize": authorize,
+            },
             project_root=project_path,
             fn=live.eval_expr,
             args=(project_path, expr),

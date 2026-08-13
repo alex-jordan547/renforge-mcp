@@ -44,6 +44,7 @@ def build_wrappers(context):
         interaction_id: str = "",
         wait_for_effect: bool = False,
         effect_timeout: float = 5.0,
+        authorize: bool = False,
     ) -> dict:
         """Run a runtime action: advance, rollback, toggle_skip, toggle_auto,
         toggle_afm, game_menu, hide_windows, quick_save, quick_load,
@@ -51,6 +52,7 @@ def build_wrappers(context):
 
         Emits correlated business events (quick_save.completed, skip.stopped,
         …). Set wait_for_effect=true to block until the matching event appears.
+        Destructive actions require authorize=true when RENFORGE_POLICY=enforce.
         """
         return _log_tool_call(
             name="renforge_control",
@@ -60,6 +62,7 @@ def build_wrappers(context):
                 "interaction_id": interaction_id,
                 "wait_for_effect": wait_for_effect,
                 "effect_timeout": effect_timeout,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.control,
@@ -116,8 +119,12 @@ def build_wrappers(context):
         slot: str | None = None,
         extra_info: str | None = None,
         regexp: str | None = None,
+        authorize: bool = False,
     ) -> dict:
-        """Save, load, or list named save slots without screenshot payloads."""
+        """Save, load, or list named save slots without screenshot payloads.
+
+        ``load`` requires authorize=true when RENFORGE_POLICY=enforce.
+        """
         return _log_tool_call(
             name="renforge_saves",
             params={
@@ -126,6 +133,7 @@ def build_wrappers(context):
                 "slot": slot,
                 "extra_info": extra_info,
                 "regexp": regexp,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.saves,

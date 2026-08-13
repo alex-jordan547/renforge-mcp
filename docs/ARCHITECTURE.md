@@ -17,6 +17,7 @@ src/renforge/
   navigation.py      # shared label and file:line warp resolution
   session_registry.py # dashboard-to-MCP active-project discovery
   symbols.py         # Ren'Py-aware token/reference lookup
+  policy.py          # operation-level risk classification and enforcement
   util/             # filesystem + subprocess helpers
   sdk.py            # Ren'Py SDK download/cache
   scanner.py        # script/label/asset scanning
@@ -72,3 +73,12 @@ Packaging uses `hatchling`; the console script is
 
 The server falls back to a compatibility mode with a clear message if
 `fastmcp` is not installed (for example after a minimal manual install).
+
+## Runtime policy
+
+`policy.py` classifies high-risk MCP calls (`renforge_control`,
+`renforge_saves`, `renforge_eval`, `renforge_run_scenario`) from the tool name
+and validated parameters, then allows or denies them inside `_log_tool_call`
+before the live implementation runs. MCP `ToolAnnotations` remain static
+discovery hints; this layer is invocation-time enforcement. Defaults stay
+permissive (`RENFORGE_POLICY=off`). See [POLICY.md](POLICY.md).

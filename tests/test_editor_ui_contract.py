@@ -275,6 +275,9 @@ def test_lot1_panels_cover_the_portage_seams():
     assert "rf_inspector_lock" not in inspector
     assert "text _renforge_editor_lock_detail():" not in inspector
     assert '_rf_facts["lock"][1]' not in inspector
+    assert '_rf_facts.get("position_mode") == "style_gui_dialogue"' in inspector
+    assert 'id "rf_inspector_ownership_style_position"' in inspector
+    assert 'id "rf_inspector_global_scope_notice"' in inspector
 
     # 1.D — colour allowlist surface + lock reason + visible colour controls
     assert "rf_style_color_value" in style

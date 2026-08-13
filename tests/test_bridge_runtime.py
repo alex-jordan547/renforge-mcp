@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import json
 import threading
 import time
 import types
@@ -1163,6 +1164,189 @@ def test_editor_periodic_restores_active_session_after_reload(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_periodic_finishes_pending_handshake_after_reload_slot_clears(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = {"say", "_renforge_editor_overlay"}
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.session = {}
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        submissions = []
+
+        class Coordinator:
+            def collect_nowait(self):
+                return []
+
+            def submit_host(self, command, payload, context=None):
+                submissions.append((command, payload, context))
+                return "handshake-request"
+
+        coordinator = Coordinator()
+        globs["_renforge_editor_ensure_coordinator"] = lambda: coordinator
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.editor_session_screen = "say"
+        state.save_in_progress = True
+        state.pending_transaction_id = "transaction-1"
+        state.pending_reload_requested = True
+        state.pending_reload_started = True
+        state.script_generation = 0
+        state.pending_handshake_generation = 1
+        state.pending_reload_draw_generation = 0
+
+        globs["_renforge_editor_periodic"]()
+        globs["_renforge_editor_periodic"]()
+
+        assert submissions == [
+            (
+                "reload_handshake",
+                {"transaction_id": "transaction-1", "script_generation": 1},
+                {"transaction_id": "transaction-1"},
+            )
+        ]
+        assert state.script_generation == 1
+        assert state.pending_handshake_sent is True
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_periodic_restores_handshake_after_saved_state(
+    running_bridge, monkeypatch, tmp_path
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.config.basedir = str(tmp_path)
+    renpy.session = {}
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.get_screen = lambda _name: None
+    renpy.show_screen = lambda _name, **_kwargs: None
+    handoff = tmp_path / ".renforge_handshake_state.json"
+    handoff.write_text(
+        json.dumps(
+            {
+                "pending_handshake_generation": 1,
+                "pending_transaction_id": "transaction-1",
+                "pending_operation": "commit",
+                "pending_commit_is_say_style_position": True,
+                "editor_session_screen": "say",
+                "attestation_screen": "say",
+                "attestation_screen_kwargs": {
+                    "who": "Test",
+                    "what": "Test dialogue",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        assert state.pending_handshake_generation is None
+
+        globs["_renforge_editor_after_load"]()
+        assert handoff.exists()
+        state.pending_reload_started = True
+        globs["_renforge_editor_periodic"]()
+
+        assert state.script_generation == 1
+        assert state.pending_handshake_generation == 1
+        assert state.pending_transaction_id == "transaction-1"
+        assert state.pending_commit_is_say_style_position is True
+        assert state.pending_attestation_screen == "say"
+        assert state.pending_attestation_screen_kwargs == {
+            "who": "Test",
+            "what": "Test dialogue",
+        }
+        assert state.active is True
+        assert not handoff.exists()
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_jump_removes_dialogue_screens_before_control_transfer(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = {"say", "quick_menu", "_renforge_editor_overlay"}
+    pending_hides = set()
+    hide_calls = []
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+    renpy.show_screen = lambda name, **_kwargs: active_screens.add(name)
+
+    def hide_screen(name, immediately=False, **_kwargs):
+        hide_calls.append((name, immediately))
+        if immediately:
+            active_screens.discard(name)
+        else:
+            pending_hides.add(name)
+
+    class JumpSignal(Exception):
+        pass
+
+    def jump(label):
+        if "say" in pending_hides:
+            raise TypeError("missing a required argument: 'who'")
+        raise JumpSignal(label)
+
+    renpy.hide_screen = hide_screen
+    renpy.jump = jump
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        with pytest.raises(JumpSignal, match="village"):
+            globs["_renforge_editor_jump_to"]("village")
+
+        assert hide_calls == [("say", True)]
+        assert "say" not in active_screens
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_exit_reverts_unsaved_previews_before_clearing_state(
     running_bridge, monkeypatch
 ):
@@ -1267,6 +1451,139 @@ def test_editor_exit_during_save_preserves_transaction_state(
         assert state.pending_reload_requested is True
         assert state.pending_handshake_generation == 7
         assert "_renforge_editor_overlay" in active_screens
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_say_dialogue_preview_keeps_screen_and_style_coordinates_distinct(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    shown = []
+    renpy.get_screen = lambda _name: types.SimpleNamespace(
+        scope={"who": None, "what": "Test dialogue for RenForge #81"}
+    )
+    renpy.show_screen = lambda name, **kwargs: shown.append((name, kwargs))
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.selected_screen = "say"
+        state.selected_widget_id = "what"
+        state.selected_target_key = "say.what"
+        state.selected_lock_reason = None
+        state.selected_rect = [268, 585, 346, 27]
+        state.preview_position = [268, 585]
+        state.targets["say.what"] = {
+            "analysis_id": "analysis-say-what",
+            "source_key": {
+                "relative_path": "screens.rpy",
+                "line": 110,
+                "position_mode": "style_gui_dialogue",
+            },
+            "capabilities": {"move": True},
+            "screen": "say",
+            "widget_id": "what",
+            "runtime_baseline": [268, 585],
+            "source_position": [268, 50],
+            "position": [268, 585],
+            "dirty": False,
+        }
+
+        preview = globs["_renforge_editor_apply_preview"](
+            288,
+            615,
+            shift=False,
+            allow_snap=False,
+            record=False,
+        )
+        intents = globs["_renforge_editor_collect_intents"]()
+
+        assert preview["method"] == "style_widget_override"
+        assert state.selected_rect[:2] == [288, 615]
+        assert shown[-1] == (
+            "say",
+            {
+                "_layer": "screens",
+                "_widget_properties": {"what": {"xpos": 288, "ypos": 80}},
+                "who": None,
+                "what": "Test dialogue for RenForge #81",
+            },
+        )
+        assert [(intent["x"], intent["y"]) for intent in intents] == [(288, 80)]
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_product_redo_reverses_the_committed_undo_transaction(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        submissions = []
+
+        class Coordinator:
+            def submit_host(self, command, payload, context=None):
+                submissions.append((command, payload, context))
+                return "redo-request"
+
+        state = globs["_renforge_editor_state"]()
+        state.last_undone_transaction_id = "undo-transaction"
+        globs["_renforge_editor_ensure_coordinator"] = lambda: Coordinator()
+
+        assert globs["_renforge_editor_can_redo"]() is True
+        result = globs["_renforge_editor_redo"]()
+
+        assert result == {
+            "ok": True,
+            "request_id": "redo-request",
+            "transaction_id": "undo-transaction",
+            "kind": "product_redo",
+        }
+        assert submissions == [
+            (
+                "undo_commit",
+                {"transaction_id": "undo-transaction"},
+                {
+                    "command": "undo_commit",
+                    "operation": "redo_commit",
+                    "transaction_id": "undo-transaction",
+                },
+            )
+        ]
+        assert state.pending_operation == "redo_commit"
+        assert state.save_in_progress is True
     finally:
         globs["_renforge_editor_stop_coordinator"]()
 

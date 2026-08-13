@@ -87,5 +87,5 @@ def test_public_tool_contract_matches_agent_safe_baseline() -> None:
 
     assert len(contract) == 54
     assert hashlib.sha256(payload).hexdigest() == (
-        "cd1eacc10aace1971faec86cc44e39b66413c1129da3e373ebbcfa987434efbe"
+        "0fe4c481efd5f410ef2b5d6d934862349aef730e4439e10741e8737432b029cc"
     )

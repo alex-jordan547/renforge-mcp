@@ -22,12 +22,15 @@ def build_wrappers(context):
         stop_on_failure: bool = True,
         state_profile: str = "minimal",
         capture_on_failure: bool = True,
+        authorize: bool = False,
     ) -> dict:
         """Run a multi-step live scenario (click/wait/assert/...) in one call.
 
         On failure, captures a screenshot and compact diagnostics automatically.
         Supported step actions: set, eval, click, click_at, advance, scroll,
         wait, assert, select_choice, capture, save, load, control, send_input.
+        The highest-risk step may require authorize=true when
+        RENFORGE_POLICY=enforce.
         """
         return _log_tool_call(
             name="renforge_run_scenario",
@@ -39,6 +42,7 @@ def build_wrappers(context):
                 "state_profile": state_profile,
                 "capture_on_failure": capture_on_failure,
                 "steps": steps,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.run_scenario,

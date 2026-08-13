@@ -998,6 +998,7 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
         "slot",
         "extra_info",
         "regexp",
+        "authorize",
     }
 
 
