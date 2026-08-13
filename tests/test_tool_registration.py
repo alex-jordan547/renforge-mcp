@@ -77,7 +77,7 @@ def test_server_bootstrap_no_longer_owns_tool_wrapper_bodies() -> None:
     assert functions == set()
 
 
-def test_public_tool_contract_matches_pre_refactor_snapshot() -> None:
+def test_public_tool_contract_matches_agent_safe_baseline() -> None:
     contract = _public_contract()
     payload = json.dumps(
         contract,
@@ -87,5 +87,5 @@ def test_public_tool_contract_matches_pre_refactor_snapshot() -> None:
 
     assert len(contract) == 54
     assert hashlib.sha256(payload).hexdigest() == (
-        "768d929452553d953c107d9a4e04e21b43e6e9dfd41df12dffff6095d7d5c3d7"
+        "cd1eacc10aace1971faec86cc44e39b66413c1129da3e373ebbcfa987434efbe"
     )

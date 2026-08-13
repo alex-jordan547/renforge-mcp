@@ -107,6 +107,8 @@ def test_emitted_tool_schemas_encode_options_limits_and_required_relationships()
     assert len(wait_schema["oneOf"]) == 3
     assert wait_schema["properties"]["timeout"]["maximum"] == 120
 
+    assert schemas["renforge_get_errors"]["properties"]["since"]["minimum"] == 0
+
     scenario_steps = schemas["renforge_run_scenario"]["properties"]["steps"]
     assert len(scenario_steps["items"]["oneOf"]) == 14
     assert scenario_steps["items"]["oneOf"][0]["additionalProperties"] is False
@@ -356,6 +358,7 @@ def test_tool_annotations_are_conservative_for_conditional_and_sdk_side_effects(
 def test_risky_runtime_annotation_matrix_is_conservative() -> None:
     arbitrary_python_tools = {
         "renforge_eval",
+        "renforge_get_var",
         "renforge_wait_until",
         "renforge_run_scenario",
     }
@@ -487,11 +490,40 @@ def test_optional_null_siblings_do_not_break_exclusive_tool_schemas(
     wait_schema.validate(
         {"project_path": str(tmp_path), "label": "start", "screen": None, "expr": None}
     )
-    Draft202012Validator(schemas["renforge_saves"]).validate(
+    saves_schema = Draft202012Validator(schemas["renforge_saves"])
+    saves_schema.validate(
         {"project_path": str(tmp_path), "action": "list", "slot": None, "extra_info": None}
+    )
+    assert not saves_schema.is_valid(
+        {"project_path": str(tmp_path), "action": "save", "slot": None, "regexp": None}
+    )
+    assert not saves_schema.is_valid(
+        {"project_path": str(tmp_path), "action": "load", "slot": "", "regexp": None}
     )
     Draft202012Validator(schemas["renforge_select_choice"]).validate(
         {"project_path": str(tmp_path), "text": "Go", "index": None}
+    )
+    scenario_schema = Draft202012Validator(schemas["renforge_run_scenario"])
+    scenario_schema.validate(
+        {
+            "project_path": str(tmp_path),
+            "steps": [
+                {"send_input": {"text": "hello", "key": None, "scroll": None}},
+                {"wait": {"label": "start", "screen": None, "expr": None}},
+                {"select_choice": {"text": "Go", "index": None}},
+                {
+                    "click": {
+                        "text": "Go",
+                        "id": None,
+                        "target": None,
+                        "screen": None,
+                        "exact": None,
+                        "element_id": None,
+                        "expected_frame_id": None,
+                    }
+                },
+            ],
+        }
     )
     assert not send_schema.is_valid(
         {"project_path": str(tmp_path), "text": "hello", "key": "enter"}
@@ -545,6 +577,8 @@ def test_run_scenario_schema_rejects_payloads_runtime_rejects() -> None:
     assert valid([{"send_input": {"text": "hello"}}])
     assert valid([{"capture": "frame"}])
     assert not valid([{"wait": {}}])
+    assert not valid([{"click": {}}])
+    assert not valid([{"click": {"text": None, "id": None}}])
     assert not valid([{"send_input": {"text": "a", "key": "enter"}}])
     assert not valid([{"capture": "."}])
     assert not valid([{"capture": {"name": ".."}}])
@@ -556,5 +590,9 @@ def test_get_var_description_does_not_promise_zero_user_code() -> None:
     assert "type label" in description
     assert "repr" in description
     assert "property" in description
-    assert TOOL_DEFINITIONS["renforge_get_var"].annotations["readOnlyHint"] is True
-
+    assert TOOL_DEFINITIONS["renforge_get_var"].annotations == {
+        "readOnlyHint": False,
+        "idempotentHint": False,
+        "destructiveHint": True,
+        "openWorldHint": True,
+    }

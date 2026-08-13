@@ -63,6 +63,32 @@ def test_write_project_capture_does_not_follow_dir_swapped_after_validation(
     assert not (project / ".renforge" / "captures" / "frame.png").is_file()
 
 
+def test_write_project_capture_does_not_follow_ancestor_swapped_after_validation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from renforge import captures as capmod
+
+    project = tmp_path / "game"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "captures").mkdir(parents=True)
+    real_ensure = capmod.ensure_nofollow_directory
+
+    def swap_ancestor_after_validation(path: Path) -> Path:
+        result = real_ensure(path)
+        renforge_dir = Path(result).parent
+        renforge_dir.rename(project / ".renforge-held")
+        renforge_dir.symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(capmod, "ensure_nofollow_directory", swap_ancestor_after_validation)
+
+    with pytest.raises((OSError, ValueError)):
+        write_project_capture(project, "frame", b"png-bytes")
+
+    assert not (outside / "captures" / "frame.png").exists()
+
+
 def test_write_json_atomic_nofollow_still_writes_inside_real_directory(tmp_path: Path) -> None:
     path = tmp_path / "data.json"
     write_json_atomic(path, {"ok": True}, follow_symlinks=False, max_bytes=1024)

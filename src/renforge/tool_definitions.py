@@ -1,11 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from typing_extensions import NotRequired, TypedDict
 
-from .captures import capture_name_json_schema
+from .tool_schema import (
+    _CAPTURE_NAME_SCHEMA,
+    _CONTROL_ACTIONS,
+    _SCAN_SECTIONS,
+    _SCENARIO_ACTIONS,
+    _SCREENSHOT_PARAMETER_SCHEMAS,
+    _SCROLL_SCHEMA,
+    _SEND_INPUT_ONEOF,
+    _STATE_PROFILES,
+    _WAIT_UNTIL_ONEOF,
+    _enum,
+    _limits,
+    _oneof_present,
+    _scenario_step_schema,
+)
 
 
 class ScrollInput(TypedDict):
@@ -87,6 +101,13 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "crop_height": "Optional crop height in pixels; 0 keeps full height.",
             "scale": "Scale multiplier applied after crop; > 1 zooms in, < 1 zooms out.",
         },
+        parameter_schemas={
+            "crop_x": {"minimum": 0},
+            "crop_y": {"minimum": 0},
+            "crop_width": {"minimum": 0},
+            "crop_height": {"minimum": 0},
+            "scale": _limits(0.1, 16.0),
+        },
     ),
     "renforge_inspect_project": ToolDefinition(
         description=(
@@ -125,6 +146,11 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "offset": "Zero-based pagination offset for scan results.",
             "limit": "Maximum items per page. Keep values bounded to avoid large payloads.",
         },
+        parameter_schemas={
+            "sections": {"items": _enum(*_SCAN_SECTIONS)},
+            "offset": {"minimum": 0},
+            "limit": _limits(1, 1_000),
+        },
     ),
     "renforge_find_references": ToolDefinition(
         description=(
@@ -143,6 +169,11 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "file_glob": "Optional glob filter limiting candidate files.",
             "offset": "Zero-based pagination offset for matches.",
             "limit": "Maximum results to return; keep this bounded for large codebases.",
+        },
+        parameter_schemas={
+            "symbol": {"pattern": r"^[A-Za-z_][A-Za-z0-9_]*$"},
+            "offset": {"minimum": 0},
+            "limit": _limits(1, 1_000),
         },
     ),
     "renforge_parse_lint": ToolDefinition(
@@ -199,6 +230,12 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                 "Ren'Py background startup deadline in seconds (0 uses the launcher default). This does not control the MCP "
                 "response wait; poll `renforge_launch_status` after a `starting` result."
             ),
+        },
+        parameter_schemas={
+            "display": _enum("auto", "native", "xvfb", "external", "none"),
+            "audio": _enum("auto", "native", "dummy", "none"),
+            "persistent": _enum("existing", "empty", "copy", "fixture"),
+            "timeout": {"minimum": 0},
         },
     ),
     "renforge_launch_status": ToolDefinition(
@@ -275,6 +312,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "project_path": "Project root with an active live session.",
             "include": "Optional sections to include in addition to default state (for example metrics, audio).",
         },
+        parameter_schemas={"include": {"items": _enum("metrics", "audio")}},
     ),
     "renforge_game_state_compact": ToolDefinition(
         description=(
@@ -295,6 +333,12 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "max_depth": "Maximum object nesting depth to serialize, from 0 through 20.",
             "max_items": "Maximum variable count before trimming, from 1 through 10000.",
             "max_output_bytes": "Payload cap in bytes, from 64 through 2000000.",
+        },
+        parameter_schemas={
+            "state_profile": _enum(*_STATE_PROFILES),
+            "max_depth": _limits(0, 20),
+            "max_items": _limits(1, 10_000),
+            "max_output_bytes": _limits(64, 2_000_000),
         },
     ),
     "renforge_inspect_screen": ToolDefinition(
@@ -321,8 +365,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={"project_path": "Project root of the running live session."},
     ),
@@ -337,7 +381,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             readOnlyHint=False,
             idempotentHint=False,
             destructiveHint=True,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with running live session.",
@@ -346,6 +390,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "wait_for_effect": "Wait until bridge reports visible state effect before returning.",
             "effect_timeout": "Maximum seconds to wait when `wait_for_effect` is enabled.",
         },
+        parameter_schemas={"action": _enum(*_CONTROL_ACTIONS)},
     ),
     "renforge_send_input": ToolDefinition(
         description=(
@@ -355,8 +400,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -371,6 +416,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             ),
             "submit": "Press Enter after injected text; only valid with text input, not key or scroll.",
         },
+        parameter_schemas={"scroll": _SCROLL_SCHEMA},
+        input_schema={"oneOf": _SEND_INPUT_ONEOF},
+        parameter_types={"scroll": ScrollInput | None},
     ),
     "renforge_saves": ToolDefinition(
         description=(
@@ -381,7 +429,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             readOnlyHint=False,
             idempotentHint=False,
             destructiveHint=True,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root of the running live game.",
@@ -389,6 +437,36 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "slot": "Slot label used by save/load actions.",
             "extra_info": "Optional save metadata for save actions.",
             "regexp": "Optional regex filter for list only, selecting matching slots.",
+        },
+        parameter_schemas={"action": _enum("save", "load", "list")},
+        input_schema={
+            "oneOf": [
+                {
+                    "properties": {
+                        "action": {"const": "save"},
+                        "slot": {"type": "string", "minLength": 1},
+                        "regexp": {"type": "null"},
+                    },
+                    "required": ["action", "slot"],
+                },
+                {
+                    "properties": {
+                        "action": {"const": "load"},
+                        "slot": {"type": "string", "minLength": 1},
+                        "extra_info": {"type": "null"},
+                        "regexp": {"type": "null"},
+                    },
+                    "required": ["action", "slot"],
+                },
+                {
+                    "properties": {
+                        "action": {"const": "list"},
+                        "slot": {"type": "null"},
+                        "extra_info": {"type": "null"},
+                    },
+                    "required": ["action"],
+                },
+            ]
         },
     ),
     "renforge_list_choices": ToolDefinition(
@@ -412,13 +490,25 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root of the running live session.",
             "text": "Visible text to match; preferred over index.",
             "index": "Zero-based choice index fallback when text is omitted.",
+        },
+        input_schema={
+            "oneOf": [
+                _oneof_present(
+                    {"text": {"type": "string", "minLength": 1}},
+                    extra={"index": {"anyOf": [{"type": "null"}, {"const": -1}]}},
+                ),
+                _oneof_present(
+                    {"index": {"type": "integer", "minimum": 0}},
+                    extra={"text": {"anyOf": [{"type": "null"}, {"const": ""}]}},
+                ),
+            ]
         },
     ),
     "renforge_list_ui_elements": ToolDefinition(
@@ -447,8 +537,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -470,8 +560,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -510,8 +600,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -521,6 +611,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "expected_state": "Optional expected runtime state dictionary before click.",
             "coordinate_space": "`logical` (default) or `screenshot` coordinates.",
         },
+        parameter_schemas={"coordinate_space": _enum("logical", "screenshot")},
     ),
     "renforge_get_displayable_bounds": ToolDefinition(
         description=(
@@ -547,8 +638,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -583,6 +674,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "after_path": "Path to comparison PNG; omit to compare against current live frame.",
             "threshold": "Pixel-difference threshold; higher values reduce sensitivity.",
         },
+        parameter_schemas={"threshold": _limits(0, 255)},
     ),
     "renforge_eval": ToolDefinition(
         description=(
@@ -594,7 +686,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             readOnlyHint=False,
             idempotentHint=False,
             destructiveHint=True,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -609,8 +701,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -625,10 +717,10 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "property getter. Prefer this over `renforge_eval` when you only need a named lookup."
         ),
         annotations=_ann(
-            readOnlyHint=True,
-            idempotentHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
+            readOnlyHint=False,
+            idempotentHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
         ),
         parameters={"project_path": "Project root with active live session.", "name": "Variable name to read."},
     ),
@@ -663,6 +755,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "project_path": "Project root; this can still read bounded crash files after the runtime stops.",
             "since": "Exclusive cursor for paginating older logs/diagnostics.",
         },
+        parameter_schemas={"since": {"minimum": 0}},
     ),
     "renforge_wait_until": ToolDefinition(
         description=(
@@ -674,7 +767,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             readOnlyHint=False,
             idempotentHint=False,
             destructiveHint=True,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root with active live session.",
@@ -689,6 +782,15 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "max_items": "Maximum list/map items in compact state, from 1 through 10000.",
             "max_output_bytes": "Payload cap for the result, from 64 through 2000000 bytes.",
         },
+        parameter_schemas={
+            "timeout": _limits(0, 120),
+            "interval": {"minimum": 0},
+            "state_profile": _enum(*_STATE_PROFILES),
+            "max_depth": _limits(0, 20),
+            "max_items": _limits(1, 10_000),
+            "max_output_bytes": _limits(64, 2_000_000),
+        },
+        input_schema={"oneOf": _WAIT_UNTIL_ONEOF},
     ),
     "renforge_hit_test": ToolDefinition(
         description=(
@@ -707,6 +809,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "y": "Y coordinate for hit testing.",
             "coordinate_space": "Coordinate system for the test point (`logical` or `screenshot`).",
         },
+        parameter_schemas={"coordinate_space": _enum("logical", "screenshot")},
     ),
     "renforge_scene_tree": ToolDefinition(
         description=(
@@ -736,6 +839,16 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "max_items": "Maximum total nodes, from 1 through 10000.",
             "max_output_bytes": "Payload cap, from 64 through 2000000 bytes.",
         },
+        parameter_schemas={
+            "detail": _enum("semantic", "layout", "raw"),
+            "include": {"items": _enum("color", "style", "overflow")},
+            "format": _enum("json", "wireframe"),
+            "save_as": {"pattern": r"^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+            "diff_against": {"pattern": r"^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+            "max_output_depth": _limits(0, 20),
+            "max_items": _limits(1, 10_000),
+            "max_output_bytes": _limits(64, 2_000_000),
+        },
     ),
     "renforge_measure": ToolDefinition(
         description=(
@@ -758,6 +871,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "within": "Optional scene node id or literal `{x,y,width,height}` bounds used as the containing region.",
             "tolerance": "Optional tolerance; adds a pass verdict (for contrast, the minimum WCAG ratio).",
         },
+        parameter_schemas={
+            "action": _enum("align", "gap", "distribute", "center", "overlap", "fit", "contrast")
+        },
     ),
     "renforge_run_scenario": ToolDefinition(
         description=(
@@ -769,7 +885,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             readOnlyHint=False,
             idempotentHint=False,
             destructiveHint=True,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Project root of the live session.",
@@ -782,6 +898,17 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "stop_on_failure": "Abort remaining steps when one step fails.",
             "state_profile": "Compact state profile used for captures: `minimal`, `interaction`, `debug`, or `full`.",
             "capture_on_failure": "Capture diagnostics (including image) when step evaluation fails.",
+        },
+        parameter_schemas={
+            "steps": {
+                "items": {
+                    "oneOf": [
+                        _scenario_step_schema(action) for action in _SCENARIO_ACTIONS
+                    ]
+                }
+            },
+            "timeout": _limits(0, 600),
+            "state_profile": _enum(*_STATE_PROFILES),
         },
     ),
     "renforge_autopilot": ToolDefinition(
@@ -973,6 +1100,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "crosshair_y": "Crosshair y coordinate; both x/y must be set together.",
             "rulers": "Draw rulers along frame edges for measurement.",
         },
+        parameter_schemas=_SCREENSHOT_PARAMETER_SCHEMAS,
     ),
     "renforge_capture_screenshot": ToolDefinition(
         description=(
@@ -1000,6 +1128,13 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "crosshair_y": "Crosshair y coordinate; both x/y must be set together.",
             "rulers": "Draw rulers along frame edges for measurement.",
         },
+        parameter_schemas={
+            "name": {
+                "pattern": _CAPTURE_NAME_SCHEMA["pattern"],
+                "not": _CAPTURE_NAME_SCHEMA["not"],
+            },
+            **_SCREENSHOT_PARAMETER_SCHEMAS,
+        },
     ),
     "renforge_estimate_translation": ToolDefinition(
         description=(
@@ -1020,6 +1155,14 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "region_height": "Optional crop region height.",
             "threshold": "Similarity threshold for matching pixels.",
             "max_shift": "Maximum per-axis shift considered during matching.",
+        },
+        parameter_schemas={
+            "region_x": {"minimum": 0},
+            "region_y": {"minimum": 0},
+            "region_width": {"minimum": 0},
+            "region_height": {"minimum": 0},
+            "threshold": _limits(0, 255),
+            "max_shift": _limits(0, 256),
         },
     ),
     "renforge_find_image_on_screen": ToolDefinition(
@@ -1043,477 +1186,13 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "region_width": "Optional region width; set width/height together.",
             "region_height": "Optional region height; set width/height together.",
         },
+        parameter_schemas={
+            "threshold": _limits(0.0, 1.0),
+            "max_matches": _limits(1, 100),
+            "region_x": {"minimum": 0},
+            "region_y": {"minimum": 0},
+            "region_width": {"minimum": 0},
+            "region_height": {"minimum": 0},
+        },
     ),
 }
-
-
-_SCAN_SECTIONS = [
-    "files",
-    "variables",
-    "graph",
-    "labels",
-    "jumps",
-    "calls",
-    "menus",
-    "characters",
-    "images",
-    "unresolved_targets",
-]
-_STATE_PROFILES = ["minimal", "interaction", "debug", "full"]
-_CONTROL_ACTIONS = [
-    "advance",
-    "rollback",
-    "toggle_skip",
-    "toggle_auto",
-    "toggle_afm",
-    "game_menu",
-    "hide_windows",
-    "quick_save",
-    "quick_load",
-    "reload_script",
-    "restart_interaction",
-    "quit",
-]
-_SCENARIO_ACTIONS = [
-    "set",
-    "eval",
-    "click",
-    "click_at",
-    "advance",
-    "scroll",
-    "wait",
-    "assert",
-    "select_choice",
-    "capture",
-    "save",
-    "load",
-    "control",
-    "send_input",
-]
-
-
-def _enum(*values: str) -> dict[str, Any]:
-    return {"enum": list(values), "type": "string"}
-
-
-def _limits(minimum: int | float, maximum: int | float) -> dict[str, Any]:
-    return {"minimum": minimum, "maximum": maximum}
-
-
-def _oneof_present(
-    required_props: dict[str, Any],
-    *,
-    null: tuple[str, ...] = (),
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Match when required fields are present; omitted or JSON-null siblings are allowed."""
-    properties = dict(required_props)
-    for name in null:
-        properties[name] = {"type": "null"}
-    if extra:
-        properties.update(extra)
-    return {"required": list(required_props), "properties": properties}
-
-
-_CAPTURE_NAME_SCHEMA = capture_name_json_schema()
-_SCROLL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "x": {"type": "number"},
-        "y": {"type": "number"},
-        "direction": _enum("up", "down"),
-        "amount": {"type": "integer", "minimum": 1},
-    },
-    "required": ["x", "y", "direction"],
-    "additionalProperties": False,
-}
-_SEND_INPUT_ONEOF = [
-    _oneof_present({"text": {"type": "string"}}, null=("key", "scroll")),
-    _oneof_present(
-        {"key": {"type": "string", "minLength": 1}},
-        null=("text", "scroll"),
-        extra={"submit": {"const": False}},
-    ),
-    _oneof_present(
-        {"scroll": _SCROLL_SCHEMA},
-        null=("text", "key"),
-        extra={"submit": {"const": False}},
-    ),
-]
-_WAIT_UNTIL_ONEOF = [
-    _oneof_present(
-        {"label": {"type": "string", "minLength": 1}},
-        null=("screen", "expr"),
-    ),
-    _oneof_present(
-        {"screen": {"type": "string", "minLength": 1}},
-        null=("label", "expr"),
-    ),
-    _oneof_present(
-        {"expr": {"type": "string", "minLength": 1}},
-        null=("label", "screen"),
-    ),
-]
-
-
-def _scenario_step_schema(action: str) -> dict[str, Any]:
-    payloads: dict[str, dict[str, Any]] = {
-        "set": {"type": "object", "minProperties": 1},
-        "eval": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {"expr": {"type": "string", "minLength": 1}},
-                    "required": ["expr"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "click": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "id": {"type": "string"},
-                        "target": {"type": "string"},
-                        "screen": {"type": "string"},
-                        "exact": {"type": "boolean"},
-                        "element_id": {"type": "string"},
-                        "expected_frame_id": {"type": ["string", "null"]},
-                    },
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "click_at": {
-            "type": "object",
-            "properties": {
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "coordinate_space": _enum("logical", "screenshot"),
-                "expected_frame_id": {"type": ["string", "null"]},
-            },
-            "required": ["x", "y"],
-            "additionalProperties": False,
-        },
-        "scroll": _SCROLL_SCHEMA,
-        "wait": {
-            "type": "object",
-            "properties": {
-                "label": {"type": "string", "minLength": 1},
-                "screen": {"type": "string", "minLength": 1},
-                "expr": {"type": "string", "minLength": 1},
-                "interval": {"type": "number", "minimum": 0},
-                "state_profile": _enum(*_STATE_PROFILES),
-                "include": {"type": "array", "items": {"type": "string"}},
-            },
-            "additionalProperties": False,
-            "oneOf": _WAIT_UNTIL_ONEOF,
-        },
-        "assert": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {
-                        "expr": {"type": "string", "minLength": 1},
-                        "equals": {},
-                        "message": {"type": "string"},
-                    },
-                    "required": ["expr"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "select_choice": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string", "minLength": 1},
-                        "index": {"type": "integer", "minimum": 0},
-                    },
-                    "additionalProperties": False,
-                    "oneOf": [
-                        _oneof_present(
-                            {"text": {"type": "string", "minLength": 1}},
-                            extra={"index": {"anyOf": [{"type": "null"}, {"const": -1}]}},
-                        ),
-                        _oneof_present(
-                            {"index": {"type": "integer", "minimum": 0}},
-                            extra={"text": {"anyOf": [{"type": "null"}, {"const": ""}]}},
-                        ),
-                    ],
-                },
-            ]
-        },
-        "capture": {
-            "oneOf": [
-                _CAPTURE_NAME_SCHEMA,
-                {
-                    "type": "object",
-                    "properties": {"name": _CAPTURE_NAME_SCHEMA},
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "save": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {"slot": {"type": "string", "minLength": 1}},
-                    "required": ["slot"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "load": {
-            "oneOf": [
-                {"type": "string", "minLength": 1},
-                {
-                    "type": "object",
-                    "properties": {"slot": {"type": "string", "minLength": 1}},
-                    "required": ["slot"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "control": {
-            "oneOf": [
-                _enum(*_CONTROL_ACTIONS),
-                {
-                    "type": "object",
-                    "properties": {"action": _enum(*_CONTROL_ACTIONS)},
-                    "required": ["action"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-        "send_input": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "key": {"type": "string", "minLength": 1},
-                "scroll": _SCROLL_SCHEMA,
-                "submit": {"type": "boolean"},
-            },
-            "additionalProperties": False,
-            "oneOf": _SEND_INPUT_ONEOF,
-        },
-        "advance": {
-            "oneOf": [
-                {"type": "null"},
-                {"type": "integer", "minimum": 1},
-                {
-                    "type": "object",
-                    "properties": {"count": {"type": "integer", "minimum": 1}},
-                    "additionalProperties": False,
-                },
-            ]
-        },
-    }
-    return {
-        "type": "object",
-        "properties": {
-            action: payloads[action],
-            "timeout": {"type": "number", "minimum": 0},
-            "step_timeout": {"type": "number", "minimum": 0},
-        },
-        "required": [action],
-        "additionalProperties": False,
-    }
-
-_PARAMETER_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
-    "renforge_inspect_image": {
-        "crop_x": {"minimum": 0},
-        "crop_y": {"minimum": 0},
-        "crop_width": {"minimum": 0},
-        "crop_height": {"minimum": 0},
-        "scale": _limits(0.1, 16.0),
-    },
-    "renforge_scan_project": {
-        "sections": {"items": _enum(*_SCAN_SECTIONS)},
-        "offset": {"minimum": 0},
-        "limit": _limits(1, 1_000),
-    },
-    "renforge_find_references": {
-        "symbol": {"pattern": r"^[A-Za-z_][A-Za-z0-9_]*$"},
-        "offset": {"minimum": 0},
-        "limit": _limits(1, 1_000),
-    },
-    "renforge_launch": {
-        "display": _enum("auto", "native", "xvfb", "external", "none"),
-        "audio": _enum("auto", "native", "dummy", "none"),
-        "persistent": _enum("existing", "empty", "copy", "fixture"),
-        "timeout": {"minimum": 0},
-    },
-    "renforge_game_state": {"include": {"items": _enum("metrics", "audio")}},
-    "renforge_game_state_compact": {
-        "state_profile": _enum(*_STATE_PROFILES),
-        "max_depth": _limits(0, 20),
-        "max_items": _limits(1, 10_000),
-        "max_output_bytes": _limits(64, 2_000_000),
-    },
-    "renforge_control": {"action": _enum(*_CONTROL_ACTIONS)},
-    "renforge_send_input": {"scroll": _SCROLL_SCHEMA},
-    "renforge_saves": {"action": _enum("save", "load", "list")},
-    "renforge_click_at": {"coordinate_space": _enum("logical", "screenshot")},
-    "renforge_diff_screenshots": {"threshold": _limits(0, 255)},
-    "renforge_wait_until": {
-        "timeout": _limits(0, 120),
-        "interval": {"minimum": 0},
-        "state_profile": _enum(*_STATE_PROFILES),
-        "max_depth": _limits(0, 20),
-        "max_items": _limits(1, 10_000),
-        "max_output_bytes": _limits(64, 2_000_000),
-    },
-    "renforge_hit_test": {"coordinate_space": _enum("logical", "screenshot")},
-    "renforge_scene_tree": {
-        "detail": _enum("semantic", "layout", "raw"),
-        "include": {"items": _enum("color", "style", "overflow")},
-        "format": _enum("json", "wireframe"),
-        "save_as": {"pattern": r"^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
-        "diff_against": {"pattern": r"^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
-        "max_output_depth": _limits(0, 20),
-        "max_items": _limits(1, 10_000),
-        "max_output_bytes": _limits(64, 2_000_000),
-    },
-    "renforge_measure": {"action": _enum("align", "gap", "distribute", "center", "overlap", "fit", "contrast")},
-    "renforge_run_scenario": {
-        "steps": {"items": {"oneOf": [_scenario_step_schema(action) for action in _SCENARIO_ACTIONS]}},
-        "timeout": _limits(0, 600),
-        "state_profile": _enum(*_STATE_PROFILES),
-    },
-    "renforge_screenshot": {
-        "width": {"minimum": 0},
-        "height": {"minimum": 0},
-        "crop_x": {"minimum": 0},
-        "crop_y": {"minimum": 0},
-        "crop_width": {"minimum": 0},
-        "crop_height": {"minimum": 0},
-        "scale": _limits(0.1, 16.0),
-        "grid": {"minimum": 0},
-        "crosshair_x": {"minimum": -1},
-        "crosshair_y": {"minimum": -1},
-    },
-    "renforge_capture_screenshot": {
-        "name": {
-            "pattern": _CAPTURE_NAME_SCHEMA["pattern"],
-            "not": _CAPTURE_NAME_SCHEMA["not"],
-        },
-        "width": {"minimum": 0},
-        "height": {"minimum": 0},
-        "crop_x": {"minimum": 0},
-        "crop_y": {"minimum": 0},
-        "crop_width": {"minimum": 0},
-        "crop_height": {"minimum": 0},
-        "scale": _limits(0.1, 16.0),
-        "grid": {"minimum": 0},
-        "crosshair_x": {"minimum": -1},
-        "crosshair_y": {"minimum": -1},
-    },
-    "renforge_estimate_translation": {
-        "region_x": {"minimum": 0},
-        "region_y": {"minimum": 0},
-        "region_width": {"minimum": 0},
-        "region_height": {"minimum": 0},
-        "threshold": _limits(0, 255),
-        "max_shift": _limits(0, 256),
-    },
-    "renforge_find_image_on_screen": {
-        "threshold": _limits(0.0, 1.0),
-        "max_matches": _limits(1, 100),
-        "region_x": {"minimum": 0},
-        "region_y": {"minimum": 0},
-        "region_width": {"minimum": 0},
-        "region_height": {"minimum": 0},
-    },
-}
-
-_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
-    "renforge_send_input": {"oneOf": _SEND_INPUT_ONEOF},
-    "renforge_wait_until": {"oneOf": _WAIT_UNTIL_ONEOF},
-    "renforge_saves": {
-        "oneOf": [
-            {
-                "properties": {
-                    "action": {"const": "save"},
-                    "regexp": {"type": "null"},
-                },
-                "required": ["action", "slot"],
-            },
-            {
-                "properties": {
-                    "action": {"const": "load"},
-                    "extra_info": {"type": "null"},
-                    "regexp": {"type": "null"},
-                },
-                "required": ["action", "slot"],
-            },
-            {
-                "properties": {
-                    "action": {"const": "list"},
-                    "slot": {"type": "null"},
-                    "extra_info": {"type": "null"},
-                },
-                "required": ["action"],
-            },
-        ]
-    },
-    "renforge_select_choice": {
-        "oneOf": [
-            _oneof_present(
-                {"text": {"type": "string", "minLength": 1}},
-                extra={"index": {"anyOf": [{"type": "null"}, {"const": -1}]}},
-            ),
-            _oneof_present(
-                {"index": {"type": "integer", "minimum": 0}},
-                extra={"text": {"anyOf": [{"type": "null"}, {"const": ""}]}},
-            ),
-        ]
-    },
-}
-
-_PARAMETER_TYPES: dict[str, dict[str, Any]] = {
-    "renforge_send_input": {"scroll": ScrollInput | None},
-}
-
-for _tool_name, _definition in tuple(TOOL_DEFINITIONS.items()):
-    TOOL_DEFINITIONS[_tool_name] = replace(
-        _definition,
-        parameter_schemas=_PARAMETER_SCHEMAS.get(_tool_name, {}),
-        input_schema=_INPUT_SCHEMAS.get(_tool_name, {}),
-        parameter_types=_PARAMETER_TYPES.get(_tool_name, {}),
-    )
-
-_ARBITRARY_RUNTIME_ACTION_TOOLS = {
-    "renforge_advance",
-    "renforge_control",
-    "renforge_send_input",
-    "renforge_saves",
-    "renforge_select_choice",
-    "renforge_click_element",
-    "renforge_hover_element",
-    "renforge_click_at",
-    "renforge_position_element",
-    "renforge_eval",
-    "renforge_set_var",
-    "renforge_wait_until",
-    "renforge_run_scenario",
-}
-for _tool_name in _ARBITRARY_RUNTIME_ACTION_TOOLS:
-    _definition = TOOL_DEFINITIONS[_tool_name]
-    TOOL_DEFINITIONS[_tool_name] = replace(
-        _definition,
-        annotations=_ann(
-            readOnlyHint=False,
-            idempotentHint=False,
-            destructiveHint=True,
-            openWorldHint=True,
-        ),
-    )

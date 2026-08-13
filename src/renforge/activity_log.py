@@ -48,8 +48,9 @@ def _bound_text(value: str) -> str:
 
 
 def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    parts = [part for part in re.split(r"[^a-z0-9]+", lowered) if part]
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    separated = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", separated)
+    parts = [part for part in re.split(r"[^a-z0-9]+", separated.lower()) if part]
     return any(part in _SENSITIVE_TOKENS for part in parts)
 
 

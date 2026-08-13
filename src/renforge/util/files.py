@@ -198,6 +198,21 @@ def _leaf_name(path: Path) -> str:
     return name
 
 
+def _iter_encoded_chunks(
+    chunks: Iterable[str | bytes],
+    *,
+    encoding: str,
+    max_bytes: int | None,
+) -> Iterable[bytes]:
+    written = 0
+    for chunk in chunks:
+        encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
+        written += len(encoded)
+        if max_bytes is not None and written > max_bytes:
+            raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
+        yield encoded
+
+
 def _write_chunks_to_fd(
     fd: int,
     chunks: Iterable[str | bytes],
@@ -207,14 +222,13 @@ def _write_chunks_to_fd(
     max_bytes: int | None,
     own_fd: bool,
 ) -> None:
-    written = 0
     handle = os.fdopen(fd, "wb") if own_fd else os.fdopen(fd, "wb", closefd=False)
     try:
-        for chunk in chunks:
-            encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
-            written += len(encoded)
-            if max_bytes is not None and written > max_bytes:
-                raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
+        for encoded in _iter_encoded_chunks(
+            chunks,
+            encoding=encoding,
+            max_bytes=max_bytes,
+        ):
             handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
@@ -234,26 +248,51 @@ def _is_loop_error(exc: OSError) -> bool:
 
 def _posix_dir_fd_supported() -> bool:
     supported = getattr(os, "supports_dir_fd", set())
-    return os.open in supported and os.rename in supported and os.unlink in supported
+    return all(fn in supported for fn in (os.mkdir, os.open, os.rename, os.unlink))
 
 
-def _open_directory_nofollow_posix(path: Path, *, action: str = "atomic-write") -> int:
+def _open_directory_chain_nofollow_posix(
+    path: Path,
+    *,
+    action: str = "atomic-write",
+    create: bool = False,
+) -> int:
+    """Open every directory component relative to the previously pinned one."""
+    target = _absolute_path(path)
     flags = _open_flags(os.O_RDONLY, getattr(os, "O_DIRECTORY", 0), getattr(os, "O_NOFOLLOW", 0))
+    anchor = Path(target.anchor) if target.anchor else Path.cwd()
+    fd = os.open(str(anchor), flags)
     try:
-        fd = os.open(str(path), flags)
-    except OSError as exc:
-        if _is_loop_error(exc) or path.is_symlink():
-            raise _symlink_error(path, action=action) from exc
-        raise
-    try:
-        opened = os.fstat(fd)
-        after = path.lstat()
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or stat.S_ISLNK(after.st_mode)
-            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
-        ):
-            raise _symlink_error(path, action=action)
+        relative_parts = target.parts[1:] if target.anchor else target.parts
+        current_path = anchor
+        for part in relative_parts:
+            current_path = current_path / part
+            try:
+                child_fd = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(part, flags, dir_fd=fd)
+            except OSError as exc:
+                try:
+                    child = os.stat(part, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    child = None
+                if _is_loop_error(exc) or (child is not None and stat.S_ISLNK(child.st_mode)):
+                    raise _symlink_error(current_path, action=action) from exc
+                raise
+            try:
+                if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                    raise OSError(errno.ENOTDIR, "path component is not a directory", str(current_path))
+            except Exception:
+                os.close(child_fd)
+                raise
+            os.close(fd)
+            fd = child_fd
         return fd
     except Exception:
         os.close(fd)
@@ -287,10 +326,9 @@ def _write_atomic_anchored_posix(
     max_bytes: int | None,
 ) -> None:
     name = _leaf_name(destination)
-    parent = destination.parent
-    if not parent.is_symlink():
-        parent.mkdir(parents=True, exist_ok=True)
-    dir_fd = _open_directory_nofollow_posix(parent)
+    parent = _absolute_path(destination).parent
+    destination = parent / name
+    dir_fd = _open_directory_chain_nofollow_posix(parent, create=True)
     temp_name: str | None = None
     fd = -1
     try:
@@ -343,7 +381,9 @@ def _write_atomic_anchored_posix(
 
 def _append_nofollow_posix(path: Path, data: bytes, *, mode: int) -> None:
     name = _leaf_name(path)
-    dir_fd = _open_directory_nofollow_posix(path.parent, action="append")
+    parent = _absolute_path(path).parent
+    path = parent / name
+    dir_fd = _open_directory_chain_nofollow_posix(parent, action="append", create=True)
     try:
         flags = _open_flags(
             os.O_WRONLY,
@@ -1303,6 +1343,7 @@ _WIN_SYNCHRONIZE = 0x00100000
 _WIN_FILE_APPEND_DATA = 0x0004
 _WIN_FILE_LIST_DIRECTORY = 0x0001
 _WIN_FILE_ADD_FILE = 0x0002
+_WIN_FILE_ADD_SUBDIRECTORY = 0x0004
 _WIN_FILE_TRAVERSE = 0x0020
 _WIN_FILE_READ_ATTRIBUTES = 0x0080
 _WIN_FILE_SHARE_ALL = 0x00000007
@@ -1460,7 +1501,12 @@ def _win_reject_reparse_handle(handle: int, path: Path, *, action: str) -> Any:
     return info
 
 
-def _open_directory_nofollow_windows(path: Path) -> int:
+def _open_directory_nofollow_windows(
+    path: Path,
+    *,
+    action: str = "atomic-write",
+    writable: bool = False,
+) -> int:
     import ctypes
     from ctypes import wintypes
 
@@ -1478,11 +1524,12 @@ def _open_directory_nofollow_windows(path: Path) -> int:
     create_file.restype = wintypes.HANDLE
     access = (
         _WIN_FILE_LIST_DIRECTORY
-        | _WIN_FILE_ADD_FILE
         | _WIN_FILE_TRAVERSE
         | _WIN_FILE_READ_ATTRIBUTES
         | _WIN_SYNCHRONIZE
     )
+    if writable:
+        access |= _WIN_FILE_ADD_FILE | _WIN_FILE_ADD_SUBDIRECTORY
     handle = create_file(
         str(path),
         access,
@@ -1496,13 +1543,105 @@ def _open_directory_nofollow_windows(path: Path) -> int:
     if handle == invalid or handle is None:
         raise OSError(ctypes.get_last_error(), "CreateFileW failed for %s" % path)
     try:
-        info = _win_reject_reparse_handle(handle, path, action="atomic-write")
+        info = _win_reject_reparse_handle(handle, path, action=action)
         if not (info.dwFileAttributes & _WIN_FILE_ATTRIBUTE_DIRECTORY):
             raise ValueError("path is not a directory: %s" % path)
         return int(handle)
     except Exception:
         _win_close(int(handle))
         raise
+
+
+def _open_directory_chain_nofollow_windows(
+    path: Path,
+    *,
+    action: str = "atomic-write",
+    create: bool = False,
+) -> int:
+    """Open every Windows directory component relative to a pinned handle."""
+    target = _absolute_path(path)
+    anchor = Path(target.anchor)
+    access = (
+        _WIN_FILE_LIST_DIRECTORY
+        | _WIN_FILE_TRAVERSE
+        | _WIN_FILE_READ_ATTRIBUTES
+        | _WIN_SYNCHRONIZE
+    )
+    handles: list[tuple[int, Path]] = [
+        (_open_directory_nofollow_windows(anchor, action=action), anchor)
+    ]
+
+    def reopen_last_writable() -> None:
+        old_handle, current_path = handles[-1]
+        if len(handles) == 1:
+            new_handle = _open_directory_nofollow_windows(
+                current_path,
+                action=action,
+                writable=True,
+            )
+        else:
+            parent_handle = handles[-2][0]
+            new_handle = _win_nt_create(
+                root=parent_handle,
+                name=current_path.name,
+                access=access | _WIN_FILE_ADD_FILE | _WIN_FILE_ADD_SUBDIRECTORY,
+                disposition=_WIN_FILE_OPEN,
+                options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                | _WIN_FILE_DIRECTORY_FILE
+                | _WIN_FILE_OPEN_REPARSE_POINT,
+                attributes=_WIN_FILE_ATTRIBUTE_DIRECTORY,
+            )
+            try:
+                _win_reject_reparse_handle(new_handle, current_path, action=action)
+            except Exception:
+                _win_close(new_handle)
+                raise
+        _win_close(old_handle)
+        handles[-1] = (new_handle, current_path)
+
+    try:
+        for part in target.parts[1:]:
+            parent_handle, parent_path = handles[-1]
+            current_path = parent_path / part
+            try:
+                child = _win_nt_create(
+                    root=parent_handle,
+                    name=part,
+                    access=access,
+                    disposition=_WIN_FILE_OPEN,
+                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WIN_FILE_DIRECTORY_FILE
+                    | _WIN_FILE_OPEN_REPARSE_POINT,
+                    attributes=_WIN_FILE_ATTRIBUTE_DIRECTORY,
+                )
+            except OSError:
+                if not create:
+                    raise
+                reopen_last_writable()
+                child = _win_nt_create(
+                    root=handles[-1][0],
+                    name=part,
+                    access=access,
+                    disposition=_WIN_FILE_OPEN_IF,
+                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                    | _WIN_FILE_DIRECTORY_FILE
+                    | _WIN_FILE_OPEN_REPARSE_POINT,
+                    attributes=_WIN_FILE_ATTRIBUTE_DIRECTORY,
+                )
+            try:
+                info = _win_reject_reparse_handle(child, current_path, action=action)
+                if not (info.dwFileAttributes & _WIN_FILE_ATTRIBUTE_DIRECTORY):
+                    raise OSError(errno.ENOTDIR, "path component is not a directory", str(current_path))
+            except Exception:
+                _win_close(child)
+                raise
+            handles.append((child, current_path))
+        reopen_last_writable()
+        final_handle = handles.pop()[0]
+        return final_handle
+    finally:
+        for handle, _path in handles:
+            _win_close(handle)
 
 
 def _win_write_handle(handle: int, data: bytes) -> None:
@@ -1578,7 +1717,7 @@ def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
         raise OSError(status, "NtSetInformationFile rename failed")
 
 
-def _win_leaf_is_reparse(dir_handle: int, name: str, destination: Path) -> None:
+def _reject_leaf_reparse_windows(dir_handle: int, name: str, destination: Path) -> None:
     try:
         handle = _win_nt_create(
             root=dir_handle,
@@ -1598,15 +1737,9 @@ def _win_leaf_is_reparse(dir_handle: int, name: str, destination: Path) -> None:
 
 
 def _encode_chunks(chunks: Iterable[str | bytes], *, encoding: str, max_bytes: int | None) -> bytes:
-    parts: list[bytes] = []
-    written = 0
-    for chunk in chunks:
-        encoded = chunk.encode(encoding) if isinstance(chunk, str) else chunk
-        written += len(encoded)
-        if max_bytes is not None and written > max_bytes:
-            raise ValueError("atomic-write payload exceeds %d bytes" % max_bytes)
-        parts.append(encoded)
-    return b"".join(parts)
+    return b"".join(
+        _iter_encoded_chunks(chunks, encoding=encoding, max_bytes=max_bytes)
+    )
 
 
 def _write_atomic_anchored_windows(
@@ -1619,14 +1752,13 @@ def _write_atomic_anchored_windows(
 ) -> None:
     del mode
     name = _leaf_name(destination)
-    parent = destination.parent
-    if not parent.is_symlink():
-        parent.mkdir(parents=True, exist_ok=True)
-    dir_handle = _open_directory_nofollow_windows(parent)
+    parent = _absolute_path(destination).parent
+    destination = parent / name
+    dir_handle = _open_directory_chain_nofollow_windows(parent, create=True)
     temp_handle = 0
     temp_name: str | None = None
     try:
-        _win_leaf_is_reparse(dir_handle, name, destination)
+        _reject_leaf_reparse_windows(dir_handle, name, destination)
         payload = _encode_chunks(chunks, encoding=encoding, max_bytes=max_bytes)
         last_error: BaseException | None = None
         for _ in range(_TEMP_ATTEMPTS):
@@ -1649,7 +1781,7 @@ def _write_atomic_anchored_windows(
         else:
             raise OSError("failed to allocate a nofollow temporary file in %s" % parent) from last_error
         _win_write_handle(temp_handle, payload)
-        _win_leaf_is_reparse(dir_handle, name, destination)
+        _reject_leaf_reparse_windows(dir_handle, name, destination)
         _win_rename_at(temp_handle, dir_handle, name)
         temp_name = None
     finally:
@@ -1695,7 +1827,9 @@ def _write_atomic_anchored_windows(
 def _append_nofollow_windows(path: Path, data: bytes, *, mode: int) -> None:
     del mode
     name = _leaf_name(path)
-    dir_handle = _open_directory_nofollow_windows(path.parent)
+    parent = _absolute_path(path).parent
+    path = parent / name
+    dir_handle = _open_directory_chain_nofollow_windows(parent, action="append", create=True)
     handle = 0
     try:
         handle = _win_nt_create(
@@ -1716,4 +1850,3 @@ def _append_nofollow_windows(path: Path, data: bytes, *, mode: int) -> None:
         if handle:
             _win_close(handle)
         _win_close(dir_handle)
-

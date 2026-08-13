@@ -154,7 +154,9 @@ def test_register_tools_fails_closed_when_backend_cannot_accept_metadata() -> No
         _register_tools(_MetadataDroppingBackend())
 
 
-def test_read_only_tool_call_does_not_create_project_activity_log(tmp_path, monkeypatch) -> None:
+def test_get_var_logs_activity_because_property_resolution_can_run_user_code(
+    tmp_path, monkeypatch
+) -> None:
     from renforge.tools import live
 
     monkeypatch.setattr(live, "get_var", lambda project_path, name: {"ok": True, "value": 7})
@@ -164,7 +166,11 @@ def test_read_only_tool_call_does_not_create_project_activity_log(tmp_path, monk
     result = app.tools["renforge_get_var"](str(tmp_path), "score")
 
     assert result == {"ok": True, "value": 7}
-    assert not (tmp_path / ".renforge" / "activity.jsonl").exists()
+    entry = json.loads(
+        (tmp_path / ".renforge" / "activity.jsonl").read_text(encoding="utf-8")
+    )
+    assert entry["name"] == "renforge_get_var"
+    assert entry["params"]["name"] == "score"
 
 
 def test_mutable_tool_call_logs_bounded_redacted_activity(tmp_path, monkeypatch) -> None:
