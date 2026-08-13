@@ -26,6 +26,23 @@ def test_mcp_safety_docs_include_runtime_mutations() -> None:
 
     assert "`renforge_control`" in safety
     assert "`renforge_saves`" in safety
+    assert "POLICY.md" in safety or "authorize=true" in safety
+
+
+def test_runtime_policy_docs_cover_model_and_compatibility() -> None:
+    root = Path(__file__).parents[1]
+    policy = (root / "docs" / "POLICY.md").read_text(encoding="utf-8")
+    mcp = (root / "docs" / "MCP.md").read_text(encoding="utf-8")
+
+    assert "ToolAnnotations" in policy
+    assert "RENFORGE_POLICY=off" in policy
+    assert "RENFORGE_POLICY=enforce" in policy
+    assert "authorize=true" in policy
+    assert "POLICY_DENIED" in policy
+    assert "`renforge_eval`" in policy
+    assert "`renforge_run_scenario`" in policy
+    assert "docs/POLICY.md" in (root / "README.md").read_text(encoding="utf-8")
+    assert "POLICY.md" in mcp
 
 
 def test_public_god_mode_tools_and_workflow_are_documented() -> None:

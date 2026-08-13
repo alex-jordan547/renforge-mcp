@@ -67,6 +67,7 @@ def log_tool_call(
     duration_ms: float,
     result: Any,
     files_touched: list[str] | None = None,
+    policy: dict[str, Any] | None = None,
 ) -> None:
     summary = summarize_result(result)
     entry = {
@@ -78,6 +79,8 @@ def log_tool_call(
         "result": _coerce_result_payload(summary["result"]),
         "files_touched": files_touched or summary["files_touched"],
     }
+    if policy:
+        entry["policy"] = _coerce_payload(policy)
 
     root = _coerce_project_root(project_root)
     if not root.exists() or not root.is_dir():

@@ -54,7 +54,20 @@ def _log_tool_call(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> Any:
-    from . import activity_log
+    from . import policy
+
+    decision = policy.evaluate(name, params, project_root=project_root)
+    if not decision.allowed:
+        result = decision.to_result()
+        _record_tool_activity(
+            project_root,
+            name,
+            policy.redact_params(params),
+            0.0,
+            result,
+            policy=decision.log_fields(),
+        )
+        return result
 
     started = perf_counter()
     try:
@@ -63,21 +76,45 @@ def _log_tool_call(
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     duration_ms = round((perf_counter() - started) * 1000, 2)
-    if project_root is not None:
-        summary = activity_log.summarize_result(result)
-        try:
-            activity_log.log_tool_call(
-                project_root,
-                name,
-                params,
-                duration_ms,
-                result,
-                files_touched=summary["files_touched"],
-            )
-        except Exception:
-            pass
-
+    logged_params = params
+    if decision.risk in {policy.RISK_OPEN_WORLD, policy.RISK_DESTRUCTIVE}:
+        logged_params = policy.redact_params(params)
+    _record_tool_activity(
+        project_root,
+        name,
+        logged_params,
+        duration_ms,
+        result,
+        policy=decision.log_fields(),
+    )
     return result
+
+
+def _record_tool_activity(
+    project_root: str | None,
+    name: str,
+    params: dict[str, Any],
+    duration_ms: float,
+    result: Any,
+    policy: dict[str, Any] | None = None,
+) -> None:
+    if project_root is None:
+        return
+    from . import activity_log
+
+    summary = activity_log.summarize_result(result)
+    try:
+        activity_log.log_tool_call(
+            project_root,
+            name,
+            params,
+            duration_ms,
+            result,
+            files_touched=summary["files_touched"],
+            policy=policy,
+        )
+    except Exception:
+        pass
 
 
 def _png_content(png: bytes) -> Any:
@@ -672,6 +709,7 @@ def _register_tools(app: Any) -> None:
         interaction_id: str = "",
         wait_for_effect: bool = False,
         effect_timeout: float = 5.0,
+        authorize: bool = False,
     ) -> dict:
         """Run a runtime action: advance, rollback, toggle_skip, toggle_auto,
         toggle_afm, game_menu, hide_windows, quick_save, quick_load,
@@ -679,6 +717,8 @@ def _register_tools(app: Any) -> None:
 
         Emits correlated business events (quick_save.completed, skip.stopped,
         …). Set wait_for_effect=true to block until the matching event appears.
+        Destructive actions (quit, load-equivalent reload/quick_load) require
+        authorize=true when RENFORGE_POLICY=enforce.
         """
         return _log_tool_call(
             name="renforge_control",
@@ -688,6 +728,7 @@ def _register_tools(app: Any) -> None:
                 "interaction_id": interaction_id,
                 "wait_for_effect": wait_for_effect,
                 "effect_timeout": effect_timeout,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.control,
@@ -744,8 +785,13 @@ def _register_tools(app: Any) -> None:
         slot: str | None = None,
         extra_info: str | None = None,
         regexp: str | None = None,
+        authorize: bool = False,
     ) -> dict:
-        """Save, load, or list named save slots without screenshot payloads."""
+        """Save, load, or list named save slots without screenshot payloads.
+
+        ``load`` is destructive and requires authorize=true when
+        RENFORGE_POLICY=enforce.
+        """
         return _log_tool_call(
             name="renforge_saves",
             params={
@@ -754,6 +800,7 @@ def _register_tools(app: Any) -> None:
                 "slot": slot,
                 "extra_info": extra_info,
                 "regexp": regexp,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.saves,
@@ -1058,11 +1105,15 @@ def _register_tools(app: Any) -> None:
         )
 
     @tool_decorator()
-    def renforge_eval(project_path: str, expr: str) -> dict:
-        """Evaluate a Python expression in the running game's store namespace."""
+    def renforge_eval(project_path: str, expr: str, authorize: bool = False) -> dict:
+        """Evaluate a Python expression in the running game's store namespace.
+
+        This is an open-world operation. When RENFORGE_POLICY=enforce, pass
+        authorize=true or allow ``renforge_eval`` in RENFORGE_POLICY_ALLOW.
+        """
         return _log_tool_call(
             name="renforge_eval",
-            params={"project_path": project_path, "expr": expr},
+            params={"project_path": project_path, "expr": expr, "authorize": authorize},
             project_root=project_path,
             fn=live.eval_expr,
             args=(project_path, expr),
@@ -1316,12 +1367,15 @@ def _register_tools(app: Any) -> None:
         stop_on_failure: bool = True,
         state_profile: str = "minimal",
         capture_on_failure: bool = True,
+        authorize: bool = False,
     ) -> dict:
         """Run a multi-step live scenario (click/wait/assert/...) in one call.
 
         On failure, captures a screenshot and compact diagnostics automatically.
         Supported step actions: set, eval, click, click_at, advance, scroll,
         wait, assert, select_choice, capture, save, load, control, send_input.
+        Risk follows the highest-risk step. eval/load/quit-class control steps
+        require authorize=true when RENFORGE_POLICY=enforce.
         """
         return _log_tool_call(
             name="renforge_run_scenario",
@@ -1333,6 +1387,7 @@ def _register_tools(app: Any) -> None:
                 "state_profile": state_profile,
                 "capture_on_failure": capture_on_failure,
                 "steps": steps,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=live.run_scenario,
@@ -1754,7 +1809,10 @@ def create_app() -> Any:
         "renforge_control(action=\"reload_script\"); Live Editor Save already "
         "reloads and attests its own changes. Use renforge_wait_until for one "
         "bounded condition, and "
-        "renforge_get_errors after risky actions or a stopped process."
+        "renforge_get_errors after risky actions or a stopped process. "
+        "RENFORGE_POLICY defaults to off; when set to enforce, destructive and "
+        "open-world operations (eval, quit, load, reload_script, and matching "
+        "scenario steps) require authorize=true or an allowlist."
     )
     try:
         app = backend_cls("renforge", instructions=instructions)

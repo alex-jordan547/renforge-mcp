@@ -41,6 +41,7 @@ docs/*
 !docs/ARCHITECTURE.md
 !docs/LIVE_EDITOR.md
 !docs/CLOUD_ENVIRONMENT.md
+!docs/POLICY.md
 !docs/superpowers/
 !docs/superpowers/specs/
 !docs/superpowers/specs/*.md

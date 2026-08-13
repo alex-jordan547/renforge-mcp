@@ -3,6 +3,16 @@
 All notable RenForge releases are recorded here. Versions follow semantic
 versioning.
 
+## Unreleased
+
+### Added
+
+- Operation-level runtime policy for `renforge_control`, `renforge_saves`,
+  `renforge_eval`, and `renforge_run_scenario`. Default remains
+  `RENFORGE_POLICY=off` (classify and record, never deny). `enforce` mode
+  blocks destructive and open-world operations unless `authorize=true` or an
+  allowlist permits them. See [docs/POLICY.md](docs/POLICY.md).
+
 ## [0.7.0] - 2026-08-11
 
 ### Added

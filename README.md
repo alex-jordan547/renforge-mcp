@@ -216,6 +216,8 @@ renforge ui [--project <project>] [--port 8765]  # start the web dashboard
   vs locked targets, source-safety, public screenshots.
 - **[MCP guide](docs/MCP.md)** — full tool catalogue, agent workflows
   (Live Editor, hot reload, saves, pixel-perfect placement, scene perception).
+- **[Runtime policy](docs/POLICY.md)** — operation-level risk enforcement vs MCP
+  `ToolAnnotations`, authorization, and the compatibility plan.
 - **[Architecture](docs/ARCHITECTURE.md)** — code layout, live-control flow,
   Ren'Py SDK resolution, packaging.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, frontend build, PRs.
