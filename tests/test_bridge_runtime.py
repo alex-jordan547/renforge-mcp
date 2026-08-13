@@ -1133,6 +1133,60 @@ def test_editor_periodic_restores_active_session_after_reload(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_jump_removes_dialogue_screens_before_control_transfer(
+    running_bridge, monkeypatch
+):
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    active_screens = {"say", "quick_menu", "_renforge_editor_overlay"}
+    pending_hides = set()
+    hide_calls = []
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+    renpy.show_screen = lambda name, **_kwargs: active_screens.add(name)
+
+    def hide_screen(name, immediately=False, **_kwargs):
+        hide_calls.append((name, immediately))
+        if immediately:
+            active_screens.discard(name)
+        else:
+            pending_hides.add(name)
+
+    class JumpSignal(Exception):
+        pass
+
+    def jump(label):
+        if "say" in pending_hides:
+            raise TypeError("missing a required argument: 'who'")
+        raise JumpSignal(label)
+
+    renpy.hide_screen = hide_screen
+    renpy.jump = jump
+
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        with pytest.raises(JumpSignal, match="village"):
+            globs["_renforge_editor_jump_to"]("village")
+
+        assert hide_calls == [("say", True)]
+        assert "say" not in active_screens
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_exit_reverts_unsaved_previews_before_clearing_state(
     running_bridge, monkeypatch
 ):
