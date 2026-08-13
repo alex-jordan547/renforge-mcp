@@ -4560,7 +4560,8 @@ init 1100 python:
     # Dialogue surfaces take required scope args (who/what). Jumping out of a
     # screen while they are still showing leaves them in the layer with an empty
     # scope; the next interact (often a `scene … with dissolve`) then dies with
-    # `TypeError: missing a required argument: 'who'`. Tear them down first.
+    # `TypeError: missing a required argument: 'who'`. Tear them down
+    # immediately so a hide transition cannot retain an empty-scope copy.
     _RF_JUMP_DISMISS_SCREENS = ("say", "nvl", "bubble", "choice")
 
     def _renforge_editor_jump_to(label):
@@ -4570,7 +4571,7 @@ init 1100 python:
         for name in _RF_JUMP_DISMISS_SCREENS:
             try:
                 if renpy.get_screen(name) is not None:
-                    renpy.hide_screen(name)
+                    renpy.hide_screen(name, immediately=True)
             except Exception:
                 pass
         renpy.jump(str(label))
