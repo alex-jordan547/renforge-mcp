@@ -6149,7 +6149,13 @@ init 1100 python:
             state.pending_reload_draw_generation = int(state.script_generation)
             renpy.restart_interaction()
             return
-        if isinstance(state.selected_runtime_key, builtins.dict):
+        # Z-order commits (and their undo/redo) swap adjacent source lines, so
+        # the pre-reload runtime_key cannot rebind. Handshake first; re-select
+        # after reload_committed using the on-screen rect.
+        skip_rebind_wait = bool(state.pending_commit_is_zorder) or str(
+            state.pending_operation or ""
+        ) in {"undo_commit", "redo_commit"}
+        if isinstance(state.selected_runtime_key, builtins.dict) and not skip_rebind_wait:
             candidate, _error = _renforge_editor_resolve_selected_candidate()
             if candidate is None:
                 renpy.restart_interaction()
