@@ -1521,7 +1521,7 @@ def run_editor_task0_live_scenario(
         "coordinator submit",
     )
     applied = None
-    deadline = time.monotonic() + 6.0
+    deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         collected = _require_ok(client.request("editor_task0_coordinator_collect"), "coordinator collect")
         applied_items = collected.get("applied") or []
