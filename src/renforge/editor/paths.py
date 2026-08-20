@@ -122,14 +122,28 @@ def hash_file_nofollow(path: Path) -> str:
         ) from exc
 
 
+def _filesystem_dir(path: Path) -> Path:
+    """Return a directory whose ``st_dev`` represents *path*'s mount.
+
+    Overlayfs reports different ``st_dev`` for files and directories on the
+    same mount, so a file-vs-directory comparison looks cross-device even
+    when ``renameat2`` between two files on that mount would succeed.
+    Always compare directories.
+    """
+    try:
+        st = path.lstat()
+    except OSError:
+        return path.parent
+    if stat.S_ISDIR(st.st_mode):
+        return path
+    return path.parent
+
+
 def _same_filesystem(left: Path, right: Path) -> bool:
     try:
-        return left.stat().st_dev == right.stat().st_dev
+        return _filesystem_dir(left).stat().st_dev == _filesystem_dir(right).stat().st_dev
     except OSError:
-        try:
-            return left.parent.stat().st_dev == right.parent.stat().st_dev
-        except OSError:
-            return False
+        return False
 
 
 def _copy_mode_bits(source: Path, destination: Path) -> int:
