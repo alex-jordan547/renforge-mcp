@@ -1520,17 +1520,36 @@ def run_editor_task0_live_scenario(
         ),
         "coordinator submit",
     )
+    request_id = queued.get("request_id")
     applied = None
+    last_collected: dict[str, Any] | None = None
     deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
-        collected = _require_ok(client.request("editor_task0_coordinator_collect"), "coordinator collect")
+        collect_payload = (
+            {"request_id": request_id}
+            if isinstance(request_id, str) and request_id
+            else {}
+        )
+        collected = _require_ok(
+            client.request("editor_task0_coordinator_collect", collect_payload),
+            "coordinator collect",
+        )
+        last_collected = collected
         applied_items = collected.get("applied") or []
-        if applied_items:
+        if isinstance(request_id, str) and request_id:
+            matching = [item for item in applied_items if item.get("request_id") == request_id]
+            if matching:
+                applied = matching[-1]
+                break
+        elif applied_items:
             applied = applied_items[-1]
             break
         time.sleep(0.05)
     if applied is None:
-        raise AssertionError("coordinator result never applied")
+        raise AssertionError(
+            "coordinator result never applied: "
+            f"request_id={request_id!r} last_collect={last_collected!r}"
+        )
     report["coordinator"] = {
         "queued": queued,
         "applied": applied,

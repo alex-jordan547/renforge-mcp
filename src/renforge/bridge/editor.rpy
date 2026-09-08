@@ -6788,7 +6788,19 @@ init 1100 python:
 
 
     def _renforge_editor_h_coordinator_collect(payload):
-        applied = _renforge_editor_apply_coordinator_results()
+        payload = payload or {}
+        newly_applied = _renforge_editor_apply_coordinator_results()
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return {"ok": True, "applied": newly_applied}
+        # Periodic also drains the coordinator queue. A collect that only
+        # returns this-tick applies misses a result the overlay already applied.
+        state = _renforge_editor_state()
+        applied = [
+            item
+            for item in (state.coordinator_applied or [])
+            if item.get("request_id") == request_id
+        ]
         return {"ok": True, "applied": applied}
 
 

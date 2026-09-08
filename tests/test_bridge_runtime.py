@@ -2007,6 +2007,77 @@ def test_editor_coordinator_survives_missing_global_queue(running_bridge, monkey
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_coordinator_collect_returns_result_already_applied_by_periodic(
+    running_bridge, monkeypatch
+):
+    """Collect by request_id must survive the overlay periodic drain.
+
+    `editor_task0_coordinator_collect` and `_renforge_editor_periodic` both call
+    `_renforge_editor_apply_coordinator_results()`. The live task0 suite submits
+    an echo and polls collect; if periodic wins the race, a collect that only
+    returns this-tick applies stays empty until the 20s timeout.
+    """
+    renpy = running_bridge.renpy
+    globs = dict(running_bridge.globs)
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    active_screens = {"page_a", "_renforge_editor_overlay"}
+    shown_screens = []
+    renpy.session = {}
+    renpy.get_screen = lambda name: object() if name in active_screens else None
+
+    def show_screen(name, **_kwargs):
+        shown_screens.append(name)
+        active_screens.add(name)
+
+    renpy.show_screen = show_screen
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.editor_session_screen = "page_a"
+        state.main_thread_id = threading.get_ident()
+        queued = globs["_renforge_editor_h_coordinator_submit"]({"observation": {"probe": True}})
+        request_id = queued["request_id"]
+        coordinator = globs["_renforge_editor_ensure_coordinator"]()
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            if coordinator.results.qsize() > 0:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("echo result never reached the coordinator queue")
+
+        globs["_renforge_editor_periodic"]()
+        assert shown_screens == []
+        assert state.coordinator_applied
+        assert state.coordinator_applied[-1]["request_id"] == request_id
+
+        this_tick = globs["_renforge_editor_h_coordinator_collect"]({})
+        assert this_tick["applied"] == []
+
+        collected = globs["_renforge_editor_h_coordinator_collect"]({"request_id": request_id})
+        matching = [item for item in collected["applied"] if item.get("request_id") == request_id]
+        assert matching
+        applied = matching[-1]
+        assert applied["worker_thread_id"] != applied["applied_thread_id"]
+        assert applied["applied_thread_id"] == queued["main_thread_id"]
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 
 def test_dispatch_mouse_click_delivers_up_after_down_is_ignored(running_bridge):
     globs = running_bridge.globs
