@@ -442,6 +442,116 @@
       "type": "object"
     }
   },
+  "renforge_editor": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Drive the in-game Live Editor with public actions `status`, `select`, and `save`. `select` uses the overlay hit path in `logical` or `screenshot` coordinates. `save` is the overlay Save (reload + attest), not a silent source write. Never call private `editor_task0_*` handlers.",
+    "parameters": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "action": {
+              "const": "status"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "select"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "action",
+            "x",
+            "y"
+          ]
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "save"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      ],
+      "properties": {
+        "action": {
+          "description": "One of `status`, `select`, or `save`.",
+          "enum": [
+            "status",
+            "select",
+            "save"
+          ],
+          "type": "string"
+        },
+        "coordinate_space": {
+          "default": "logical",
+          "description": "`logical` (default) or `screenshot` coordinates.",
+          "enum": [
+            "logical",
+            "screenshot"
+          ],
+          "type": "string"
+        },
+        "expected_frame_id": {
+          "default": "",
+          "description": "Optional frame id from a recent screenshot or listing; rejects a stale frame.",
+          "type": "string"
+        },
+        "project_path": {
+          "description": "Project root with an active live session and Live Editor.",
+          "type": "string"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required for `select`. Optional destination for `save` when applying a move."
+        },
+        "y": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required for `select`. Optional destination for `save` when applying a move."
+        }
+      },
+      "required": [
+        "project_path",
+        "action"
+      ],
+      "type": "object"
+    }
+  },
   "renforge_estimate_translation": {
     "annotations": {
       "destructiveHint": false,

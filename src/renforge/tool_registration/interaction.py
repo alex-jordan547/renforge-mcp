@@ -15,6 +15,7 @@ TOOL_NAMES = (
     "renforge_click_element",
     "renforge_hover_element",
     "renforge_get_ui_element_bounds",
+    "renforge_editor",
     "renforge_click_at",
     "renforge_get_displayable_bounds",
     "renforge_position_element",
@@ -304,6 +305,37 @@ def build_wrappers(context):
                 "element_id": element_id or None,
                 "screen": screen or None,
                 "exact": exact,
+                "expected_frame_id": expected_frame_id or None,
+            },
+        )
+
+
+    def renforge_editor(
+        project_path: str,
+        action: str,
+        x: float | None = None,
+        y: float | None = None,
+        coordinate_space: str = "logical",
+        expected_frame_id: str = "",
+    ) -> dict:
+        """Status, select, or Save through the public Live Editor tool."""
+        return _log_tool_call(
+            name="renforge_editor",
+            params={
+                "project_path": project_path,
+                "action": action,
+                "x": x,
+                "y": y,
+                "coordinate_space": coordinate_space,
+                "expected_frame_id": expected_frame_id,
+            },
+            project_root=project_path,
+            fn=live.editor,
+            args=(project_path, action),
+            kwargs={
+                "x": x,
+                "y": y,
+                "coordinate_space": coordinate_space,
                 "expected_frame_id": expected_frame_id or None,
             },
         )

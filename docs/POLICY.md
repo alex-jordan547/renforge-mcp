@@ -26,6 +26,7 @@ Covered tools:
 
 - `renforge_control` — classified by `action`
 - `renforge_saves` — classified by `action`
+- `renforge_editor` — classified by `action` (`status` observational, `select`/`save` mutating)
 - `renforge_eval` — always `open_world` when `expr` is a non-empty string
 - `renforge_run_scenario` — classified by the highest-risk step, including nested `control` actions
 

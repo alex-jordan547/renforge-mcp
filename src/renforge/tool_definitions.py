@@ -601,6 +601,52 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "expected_frame_id": "Optional frame guard token for freshness.",
         },
     ),
+    "renforge_editor": ToolDefinition(
+        description=(
+            "Drive the in-game Live Editor with public actions `status`, `select`, and `save`. "
+            "`select` uses the overlay hit path in `logical` or `screenshot` coordinates. "
+            "`save` is the overlay Save (reload + attest), not a silent source write. "
+            "Never call private `editor_task0_*` handlers."
+        ),
+        annotations=_ann(
+            readOnlyHint=False,
+            idempotentHint=False,
+            destructiveHint=True,
+            openWorldHint=False,
+        ),
+        parameters={
+            "project_path": "Project root with an active live session and Live Editor.",
+            "action": "One of `status`, `select`, or `save`.",
+            "x": "Required for `select`. Optional destination for `save` when applying a move.",
+            "y": "Required for `select`. Optional destination for `save` when applying a move.",
+            "coordinate_space": "`logical` (default) or `screenshot` coordinates.",
+            "expected_frame_id": "Optional frame id from a recent screenshot or listing; rejects a stale frame.",
+        },
+        parameter_schemas={
+            "action": _enum("status", "select", "save"),
+            "coordinate_space": _enum("logical", "screenshot"),
+        },
+        input_schema={
+            "oneOf": [
+                {
+                    "properties": {"action": {"const": "status"}},
+                    "required": ["action"],
+                },
+                {
+                    "properties": {
+                        "action": {"const": "select"},
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                    },
+                    "required": ["action", "x", "y"],
+                },
+                {
+                    "properties": {"action": {"const": "save"}},
+                    "required": ["action"],
+                },
+            ]
+        },
+    ),
     "renforge_click_at": ToolDefinition(
         description=(
             "Click a coordinate in screenshot or logical space. Use semantic click first (`renforge_click_element`) and fall back "

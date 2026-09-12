@@ -52,7 +52,7 @@ def _public_contract() -> dict:
 def test_domain_modules_partition_the_public_tool_catalog() -> None:
     names = [name for domain in DOMAIN_MODULES for name in domain.TOOL_NAMES]
 
-    assert len(names) == len(set(names)) == 54
+    assert len(names) == len(set(names)) == 55
     assert set(names) == set(TOOL_DEFINITIONS)
 
 
@@ -85,6 +85,6 @@ def test_public_tool_contract_matches_agent_safe_baseline() -> None:
     contract = _public_contract()
     snapshot = json.loads(CONTRACT_SNAPSHOT.read_text(encoding="utf-8"))
 
-    assert len(contract) == 54
+    assert len(contract) == 55
     assert set(contract) == set(TOOL_DEFINITIONS)
     assert contract == snapshot

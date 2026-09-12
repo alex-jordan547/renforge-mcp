@@ -36,7 +36,7 @@ def test_tool_definitions_cover_all_registered_tools_and_parameters() -> None:
 
     expected = set(TOOL_DEFINITIONS)
     assert set(registered) == expected
-    assert len(registered) == 54
+    assert len(registered) == 55
 
     for name, definition in TOOL_DEFINITIONS.items():
         tool = registered[name]

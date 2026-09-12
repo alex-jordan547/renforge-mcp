@@ -52,6 +52,12 @@ SAVES_ACTIONS: dict[str, str] = {
     "load": RISK_DESTRUCTIVE,
 }
 
+EDITOR_ACTIONS: dict[str, str] = {
+    "status": RISK_OBSERVATIONAL,
+    "select": RISK_MUTATING,
+    "save": RISK_MUTATING,
+}
+
 SCENARIO_STEP_RISKS: dict[str, str] = {
     "wait": RISK_OBSERVATIONAL,
     "assert": RISK_OBSERVATIONAL,
@@ -195,6 +201,15 @@ def classify(name: str, params: Mapping[str, Any] | None = None) -> tuple[str, s
         if risk is None:
             return f"renforge_saves.{action}", RISK_MALFORMED
         return f"renforge_saves.{action}", risk
+    if name == "renforge_editor":
+        action = payload.get("action")
+        if not isinstance(action, str) or not action.strip():
+            return "renforge_editor", RISK_MALFORMED
+        action = action.strip()
+        risk = EDITOR_ACTIONS.get(action)
+        if risk is None:
+            return f"renforge_editor.{action}", RISK_MALFORMED
+        return f"renforge_editor.{action}", risk
     if name == "renforge_eval":
         expr = payload.get("expr")
         if not isinstance(expr, str) or not expr.strip():

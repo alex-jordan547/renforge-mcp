@@ -87,14 +87,18 @@ renforge_launch_status(project_path)   # poll while starting
   -> starting | ready | failed | idle
 renforge_screenshot(project_path)      # fresh visual observation
 renforge_scene_tree(project_path)      # structured layout (logical coords)
-  # optional: renforge_list_ui_elements for focusable controls + frame_id
-renforge_click_at(
+renforge_editor(project_path, action="status")
+  -> selected_widget_id, lock_reason, capabilities, frame_id
+renforge_editor(
   project_path,
+  action="select",
   x=..., y=...,
   coordinate_space="logical",          # or "screenshot" from image search
   expected_frame_id=frame_id,          # when you have one
 )
-  # or renforge_click_element(project_path, element_id=..., expected_frame_id=frame_id)
+  -> overlay hit path; capabilities.move when the target is proven
+renforge_editor(project_path, action="save", x=..., y=...)  # optional destination
+  -> overlay Save (reload + attest). Locked targets return the lock code.
 renforge_screenshot / renforge_scene_tree / renforge_get_errors
   -> verify visible result, status, or source outcome
 renforge_stop(project_path)
@@ -108,11 +112,12 @@ renforge_stop(project_path)
   or re-capture before the next guarded click (`expected_frame_id`).
 - Prefer `coordinate_space` and `frame_id` values returned by the tools you
   just called; do not invent private bridge RPC names.
-- Distinguish **editable** vs **locked** from what the overlay and status UI
-  show in screenshots — locked is not “click harder”.
-- After a Live Editor **Save**, wait for its final status and observe again; the
-  editor already reloaded and attested the change. After your own external `.rpy`
-  edits, call `renforge_control(project_path, action="reload_script")` first.
+- Distinguish **editable** vs **locked** from `renforge_editor` `status` /
+  `select` (`lock_reason`, `capabilities`) — locked is not “click harder”.
+- After `renforge_editor` `save`, wait for its final `status_code` and observe
+  again; the editor already reloaded and attested the change. After your own
+  external `.rpy` edits, call `renforge_control(project_path, action="reload_script")`
+  first.
 - Always end with `renforge_stop` so the session can clean up.
 
 ## Related docs

@@ -32,8 +32,7 @@ PUBLIC_WORKFLOW_TOOLS = (
     "renforge_launch_status",
     "renforge_screenshot",
     "renforge_scene_tree",
-    "renforge_click_at",
-    "renforge_click_element",
+    "renforge_editor",
     "renforge_stop",
 )
 

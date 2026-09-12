@@ -67,7 +67,7 @@ for local testing by running `npm run build` from `ui/`.
 
 ## Adding or changing an MCP tool
 
-The public MCP API is a versioned tool contract (currently 54 tools). Keep
+The public MCP API is a versioned tool contract (currently 55 tools). Keep
 registration, wrappers, and metadata in sync so names and schemas cannot
 drift silently.
 

@@ -36,6 +36,18 @@ def test_classify_control_saves_eval_and_scenario_operations() -> None:
         "renforge_saves.load",
         RISK_DESTRUCTIVE,
     )
+    assert classify("renforge_editor", {"action": "status"}) == (
+        "renforge_editor.status",
+        RISK_OBSERVATIONAL,
+    )
+    assert classify("renforge_editor", {"action": "select"}) == (
+        "renforge_editor.select",
+        RISK_MUTATING,
+    )
+    assert classify("renforge_editor", {"action": "save"}) == (
+        "renforge_editor.save",
+        RISK_MUTATING,
+    )
     assert classify("renforge_eval", {"expr": "renpy.version"}) == (
         "renforge_eval",
         RISK_OPEN_WORLD,
@@ -61,6 +73,7 @@ def test_classify_control_saves_eval_and_scenario_operations() -> None:
 def test_classify_malformed_operations() -> None:
     assert classify("renforge_control", {"action": "explode"})[1] == RISK_MALFORMED
     assert classify("renforge_saves", {"action": "delete"})[1] == RISK_MALFORMED
+    assert classify("renforge_editor", {"action": "drag"})[1] == RISK_MALFORMED
     assert classify("renforge_eval", {"expr": "   "})[1] == RISK_MALFORMED
     assert classify("renforge_run_scenario", {"steps": "nope"})[1] == RISK_MALFORMED
     assert classify("renforge_run_scenario", {"steps": [{"wait": {}, "eval": "1"}]})[1] == (

@@ -7,6 +7,9 @@ versioning.
 
 ### Added
 
+- Public MCP tool `renforge_editor` (`status` / `select` / `save`) so agents
+  can drive the Live Editor without private `editor_task0_*` handlers.
+
 ### Changed
 
 ### Fixed

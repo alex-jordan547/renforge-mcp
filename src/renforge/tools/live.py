@@ -1215,6 +1215,219 @@ def click_element(
     )
 
 
+_EDITOR_ACTIONS = frozenset({"status", "select", "save"})
+_EDITOR_ANALYSIS_WAIT_SECONDS = 5.0
+_EDITOR_SAVE_WAIT_SECONDS = 30.0
+_EDITOR_STATUS_RPC = "editor_task0_status"
+_EDITOR_SELECT_RPC = "editor_task0_select"
+_EDITOR_SAVE_RPC = "editor_task0_save"
+
+
+def _editor_lock_code(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        code = value.get("code")
+        return str(code) if code else None
+    return str(value)
+
+
+def _editor_frame_guard(client: BridgeClient, expected_frame_id: str | None) -> dict | None:
+    if expected_frame_id in (None, ""):
+        return None
+    digest = client.screenshot_hash()
+    expected = str(expected_frame_id).strip()
+    if expected.casefold().startswith("sha256:"):
+        expected = expected.split(":", 1)[1].strip()
+    if expected.casefold() == digest.casefold():
+        return None
+    return {
+        "ok": False,
+        "error": "expected_frame_id guard failed",
+        "frame_id": digest,
+    }
+
+
+def _editor_logical_point(
+    client: BridgeClient,
+    x: int | float,
+    y: int | float,
+    coordinate_space: str,
+) -> tuple[int, int] | dict:
+    space = str(coordinate_space or "logical").casefold()
+    if space not in {"logical", "screenshot"}:
+        return {"ok": False, "error": "coordinate_space must be logical or screenshot"}
+    try:
+        px, py = int(round(float(x))), int(round(float(y)))
+    except (TypeError, ValueError, OverflowError):
+        return {"ok": False, "error": "x and y must be numbers"}
+    if px < 0 or py < 0:
+        return {"ok": False, "error": "coordinates must be non-negative"}
+    if space == "logical":
+        return px, py
+    converted = client.eval_expr(
+        f"list(_renforge_to_logical_coordinates({px}, {py}, 'screenshot')[:2])"
+    )
+    if (
+        not isinstance(converted, (list, tuple))
+        or len(converted) != 2
+        or converted[0] is None
+        or converted[1] is None
+    ):
+        return {"ok": False, "error": "screenshot coordinate space is unavailable"}
+    return int(round(float(converted[0]))), int(round(float(converted[1])))
+
+
+def _editor_public_view(
+    raw: dict[str, Any],
+    *,
+    action: str,
+    frame_id: str | None = None,
+) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "ok": bool(raw.get("ok", True)) and raw.get("error") is None,
+        "action": action,
+        "active": bool(raw.get("active")),
+        "selected_widget_id": raw.get("selected_widget_id"),
+        "lock_reason": _editor_lock_code(raw.get("selected_lock_reason") or raw.get("lock_reason")),
+        "capabilities": dict(raw.get("capabilities") or {}),
+        "frame_id": frame_id,
+        "save_enabled": bool(raw.get("save_enabled")),
+        "status_code": raw.get("status_code"),
+        "dirty_target_count": int(raw.get("dirty_target_count") or 0),
+    }
+    if raw.get("error") is not None:
+        view["ok"] = False
+        view["error"] = raw["error"]
+    return view
+
+
+def _editor_read_status(client: BridgeClient) -> dict[str, Any]:
+    reply = client.request(_EDITOR_STATUS_RPC, {})
+    if not isinstance(reply, dict):
+        return {"ok": False, "error": "editor status unavailable"}
+    return reply
+
+
+def _editor_ensure_active(client: BridgeClient) -> dict[str, Any] | None:
+    status = _editor_read_status(client)
+    if status.get("error"):
+        return status
+    if status.get("active"):
+        return None
+    activated = client.eval_expr("_renforge_editor_activate()")
+    if isinstance(activated, dict) and activated.get("ok") is False:
+        return activated
+    return None
+
+
+def _editor_wait_until_analyzed(client: BridgeClient) -> dict[str, Any]:
+    deadline = time.monotonic() + _EDITOR_ANALYSIS_WAIT_SECONDS
+    last = _editor_read_status(client)
+    while time.monotonic() < deadline:
+        if _editor_lock_code(last.get("selected_lock_reason")) != "ANALYZING":
+            return last
+        time.sleep(0.05)
+        last = _editor_read_status(client)
+    return last
+
+
+def _editor_wait_until_save_settled(client: BridgeClient) -> dict[str, Any]:
+    deadline = time.monotonic() + _EDITOR_SAVE_WAIT_SECONDS
+    last = _editor_read_status(client)
+    while time.monotonic() < deadline:
+        in_progress = bool(last.get("save_in_progress") or last.get("save_requested"))
+        if last.get("save_error") or not in_progress:
+            return last
+        time.sleep(0.1)
+        last = _editor_read_status(client)
+    return last
+
+
+def editor(
+    project_path: str,
+    action: str,
+    *,
+    x: int | float | None = None,
+    y: int | float | None = None,
+    coordinate_space: str = "logical",
+    expected_frame_id: str | None = None,
+) -> dict:
+    """Public Live Editor host: status, overlay select, overlay Save."""
+
+    def _handler(client: BridgeClient) -> dict:
+        if action not in _EDITOR_ACTIONS:
+            return {"ok": False, "error": "action must be status, select, or save"}
+        frame_id = client.screenshot_hash()
+        if action == "status":
+            return _editor_public_view(_editor_read_status(client), action=action, frame_id=frame_id)
+
+        guard = _editor_frame_guard(client, expected_frame_id)
+        if guard is not None:
+            return guard
+
+        if action == "select":
+            if x is None or y is None:
+                return {"ok": False, "error": "select requires x and y"}
+            point = _editor_logical_point(client, x, y, coordinate_space)
+            if isinstance(point, dict):
+                return point
+            activated = _editor_ensure_active(client)
+            if activated is not None:
+                return _editor_public_view(activated, action=action, frame_id=frame_id)
+            select_reply = client.request(
+                _EDITOR_SELECT_RPC,
+                {"x": point[0], "y": point[1], "coordinate_space": "logical"},
+            )
+            if not isinstance(select_reply, dict):
+                return {"ok": False, "error": "editor select unavailable"}
+            if select_reply.get("ok") is False and select_reply.get("error"):
+                view = _editor_public_view(select_reply, action=action, frame_id=frame_id)
+                return view
+            settled = _editor_wait_until_analyzed(client)
+            return _editor_public_view(settled, action=action, frame_id=client.screenshot_hash())
+
+        activated = _editor_ensure_active(client)
+        if activated is not None:
+            return _editor_public_view(activated, action=action, frame_id=frame_id)
+        current = _editor_wait_until_analyzed(client)
+        lock = _editor_lock_code(current.get("selected_lock_reason"))
+        if lock:
+            view = _editor_public_view(current, action=action, frame_id=frame_id)
+            view["ok"] = False
+            view["error"] = lock
+            return view
+        if x is not None and y is not None:
+            caps = dict(current.get("capabilities") or {})
+            if caps.get("move") is not True:
+                view = _editor_public_view(current, action=action, frame_id=frame_id)
+                view["ok"] = False
+                view["error"] = "MOVE_UNSUPPORTED"
+                return view
+            point = _editor_logical_point(client, x, y, coordinate_space)
+            if isinstance(point, dict):
+                return point
+            client.eval_expr(
+                f"_renforge_editor_apply_preview({point[0]}, {point[1]}, shift=False)"
+            )
+        save_reply = client.request(_EDITOR_SAVE_RPC, {})
+        if not isinstance(save_reply, dict):
+            return {"ok": False, "error": "editor save unavailable"}
+        if save_reply.get("ok") is False:
+            view = _editor_public_view(current, action=action, frame_id=frame_id)
+            view["ok"] = False
+            view["error"] = save_reply.get("error") or "SAVE_UNAVAILABLE"
+            return view
+        settled = _editor_wait_until_save_settled(client)
+        view = _editor_public_view(settled, action=action, frame_id=client.screenshot_hash())
+        if settled.get("save_error"):
+            view["ok"] = False
+            view["error"] = settled.get("save_error")
+        return view
+
+    return _with_client(project_path, _handler)
+
+
 def click_at(
     project_path: str,
     x: int | float,

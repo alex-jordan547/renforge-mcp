@@ -55,7 +55,8 @@ def build_wrappers(context):
                     "In-game Live Editor is injected by default on "
                     "renforge_launch. Preview is runtime-only until Save; "
                     "locked targets stay inspectable. Use only public MCP "
-                    "tools — never private editor_task0_* handlers."
+                    "tools — never private editor_task0_* handlers. "
+                    "Use renforge_editor for status/select/save."
                 ),
                 "agent_workflow": [
                     "renforge_info",
@@ -63,8 +64,7 @@ def build_wrappers(context):
                     "renforge_launch_status",
                     "renforge_screenshot",
                     "renforge_scene_tree",
-                    "renforge_click_at",
-                    "renforge_click_element",
+                    "renforge_editor",
                     "renforge_stop",
                 ],
             },
