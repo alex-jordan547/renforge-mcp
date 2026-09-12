@@ -1416,7 +1416,10 @@ def editor(
         if save_reply.get("ok") is False:
             view = _editor_public_view(current, action=action, frame_id=frame_id)
             view["ok"] = False
-            view["error"] = save_reply.get("error") or "SAVE_UNAVAILABLE"
+            error = save_reply.get("error") or "SAVE_UNAVAILABLE"
+            if error == "SAVE_UNAVAILABLE" and int(current.get("dirty_target_count") or 0) == 0:
+                error = "NO_INTENTS"
+            view["error"] = error
             return view
         settled = _editor_wait_until_save_settled(client)
         view = _editor_public_view(settled, action=action, frame_id=client.screenshot_hash())

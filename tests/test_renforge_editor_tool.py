@@ -158,7 +158,7 @@ def test_save_without_dirty_intent_does_not_claim_success(
     client = _FakeEditorClient()
     client.status["selected_widget_id"] = "start_btn"
     client.status["capabilities"] = {"move": True}
-    client.save_reply = {"ok": False, "error": "NO_INTENTS"}
+    client.save_reply = {"ok": False, "error": "SAVE_UNAVAILABLE"}
     _install_client(monkeypatch, client)
 
     result = live.editor("/tmp/game", "save")
