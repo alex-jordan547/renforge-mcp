@@ -7,12 +7,36 @@ versioning.
 
 ### Added
 
-- Public MCP tool `renforge_editor` (`status` / `select` / `save`) so agents
-  can drive the Live Editor without private `editor_task0_*` handlers.
-
 ### Changed
 
 ### Fixed
+
+## [0.7.3] - 2026-10-07
+
+### Added
+
+- Public MCP tool `renforge_editor` (`status` / `select` / `save`) so agents
+  can drive the Live Editor without private `editor_task0_*` handlers.
+  Catalog 54 → 55. (#102)
+- Live Editor: select and move a literal one-line `add` or decorative `frame`
+  that has a single authored `id` and integer `xpos`/`ypos`, using scene-walk
+  hit-testing. Overlapping non-focusable hits stay locked (`AMBIGUOUS_HIT`).
+  (#103)
+- Live Editor: unlock move and Save for the standard namebox (`say.who`) via
+  `gui.name_xpos` / `gui.name_ypos`, on the same style-position path as
+  `say.what`. Save writes `gui.rpy` only. (#101)
+
+### Fixed
+
+- Keep `say.who` locked unless the speaker name is nested in the namebox
+  window; a matching global `style namebox` does not unlock it. Preview
+  applies position to `id "namebox"`, and the live poll survives wrapped
+  bridge drops. (#101)
+- Reject conditional `xpos`/`ypos` on literal `add` and decorative `frame`
+  so Save cannot rewrite one branch of an expression. (#103)
+- Drop nested child `add`/`frame` hit candidates regardless of scene-walk
+  order. Measurement continues through position-only `Transform` wrappers
+  and still stops on rotate, zoom, or crop. (#103)
 
 ## [0.7.2] - 2026-09-08
 

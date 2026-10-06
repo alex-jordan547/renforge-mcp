@@ -6,13 +6,13 @@
     "url": "https://github.com/alex-jordan547/renforge-mcp",
     "source": "github"
   },
-  "version": "0.7.2",
+  "version": "0.7.3",
   "websiteUrl": "https://pypi.org/project/renforge/",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "renforge",
-      "version": "0.7.2",
+      "version": "0.7.3",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
