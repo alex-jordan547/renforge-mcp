@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1714,6 +1715,40 @@ def test_shadow_lint_command_requests_error_exit_code(monkeypatch, tmp_path: Pat
     assert result.ok is True
     # Ren'Py lint only exits non-zero on reported errors with --error-code.
     assert commands[0][-2:] == ["lint", "--error-code"]
+
+
+def test_editor_gate_uses_lenient_lint_by_default(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.coordinator as coordinator_module
+    from renforge.editor.shadow import ShadowLintResult
+
+    project, _source = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    seen: list[bool] = []
+
+    def fake_validate(*_args, **kwargs):
+        seen.append(bool(kwargs.get("error_code")))
+        return ShadowLintResult(
+            ok=True,
+            returncode=0,
+            timed_out=False,
+            stdout="",
+            stderr="",
+            truncated=False,
+        )
+
+    monkeypatch.setattr(coordinator_module, "validate_shadow_project", fake_validate)
+    transaction = SimpleNamespace(
+        transaction_id="tx-lenient",
+        source_relative_path="script.rpy",
+        staged_bytes=b"label start:\n    return\n",
+    )
+
+    monkeypatch.delenv("RENFORGE_SHADOW_STRICT_LINT", raising=False)
+    coordinator._validate_shadow(transaction)
+    monkeypatch.setenv("RENFORGE_SHADOW_STRICT_LINT", "1")
+    coordinator._validate_shadow(transaction)
+
+    assert seen == [False, True]
 
 
 def test_shadow_lint_truncation_is_not_success(tmp_path: Path) -> None:

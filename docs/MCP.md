@@ -520,7 +520,8 @@ Linked directories (symlinks/junctions) are **never copied byte-for-byte**.
 Each skip is recorded in `skipped_links` with a reason. A linked directory under
 `game/` (matched case-insensitively) is scanned read-only for `.rpy`/`.rpym`
 source: the scan never reads file contents, is capped at 50,000 entries, and
-gets a 5-second budget so a network/UNC target cannot block validation. If any
+checks a 5-second budget between entries. A hung network/UNC operation may still
+block until the OS call returns. If any
 source is found the reason is `linked_directory_with_source` and
 `complete=false` (and `ok=false`). If the target cannot be fully scanned (broken
 link, nested link or special file, unreadable subtree, entry cap, or timeout)
