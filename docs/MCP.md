@@ -415,6 +415,7 @@ guards: each capture hashes a new frame.
 | `renforge_scan_project` | Scan scripts, labels, links, and metadata. Use filters and pagination for large projects. |
 | `renforge_find_references` | Exact Ren'Py definitions and usages, including text interpolations. |
 | `renforge_parse_lint` | Parse `renpy lint` output. |
+| `renforge_validate` | Lint a clean shadow copy of the project with optional staged bytes; reports shadow measurements, quota limits, and skipped linked directories. |
 | `renforge_inspect_image` | Inspect a local image, with optional crop and zoom. |
 
 ### Game lifecycle
@@ -485,6 +486,53 @@ guards: each capture hashes a new frame.
 | `renforge_get_doc` | Read an offline Ren'Py documentation page. |
 | `renforge_list_docs` | List available offline documentation pages. |
 
+### Shadow validation
+
+`renforge_validate` runs `renpy lint` against a **clean shadow copy** of the
+project tree. It never publishes to project sources and does not create an
+editor transaction. The shadow excludes ignored caches and compiled files, and
+omits RenForge-injected session artifacts: exact names from
+`.renforge/control/artifacts.json` when that manifest is available, plus the
+known `zzrenforge_*` and `00renforge_session_*` prefixes. The result describes
+this clean tree, not a live session.
+
+`staged` overlays UTF-8 text into the shadow without touching the project. Keys
+may be project-relative (`game/script.rpy`) or game-relative (`script.rpy`);
+absolute paths, `..`, and duplicate normalized paths are rejected. Staged bytes
+count against the shadow quotas.
+
+Shadow quotas default to **10,000 files** and **500 MiB**. Override them with
+positive integers:
+
+```bash
+RENFORGE_SHADOW_MAX_FILES=25000
+RENFORGE_SHADOW_MAX_BYTES=2147483648  # 2 GiB
+```
+
+Invalid values fail closed with `SHADOW_QUOTA_INVALID` rather than silently
+using the defaults. A quota breach returns `SHADOW_QUOTA_EXCEEDED` with
+`files`, `bytes`, `max_files`, `max_bytes`, the `offending_path`/size that
+crossed the ceiling, and the `largest_path`/size top-level contributor
+(`game/images`, `game`, or `.` for project-root files).
+
+Linked directories (symlinks/junctions) are **not followed**. Each skip is
+recorded in `skipped_links` with a reason. A linked directory named like a
+known asset folder (`images`, `audio`, `gui`, …) leaves `complete=true` but sets
+`degraded=true`; any other linked directory could contain `.rpy`/`.rpym` source
+and sets `complete=false` (and `ok=false`). Linked regular files and other
+special files remain fatal (`SHADOW_SPECIAL_FILE`). The Live Editor commit and
+undo gates refuse a shadow with skipped source directories
+(`SHADOW_SOURCE_INCOMPLETE`), so an asset-skipping build never hides a script
+error.
+
+`checks` currently accepts only `["lint"]`. `timeout=0` derives
+`min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
+attestation budget); explicit values are clamped to 1-600 seconds. `ok` is
+false for a timeout or a truncated transcript, even when the return code is 0.
+Set `keep_shadow=true` to retain the temporary tree and receive its
+`shadow_path` (the caller owns cleanup). The tool may download and cache the
+Ren'Py SDK, but writes only to that temporary shadow and the SDK cache.
+
 ## Writes and safety
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
@@ -494,6 +542,10 @@ These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_position_element`, `renforge_set_var`,
 `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
+
+`renforge_validate` is non-destructive: it writes only a temporary clean
+shadow (plus the SDK cache when it must download one) and never publishes to
+project sources or records an editor transaction.
 
 `renforge_send_input` is also stateful: supply exactly one mode per call. Text
 input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh

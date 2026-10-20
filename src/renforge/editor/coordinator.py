@@ -6,10 +6,7 @@ from copy import deepcopy
 import difflib
 import ipaddress
 import json
-import os
-import shutil
 import socket
-import stat
 import threading
 import time
 import uuid
@@ -41,7 +38,7 @@ from .paths import (
     sha256_bytes,
 )
 from .runtime import RuntimeProbe
-from .shadow import ShadowLintResult, build_shadow_project, run_shadow_lint
+from .shadow import ShadowLintResult, validate_shadow_project
 from .source import (
     BAR_SIZE_MODE_XSIZE_YSIZE,
     DEFAULT_ALIGN_PARENT_SIZE,
@@ -2258,54 +2255,30 @@ class EditorCoordinator:
 
     def _validate_shadow(self, transaction: _TransactionRecord) -> ShadowLintResult:
         tx_dir = self._transaction_root / transaction.transaction_id
-        shadow_root = tx_dir / "shadow"
-        try:
-            build_shadow_project(
-                self._project,
-                shadow_root=shadow_root,
-                staged_replacements={transaction.source_relative_path: transaction.staged_bytes},
-            )
-            try:
-                return run_shadow_lint(
-                    self._project,
-                    self._sdk,
-                    shadow_root=shadow_root,
-                    timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
-                )
-            except EditorError:
-                raise
-            except (OSError, ValueError) as exc:
-                raise EditorError(
-                    "SHADOW_LINT_FAILED",
-                    "could not run Ren'Py lint in the shadow project",
-                ) from exc
-        finally:
-            try:
-                # Windows marks some copied modes read-only; clear the bit so
-                # rmtree does not raise PermissionError after a successful lint.
-                def _clear_readonly(func: Any, path: str, _exc_info: Any) -> None:
-                    try:
-                        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-                        func(path)
-                    except OSError:
-                        raise
-
-                shutil.rmtree(shadow_root, onerror=_clear_readonly)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise EditorError(
-                    "SHADOW_CLEANUP_FAILED",
-                    "could not remove the validation shadow project",
-                ) from exc
+        return validate_shadow_project(
+            self._project,
+            self._sdk,
+            shadow_root=tx_dir / "shadow",
+            staged_replacements={transaction.source_relative_path: transaction.staged_bytes},
+            timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
+            # A linked source directory is not linted; a green gate would lie.
+            require_source_complete=True,
+        )
 
     def _lint_diagnostics(self, lint_result: ShadowLintResult) -> dict[str, Any]:
         return {
             "returncode": lint_result.returncode,
             "timed_out": lint_result.timed_out,
+            "truncated": lint_result.truncated,
+            "complete": lint_result.complete,
+            "degraded": lint_result.degraded,
+            "files": lint_result.files,
+            "bytes": lint_result.bytes,
+            "limits": dict(lint_result.limits),
+            "largest": dict(lint_result.largest) if lint_result.largest is not None else None,
+            "skipped_links": [dict(item) for item in lint_result.skipped_links],
             "stdout": lint_result.stdout,
             "stderr": lint_result.stderr,
-            "truncated": lint_result.truncated,
         }
 
     def _schedule_attestation_timeout(self, transaction: _TransactionRecord) -> None:

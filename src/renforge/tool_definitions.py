@@ -189,6 +189,42 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         ),
         parameters={"text": "Existing Ren'Py lint output text to parse."},
     ),
+    "renforge_validate": ToolDefinition(
+        description=(
+            "Run Ren'Py `lint` against a clean shadow copy of the project tree: no live session artifacts, optional "
+            "staged bytes overlaid, and project sources are never modified. The shadow omits RenForge-injected files "
+            "using `.renforge/control/artifacts.json` when available plus the known `zzrenforge_*` and "
+            "`00renforge_session_*` prefixes. Linked directories are not followed and are reported in `skipped_links`; "
+            "if one could contain `.rpy`/`.rpym` scripts, `complete` and `ok` are false. Quotas default to 10000 files "
+            "and 500 MiB and are configurable with `RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. This "
+            "may download and cache the Ren'Py SDK. A timeout or truncated transcript is never reported as success."
+        ),
+        annotations=_ann(
+            readOnlyHint=False,
+            idempotentHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        parameters={
+            "project_path": "Ren'Py project root containing `game/`.",
+            "checks": "Optional checks. Only `[\"lint\"]` is supported; any other value is rejected.",
+            "staged": (
+                "Optional overlay map from a project-relative (`game/script.rpy`) or game-relative (`script.rpy`) "
+                "path to UTF-8 text. Staged bytes live only in the temporary shadow and count against shadow quotas."
+            ),
+            "keep_shadow": "Keep the temporary shadow after validation and return `shadow_path`; cleanup then belongs to the caller.",
+            "timeout": (
+                "Lint timeout in seconds. `0` derives `min(180, max(1, attestation_timeout*3))` (90 seconds by "
+                "default); explicit values are clamped to 1-600."
+            ),
+        },
+        parameter_schemas={
+            "checks": {"items": _enum("lint")},
+            "staged": {"type": "object", "additionalProperties": {"type": "string"}},
+            "timeout": _limits(0, 600),
+        },
+        parameter_types={"staged": dict[str, str] | None},
+    ),
     "renforge_launch": ToolDefinition(
         description=(
             "Start or attach a running game session with Live Editor enabled by default (pass editor=false for non-editor "

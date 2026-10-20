@@ -36,7 +36,7 @@ def test_tool_definitions_cover_all_registered_tools_and_parameters() -> None:
 
     expected = set(TOOL_DEFINITIONS)
     assert set(registered) == expected
-    assert len(registered) == 55
+    assert len(registered) == 56
 
     for name, definition in TOOL_DEFINITIONS.items():
         tool = registered[name]
@@ -604,3 +604,28 @@ def test_get_var_description_does_not_promise_zero_user_code() -> None:
         "destructiveHint": True,
         "openWorldHint": True,
     }
+
+
+def test_validate_tool_documents_the_clean_shadow_contract() -> None:
+    definition = TOOL_DEFINITIONS["renforge_validate"]
+    description = definition.description.lower()
+
+    assert "clean shadow" in description
+    assert "no live session artifacts" in description
+    assert "staged bytes" in description
+    assert "project sources are never modified" in description
+    assert "skipped_links" in description
+    assert "renforge_shadow_max_files" in description
+    assert "renforge_shadow_max_bytes" in description
+    assert "timeout or truncated" in description
+    assert definition.annotations == {
+        "readOnlyHint": False,
+        "idempotentHint": True,
+        "destructiveHint": False,
+        "openWorldHint": False,
+    }
+    assert "only" in definition.parameters["checks"].lower()
+    assert "project-relative" in definition.parameters["staged"].lower()
+    assert "game-relative" in definition.parameters["staged"].lower()
+    assert "shadow_path" in definition.parameters["keep_shadow"]
+    assert definition.parameter_schemas["timeout"] == {"minimum": 0, "maximum": 600}
