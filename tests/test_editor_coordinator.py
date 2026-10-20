@@ -1355,7 +1355,7 @@ def _link_directory_or_simulate(
     monkeypatch.setattr(Path, "lstat", _fake_lstat)
 
 
-def test_shadow_skips_linked_asset_directory_with_reason(
+def test_shadow_linked_asset_directory_uses_zero_byte_placeholders(
     monkeypatch, tmp_path: Path
 ) -> None:
     from renforge.editor.shadow import validate_shadow_project
@@ -1363,7 +1363,11 @@ def test_shadow_skips_linked_asset_directory_with_reason(
     project, _source = _make_project(tmp_path)
     external = tmp_path / "external-images"
     external.mkdir()
-    (external / "bg.png").write_bytes(b"png")
+    (external / "fake_image.png").write_bytes(b"x" * 4096)
+    (external / "compiled.rpyc").write_bytes(b"bytecode")
+    nested = external / "ui"
+    nested.mkdir()
+    (nested / "button_normal.png").write_bytes(b"png")
     _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
     monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
     monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
@@ -1375,6 +1379,7 @@ def test_shadow_skips_linked_asset_directory_with_reason(
         shadow_root=shadow_root,
         staged_replacements={},
         timeout=15,
+        keep_shadow=True,
     )
 
     assert result.ok is True
@@ -1383,11 +1388,62 @@ def test_shadow_skips_linked_asset_directory_with_reason(
     assert result.skipped_links == (
         {
             "path": "game/images",
-            "reason": "linked_directory_not_followed",
+            "reason": "linked_directory_assets_placeholders",
         },
     )
-    assert not (shadow_root / "game" / "images").exists()
-    assert not shadow_root.exists()
+    assert result.shadow_path is not None
+    built_root = Path(result.shadow_path)
+    for relative in (
+        "game/images/fake_image.png",
+        "game/images/ui/button_normal.png",
+    ):
+        built = built_root / relative
+        assert built.is_file()
+        assert built.stat().st_size == 0
+    assert not (built_root / "game" / "images" / "compiled.rpyc").exists()
+
+
+def test_shadow_linked_asset_plan_uses_placeholders_without_byte_weight(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-images"
+    external.mkdir()
+    (external / "fake_image.png").write_bytes(b"x" * 100_000)
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
+
+    plan = shadow.plan_shadow_project(
+        project,
+        limits=shadow.ShadowLimits(max_files=3, max_bytes=4096),
+    )
+
+    placeholders = [entry for entry in plan.entries if entry.placeholder]
+    assert [entry.relative_path for entry in placeholders] == [
+        "game/images/fake_image.png"
+    ]
+    assert placeholders[0].source_path is None
+    assert placeholders[0].size == 0
+    # The 100,000-byte asset contributes zero bytes to the quota while still
+    # counting as one file.
+    assert plan.files == 2
+    assert plan.bytes < 4096
+    assert plan.complete is True
+    assert plan.degraded is True
+    assert plan.skipped_links == (
+        {
+            "path": "game/images",
+            "reason": "linked_directory_assets_placeholders",
+        },
+    )
+
+    shadow_root = tmp_path / "shadow-plan-placeholders"
+    shadow._build_shadow_from_plan(plan, shadow_root=shadow_root)
+
+    built = shadow_root / "game" / "images" / "fake_image.png"
+    assert built.is_file()
+    assert built.stat().st_size == 0
 
 
 def test_shadow_linked_directory_outside_game_does_not_affect_completeness(
@@ -1422,6 +1478,7 @@ def test_shadow_linked_directory_outside_game_does_not_affect_completeness(
 def test_shadow_linked_source_directory_is_incomplete_and_refused(
     monkeypatch, tmp_path: Path
 ) -> None:
+    import renforge.editor.shadow as shadow
     from renforge.editor.shadow import validate_shadow_project
 
     project, _source = _make_project(tmp_path)
@@ -1447,6 +1504,12 @@ def test_shadow_linked_source_directory_is_incomplete_and_refused(
     assert result.skipped_links[0]["path"] == "game/chapters"
     assert result.skipped_links[0]["reason"] == "linked_directory_with_source"
 
+    plan = shadow.plan_shadow_project(project)
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert "game/chapters/chapter1.rpy" not in {
+        entry.relative_path for entry in plan.entries
+    }
+
     with pytest.raises(EditorError) as excinfo:
         validate_shadow_project(
             project,
@@ -1464,6 +1527,108 @@ def test_shadow_linked_source_directory_is_incomplete_and_refused(
             "reason": "linked_directory_with_source",
         }
     ]
+
+
+def test_shadow_uninspectable_linked_asset_target_stays_incomplete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import errno
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-locked"
+    external.mkdir()
+    (external / "bg.png").write_bytes(b"png")
+    link = project.root / "game" / "images"
+    _link_directory_or_simulate(monkeypatch, link, external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    scan_root = link.resolve()
+    real_walk = shadow.os.walk
+
+    def _walk(root, *, topdown, followlinks, onerror):
+        if Path(root) == scan_root:
+            onerror(OSError(errno.EACCES, "Permission denied", str(scan_root)))
+            return iter(())
+        return real_walk(root, topdown=topdown, followlinks=followlinks, onerror=onerror)
+
+    monkeypatch.setattr(shadow.os, "walk", _walk)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert plan.degraded is True
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
+
+
+def test_shadow_linked_asset_scan_entry_cap_marks_target_uninspectable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-cap"
+    external.mkdir()
+    (external / "bg.png").write_bytes(b"png")
+    (external / "cg.png").write_bytes(b"png")
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_LINKED_SOURCE_SCAN_ENTRIES", 1)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
+
+
+def test_shadow_linked_directory_with_nested_link_is_uninspectable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import os
+    import stat as stat_module
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-nested"
+    external.mkdir()
+    nested = external / "nested"
+    nested.mkdir()
+    (nested / "bg.png").write_bytes(b"png")
+    (external / "bg.png").write_bytes(b"png")
+    link = project.root / "game" / "images"
+    _link_directory_or_simulate(monkeypatch, link, external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    scan_root = link.resolve()
+    nested_scan_path = scan_root / "nested"
+    real_lstat = Path.lstat
+
+    def _fake_lstat(self: Path):
+        result = real_lstat(self)
+        if self == nested_scan_path:
+            return os.stat_result(
+                (stat_module.S_IFLNK | stat_module.S_IMODE(result.st_mode), *tuple(result)[1:])
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", _fake_lstat)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
 
 
 def test_shadow_unreadable_directory_fails_instead_of_looking_complete(

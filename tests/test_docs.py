@@ -40,6 +40,9 @@ def test_mcp_docs_document_shadow_validation_limits_and_links() -> None:
     assert "skipped_links" in text
     assert "complete=false" in text
     assert "linked_directory_with_source" in text
+    assert "linked_directory_uninspectable" in text
+    assert "linked_directory_assets_placeholders" in text
+    assert "zero-byte placeholder" in text
     assert "keep_shadow=true" in text
     assert ".renforge/activity.jsonl" in text
 

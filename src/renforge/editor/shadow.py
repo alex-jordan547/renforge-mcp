@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from typing import Any, Iterable
 
 from ..project import RenpyProject
@@ -20,6 +21,7 @@ from .exceptions import EditorError
 MAX_SHADOW_FILES = 10_000
 MAX_SHADOW_BYTES = 500 * 1024 * 1024
 MAX_LINKED_SOURCE_SCAN_ENTRIES = 50_000
+MAX_LINKED_SOURCE_SCAN_SECONDS = 5.0
 SHADOW_MAX_FILES_ENV = "RENFORGE_SHADOW_MAX_FILES"
 SHADOW_MAX_BYTES_ENV = "RENFORGE_SHADOW_MAX_BYTES"
 
@@ -51,43 +53,61 @@ def _is_directory_link(directory_st: os.stat_result) -> bool:
     )
 
 
-def _linked_directory_contains_source(link: Path) -> bool | None:
-    """Inspect a linked directory's target read-only for Ren'Py source.
+@dataclass(frozen=True)
+class _LinkedDirectoryScan:
+    """Read-only inventory of a linked directory's target.
 
-    Nothing is copied. Returns True when ``.rpy``/``.rpym`` source exists,
-    False when the whole target was inspected and holds none, and None when it
-    cannot be fully inspected (broken link, unreadable subtree, nested link, or
-    more entries than the scan bound).
+    ``source_found`` is True when Ren'Py source exists, False when the whole
+    target was scanned and holds none, and None when it cannot be fully
+    inspected (broken link, nested link/special entry, unreadable subtree,
+    entry cap, or time budget). ``directories`` and ``files`` are relative
+    POSIX paths inside the target; they are only meaningful for a source-free,
+    fully inspected target and never include file contents.
     """
+
+    source_found: bool | None
+    directories: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+
+
+_UNINSPECTABLE_LINKED_DIRECTORY = _LinkedDirectoryScan(source_found=None)
+
+
+def _scan_linked_directory(link: Path) -> _LinkedDirectoryScan:
+    """Inspect a linked directory's target without reading or copying bytes."""
     try:
         target = link.resolve(strict=True)
     except (OSError, RuntimeError):
-        return None
+        return _UNINSPECTABLE_LINKED_DIRECTORY
     if not target.is_dir():
-        return None
+        return _UNINSPECTABLE_LINKED_DIRECTORY
 
+    deadline = time.monotonic() + MAX_LINKED_SOURCE_SCAN_SECONDS
     inspected = 0
+    directories: list[str] = []
+    files: list[str] = []
     complete = True
 
     def _record_error(_exc: OSError) -> None:
         nonlocal complete
         complete = False
 
-    for current, dirs, files in os.walk(
+    def _budget_exceeded() -> bool:
+        return (
+            inspected > MAX_LINKED_SOURCE_SCAN_ENTRIES
+            or time.monotonic() > deadline
+        )
+
+    for current, dirs, filenames in os.walk(
         target, topdown=True, followlinks=False, onerror=_record_error
     ):
         current_path = Path(current)
-        for filename in sorted(files):
-            inspected += 1
-            if inspected > MAX_LINKED_SOURCE_SCAN_ENTRIES:
-                return None
-            if Path(filename).suffix.casefold() in _SOURCE_SUFFIXES:
-                return True
+        relative_current = current_path.relative_to(target)
         kept_dirs: list[str] = []
         for dirname in sorted(dirs):
             inspected += 1
-            if inspected > MAX_LINKED_SOURCE_SCAN_ENTRIES:
-                return None
+            if _budget_exceeded():
+                return _UNINSPECTABLE_LINKED_DIRECTORY
             if dirname in _EXCLUDED_DIRS:
                 continue
             child = current_path / dirname
@@ -102,8 +122,38 @@ def _linked_directory_contains_source(link: Path) -> bool | None:
                 complete = False
                 continue
             kept_dirs.append(dirname)
+            directories.append((relative_current / dirname).as_posix())
         dirs[:] = kept_dirs
-    return False if complete else None
+
+        for filename in sorted(filenames):
+            inspected += 1
+            if _budget_exceeded():
+                return _UNINSPECTABLE_LINKED_DIRECTORY
+            file_path = current_path / filename
+            try:
+                file_st = file_path.lstat()
+            except OSError:
+                complete = False
+                continue
+            if stat.S_ISLNK(file_st.st_mode) or not stat.S_ISREG(file_st.st_mode):
+                # Linked or special files cannot be mirrored as placeholders
+                # and may hide source, so the target is not fully inspectable.
+                complete = False
+                continue
+            suffix = Path(filename).suffix.casefold()
+            if suffix in _SOURCE_SUFFIXES:
+                return _LinkedDirectoryScan(source_found=True)
+            if suffix in _EXCLUDED_SUFFIXES:
+                continue
+            files.append((relative_current / filename).as_posix())
+
+    if not complete:
+        return _UNINSPECTABLE_LINKED_DIRECTORY
+    return _LinkedDirectoryScan(
+        source_found=False,
+        directories=tuple(directories),
+        files=tuple(files),
+    )
 
 
 @dataclass(frozen=True)
@@ -135,6 +185,7 @@ class _ShadowEntry:
     relative_path: str
     source_path: Path | None
     size: int
+    placeholder: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,6 +305,16 @@ def _relative_posix(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _is_game_relative(relative_dir: str) -> bool:
+    """True when the path's top-level component is ``game`` (case-insensitive).
+
+    Windows junctions may spell the game directory with any case; Ren'Py loads
+    it either way, so the linked-directory policy must match that behavior.
+    """
+    parts = PurePosixPath(relative_dir).parts
+    return bool(parts) and parts[0].casefold() == "game"
+
+
 def _largest_contributor(entries: list[_ShadowEntry]) -> dict[str, Any] | None:
     totals: dict[str, int] = {}
     for entry in entries:
@@ -351,17 +412,38 @@ def plan_shadow_project(
                 directory = current_path / dirname
                 directory_st = directory.lstat()
                 if _is_directory_link(directory_st):
-                    # Linked directories are never followed or copied. A link
-                    # under game/ can still hide script source, so inspect its
-                    # target read-only before declaring the shadow complete.
+                    # Linked directories are never copied byte-for-byte. A
+                    # link under game/ can still hide script source, so scan
+                    # its target read-only before declaring the shadow complete.
                     relative_dir = _relative_posix(root, directory)
                     reason = "linked_directory_not_followed"
-                    if PurePosixPath(relative_dir).parts[0] == "game":
-                        source_state = _linked_directory_contains_source(directory)
-                        if source_state is True:
+                    if _is_game_relative(relative_dir):
+                        scan = _scan_linked_directory(directory)
+                        if scan.source_found is True:
                             reason = "linked_directory_with_source"
-                        if source_state is not False:
                             complete = False
+                        elif scan.source_found is None:
+                            reason = "linked_directory_uninspectable"
+                            complete = False
+                        else:
+                            # A fully inspected, source-free asset directory
+                            # is mirrored with zero-byte placeholders so lint
+                            # still resolves expected image/audio names.
+                            reason = "linked_directory_assets_placeholders"
+                            prefix = PurePosixPath(relative_dir)
+                            directories.append(relative_dir)
+                            directories.extend(
+                                (prefix / item).as_posix() for item in scan.directories
+                            )
+                            base_entries.extend(
+                                _ShadowEntry(
+                                    relative_path=(prefix / item).as_posix(),
+                                    source_path=None,
+                                    size=0,
+                                    placeholder=True,
+                                )
+                                for item in scan.files
+                            )
                     skipped_links.append({"path": relative_dir, "reason": reason})
                     continue
                 if not stat.S_ISDIR(directory_st.st_mode):
@@ -478,6 +560,19 @@ def _build_shadow_from_plan(plan: ShadowPlan, *, shadow_root: Path) -> tuple[int
             if entry.relative_path in plan.staged:
                 continue
             destination_path = shadow_root / entry.relative_path
+            if entry.placeholder:
+                # Source-free linked assets are represented by empty files;
+                # nothing but the expected names is materialized.
+                try:
+                    write_exclusive_bytes(destination_path, b"", mode=0o644)
+                except OSError as exc:
+                    raise EditorError(
+                        "SHADOW_COPY_FAILED",
+                        "could not write a placeholder file into the shadow project",
+                        {"path": destination_path.as_posix()},
+                    ) from exc
+                file_count += 1
+                continue
             try:
                 copied = copy_regular_file_nofollow(
                     entry.source_path,

@@ -616,6 +616,8 @@ def test_validate_tool_documents_the_clean_shadow_contract() -> None:
     assert "staged bytes" in description
     assert "project sources are never modified" in description
     assert "skipped_links" in description
+    assert "zero-byte placeholder" in description
+    assert "degraded=true" in description
     assert "renforge_shadow_max_files" in description
     assert "renforge_shadow_max_bytes" in description
     assert "timeout or truncated" in description

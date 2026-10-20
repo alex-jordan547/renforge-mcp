@@ -516,18 +516,27 @@ using the defaults. A quota breach returns `SHADOW_QUOTA_EXCEEDED` with
 crossed the ceiling, and the `largest_path`/size top-level contributor
 (`game/images`, `game`, or `.` for project-root files).
 
-Linked directories (symlinks/junctions) are **not followed or copied**. Each
-skip is recorded in `skipped_links` with a reason. A linked directory under
-`game/` is inspected read-only (bounded recursive walk, nothing copied) for
-`.rpy`/`.rpym` source: if any source is found the reason is
-`linked_directory_with_source` and `complete=false` (and `ok=false`); if the
-target cannot be fully inspected, `complete` is also false; otherwise
-`complete=true` and the reason is `linked_directory_not_followed`. Links outside
-`game/` cannot affect source lint, so they never clear `complete`. Linked
-regular files and other special files remain fatal (`SHADOW_SPECIAL_FILE`). The
-Live Editor commit and undo gates refuse a shadow with skipped source
-directories (`SHADOW_SOURCE_INCOMPLETE`), so an asset-skipping build never hides
-a script error.
+Linked directories (symlinks/junctions) are **never copied byte-for-byte**.
+Each skip is recorded in `skipped_links` with a reason. A linked directory under
+`game/` (matched case-insensitively) is scanned read-only for `.rpy`/`.rpym`
+source: the scan never reads file contents, is capped at 50,000 entries, and
+gets a 5-second budget so a network/UNC target cannot block validation. If any
+source is found the reason is `linked_directory_with_source` and
+`complete=false` (and `ok=false`). If the target cannot be fully scanned (broken
+link, nested link or special file, unreadable subtree, entry cap, or timeout)
+the reason is `linked_directory_uninspectable` and `complete` is also false.
+When the target is fully scanned and contains no source, the shadow mirrors its
+directory structure and creates **zero-byte placeholder files** for its regular
+files, so lint still sees the expected image/audio names without copying any
+bytes; the reason is `linked_directory_assets_placeholders`, `complete` stays
+true, and `degraded=true`. Placeholders count as files but contribute zero
+bytes to the quota, and none are created for `.rpy`/`.rpym` or compiled-artifact
+suffixes. Links outside `game/` cannot affect source lint, so they never clear
+`complete`; their reason is `linked_directory_not_followed`. Linked regular
+files and other special files remain fatal (`SHADOW_SPECIAL_FILE`). The Live
+Editor commit and undo gates refuse a shadow with skipped source directories
+(`SHADOW_SOURCE_INCOMPLETE`); a source-free linked asset directory stays
+eligible because its placeholders let lint validate references.
 
 `checks` currently accepts only `["lint"]`. `timeout=0` derives
 `min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
