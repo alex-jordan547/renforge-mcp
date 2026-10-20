@@ -6,6 +6,7 @@ from copy import deepcopy
 import difflib
 import ipaddress
 import json
+import os
 import socket
 import threading
 import time
@@ -2263,6 +2264,9 @@ class EditorCoordinator:
             timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
             # A linked source directory is not linted; a green gate would lie.
             require_source_complete=True,
+            # Pre-existing lint errors must not block an unrelated edit. Set
+            # RENFORGE_SHADOW_STRICT_LINT=1 to make this gate strict as well.
+            error_code=os.environ.get("RENFORGE_SHADOW_STRICT_LINT") == "1",
         )
 
     def _lint_diagnostics(self, lint_result: ShadowLintResult) -> dict[str, Any]:

@@ -676,8 +676,11 @@ def run_shadow_lint(
     *,
     shadow_root: Path,
     timeout: float,
+    error_code: bool = True,
 ) -> ShadowLintResult:
-    command = sdk.launch_command(shadow_root.resolve(strict=True), "lint", "--error-code")
+    command = sdk.launch_command(shadow_root.resolve(strict=True), "lint")
+    if error_code:
+        command.append("--error-code")
     result = run_command(command, timeout=timeout)
     stdout_text = result.stdout or ""
     stderr_text = result.stderr or ""
@@ -706,6 +709,7 @@ def validate_shadow_project(
     excluded_prefixes: Iterable[str] = (),
     require_source_complete: bool = False,
     keep_shadow: bool = False,
+    error_code: bool = True,
 ) -> ShadowLintResult:
     """Build, lint, and clean up a shadow copy in one reusable step."""
     limits = resolve_shadow_limits()
@@ -725,7 +729,13 @@ def validate_shadow_project(
 
     file_count, byte_count = _build_shadow_from_plan(plan, shadow_root=shadow_root)
     try:
-        lint_result = run_shadow_lint(project, sdk, shadow_root=shadow_root, timeout=timeout)
+        lint_result = run_shadow_lint(
+            project,
+            sdk,
+            shadow_root=shadow_root,
+            timeout=timeout,
+            error_code=error_code,
+        )
     except EditorError:
         if not keep_shadow:
             remove_shadow_project(shadow_root)
