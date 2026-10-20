@@ -94,6 +94,11 @@ def _resolve_timeout(timeout: float) -> float:
     return min(600.0, max(1.0, value))
 
 
+def _is_injected_artifact_name(name: Any) -> bool:
+    """Only names carrying a known injected prefix may be excluded."""
+    return isinstance(name, str) and name.startswith(_ARTIFACT_PREFIXES)
+
+
 def _clean_tree_exclusions(project_root: Path) -> tuple[set[str], tuple[str, ...]]:
     """Return injected artifact names to omit from a clean shadow tree."""
     names: set[str] = set()
@@ -113,15 +118,15 @@ def _clean_tree_exclusions(project_root: Path) -> tuple[set[str], tuple[str, ...
                 if not isinstance(entry, dict):
                     continue
                 basename = entry.get("basename")
-                if isinstance(basename, str):
+                if _is_injected_artifact_name(basename):
                     names.add(basename)
                 siblings = entry.get("generated_siblings")
                 if isinstance(siblings, list):
-                    names.update(item for item in siblings if isinstance(item, str))
+                    names.update(item for item in siblings if _is_injected_artifact_name(item))
         asset_tree = manifest.get("asset_tree")
         if isinstance(asset_tree, dict):
             dirname = asset_tree.get("dirname")
-            if isinstance(dirname, str):
+            if _is_injected_artifact_name(dirname):
                 names.add(dirname)
     return names, _ARTIFACT_PREFIXES
 
@@ -188,11 +193,9 @@ def validate_project(
         payload: dict[str, Any] = {
             "ok": False,
             "checks": normalized_checks,
-            "error": {
-                "code": exc.code,
-                "message": exc.message,
-                "details": dict(exc.details),
-            },
+            "error": exc.message,
+            "code": exc.code,
+            "details": dict(exc.details),
         }
         shadow_path = temp_parent / "shadow" if temp_parent is not None else None
         if keep_shadow and shadow_path is not None and shadow_path.is_dir():

@@ -39,7 +39,9 @@ def test_mcp_docs_document_shadow_validation_limits_and_links() -> None:
     assert "SHADOW_QUOTA_EXCEEDED" in text
     assert "skipped_links" in text
     assert "complete=false" in text
+    assert "linked_directory_with_source" in text
     assert "keep_shadow=true" in text
+    assert ".renforge/activity.jsonl" in text
 
 
 def test_runtime_policy_docs_cover_model_and_compatibility() -> None:

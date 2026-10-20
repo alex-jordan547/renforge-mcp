@@ -336,6 +336,7 @@ def test_tool_annotations_are_conservative_for_conditional_and_sdk_side_effects(
     }
 
     sdk_backed_tools = {
+        "renforge_validate",
         "renforge_launch",
         "renforge_jump",
         "renforge_new_game",
@@ -618,11 +619,12 @@ def test_validate_tool_documents_the_clean_shadow_contract() -> None:
     assert "renforge_shadow_max_files" in description
     assert "renforge_shadow_max_bytes" in description
     assert "timeout or truncated" in description
+    assert "--error-code" in description
     assert definition.annotations == {
         "readOnlyHint": False,
         "idempotentHint": True,
         "destructiveHint": False,
-        "openWorldHint": False,
+        "openWorldHint": True,
     }
     assert "only" in definition.parameters["checks"].lower()
     assert "project-relative" in definition.parameters["staged"].lower()

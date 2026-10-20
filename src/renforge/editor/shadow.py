@@ -19,6 +19,7 @@ from .exceptions import EditorError
 
 MAX_SHADOW_FILES = 10_000
 MAX_SHADOW_BYTES = 500 * 1024 * 1024
+MAX_LINKED_SOURCE_SCAN_ENTRIES = 50_000
 SHADOW_MAX_FILES_ENV = "RENFORGE_SHADOW_MAX_FILES"
 SHADOW_MAX_BYTES_ENV = "RENFORGE_SHADOW_MAX_BYTES"
 
@@ -36,27 +37,7 @@ _EXCLUDED_DIRS = {
     "venv",
 }
 _EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".rpyb", ".rpyc", ".rpymc"}
-
-# A linked directory is never followed. Names in this set are trusted to hold
-# assets only; every other linked directory could contain .rpy/.rpym source.
-_LINK_ASSET_DIR_NAMES = {
-    "audio",
-    "bgm",
-    "cg",
-    "image",
-    "images",
-    "movie",
-    "movies",
-    "music",
-    "se",
-    "sfx",
-    "sound",
-    "sounds",
-    "video",
-    "videos",
-    "voice",
-    "voices",
-}
+_SOURCE_SUFFIXES = {".rpy", ".rpym"}
 
 _POSITIVE_INT_RE = re.compile(r"^[0-9]+$")
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -68,6 +49,61 @@ def _is_directory_link(directory_st: os.stat_result) -> bool:
     return stat.S_ISLNK(directory_st.st_mode) or bool(
         getattr(directory_st, "st_file_attributes", 0) & _REPARSE_POINT_ATTRIBUTE
     )
+
+
+def _linked_directory_contains_source(link: Path) -> bool | None:
+    """Inspect a linked directory's target read-only for Ren'Py source.
+
+    Nothing is copied. Returns True when ``.rpy``/``.rpym`` source exists,
+    False when the whole target was inspected and holds none, and None when it
+    cannot be fully inspected (broken link, unreadable subtree, nested link, or
+    more entries than the scan bound).
+    """
+    try:
+        target = link.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not target.is_dir():
+        return None
+
+    inspected = 0
+    complete = True
+
+    def _record_error(_exc: OSError) -> None:
+        nonlocal complete
+        complete = False
+
+    for current, dirs, files in os.walk(
+        target, topdown=True, followlinks=False, onerror=_record_error
+    ):
+        current_path = Path(current)
+        for filename in sorted(files):
+            inspected += 1
+            if inspected > MAX_LINKED_SOURCE_SCAN_ENTRIES:
+                return None
+            if Path(filename).suffix.casefold() in _SOURCE_SUFFIXES:
+                return True
+        kept_dirs: list[str] = []
+        for dirname in sorted(dirs):
+            inspected += 1
+            if inspected > MAX_LINKED_SOURCE_SCAN_ENTRIES:
+                return None
+            if dirname in _EXCLUDED_DIRS:
+                continue
+            child = current_path / dirname
+            try:
+                child_st = child.lstat()
+            except OSError:
+                complete = False
+                continue
+            if _is_directory_link(child_st) or not stat.S_ISDIR(child_st.st_mode):
+                # A nested link or special entry leaves part of the target
+                # outside the inspected tree.
+                complete = False
+                continue
+            kept_dirs.append(dirname)
+        dirs[:] = kept_dirs
+    return False if complete else None
 
 
 @dataclass(frozen=True)
@@ -294,8 +330,19 @@ def plan_shadow_project(
     skipped_links: list[dict[str, str]] = []
     complete = True
 
+    def _on_walk_error(exc: OSError) -> None:
+        # os.walk otherwise skips unreadable directories silently, which would
+        # make an incomplete tree look clean.
+        raise EditorError(
+            "SHADOW_COPY_FAILED",
+            "could not inspect the project tree",
+            {"path": str(exc.filename or root)},
+        ) from exc
+
     try:
-        for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        for current, dirs, files in os.walk(
+            root, topdown=True, followlinks=False, onerror=_on_walk_error
+        ):
             current_path = Path(current)
             kept_dirs: list[str] = []
             for dirname in dirs:
@@ -304,16 +351,18 @@ def plan_shadow_project(
                 directory = current_path / dirname
                 directory_st = directory.lstat()
                 if _is_directory_link(directory_st):
-                    # Linked directories are never followed. Record the skip
-                    # instead of aborting; unknown names may hide script source.
-                    skipped_links.append(
-                        {
-                            "path": _relative_posix(root, directory),
-                            "reason": "linked_directory_not_followed",
-                        }
-                    )
-                    if dirname.casefold() not in _LINK_ASSET_DIR_NAMES:
-                        complete = False
+                    # Linked directories are never followed or copied. A link
+                    # under game/ can still hide script source, so inspect its
+                    # target read-only before declaring the shadow complete.
+                    relative_dir = _relative_posix(root, directory)
+                    reason = "linked_directory_not_followed"
+                    if PurePosixPath(relative_dir).parts[0] == "game":
+                        source_state = _linked_directory_contains_source(directory)
+                        if source_state is True:
+                            reason = "linked_directory_with_source"
+                        if source_state is not False:
+                            complete = False
+                    skipped_links.append({"path": relative_dir, "reason": reason})
                     continue
                 if not stat.S_ISDIR(directory_st.st_mode):
                     raise EditorError(
@@ -353,7 +402,7 @@ def plan_shadow_project(
         raise EditorError(
             "SHADOW_COPY_FAILED",
             "could not inspect the project tree",
-            {"path": str(root)},
+            {"path": str(exc.filename or root)},
         ) from exc
 
     entries = list(base_entries)
@@ -455,22 +504,10 @@ def _build_shadow_from_plan(plan: ShadowPlan, *, shadow_root: Path) -> tuple[int
 
         for relative_path, payload in plan.staged.items():
             destination_path = shadow_root / relative_path
-            previous_size = 0
-            try:
-                destination_st = destination_path.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                if stat.S_ISLNK(destination_st.st_mode) or not stat.S_ISREG(destination_st.st_mode):
-                    raise EditorError(
-                        "SHADOW_SPECIAL_FILE",
-                        "staged shadow destination is not a regular file",
-                        {"path": str(destination_path)},
-                    )
-                previous_size = destination_st.st_size
-                destination_path.unlink()
+            # Staged entries are skipped during the copy, so the destination
+            # never exists yet; the payload size is the only new weight.
             next_files = file_count + 1
-            next_bytes = byte_count - previous_size + len(payload)
+            next_bytes = byte_count + len(payload)
             if next_files > plan.limits.max_files or next_bytes > plan.limits.max_bytes:
                 _raise_quota_error(
                     files=next_files,
@@ -545,7 +582,7 @@ def run_shadow_lint(
     shadow_root: Path,
     timeout: float,
 ) -> ShadowLintResult:
-    command = sdk.launch_command(shadow_root.resolve(strict=True), "lint")
+    command = sdk.launch_command(shadow_root.resolve(strict=True), "lint", "--error-code")
     result = run_command(command, timeout=timeout)
     stdout_text = result.stdout or ""
     stderr_text = result.stderr or ""

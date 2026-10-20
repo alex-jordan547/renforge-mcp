@@ -491,10 +491,11 @@ guards: each capture hashes a new frame.
 `renforge_validate` runs `renpy lint` against a **clean shadow copy** of the
 project tree. It never publishes to project sources and does not create an
 editor transaction. The shadow excludes ignored caches and compiled files, and
-omits RenForge-injected session artifacts: exact names from
-`.renforge/control/artifacts.json` when that manifest is available, plus the
-known `zzrenforge_*` and `00renforge_session_*` prefixes. The result describes
-this clean tree, not a live session.
+omits RenForge-injected session artifacts: manifest names from
+`.renforge/control/artifacts.json` when that manifest is available, but only
+when they carry the known `zzrenforge_*` or `00renforge_session_*` prefixes. A
+crafted or stale manifest therefore cannot hide user source. The result
+describes this clean tree, not a live session.
 
 `staged` overlays UTF-8 text into the shadow without touching the project. Keys
 may be project-relative (`game/script.rpy`) or game-relative (`script.rpy`);
@@ -515,23 +516,30 @@ using the defaults. A quota breach returns `SHADOW_QUOTA_EXCEEDED` with
 crossed the ceiling, and the `largest_path`/size top-level contributor
 (`game/images`, `game`, or `.` for project-root files).
 
-Linked directories (symlinks/junctions) are **not followed**. Each skip is
-recorded in `skipped_links` with a reason. A linked directory named like a
-known asset folder (`images`, `audio`, `gui`, …) leaves `complete=true` but sets
-`degraded=true`; any other linked directory could contain `.rpy`/`.rpym` source
-and sets `complete=false` (and `ok=false`). Linked regular files and other
-special files remain fatal (`SHADOW_SPECIAL_FILE`). The Live Editor commit and
-undo gates refuse a shadow with skipped source directories
-(`SHADOW_SOURCE_INCOMPLETE`), so an asset-skipping build never hides a script
-error.
+Linked directories (symlinks/junctions) are **not followed or copied**. Each
+skip is recorded in `skipped_links` with a reason. A linked directory under
+`game/` is inspected read-only (bounded recursive walk, nothing copied) for
+`.rpy`/`.rpym` source: if any source is found the reason is
+`linked_directory_with_source` and `complete=false` (and `ok=false`); if the
+target cannot be fully inspected, `complete` is also false; otherwise
+`complete=true` and the reason is `linked_directory_not_followed`. Links outside
+`game/` cannot affect source lint, so they never clear `complete`. Linked
+regular files and other special files remain fatal (`SHADOW_SPECIAL_FILE`). The
+Live Editor commit and undo gates refuse a shadow with skipped source
+directories (`SHADOW_SOURCE_INCOMPLETE`), so an asset-skipping build never hides
+a script error.
 
 `checks` currently accepts only `["lint"]`. `timeout=0` derives
 `min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
-attestation budget); explicit values are clamped to 1-600 seconds. `ok` is
-false for a timeout or a truncated transcript, even when the return code is 0.
-Set `keep_shadow=true` to retain the temporary tree and receive its
+attestation budget); explicit values are clamped to 1-600 seconds. Lint runs
+with `--error-code`, so reported lint errors produce a non-zero return code.
+`ok` is false for a timeout or a truncated transcript, even when the return code
+is 0. Set `keep_shadow=true` to retain the temporary tree and receive its
 `shadow_path` (the caller owns cleanup). The tool may download and cache the
-Ren'Py SDK, but writes only to that temporary shadow and the SDK cache.
+Ren'Py SDK. Project sources are unchanged, but runtime state may be created:
+`RenpyProject` initialization can create `.renforge/`, and the tool wrapper
+appends `.renforge/activity.jsonl`. Errors use the standard tool shape:
+`ok=false` with a string `error` and top-level `code`/`details`.
 
 ## Writes and safety
 
@@ -543,9 +551,11 @@ These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
 
-`renforge_validate` is non-destructive: it writes only a temporary clean
-shadow (plus the SDK cache when it must download one) and never publishes to
-project sources or records an editor transaction.
+`renforge_validate` is non-destructive: project sources are unchanged. It
+builds a temporary clean shadow and never publishes to project sources or
+records an editor transaction, but runtime state and the SDK cache may be
+created (`.renforge/`, including the wrapper's `.renforge/activity.jsonl`, and
+the downloaded SDK cache).
 
 `renforge_send_input` is also stateful: supply exactly one mode per call. Text
 input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh

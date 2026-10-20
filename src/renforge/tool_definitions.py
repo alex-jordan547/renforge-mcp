@@ -194,16 +194,18 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Run Ren'Py `lint` against a clean shadow copy of the project tree: no live session artifacts, optional "
             "staged bytes overlaid, and project sources are never modified. The shadow omits RenForge-injected files "
             "using `.renforge/control/artifacts.json` when available plus the known `zzrenforge_*` and "
-            "`00renforge_session_*` prefixes. Linked directories are not followed and are reported in `skipped_links`; "
-            "if one could contain `.rpy`/`.rpym` scripts, `complete` and `ok` are false. Quotas default to 10000 files "
-            "and 500 MiB and are configurable with `RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. This "
-            "may download and cache the Ren'Py SDK. A timeout or truncated transcript is never reported as success."
+            "`00renforge_session_*` prefixes. Linked directories are never followed or copied and are reported in "
+            "`skipped_links`; a link under `game/` is inspected read-only for `.rpy`/`.rpym` source, and `complete`/`ok` "
+            "are false when source is found or the target cannot be inspected. Quotas default to 10000 files "
+            "and 500 MiB and are configurable with `RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
+            "runs with `--error-code`, so reported errors produce a non-zero return code. This may download and cache "
+            "the Ren'Py SDK. A timeout or truncated transcript is never reported as success."
         ),
         annotations=_ann(
             readOnlyHint=False,
             idempotentHint=True,
             destructiveHint=False,
-            openWorldHint=False,
+            openWorldHint=True,
         ),
         parameters={
             "project_path": "Ren'Py project root containing `game/`.",

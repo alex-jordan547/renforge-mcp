@@ -93,7 +93,10 @@ def _make_sdk(tmp_path: Path) -> RenpySdk:
         "    (project / 'game' / '_shadow_artifact.txt').write_text('touch\\n', encoding='utf-8')\n"
         "if (project / '.lint_fail').is_file():\n"
         "    sys.stderr.write('lint-failed\\n')\n"
-        "    raise SystemExit(1)\n"
+        "    # Real Ren'Py lint exits 0 on reported errors unless --error-code\n"
+        "    # is passed; model that so a missing flag turns this test red.\n"
+        "    if '--error-code' in sys.argv:\n"
+        "        raise SystemExit(1)\n"
         "raise SystemExit(0)\n",
         encoding="utf-8",
     )
@@ -1139,6 +1142,7 @@ def test_commit_shadow_isolation_and_validation_failure_diagnostics(tmp_path: Pa
             status = _commit_status(sock, auth, tx, request_id="st-fail")
             assert status["ok"] is True
             assert status["result"]["state"] == "failed"
+            assert status["result"]["diagnostics"]["returncode"] == 1
             assert status["result"]["diagnostics"]["truncated"] is True
             assert len(status["result"]["diagnostics"]["stderr"]) <= 65536
 
@@ -1323,6 +1327,7 @@ def _link_directory_or_simulate(
     target: Path,
 ) -> None:
     import os
+    import shutil
     import stat as stat_module
 
     try:
@@ -1332,8 +1337,11 @@ def _link_directory_or_simulate(
         pass
 
     # Windows without developer mode cannot create symlinks. Simulate the
-    # directory link at the lstat boundary so the skip path still runs.
+    # directory link at the lstat boundary so the skip path still runs, and
+    # mirror the target's content so read-only inspection sees what a real
+    # link would expose.
     link.mkdir()
+    shutil.copytree(target, link, dirs_exist_ok=True)
     real_lstat = Path.lstat
 
     def _fake_lstat(self: Path):
@@ -1382,6 +1390,35 @@ def test_shadow_skips_linked_asset_directory_with_reason(
     assert not shadow_root.exists()
 
 
+def test_shadow_linked_directory_outside_game_does_not_affect_completeness(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from renforge.editor.shadow import validate_shadow_project
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-docs"
+    external.mkdir()
+    (external / "notes.rpy").write_text("label notes:\n    return\n", encoding="utf-8")
+    _link_directory_or_simulate(monkeypatch, project.root / "docs", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+
+    result = validate_shadow_project(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=tmp_path / "shadow-linked-docs",
+        staged_replacements={},
+        timeout=15,
+    )
+
+    # Source outside game/ cannot be loaded by lint, so the shadow stays complete.
+    assert result.ok is True
+    assert result.complete is True
+    assert result.skipped_links == (
+        {"path": "docs", "reason": "linked_directory_not_followed"},
+    )
+
+
 def test_shadow_linked_source_directory_is_incomplete_and_refused(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1408,6 +1445,7 @@ def test_shadow_linked_source_directory_is_incomplete_and_refused(
     assert result.degraded is True
     assert result.ok is False
     assert result.skipped_links[0]["path"] == "game/chapters"
+    assert result.skipped_links[0]["reason"] == "linked_directory_with_source"
 
     with pytest.raises(EditorError) as excinfo:
         validate_shadow_project(
@@ -1423,9 +1461,91 @@ def test_shadow_linked_source_directory_is_incomplete_and_refused(
     assert excinfo.value.details["skipped_links"] == [
         {
             "path": "game/chapters",
-            "reason": "linked_directory_not_followed",
+            "reason": "linked_directory_with_source",
         }
     ]
+
+
+def test_shadow_unreadable_directory_fails_instead_of_looking_complete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import errno
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    unreadable = project.root / "game" / "locked"
+
+    def _walk(_root, *, topdown, followlinks, onerror):
+        assert topdown is True
+        assert followlinks is False
+        onerror(OSError(errno.EACCES, "Permission denied", str(unreadable)))
+        return iter(())
+
+    monkeypatch.setattr(shadow.os, "walk", _walk)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(project)
+
+    assert excinfo.value.code == "SHADOW_COPY_FAILED"
+    assert excinfo.value.details["path"] == str(unreadable)
+
+
+def test_shadow_lint_failure_is_not_success(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-failing-lint"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_fail").write_text("1\n", encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+    )
+
+    assert result.returncode == 1
+    assert result.timed_out is False
+    assert result.ok is False
+    assert "lint-failed" in result.stderr
+
+
+def test_shadow_lint_command_requests_error_exit_code(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+    from renforge.util.subprocess import CommandResult
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-command"
+    shadow_root.mkdir()
+    commands: list[list[str]] = []
+
+    def _run(command, *, timeout):
+        commands.append(list(command))
+        return CommandResult(
+            command=tuple(command),
+            returncode=0,
+            stdout="",
+            stderr="",
+            timeout=timeout,
+            cwd=None,
+            env=None,
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(shadow, "run_command", _run)
+
+    result = shadow.run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+    )
+
+    assert result.ok is True
+    # Ren'Py lint only exits non-zero on reported errors with --error-code.
+    assert commands[0][-2:] == ["lint", "--error-code"]
 
 
 def test_shadow_lint_truncation_is_not_success(tmp_path: Path) -> None:

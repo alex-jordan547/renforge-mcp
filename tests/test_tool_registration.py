@@ -303,7 +303,7 @@ def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_pat
     from renforge.util.files import atomic_write_private_json, ensure_private_directory
 
     project = _validate_project(tmp_path)
-    injected_name = "custom_inject_deadbeef.rpy"
+    injected_name = "zzrenforge_custom_inject_deadbeef.rpy"
     (project / "game" / injected_name).write_text(
         "init python:\n    pass\n",
         encoding="utf-8",
@@ -325,6 +325,48 @@ def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_pat
                         injected_name + "c",
                         injected_name + "c.bak",
                     ],
+                }
+            ],
+            "asset_tree": None,
+        },
+        max_bytes=1024 * 1024,
+    )
+    sdk = _fake_sdk(tmp_path)
+    monkeypatch.setattr(
+        validate_tool,
+        "get_or_install_sdk",
+        lambda *args, **kwargs: sdk,
+    )
+    wrapper = build_tool_wrappers(_MetadataToolRegistry())["renforge_validate"]
+
+    result = wrapper(str(project))
+
+    assert result["ok"] is True, result
+    assert result["files"] == 1
+
+
+def test_validate_wrapper_ignores_manifest_names_without_injected_prefix(
+    monkeypatch, tmp_path
+) -> None:
+    import renforge.tools.validate as validate_tool
+    from renforge.util.files import atomic_write_private_json, ensure_private_directory
+
+    project = _validate_project(tmp_path)
+    # A crafted or stale manifest must not be able to exclude user source.
+    control_dir = ensure_private_directory(project / ".renforge" / "control")
+    atomic_write_private_json(
+        control_dir / "artifacts.json",
+        {
+            "schema_version": 3,
+            "session_id": "a" * 32,
+            "project_root": str(project.resolve()),
+            "bridge_info": "bridge.json",
+            "sources": [
+                {
+                    "role": "bridge",
+                    "basename": "script.rpy",
+                    "sha256": "b" * 64,
+                    "generated_siblings": ["script.rpyc", "script.rpyc.bak"],
                 }
             ],
             "asset_tree": None,
@@ -387,9 +429,9 @@ def test_validate_wrapper_returns_editor_error_measurements(monkeypatch, tmp_pat
     result = wrapper(str(project), staged={"extra.rpy": "label extra:\n    return\n"})
 
     assert result["ok"] is False
-    error = result["error"]
-    assert error["code"] == "SHADOW_QUOTA_EXCEEDED"
-    details = error["details"]
+    assert isinstance(result["error"], str)
+    assert result["code"] == "SHADOW_QUOTA_EXCEEDED"
+    details = result["details"]
     assert set(details) == {
         "files",
         "bytes",
@@ -412,8 +454,10 @@ def test_validate_wrapper_returns_editor_error_measurements(monkeypatch, tmp_pat
 
     invalid = wrapper(str(project), staged={"../escape.rpy": "x"})
     assert invalid["ok"] is False
-    assert invalid["error"]["code"] == "SHADOW_PATH_INVALID"
+    assert isinstance(invalid["error"], str)
+    assert invalid["code"] == "SHADOW_PATH_INVALID"
 
     unsupported = wrapper(str(project), checks=["assets"])
     assert unsupported["ok"] is False
-    assert unsupported["error"]["code"] == "VALIDATE_CHECKS_UNSUPPORTED"
+    assert isinstance(unsupported["error"], str)
+    assert unsupported["code"] == "VALIDATE_CHECKS_UNSUPPORTED"
