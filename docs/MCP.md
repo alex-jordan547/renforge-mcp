@@ -543,16 +543,21 @@ eligible because its placeholders let lint validate references.
 `min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
 attestation budget); explicit values are clamped to 1-600 seconds. Lint runs
 with `--error-code`, so reported lint errors produce a non-zero return code.
-`ok` is false for a timeout or a truncated transcript, even when the return code
-is 0. `renforge_validate` always uses `--error-code`, so reported lint errors
-fail the tool. The Live Editor commit/undo gate keeps the legacy exit code by
-default so pre-existing lint errors do not block unrelated edits; set
-`RENFORGE_SHADOW_STRICT_LINT=1` to make that gate strict as well. Set
+`ok` is false for a timeout. `renforge_validate` also reports `ok=false` for a
+truncated transcript, because it always uses `--error-code` and a report it
+cannot show is not a verdict it can return. Reported lint errors fail the tool.
+The Live Editor commit/undo gate keeps the legacy exit code by default so
+pre-existing lint errors do not block unrelated edits; in that lenient mode a
+long transcript is recorded as `truncated` but does not fail the commit by
+itself. Set `RENFORGE_SHADOW_STRICT_LINT=1` to make that gate strict as well. Set
 `keep_shadow=true` to retain the temporary tree and receive its
 `shadow_path` (the caller owns cleanup). The tool may download and cache the
 Ren'Py SDK. It uses the explicit SDK override or the managed cache, never a
 launcher discovered inside the project being validated: a project-controlled
-fake SDK must not become executable code. Project sources are unchanged, but runtime state may be created:
+fake SDK must not become executable code. Linting is not a sandbox: like
+`renforge_launch`, `renpy lint` executes the project's `init python` blocks with
+the current user's privileges, so validating a project you would not run runs
+its code. The shadow isolates writes, not execution. Project sources are unchanged, but runtime state may be created:
 `RenpyProject` initialization can create `.renforge/`, and the tool wrapper
 appends `.renforge/activity.jsonl`. Errors use the standard tool shape:
 `ok=false` with a string `error` and top-level `code`/`details`.

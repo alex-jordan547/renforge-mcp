@@ -1772,6 +1772,26 @@ def test_shadow_lint_truncation_is_not_success(tmp_path: Path) -> None:
     assert result.ok is False
 
 
+def test_shadow_lint_truncation_does_not_block_the_lenient_gate(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-truncated-lenient"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_stdout").write_text("x" * 70000, encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+        error_code=False,
+    )
+
+    assert result.truncated is True
+    assert result.ok is True
+
+
 def test_shadow_lint_timeout_is_not_success(tmp_path: Path) -> None:
     from renforge.editor.shadow import run_shadow_lint
 

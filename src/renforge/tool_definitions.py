@@ -192,7 +192,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_validate": ToolDefinition(
         description=(
             "Run Ren'Py `lint` against a clean shadow copy of the project tree: no live session artifacts, optional "
-            "staged bytes overlaid, and project sources are never modified. The shadow omits RenForge-injected files "
+            "staged bytes overlaid, and project sources are never modified. Lint executes the project's "
+            "`init python` blocks with your privileges, so the shadow isolates writes, not execution. The shadow "
+            "omits RenForge-injected files "
             "using `.renforge/control/artifacts.json` when available plus the known `zzrenforge_*` and "
             "`00renforge_session_*` prefixes. Linked directories are never copied byte-for-byte and are reported in "
             "`skipped_links`; a link under `game/` (case-insensitive) is scanned read-only with an entry cap and time "

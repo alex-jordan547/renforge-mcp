@@ -719,9 +719,16 @@ def run_shadow_lint(
     bounded_stdout, trunc_stdout = _bounded_output(stdout_text, MAX_DIAGNOSTICS_BYTES)
     bounded_stderr, trunc_stderr = _bounded_output(stderr_text, MAX_DIAGNOSTICS_BYTES)
     truncated = trunc_stdout or trunc_stderr
+    # With --error-code the return code is the verdict, so a truncated
+    # transcript must not turn a failing lint into a passing one. Without it
+    # the transcript is the only evidence, and the editor's lenient gate
+    # already accepts reported lint errors: a long transcript alone must not
+    # become a commit blocker there. `truncated` is reported either way.
+    ok = result.returncode == 0 and not result.timed_out and not (
+        truncated and error_code
+    )
     return ShadowLintResult(
-        # A truncated transcript cannot prove a clean lint, even with rc 0.
-        ok=result.returncode == 0 and not result.timed_out and not truncated,
+        ok=ok,
         returncode=result.returncode,
         timed_out=result.timed_out,
         stdout=bounded_stdout,
