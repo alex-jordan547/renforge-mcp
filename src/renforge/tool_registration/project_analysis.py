@@ -229,7 +229,9 @@ def build_wrappers(context):
             params={
                 "project_path": project_path,
                 "checks": [] if checks is None else checks,
-                "staged": {} if staged is None else staged,
+                # Journal paths only; staged source text must not enter the
+                # activity log.
+                "staged": [] if staged is None else sorted(staged),
                 "keep_shadow": keep_shadow,
                 "timeout": timeout,
             },

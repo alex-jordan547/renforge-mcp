@@ -550,7 +550,9 @@ default so pre-existing lint errors do not block unrelated edits; set
 `RENFORGE_SHADOW_STRICT_LINT=1` to make that gate strict as well. Set
 `keep_shadow=true` to retain the temporary tree and receive its
 `shadow_path` (the caller owns cleanup). The tool may download and cache the
-Ren'Py SDK. Project sources are unchanged, but runtime state may be created:
+Ren'Py SDK. It uses the explicit SDK override or the managed cache, never a
+launcher discovered inside the project being validated: a project-controlled
+fake SDK must not become executable code. Project sources are unchanged, but runtime state may be created:
 `RenpyProject` initialization can create `.renforge/`, and the tool wrapper
 appends `.renforge/activity.jsonl`. Errors use the standard tool shape:
 `ok=false` with a string `error` and top-level `code`/`details`.

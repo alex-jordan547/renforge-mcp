@@ -202,7 +202,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "resolve without copying asset bytes. Quotas default to 10000 files "
             "and 500 MiB and are configurable with `RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
             "runs with `--error-code`, so reported errors produce a non-zero return code. This may download and cache "
-            "the Ren'Py SDK. A timeout or truncated transcript is never reported as success."
+            "the Ren'Py SDK; it uses the explicit override or managed cache, never a launcher found inside the project "
+            "being validated. A timeout or truncated transcript is never reported as success."
         ),
         annotations=_ann(
             readOnlyHint=False,

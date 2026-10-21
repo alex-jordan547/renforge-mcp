@@ -174,7 +174,9 @@ def validate_project(
         staged_bytes = _encode_staged(staged)
         resolved_timeout = _resolve_timeout(timeout)
         project = RenpyProject(Path(project_path))
-        sdk = get_or_install_sdk("stable", project_root=project.abs_root)
+        # Never discover a launcher inside the project being validated: a
+        # project-local "SDK" would be project-controlled executable code.
+        sdk = get_or_install_sdk("stable")
         excluded_names, excluded_prefixes = _clean_tree_exclusions(project.root)
         temp_parent = Path(tempfile.mkdtemp(prefix="renforge-validate-"))
         shadow_root = temp_parent / "shadow"

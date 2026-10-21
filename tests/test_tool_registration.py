@@ -308,6 +308,12 @@ def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_pat
         "init python:\n    pass\n",
         encoding="utf-8",
     )
+    nested = project / "game" / "scenes"
+    nested.mkdir()
+    (nested / injected_name).write_text(
+        "init python:\n    pass\n# user file\n",
+        encoding="utf-8",
+    )
     control_dir = ensure_private_directory(project / ".renforge" / "control")
     atomic_write_private_json(
         control_dir / "artifacts.json",
@@ -339,10 +345,58 @@ def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_pat
     )
     wrapper = build_tool_wrappers(_MetadataToolRegistry())["renforge_validate"]
 
+    result = wrapper(str(project), keep_shadow=True)
+
+    assert result["ok"] is True, result
+    # The injected root file is excluded; the nested user file with the same
+    # basename must survive.
+    assert result["files"] == 2
+    shadow_root = Path(result["shadow_path"])
+    assert (shadow_root / "game" / "scenes" / injected_name).is_file()
+    import shutil
+
+    shutil.rmtree(shadow_root.parent, ignore_errors=True)
+
+
+def test_validate_never_uses_a_project_local_sdk(monkeypatch, tmp_path) -> None:
+    import renforge.tools.validate as validate_tool
+
+    project = _validate_project(tmp_path)
+    sdk = _fake_sdk(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_sdk(version="stable", **kwargs):
+        captured["version"] = version
+        captured.update(kwargs)
+        return sdk
+
+    monkeypatch.setattr(validate_tool, "get_or_install_sdk", fake_sdk)
+    wrapper = build_tool_wrappers(_MetadataToolRegistry())["renforge_validate"]
+
     result = wrapper(str(project))
 
     assert result["ok"] is True, result
-    assert result["files"] == 1
+    assert captured == {"version": "stable"}
+
+
+def test_validate_does_not_log_staged_source_text(monkeypatch, tmp_path) -> None:
+    import renforge.tools.validate as validate_tool
+
+    project = _validate_project(tmp_path)
+    sdk = _fake_sdk(tmp_path)
+    monkeypatch.setattr(validate_tool, "get_or_install_sdk", lambda *args, **kwargs: sdk)
+    wrapper = build_tool_wrappers(_MetadataToolRegistry())["renforge_validate"]
+    secret = "SECRET_STAGED_SOURCE_MUST_NOT_APPEAR"
+
+    result = wrapper(
+        str(project),
+        staged={"script.rpy": f"label start:\n    '{secret}'\n    return\n"},
+    )
+
+    assert result["ok"] is True, result
+    activity = (project / ".renforge" / "activity.jsonl").read_text(encoding="utf-8")
+    assert secret not in activity
+    assert "script.rpy" in activity
 
 
 def test_validate_wrapper_ignores_manifest_names_without_injected_prefix(

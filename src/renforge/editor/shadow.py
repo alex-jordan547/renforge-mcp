@@ -386,10 +386,25 @@ def plan_shadow_project(
     root = project.root.resolve(strict=True)
     names = frozenset(excluded_names)
     prefixes = tuple(excluded_prefixes)
+    game_root = root / "game"
     directories: list[str] = []
     base_entries: list[_ShadowEntry] = []
+    base_bytes = 0
     skipped_links: list[dict[str, str]] = []
     complete = True
+
+    def _check_base_quota() -> None:
+        if len(base_entries) <= resolved_limits.max_files and base_bytes <= resolved_limits.max_bytes:
+            return
+        offending = base_entries[-1]
+        _raise_quota_error(
+            files=len(base_entries),
+            byte_count=base_bytes,
+            limits=resolved_limits,
+            offending_path=offending.relative_path,
+            offending_size=offending.size,
+            largest=_largest_contributor(base_entries),
+        )
 
     def _on_walk_error(exc: OSError) -> None:
         # os.walk otherwise skips unreadable directories silently, which would
@@ -405,9 +420,12 @@ def plan_shadow_project(
             root, topdown=True, followlinks=False, onerror=_on_walk_error
         ):
             current_path = Path(current)
+            at_game_root = current_path == game_root
             kept_dirs: list[str] = []
             for dirname in dirs:
-                if dirname in _EXCLUDED_DIRS or _is_excluded_name(dirname, names, prefixes):
+                if dirname in _EXCLUDED_DIRS or (
+                    at_game_root and _is_excluded_name(dirname, names, prefixes)
+                ):
                     continue
                 directory = current_path / dirname
                 directory_st = directory.lstat()
@@ -444,6 +462,7 @@ def plan_shadow_project(
                                 )
                                 for item in scan.files
                             )
+                            _check_base_quota()
                     skipped_links.append({"path": relative_dir, "reason": reason})
                     continue
                 if not stat.S_ISDIR(directory_st.st_mode):
@@ -459,7 +478,7 @@ def plan_shadow_project(
             dirs[:] = sorted(kept_dirs)
 
             for filename in sorted(files):
-                if _is_excluded_name(filename, names, prefixes):
+                if at_game_root and _is_excluded_name(filename, names, prefixes):
                     continue
                 source_path = current_path / filename
                 if source_path.suffix in _EXCLUDED_SUFFIXES:
@@ -480,6 +499,8 @@ def plan_shadow_project(
                         size=source_st.st_size,
                     )
                 )
+                base_bytes += source_st.st_size
+                _check_base_quota()
     except OSError as exc:
         raise EditorError(
             "SHADOW_COPY_FAILED",

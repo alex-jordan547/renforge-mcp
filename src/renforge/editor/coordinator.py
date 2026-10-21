@@ -1529,7 +1529,23 @@ class EditorCoordinator:
             self._transactions[transaction_id] = transaction
         self._persist_transaction(transaction)
 
-        lint_result = self._validate_shadow(transaction)
+        try:
+            lint_result = self._validate_shadow(transaction)
+        except EditorError as exc:
+            transaction.state = "failed"
+            transaction.diagnostics = {
+                "validation_error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": dict(exc.details),
+                }
+            }
+            self._persist_transaction(transaction)
+            raise EditorError(
+                "VALIDATION_FAILED",
+                "Ren'Py lint validation could not complete",
+                details={"transaction_id": transaction_id, "cause": exc.code},
+            ) from exc
         if not lint_result.ok:
             transaction.state = "failed"
             transaction.diagnostics = self._lint_diagnostics(lint_result)
@@ -1714,7 +1730,23 @@ class EditorCoordinator:
             self._transactions[transaction_id] = transaction
         self._persist_transaction(transaction)
 
-        lint_result = self._validate_shadow(transaction)
+        try:
+            lint_result = self._validate_shadow(transaction)
+        except EditorError as exc:
+            transaction.state = "failed"
+            transaction.diagnostics = {
+                "validation_error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": dict(exc.details),
+                }
+            }
+            self._persist_transaction(transaction)
+            raise EditorError(
+                "VALIDATION_FAILED",
+                "Ren'Py lint validation could not complete while validating product undo",
+                details={"transaction_id": transaction_id, "cause": exc.code},
+            ) from exc
         if not lint_result.ok:
             transaction.state = "failed"
             transaction.diagnostics = self._lint_diagnostics(lint_result)
