@@ -399,6 +399,16 @@ def test_validate_does_not_log_staged_source_text(monkeypatch, tmp_path) -> None
     assert "script.rpy" in activity
 
 
+def test_validate_invalid_project_returns_structured_error(tmp_path) -> None:
+    from renforge.tools.validate import validate_project
+
+    result = validate_project(str(tmp_path / "missing"))
+
+    assert result["ok"] is False
+    assert result["code"] == "PROJECT_INVALID"
+    assert "project_path" in result["details"]
+
+
 def test_validate_wrapper_ignores_manifest_names_without_injected_prefix(
     monkeypatch, tmp_path
 ) -> None:

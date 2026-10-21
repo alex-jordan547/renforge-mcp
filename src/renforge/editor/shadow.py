@@ -263,7 +263,7 @@ def _staged_path_candidate(raw_path: str) -> PurePosixPath:
     return pure
 
 
-def _resolve_staged_path(raw_path: str, base_paths: set[str]) -> str:
+def _resolve_staged_path(raw_path: str, base_paths: dict[str, str]) -> str:
     """Resolve a project-relative or game-relative overlay path.
 
     ``game/foo`` is ambiguous: it may already be project-relative or may be a
@@ -276,33 +276,41 @@ def _resolve_staged_path(raw_path: str, base_paths: set[str]) -> str:
     project_relative = pure.as_posix()
     game_relative = "game/" + project_relative
     if pure.parts[0] == "game":
-        if project_relative in base_paths:
-            return project_relative
-        if game_relative in base_paths:
-            return game_relative
+        if _path_key(project_relative) in base_paths:
+            return base_paths[_path_key(project_relative)]
+        if _path_key(game_relative) in base_paths:
+            return base_paths[_path_key(game_relative)]
         return project_relative
-    return game_relative
+    return base_paths.get(_path_key(game_relative), game_relative)
 
 
 def _normalize_staged_replacements(
     staged_replacements: dict[str, bytes],
-    base_paths: set[str],
+    base_paths: dict[str, str],
 ) -> dict[str, bytes]:
     staged: dict[str, bytes] = {}
+    seen: set[str] = set()
     for raw_path, payload in staged_replacements.items():
         relative_path = _resolve_staged_path(raw_path, base_paths)
-        if relative_path in staged:
+        key = _path_key(relative_path)
+        if key in seen:
             raise EditorError(
                 "SHADOW_PATH_INVALID",
                 "staged shadow paths collide after normalization",
                 {"path": raw_path, "normalized_path": relative_path},
             )
+        seen.add(key)
         staged[relative_path] = payload
     return staged
 
 
 def _relative_posix(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def _path_key(path: str) -> str:
+    """Compare staged paths the way the local filesystem compares names."""
+    return os.path.normcase(path)
 
 
 def _is_game_relative(relative_dir: str) -> bool:
@@ -509,14 +517,16 @@ def plan_shadow_project(
         ) from exc
 
     entries = list(base_entries)
-    base_paths = set(directories) | {entry.relative_path for entry in entries}
+    base_paths = {_path_key(path): path for path in directories}
+    base_paths.update({_path_key(entry.relative_path): entry.relative_path for entry in entries})
     staged = _normalize_staged_replacements(staged_replacements or {}, base_paths)
-    index_by_relative = {entry.relative_path: index for index, entry in enumerate(entries)}
-    directory_set = set(directories)
+    index_by_relative = {_path_key(entry.relative_path): index for index, entry in enumerate(entries)}
+    directory_set = {_path_key(path) for path in directories}
     file_set = set(index_by_relative)
-    staged_paths = set(staged)
+    staged_paths = {_path_key(path) for path in staged}
     for relative_path, payload in staged.items():
-        if relative_path in directory_set:
+        key = _path_key(relative_path)
+        if key in directory_set:
             raise EditorError(
                 "SHADOW_PATH_INVALID",
                 "staged shadow path names a directory",
@@ -524,7 +534,8 @@ def plan_shadow_project(
             )
         parent = PurePosixPath(relative_path).parent
         while parent.parts:
-            if parent.as_posix() in file_set or parent.as_posix() in staged_paths:
+            parent_key = _path_key(parent.as_posix())
+            if parent_key in file_set or parent_key in staged_paths:
                 raise EditorError(
                     "SHADOW_PATH_INVALID",
                     "staged shadow path is nested under a file",
@@ -532,10 +543,10 @@ def plan_shadow_project(
                 )
             parent = parent.parent
         entry = _ShadowEntry(relative_path, None, len(payload))
-        if relative_path in index_by_relative:
-            entries[index_by_relative[relative_path]] = entry
+        if key in index_by_relative:
+            entries[index_by_relative[key]] = entry
         else:
-            index_by_relative[relative_path] = len(entries)
+            index_by_relative[key] = len(entries)
             entries.append(entry)
 
     file_count = len(entries)

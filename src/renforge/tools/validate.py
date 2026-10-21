@@ -173,7 +173,16 @@ def validate_project(
         normalized_checks = _normalize_checks(checks)
         staged_bytes = _encode_staged(staged)
         resolved_timeout = _resolve_timeout(timeout)
-        project = RenpyProject(Path(project_path))
+        try:
+            project = RenpyProject(Path(project_path))
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "checks": normalized_checks,
+                "error": str(exc),
+                "code": "PROJECT_INVALID",
+                "details": {"project_path": str(project_path)},
+            }
         # Never discover a launcher inside the project being validated: a
         # project-local "SDK" would be project-controlled executable code.
         sdk = get_or_install_sdk("stable")
