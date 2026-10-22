@@ -298,6 +298,28 @@ def test_validate_wrapper_normalizes_staged_paths(monkeypatch, tmp_path) -> None
         shutil.rmtree(shadow_root, ignore_errors=True)
 
 
+def test_validate_project_does_not_create_project_state(monkeypatch, tmp_path) -> None:
+    import shutil
+
+    import renforge.tools.validate as validate_tool
+
+    project = _validate_project(tmp_path)
+    sdk = _fake_sdk(tmp_path)
+    monkeypatch.setattr(
+        validate_tool,
+        "get_or_install_sdk",
+        lambda *args, **kwargs: sdk,
+    )
+
+    result = validate_tool.validate_project(str(project), keep_shadow=True)
+
+    assert result["ok"] is True, result
+    # Validation is read-only for the project: the SDK cache and the shadow
+    # live elsewhere, so it must not create .renforge/ either.
+    assert not (project / ".renforge").exists()
+    shutil.rmtree(Path(result["shadow_path"]), ignore_errors=True)
+
+
 def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_path) -> None:
     import renforge.tools.validate as validate_tool
     from renforge.util.files import atomic_write_private_json, ensure_private_directory

@@ -56,6 +56,8 @@ class RenpyProject:
     """Represents a Ren'Py project directory."""
 
     root: Path
+    # Read-only callers (validation) must not add state to the project tree.
+    create_cache: bool = field(default=True, compare=False, repr=False)
     game_dir: Path = field(init=False)
     cache_dir: Path = field(init=False)
 
@@ -76,7 +78,8 @@ class RenpyProject:
             )
 
         cache_dir = canonical / RENFORGE_CACHE_DIR
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.create_cache:
+            cache_dir.mkdir(parents=True, exist_ok=True)
         object.__setattr__(self, "root", canonical)
         object.__setattr__(self, "game_dir", game_dir)
         object.__setattr__(self, "cache_dir", cache_dir)
