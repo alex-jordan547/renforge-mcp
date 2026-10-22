@@ -582,7 +582,9 @@ def _build_shadow_from_plan(plan: ShadowPlan, *, shadow_root: Path) -> tuple[int
     file_count = 0
     byte_count = 0
     try:
-        shadow_root.mkdir(parents=True, exist_ok=False)
+        # The copy holds staged source, so keep it private even when the caller
+        # puts it somewhere other than a 0700 temp parent.
+        shadow_root.mkdir(mode=0o700, parents=True, exist_ok=False)
         for relative_dir in plan.directories:
             destination_dir = shadow_root / relative_dir
             destination_dir.mkdir(parents=True, exist_ok=True)

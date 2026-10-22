@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
+import stat
 import threading
 import time
 from pathlib import Path
@@ -1448,6 +1450,8 @@ def test_shadow_linked_asset_plan_uses_placeholders_without_byte_weight(
     built = shadow_root / "game" / "images" / "fake_image.png"
     assert built.is_file()
     assert built.stat().st_size == 0
+    if os.name == "posix":
+        assert stat.S_IMODE(shadow_root.stat().st_mode) == 0o700
 
 
 def test_shadow_linked_directory_outside_game_does_not_affect_completeness(
