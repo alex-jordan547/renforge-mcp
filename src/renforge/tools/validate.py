@@ -169,6 +169,7 @@ def validate_project(
     """Lint a clean shadow copy of a project without touching its sources."""
     normalized_checks: list[str] = checks if isinstance(checks, list) else []
     temp_parent: Path | None = None
+    shadow_root: Path | None = None
     try:
         normalized_checks = _normalize_checks(checks)
         staged_bytes = _encode_staged(staged)
@@ -188,7 +189,14 @@ def validate_project(
         sdk = get_or_install_sdk("stable")
         excluded_names, excluded_prefixes = _clean_tree_exclusions(project.root)
         temp_parent = Path(tempfile.mkdtemp(prefix="renforge-validate-"))
-        shadow_root = temp_parent / "shadow"
+        if keep_shadow:
+            # The caller cleans up the path we return, so the shadow must be
+            # the directory mkdtemp created, not a child of it: deleting a
+            # child would leave an empty parent behind on every call.
+            temp_parent.rmdir()
+            shadow_root = temp_parent
+        else:
+            shadow_root = temp_parent / "shadow"
         result = validate_shadow_project(
             project,
             sdk,
@@ -208,7 +216,7 @@ def validate_project(
             "code": exc.code,
             "details": dict(exc.details),
         }
-        shadow_path = temp_parent / "shadow" if temp_parent is not None else None
+        shadow_path = shadow_root if shadow_root is not None else None
         if keep_shadow and shadow_path is not None and shadow_path.is_dir():
             payload["shadow_path"] = str(shadow_path)
         elif temp_parent is not None:

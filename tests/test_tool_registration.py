@@ -295,7 +295,7 @@ def test_validate_wrapper_normalizes_staged_paths(monkeypatch, tmp_path) -> None
             "label start:\n    return\n"
         )
         assert not (project / ".renforge" / "editor-transactions").exists()
-        shutil.rmtree(shadow_root.parent, ignore_errors=True)
+        shutil.rmtree(shadow_root, ignore_errors=True)
 
 
 def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_path) -> None:
@@ -353,9 +353,12 @@ def test_validate_wrapper_excludes_manifest_owned_artifacts(monkeypatch, tmp_pat
     assert result["files"] == 2
     shadow_root = Path(result["shadow_path"])
     assert (shadow_root / "game" / "scenes" / injected_name).is_file()
+    # The returned path is the temporary root itself, so deleting it leaves no
+    # empty RenForge directory behind.
+    assert shadow_root.name.startswith("renforge-validate-")
     import shutil
 
-    shutil.rmtree(shadow_root.parent, ignore_errors=True)
+    shutil.rmtree(shadow_root, ignore_errors=True)
 
 
 def test_validate_never_uses_a_project_local_sdk(monkeypatch, tmp_path) -> None:
