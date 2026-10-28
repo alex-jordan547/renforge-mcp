@@ -40,6 +40,35 @@ _EXCLUDED_DIRS = {
 }
 _EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".rpyb", ".rpyc", ".rpymc"}
 _SOURCE_SUFFIXES = {".rpy", ".rpym"}
+# Lint resolves media names but never reads their bytes, so media files become
+# zero-byte placeholders instead of consuming the shadow's byte quota.
+_MEDIA_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".avif",
+    ".gif",
+    ".bmp",
+    ".tga",
+    ".ogg",
+    ".opus",
+    ".mp3",
+    ".wav",
+    ".flac",
+    ".m4a",
+    ".aac",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".webm",
+    ".mp4",
+    ".mkv",
+    ".ogv",
+    ".avi",
+    ".mov",
+}
 
 _POSITIVE_INT_RE = re.compile(r"^[0-9]+$")
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -168,6 +197,7 @@ class ShadowLintResult:
     degraded: bool = False
     files: int = 0
     bytes: int = 0
+    placeholders: int = 0
     limits: dict[str, int] = field(default_factory=dict)
     largest: dict[str, Any] | None = None
     skipped_links: tuple[dict[str, str], ...] = ()
@@ -500,9 +530,21 @@ def plan_shadow_project(
                         "shadow project contains a non-regular file",
                         {"path": str(source_path)},
                     )
+                relative_path = _relative_posix(root, source_path)
+                if source_path.suffix.casefold() in _MEDIA_SUFFIXES:
+                    base_entries.append(
+                        _ShadowEntry(
+                            relative_path=relative_path,
+                            source_path=None,
+                            size=0,
+                            placeholder=True,
+                        )
+                    )
+                    _check_base_quota()
+                    continue
                 base_entries.append(
                     _ShadowEntry(
-                        relative_path=_relative_posix(root, source_path),
+                        relative_path=relative_path,
                         source_path=source_path,
                         size=source_st.st_size,
                     )
@@ -800,6 +842,7 @@ def validate_shadow_project(
         degraded=plan.degraded,
         files=file_count,
         bytes=byte_count,
+        placeholders=sum(1 for entry in plan.entries if entry.placeholder),
         limits={"max_files": limits.max_files, "max_bytes": limits.max_bytes},
         largest=plan.largest,
         skipped_links=plan.skipped_links,

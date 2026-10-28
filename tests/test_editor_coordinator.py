@@ -1266,7 +1266,7 @@ def test_shadow_largest_contributor_names_the_asset_directory(
     project, _source = _make_project(tmp_path)
     images = project.root / "game" / "images"
     images.mkdir()
-    (images / "bg.png").write_bytes(b"x" * 200)
+    (images / "bg.bin").write_bytes(b"x" * 200)
     monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
     monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
     monkeypatch.setattr(shadow, "MAX_SHADOW_BYTES", 100)
@@ -1279,10 +1279,47 @@ def test_shadow_largest_contributor_names_the_asset_directory(
         )
 
     details = excinfo.value.details
-    assert details["offending_path"] == "game/images/bg.png"
+    assert details["offending_path"] == "game/images/bg.bin"
     assert details["largest_path"] == "game/images"
     assert details["largest_size"] == 200
     assert not (tmp_path / "shadow-largest-assets").exists()
+
+
+def test_shadow_media_files_use_zero_byte_placeholders(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    media = {
+        "game/images/bg.PNG": b"x" * 100_000,
+        "game/audio/theme.ogg": b"y" * 100_000,
+        "game/fonts/ui.ttf": b"z" * 100_000,
+    }
+    for relative_path, payload in media.items():
+        path = project.root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    data = project.root / "game" / "data.bin"
+    data.write_bytes(b"d" * 200)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_BYTES", 4096)
+
+    plan = shadow.plan_shadow_project(project)
+    placeholders = {entry.relative_path for entry in plan.entries if entry.placeholder}
+    assert placeholders == set(media)
+    assert plan.bytes < 4096
+
+    shadow_root = tmp_path / "shadow-media-placeholders"
+    shadow.build_shadow_project(project, shadow_root=shadow_root, staged_replacements={})
+
+    for relative_path in media:
+        copied = shadow_root / relative_path
+        assert copied.is_file()
+        assert copied.stat().st_size == 0
+    assert (shadow_root / "game" / "data.bin").read_bytes() == b"d" * 200
+    assert (shadow_root / "game" / "script.rpy").read_text(encoding="utf-8").startswith(
+        "screen test_screen"
+    )
 
 
 def test_shadow_env_limit_overrides_the_old_default(monkeypatch, tmp_path: Path) -> None:

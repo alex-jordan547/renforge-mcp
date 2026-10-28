@@ -136,10 +136,12 @@ def _result_payload(
     *,
     checks: list[str],
     keep_shadow: bool,
+    sdk_version: str,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ok": result.ok,
         "checks": checks,
+        "sdk_version": sdk_version,
         "returncode": result.returncode,
         "timed_out": result.timed_out,
         "truncated": result.truncated,
@@ -147,6 +149,7 @@ def _result_payload(
         "degraded": result.degraded,
         "files": result.files,
         "bytes": result.bytes,
+        "placeholders": result.placeholders,
         "limits": dict(result.limits),
         "largest": dict(result.largest) if result.largest is not None else None,
         "skipped_links": [dict(item) for item in result.skipped_links],
@@ -161,6 +164,7 @@ def _result_payload(
 def validate_project(
     project_path: str,
     *,
+    version: str = "stable",
     checks: list[str] | None = None,
     staged: dict[str, str] | None = None,
     keep_shadow: bool = False,
@@ -186,7 +190,8 @@ def validate_project(
             }
         # Never discover a launcher inside the project being validated: a
         # project-local "SDK" would be project-controlled executable code.
-        sdk = get_or_install_sdk("stable")
+        sdk = get_or_install_sdk(version or "stable")
+        sdk_version = str(getattr(sdk, "version", version or "stable"))
         excluded_names, excluded_prefixes = _clean_tree_exclusions(project.root)
         temp_parent = Path(tempfile.mkdtemp(prefix="renforge-validate-"))
         if keep_shadow:
@@ -207,7 +212,12 @@ def validate_project(
             excluded_prefixes=excluded_prefixes,
             keep_shadow=keep_shadow,
         )
-        return _result_payload(result, checks=normalized_checks, keep_shadow=keep_shadow)
+        return _result_payload(
+            result,
+            checks=normalized_checks,
+            keep_shadow=keep_shadow,
+            sdk_version=sdk_version,
+        )
     except EditorError as exc:
         payload: dict[str, Any] = {
             "ok": False,

@@ -216,6 +216,7 @@ def build_wrappers(context):
 
     def renforge_validate(
         project_path: str,
+        version: str = "stable",
         checks: list[str] | None = None,
         staged: dict[str, str] | None = None,
         keep_shadow: bool = False,
@@ -228,6 +229,7 @@ def build_wrappers(context):
             name="renforge_validate",
             params={
                 "project_path": project_path,
+                "version": version,
                 "checks": [] if checks is None else checks,
                 # Journal paths only; staged source text must not enter the
                 # activity log.
@@ -239,6 +241,7 @@ def build_wrappers(context):
             fn=validate_project,
             args=(project_path,),
             kwargs={
+                "version": version,
                 "checks": checks,
                 "staged": staged,
                 "keep_shadow": keep_shadow,

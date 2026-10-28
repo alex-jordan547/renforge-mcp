@@ -298,6 +298,26 @@ def test_validate_wrapper_normalizes_staged_paths(monkeypatch, tmp_path) -> None
         shutil.rmtree(shadow_root, ignore_errors=True)
 
 
+def test_validate_reports_media_placeholder_count(monkeypatch, tmp_path) -> None:
+    import renforge.tools.validate as validate_tool
+
+    project = _validate_project(tmp_path)
+    (project / "game" / "bg.png").write_bytes(b"x" * 100)
+    sdk = _fake_sdk(tmp_path)
+    monkeypatch.setattr(
+        validate_tool,
+        "get_or_install_sdk",
+        lambda *args, **kwargs: sdk,
+    )
+
+    result = validate_tool.validate_project(str(project))
+
+    assert result["ok"] is True, result
+    assert result["files"] == 2
+    assert result["placeholders"] == 1
+    assert result["bytes"] == (project / "game" / "script.rpy").stat().st_size
+
+
 def test_validate_project_does_not_create_project_state(monkeypatch, tmp_path) -> None:
     import shutil
 
@@ -401,7 +421,15 @@ def test_validate_never_uses_a_project_local_sdk(monkeypatch, tmp_path) -> None:
     result = wrapper(str(project))
 
     assert result["ok"] is True, result
+    assert result["sdk_version"] == "8.5.3"
     assert captured == {"version": "stable"}
+
+    captured.clear()
+    explicit = wrapper(str(project), version="8.5.3")
+
+    assert explicit["ok"] is True, explicit
+    assert explicit["sdk_version"] == "8.5.3"
+    assert captured == {"version": "8.5.3"}
 
 
 def test_validate_does_not_log_staged_source_text(monkeypatch, tmp_path) -> None:

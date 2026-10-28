@@ -201,11 +201,16 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "budget for `.rpy`/`.rpym` source, and `complete`/`ok` are false when source is found or the target cannot "
             "be inspected. A fully scanned source-free linked asset directory is represented by zero-byte placeholder "
             "files for lint (counted as files, not bytes; `degraded=true`), so expected image/audio names still "
-            "resolve without copying asset bytes. Quotas default to 10000 files "
-            "and 500 MiB and are configurable with `RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
+            "resolve without copying asset bytes. Media files (images, audio, fonts, video) are also represented by "
+            "zero-byte placeholders by default: lint resolves their names, not their contents, and init code that "
+            "opens media bytes sees empty files. Other files are copied. Quotas default to 10000 files "
+            "and 500 MiB (media placeholders count as files, not bytes) and are configurable with "
+            "`RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
             "runs with `--error-code`, so reported errors produce a non-zero return code. This may download and cache "
-            "the Ren'Py SDK; it uses the explicit override or managed cache, never a launcher found inside the project "
-            "being validated. A timeout or truncated transcript is never reported as success."
+            "the Ren'Py SDK; it uses the requested `version` (or `stable`), and never a launcher found inside the "
+            "project being validated. The result reports `sdk_version` and `placeholders` (files materialized by name "
+            "only). A timeout or truncated transcript is never "
+            "reported as success."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -215,6 +220,10 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         ),
         parameters={
             "project_path": "Ren'Py project root containing `game/`.",
+            "version": (
+                "Ren'Py SDK version selector: `stable` (default) or an explicit version such as `8.5.3`. "
+                "`stable` honors `RENPY_SDK_STABLE_VERSION`. The project tree is never searched for an SDK."
+            ),
             "checks": "Optional checks. Only `[\"lint\"]` is supported; any other value is rejected.",
             "staged": (
                 "Optional overlay map from a project-relative (`game/script.rpy`) or game-relative (`script.rpy`) "

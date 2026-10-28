@@ -415,7 +415,7 @@ guards: each capture hashes a new frame.
 | `renforge_scan_project` | Scan scripts, labels, links, and metadata. Use filters and pagination for large projects. |
 | `renforge_find_references` | Exact Ren'Py definitions and usages, including text interpolations. |
 | `renforge_parse_lint` | Parse `renpy lint` output. |
-| `renforge_validate` | Lint a clean shadow copy of the project with optional staged bytes; reports shadow measurements, quota limits, and skipped linked directories. |
+| `renforge_validate` | Lint a clean shadow copy of the project with optional staged bytes; reports the resolved `sdk_version`, shadow measurements, quota limits, and skipped linked directories. Media files are zero-byte placeholders, so asset-heavy projects lint without copying media bytes. |
 | `renforge_inspect_image` | Inspect a local image, with optional crop and zoom. |
 
 ### Game lifecycle
@@ -502,8 +502,13 @@ may be project-relative (`game/script.rpy`) or game-relative (`script.rpy`);
 absolute paths, `..`, and duplicate normalized paths are rejected. Staged bytes
 count against the shadow quotas.
 
-Shadow quotas default to **10,000 files** and **500 MiB**. Override them with
-positive integers:
+Shadow quotas default to **10,000 files** and **500 MiB**. Media files
+(images, audio, fonts, and video) are represented by **zero-byte placeholders**
+by default, so an asset-heavy project lints without copying media bytes; lint
+resolves names, not contents, and `init python` code that opens media bytes sees
+empty files. Media placeholders count as files but not bytes. Other files are
+copied and count normally. The result reports `placeholders`, the number of
+files materialized by name only. Override the limits with positive integers:
 
 ```bash
 RENFORGE_SHADOW_MAX_FILES=25000
@@ -539,7 +544,10 @@ Editor commit and undo gates refuse a shadow with skipped source directories
 (`SHADOW_SOURCE_INCOMPLETE`); a source-free linked asset directory stays
 eligible because its placeholders let lint validate references.
 
-`checks` currently accepts only `["lint"]`. `timeout=0` derives
+`checks` currently accepts only `["lint"]`. `version` selects the Ren'Py SDK:
+`stable` (default, honoring `RENPY_SDK_STABLE_VERSION`) or an explicit version
+such as `8.5.3`; the result reports the resolved `sdk_version`. `timeout=0`
+derives
 `min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
 attestation budget); explicit values are clamped to 1-600 seconds. Lint runs
 with `--error-code`, so reported lint errors produce a non-zero return code.
@@ -552,7 +560,7 @@ long transcript is recorded as `truncated` but does not fail the commit by
 itself. Set `RENFORGE_SHADOW_STRICT_LINT=1` to make that gate strict as well. Set
 `keep_shadow=true` to retain the temporary tree and receive its
 `shadow_path` (the caller owns cleanup). The tool may download and cache the
-Ren'Py SDK. It uses the explicit SDK override or the managed cache, never a
+Ren'Py SDK. It uses the requested `version` or the managed cache, never a
 launcher discovered inside the project being validated: a project-controlled
 fake SDK must not become executable code. Linting is not a sandbox: like
 `renforge_launch`, `renpy lint` executes the project's `init python` blocks with
