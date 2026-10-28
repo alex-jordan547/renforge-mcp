@@ -14,6 +14,38 @@ TOOL_NAMES = (
     "renforge_stop",
 )
 
+_LANGUAGE_RESULT_KEYS = ("requested_language", "active_language", "language_applied")
+
+
+def _annotate_language_result(
+    result: dict[str, Any],
+    language: str | None,
+    warning: str | None = None,
+) -> dict[str, Any]:
+    """Keep language fields honest for delegated dashboard launches.
+
+    An older dashboard ignores the unknown ``language`` key and returns no
+    language fields. Without this note the launch would look as if the language
+    had been applied. A successful launch that used the default savedir also
+    needs the persistence warning, because Ren'Py stores the language there.
+    """
+    annotated = dict(result)
+    if language is not None and not any(key in annotated for key in _LANGUAGE_RESULT_KEYS):
+        note = (
+            "The dashboard did not report language support, so the requested "
+            f"language {language!r} was not confirmed. Upgrade the dashboard or "
+            "launch without a language."
+        )
+        annotated["requested_language"] = language
+        annotated["language_applied"] = False
+        message = annotated.get("message")
+        annotated["message"] = f"{message} {note}" if isinstance(message, str) and message else note
+    if language is not None and not annotated.get("ok"):
+        annotated["language_applied"] = False
+    if warning is not None and annotated.get("ok"):
+        annotated.setdefault("warning", warning)
+    return annotated
+
 
 def build_wrappers(context):
     live = context.live
@@ -31,6 +63,7 @@ def build_wrappers(context):
         persistent: str = "existing",
         cleanup_on_stop: bool = True,
         timeout: float | None = None,
+        language: str | None = None,
         session: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict:
@@ -63,6 +96,7 @@ def build_wrappers(context):
             persistent=effective_persistent,
             cleanup_on_stop=bool(effective_cleanup),
             timeout=timeout,
+            language=language,
         )
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
@@ -88,7 +122,11 @@ def build_wrappers(context):
                         "launch_cancel_requested": True,
                     }
                 return live.cancelled_launch_result(phase="starting_renpy")
-            return delegated
+            warning = live.language_persistence_warning(
+                language,
+                effective_savedir if isinstance(effective_savedir, str) else None,
+            )
+            return _annotate_language_result(delegated, language, warning)
         if cancel_event is not None and cancel_event.is_set():
             stopped = live.stop_external_game(project_path)
             if not stopped.get("ok"):
@@ -109,6 +147,7 @@ def build_wrappers(context):
             persistent=effective_persistent,
             cleanup_on_stop=bool(effective_cleanup),
             timeout=timeout,
+            language=language,
             session=session,
             cancel_event=cancel_event,
         )
@@ -140,7 +179,12 @@ def build_wrappers(context):
                 **kwargs,
             )
 
-        return live.start_launch(project_path, _launch, editor=requested_editor)
+        return live.start_launch(
+            project_path,
+            _launch,
+            editor=requested_editor,
+            language=kwargs.get("language"),
+        )
 
 
     def renforge_launch(
@@ -154,6 +198,7 @@ def build_wrappers(context):
         persistent: str = "existing",
         cleanup_on_stop: bool = True,
         timeout: float = 0,
+        language: str | None = None,
     ) -> dict:
         """Launch or reuse a game with the Live Editor enabled by default.
 
@@ -170,6 +215,14 @@ def build_wrappers(context):
         ``renforge_launch_status`` until it reports ``ready`` or ``failed``.
         display/audio default to auto; savedir='temporary' isolates saves.
         timeout controls the background startup deadline, not the MCP call.
+        ``language`` sets ``RENPY_LANGUAGE`` for a fresh game process. Ren'Py
+        persists it as ``preferences.language``, so this overrides the stored
+        preference, not just one session; for verification use
+        ``savedir="temporary"`` (and ``persistent="empty"``, which needs an
+        isolated savedir) or restore the language afterward. It cannot change an
+        already-running session. Only this tool accepts ``language``: a later
+        ``renforge_jump``/``renforge_new_game`` or dashboard Warp relaunch
+        starts without it and returns to the stored preference.
         """
         kwargs: dict[str, Any] = {
             "version": version,
@@ -184,6 +237,8 @@ def build_wrappers(context):
             kwargs["savedir"] = savedir
         if timeout and timeout > 0:
             kwargs["timeout"] = float(timeout)
+        if language is not None:
+            kwargs["language"] = language
         return _log_tool_call(
             name="renforge_launch",
             params={
@@ -197,6 +252,7 @@ def build_wrappers(context):
                 "persistent": persistent,
                 "cleanup_on_stop": cleanup_on_stop,
                 "timeout": timeout,
+                "language": language,
             },
             project_root=project_path,
             fn=_start_launch,

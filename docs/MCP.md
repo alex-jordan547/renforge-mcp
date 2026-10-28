@@ -178,6 +178,22 @@ renforge_stop(project_path)
 Live Editor human and agent detail (editable vs locked, Save vs preview,
 source safety): **[LIVE_EDITOR.md](LIVE_EDITOR.md)**.
 
+`renforge_launch(language="schinese")` sets `RENPY_LANGUAGE` for a fresh game
+process. Ren'Py's `change_language` writes `preferences.language`, so the
+override changes the stored preference used by later launches rather than one
+session. For verification, isolate state with `savedir="temporary"` (plus
+`persistent="empty"`, which requires an isolated savedir) or restore the
+original language afterward. It cannot change an already-running session, and
+only `renforge_launch` accepts a language: a later jump/new-game/Warp relaunch
+starts without it and returns to the stored preference. Launch results echo
+`requested_language`, plus `active_language` read from the bridge when the
+session is ready. `language_applied` is `true` only when the bridge reports the
+requested language active, `false` when the launch did not apply it, and `null`
+when the bridge did not report a language. A reused session that cannot switch
+reports `false` with a message, unless the language was already active. A
+successful launch with `language` and no isolated `savedir` adds a `warning`,
+because the stored preference changed.
+
 After editing a running project's `.rpy` file, hot-reload it and inspect the
 result without restarting the game process:
 
@@ -386,7 +402,7 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; `savedir=temporary` isolates saves. `timeout` controls the background startup deadline. |
+| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; `savedir=temporary` isolates saves; `language` sets `RENPY_LANGUAGE` for a fresh game process (Ren'Py persists it as `preferences.language`, so it changes the stored preference rather than one session; isolate with `savedir=temporary` or restore the language afterward; it cannot change a running session, and only this tool forwards it, so a later jump/new-game/Warp relaunch uses the stored preference). `timeout` controls the background startup deadline. |
 | `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. |
 | `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle. |
 | `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle. |

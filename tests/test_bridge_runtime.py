@@ -605,6 +605,22 @@ def test_get_state_reports_variables_and_showing(running_bridge):
     assert "audio" not in state
 
 
+def test_get_state_reports_the_stored_preferences_language(running_bridge):
+    running_bridge.store._preferences = types.SimpleNamespace(language="japanese")
+
+    state = running_bridge.client.get_state()
+
+    assert state["language"] == "japanese"
+
+
+def test_get_state_falls_back_to_config_language(running_bridge):
+    running_bridge.renpy.config.language = "korean"
+
+    state = running_bridge.client.get_state()
+
+    assert state["language"] == "korean"
+
+
 def test_get_state_includes_render_metrics_and_audio_channels_on_request(running_bridge):
     renpy = running_bridge.renpy
     renpy.display.interface.frame_times = [index / 10.0 for index in range(11)]

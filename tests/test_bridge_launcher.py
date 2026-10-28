@@ -281,6 +281,71 @@ def test_launch_accepts_display_provided_via_extra_env(monkeypatch, tmp_path: Pa
     session.close(timeout=0.1)
 
 
+def test_launch_sets_renpy_language_for_the_game_process(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("RENPY_LANGUAGE", "inherited")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, language=" japanese ")
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["RENPY_LANGUAGE"] == "japanese"
+
+    session.close(timeout=0.1)
+
+
+def test_launch_without_language_keeps_inherited_renpy_language(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("RENPY_LANGUAGE", "schinese")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
+
+    session = launch_with_bridge(sdk, project)
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["RENPY_LANGUAGE"] == "schinese"
+
+    session.close(timeout=0.1)
+
+
+@pytest.mark.parametrize(
+    "language",
+    ["   ", "ja\npanese", "x" * 65, "ja/panese", "ja\\panese", "ja\ud800panese"],
+)
+def test_launch_rejects_invalid_language(monkeypatch, tmp_path: Path, language: str) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("Popen must not be reached for an invalid language")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project, language=language)
+
+    assert excinfo.value.code == "LANGUAGE_INVALID"
+    assert not list((project_root / "game").glob("zzrenforge_bridge_*.rpy"))
+    assert not _bridge_info_path(project_root).exists()
+
+
 def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Path) -> None:
     from renforge.bridge.artifacts import allocate_and_materialize, artifacts_path
     from renforge.project import RenpyProject

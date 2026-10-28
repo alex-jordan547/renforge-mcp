@@ -7,9 +7,17 @@ versioning.
 
 ### Added
 
+- `renforge_launch(language=...)` sets `RENPY_LANGUAGE` for a fresh game
+  process. Results report `language_applied` (`true`/`false`, or `null` when the
+  bridge does not report a language) and a `warning` when the default savedir
+  lets the preference persist. (#112)
+
 ### Changed
 
 ### Fixed
+
+- A failed launch no longer reports `language_applied: true` just because the
+  requested language was already active in another session. (#112)
 
 ## [0.7.3] - 2026-10-07
 

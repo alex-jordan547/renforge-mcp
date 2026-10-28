@@ -468,6 +468,14 @@ init python:
                 result["auto"] = bool(getattr(prefs, "afm_enable", False))
         except Exception:
             pass
+        try:
+            prefs = getattr(renpy.store, "_preferences", None)
+            language = getattr(prefs, "language", None) if prefs is not None else None
+            if language is None:
+                language = getattr(renpy.config, "language", None)
+            result["language"] = _renforge_jsonable(language)
+        except Exception:
+            result["language"] = None
 
         extra_vars = payload.get("variables") or payload.get("variable_names") or []
         if isinstance(extra_vars, str):

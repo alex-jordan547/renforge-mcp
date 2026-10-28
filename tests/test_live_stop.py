@@ -344,6 +344,8 @@ def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Pat
         "ready": True,
         "current_label": "dashboard_scene",
         "editor": True,
+        "requested_language": None,
+        "active_language": None,
     }
     assert live._SESSIONS[key] is session
     assert session.close_calls == 0
@@ -415,6 +417,7 @@ def test_launch_status_preserves_editor_for_owned_session(tmp_path: Path) -> Non
         "status": "ready",
         "current_label": "dashboard_scene",
         "editor": True,
+        "active_language": None,
     }
     live._SESSIONS.pop(key, None)
 

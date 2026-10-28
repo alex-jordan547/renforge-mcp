@@ -279,7 +279,10 @@ def test_api_live_launch_defaults_editor_true(tmp_path: Path, monkeypatch) -> No
     calls = {}
 
     def fake_launch(project_path: str, **kwargs):
-        calls.update(project_path=project_path, **{k: kwargs.get(k) for k in ("version", "warp", "editor")})
+        calls.update(
+            project_path=project_path,
+            **{k: kwargs.get(k) for k in ("version", "warp", "editor", "language")},
+        )
         return {
             "ok": True,
             "ready": True,
@@ -293,7 +296,7 @@ def test_api_live_launch_defaults_editor_true(tmp_path: Path, monkeypatch) -> No
     client = TestClient(app)
     response = client.post(
         "/api/live/launch?token=token",
-        json={"version": "stable"},
+        json={"version": "stable", "language": " japanese "},
     )
 
     assert response.status_code == 200
@@ -304,6 +307,7 @@ def test_api_live_launch_defaults_editor_true(tmp_path: Path, monkeypatch) -> No
     assert body.get("editor") is True
     assert calls["project_path"] == str(project)
     assert calls.get("editor") is True
+    assert calls.get("language") == "japanese"
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
@@ -330,6 +334,30 @@ def test_api_live_launch_rejects_non_boolean_editor(tmp_path: Path, monkeypatch)
         "details": {"editor": "yes"},
         "error": "editor must be a boolean",
     }
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_launch_rejects_invalid_language(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: pytest.fail("launch_game should not run for an invalid language"),
+    )
+    app = create_ui_app(project, ui_token="token")
+    client = TestClient(app)
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable", "language": "ja/panese"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "launch_language_invalid"
+    assert payload["details"] == {"language": "ja/panese"}
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
