@@ -384,17 +384,36 @@ def test_poll_command_does_not_retry_oversized_frames():
     assert client.calls == 1
 
 
-def test_poll_command_reraises_when_the_bridge_never_returns():
-    client = _StatusScript(
-        [
-            BridgeProtocolError(
-                "socket read failed: [Errno 104] Connection reset by peer",
-                code=FRAME_TIMEOUT,
-            )
-        ]
-        * 8
+def test_poll_command_reraises_when_the_bridge_never_returns(monkeypatch: pytest.MonkeyPatch):
+    # Drive the deadline with a virtual clock. A real sleep(0.01) is shorter
+    # than 10ms on windows-latest, so a fixed script of errors runs out and
+    # the next pop raises IndexError before the timeout can fire.
+    clock = {"now": 0.0}
+
+    def monotonic() -> float:
+        return clock["now"]
+
+    def sleep(seconds: float) -> None:
+        clock["now"] += seconds
+
+    monkeypatch.setattr("renforge.bridge.client.time.monotonic", monotonic)
+    monkeypatch.setattr("renforge.bridge.client.time.sleep", sleep)
+
+    reset = BridgeProtocolError(
+        "socket read failed: [Errno 104] Connection reset by peer",
+        code=FRAME_TIMEOUT,
     )
 
+    class _AlwaysReset:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, command: str, payload: dict | None = None) -> dict:
+            assert command == "editor_task0_status"
+            self.calls += 1
+            raise reset
+
+    client = _AlwaysReset()
     with pytest.raises(BridgeProtocolError, match="Connection reset by peer"):
         poll_command(
             client,
@@ -404,7 +423,8 @@ def test_poll_command_reraises_when_the_bridge_never_returns():
             pause=0.01,
         )
 
-    assert client.calls >= 1
+    # 0.00, 0.01, 0.02, 0.03, 0.04, then the read at 0.05 is past the deadline.
+    assert client.calls == 6
 
 
 def test_bridge_client_invalid_json_response():
