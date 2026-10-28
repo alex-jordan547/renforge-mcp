@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
+import stat
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -78,10 +81,13 @@ def _make_sdk(tmp_path: Path) -> RenpySdk:
     launcher.write_text(
         "import pathlib\n"
         "import sys\n"
+        "import time\n"
         "\n"
         "project = pathlib.Path(sys.argv[1])\n"
         "if (sys.argv[2] if len(sys.argv) > 2 else '') != 'lint':\n"
         "    raise SystemExit(0)\n"
+        "if (project / '.lint_sleep').is_file():\n"
+        "    time.sleep(5)\n"
         "for name, stream in (('.lint_stderr', sys.stderr), ('.lint_stdout', sys.stdout)):\n"
         "    fixture = project / name\n"
         "    if fixture.is_file():\n"
@@ -90,7 +96,10 @@ def _make_sdk(tmp_path: Path) -> RenpySdk:
         "    (project / 'game' / '_shadow_artifact.txt').write_text('touch\\n', encoding='utf-8')\n"
         "if (project / '.lint_fail').is_file():\n"
         "    sys.stderr.write('lint-failed\\n')\n"
-        "    raise SystemExit(1)\n"
+        "    # Real Ren'Py lint exits 0 on reported errors unless --error-code\n"
+        "    # is passed; model that so a missing flag turns this test red.\n"
+        "    if '--error-code' in sys.argv:\n"
+        "        raise SystemExit(1)\n"
         "raise SystemExit(0)\n",
         encoding="utf-8",
     )
@@ -1106,7 +1115,10 @@ def test_undo_commit_refuses_target_outside_write_scope(
         coordinator.close()
 
 
-def test_commit_shadow_isolation_and_validation_failure_diagnostics(tmp_path: Path) -> None:
+def test_commit_shadow_isolation_and_validation_failure_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("RENFORGE_SHADOW_STRICT_LINT", "1")
     project, source = _make_project(tmp_path)
     (project.root / ".lint_touch").write_text("1\n", encoding="utf-8")
     (project.root / ".lint_fail").write_text("1\n", encoding="utf-8")
@@ -1136,6 +1148,7 @@ def test_commit_shadow_isolation_and_validation_failure_diagnostics(tmp_path: Pa
             status = _commit_status(sock, auth, tx, request_id="st-fail")
             assert status["ok"] is True
             assert status["result"]["state"] == "failed"
+            assert status["result"]["diagnostics"]["returncode"] == 1
             assert status["result"]["diagnostics"]["truncated"] is True
             assert len(status["result"]["diagnostics"]["stderr"]) <= 65536
 
@@ -1172,6 +1185,8 @@ def test_shadow_enforces_file_quota_and_removes_partial_copy(
     project, _source = _make_project(tmp_path)
     (project.root / "extra.txt").write_text("extra\n", encoding="utf-8")
     shadow_root = tmp_path / "shadow-quota"
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
     monkeypatch.setattr(shadow, "MAX_SHADOW_FILES", 1)
 
     with pytest.raises(EditorError) as excinfo:
@@ -1183,6 +1198,659 @@ def test_shadow_enforces_file_quota_and_removes_partial_copy(
 
     assert excinfo.value.code == "SHADOW_QUOTA_EXCEEDED"
     assert not shadow_root.exists()
+
+
+def test_shadow_quota_error_reports_measurements(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    (project.root / "extra.bin").write_bytes(b"x" * 16)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_FILES", 1)
+    shadow_root = tmp_path / "shadow-measured"
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.build_shadow_project(
+            project,
+            shadow_root=shadow_root,
+            staged_replacements={},
+        )
+
+    assert excinfo.value.code == "SHADOW_QUOTA_EXCEEDED"
+    details = excinfo.value.details
+    assert details["files"] == 2
+    assert details["bytes"] > 0
+    assert details["max_files"] == 1
+    assert details["max_bytes"] == shadow.MAX_SHADOW_BYTES
+    assert details["offending_path"] == "game/script.rpy"
+    assert details["offending_size"] == (project.root / "game" / "script.rpy").stat().st_size
+    assert details["largest_path"] == "game"
+    assert details["largest_size"] > 0
+    assert not shadow_root.exists()
+
+
+def test_shadow_byte_quota_error_reports_measurements(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_BYTES", 10)
+    shadow_root = tmp_path / "shadow-byte-measured"
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.build_shadow_project(
+            project,
+            shadow_root=shadow_root,
+            staged_replacements={},
+        )
+
+    details = excinfo.value.details
+    assert details["files"] == 1
+    assert details["bytes"] == details["offending_size"]
+    assert details["max_bytes"] == 10
+    assert details["offending_path"] == "game/script.rpy"
+    assert details["largest_path"] == "game"
+    assert not shadow_root.exists()
+    assert not shadow_root.exists()
+
+
+def test_shadow_largest_contributor_names_the_asset_directory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    images = project.root / "game" / "images"
+    images.mkdir()
+    (images / "bg.bin").write_bytes(b"x" * 200)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_BYTES", 100)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.build_shadow_project(
+            project,
+            shadow_root=tmp_path / "shadow-largest-assets",
+            staged_replacements={},
+        )
+
+    details = excinfo.value.details
+    assert details["offending_path"] == "game/images/bg.bin"
+    assert details["largest_path"] == "game/images"
+    assert details["largest_size"] == 200
+    assert not (tmp_path / "shadow-largest-assets").exists()
+
+
+def test_shadow_media_files_use_zero_byte_placeholders(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    media = {
+        "game/images/bg.PNG": b"x" * 100_000,
+        "game/audio/theme.ogg": b"y" * 100_000,
+        "game/fonts/ui.ttf": b"z" * 100_000,
+    }
+    for relative_path, payload in media.items():
+        path = project.root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    data = project.root / "game" / "data.bin"
+    data.write_bytes(b"d" * 200)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_BYTES", 4096)
+
+    plan = shadow.plan_shadow_project(project)
+    placeholders = {entry.relative_path for entry in plan.entries if entry.placeholder}
+    assert placeholders == set(media)
+    assert plan.bytes < 4096
+
+    shadow_root = tmp_path / "shadow-media-placeholders"
+    shadow.build_shadow_project(project, shadow_root=shadow_root, staged_replacements={})
+
+    for relative_path in media:
+        copied = shadow_root / relative_path
+        assert copied.is_file()
+        assert copied.stat().st_size == 0
+    assert (shadow_root / "game" / "data.bin").read_bytes() == b"d" * 200
+    assert (shadow_root / "game" / "script.rpy").read_text(encoding="utf-8").startswith(
+        "screen test_screen"
+    )
+
+
+def test_shadow_env_limit_overrides_the_old_default(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    (project.root / "extra.bin").write_bytes(b"x" * 16)
+    monkeypatch.setattr(shadow, "MAX_SHADOW_FILES", 1)
+    monkeypatch.setenv("RENFORGE_SHADOW_MAX_FILES", "2")
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    shadow_root = tmp_path / "shadow-env"
+
+    shadow.build_shadow_project(
+        project,
+        shadow_root=shadow_root,
+        staged_replacements={},
+    )
+
+    assert (shadow_root / "extra.bin").is_file()
+    assert (shadow_root / "game" / "script.rpy").is_file()
+
+
+def test_shadow_quota_env_fails_closed(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    monkeypatch.setenv("RENFORGE_SHADOW_MAX_FILES", "not-a-number")
+    shadow_root = tmp_path / "shadow-invalid-limit"
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.build_shadow_project(
+            project,
+            shadow_root=shadow_root,
+            staged_replacements={},
+        )
+
+    assert excinfo.value.code == "SHADOW_QUOTA_INVALID"
+    assert excinfo.value.details == {
+        "variable": "RENFORGE_SHADOW_MAX_FILES",
+        "value": "not-a-number",
+    }
+    assert not shadow_root.exists()
+
+
+def _link_directory_or_simulate(
+    monkeypatch: pytest.MonkeyPatch,
+    link: Path,
+    target: Path,
+) -> None:
+    import os
+    import shutil
+    import stat as stat_module
+
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+
+    # Windows without developer mode cannot create symlinks. Simulate the
+    # directory link at the lstat boundary so the skip path still runs, and
+    # mirror the target's content so read-only inspection sees what a real
+    # link would expose.
+    link.mkdir()
+    shutil.copytree(target, link, dirs_exist_ok=True)
+    real_lstat = Path.lstat
+
+    def _fake_lstat(self: Path):
+        result = real_lstat(self)
+        if self == link:
+            return os.stat_result(
+                (stat_module.S_IFLNK | stat_module.S_IMODE(result.st_mode), *tuple(result)[1:])
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", _fake_lstat)
+
+
+def test_shadow_linked_asset_directory_uses_zero_byte_placeholders(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from renforge.editor.shadow import validate_shadow_project
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-images"
+    external.mkdir()
+    (external / "fake_image.png").write_bytes(b"x" * 4096)
+    (external / "compiled.rpyc").write_bytes(b"bytecode")
+    nested = external / "ui"
+    nested.mkdir()
+    (nested / "button_normal.png").write_bytes(b"png")
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    shadow_root = tmp_path / "shadow-linked-assets"
+
+    result = validate_shadow_project(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        staged_replacements={},
+        timeout=15,
+        keep_shadow=True,
+    )
+
+    assert result.ok is True
+    assert result.complete is True
+    assert result.degraded is True
+    assert result.skipped_links == (
+        {
+            "path": "game/images",
+            "reason": "linked_directory_assets_placeholders",
+        },
+    )
+    assert result.shadow_path is not None
+    built_root = Path(result.shadow_path)
+    for relative in (
+        "game/images/fake_image.png",
+        "game/images/ui/button_normal.png",
+    ):
+        built = built_root / relative
+        assert built.is_file()
+        assert built.stat().st_size == 0
+    assert not (built_root / "game" / "images" / "compiled.rpyc").exists()
+
+
+def test_shadow_linked_asset_plan_uses_placeholders_without_byte_weight(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-images"
+    external.mkdir()
+    (external / "fake_image.png").write_bytes(b"x" * 100_000)
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
+
+    plan = shadow.plan_shadow_project(
+        project,
+        limits=shadow.ShadowLimits(max_files=3, max_bytes=4096),
+    )
+
+    placeholders = [entry for entry in plan.entries if entry.placeholder]
+    assert [entry.relative_path for entry in placeholders] == [
+        "game/images/fake_image.png"
+    ]
+    assert placeholders[0].source_path is None
+    assert placeholders[0].size == 0
+    # The 100,000-byte asset contributes zero bytes to the quota while still
+    # counting as one file.
+    assert plan.files == 2
+    assert plan.bytes < 4096
+    assert plan.complete is True
+    assert plan.degraded is True
+    assert plan.skipped_links == (
+        {
+            "path": "game/images",
+            "reason": "linked_directory_assets_placeholders",
+        },
+    )
+
+    shadow_root = tmp_path / "shadow-plan-placeholders"
+    shadow._build_shadow_from_plan(plan, shadow_root=shadow_root)
+
+    built = shadow_root / "game" / "images" / "fake_image.png"
+    assert built.is_file()
+    assert built.stat().st_size == 0
+    if os.name == "posix":
+        assert stat.S_IMODE(shadow_root.stat().st_mode) == 0o700
+
+
+def test_shadow_linked_directory_outside_game_does_not_affect_completeness(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from renforge.editor.shadow import validate_shadow_project
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-docs"
+    external.mkdir()
+    (external / "notes.rpy").write_text("label notes:\n    return\n", encoding="utf-8")
+    _link_directory_or_simulate(monkeypatch, project.root / "docs", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+
+    result = validate_shadow_project(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=tmp_path / "shadow-linked-docs",
+        staged_replacements={},
+        timeout=15,
+    )
+
+    # Source outside game/ cannot be loaded by lint, so the shadow stays complete.
+    assert result.ok is True
+    assert result.complete is True
+    assert result.skipped_links == (
+        {"path": "docs", "reason": "linked_directory_not_followed"},
+    )
+
+
+def test_shadow_linked_source_directory_is_incomplete_and_refused(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+    from renforge.editor.shadow import validate_shadow_project
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-chapters"
+    external.mkdir()
+    (external / "chapter1.rpy").write_text("label chapter1:\n    return\n", encoding="utf-8")
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "chapters", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    sdk = _make_sdk(tmp_path)
+
+    result = validate_shadow_project(
+        project,
+        sdk,
+        shadow_root=tmp_path / "shadow-linked-source",
+        staged_replacements={},
+        timeout=15,
+    )
+
+    assert result.complete is False
+    assert result.degraded is True
+    assert result.ok is False
+    assert result.skipped_links[0]["path"] == "game/chapters"
+    assert result.skipped_links[0]["reason"] == "linked_directory_with_source"
+
+    plan = shadow.plan_shadow_project(project)
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert "game/chapters/chapter1.rpy" not in {
+        entry.relative_path for entry in plan.entries
+    }
+
+    with pytest.raises(EditorError) as excinfo:
+        validate_shadow_project(
+            project,
+            sdk,
+            shadow_root=tmp_path / "shadow-linked-source-required",
+            staged_replacements={},
+            timeout=15,
+            require_source_complete=True,
+        )
+
+    assert excinfo.value.code == "SHADOW_SOURCE_INCOMPLETE"
+    assert excinfo.value.details["skipped_links"] == [
+        {
+            "path": "game/chapters",
+            "reason": "linked_directory_with_source",
+        }
+    ]
+
+
+def test_shadow_uninspectable_linked_asset_target_stays_incomplete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import errno
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-locked"
+    external.mkdir()
+    (external / "bg.png").write_bytes(b"png")
+    link = project.root / "game" / "images"
+    _link_directory_or_simulate(monkeypatch, link, external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    scan_root = link.resolve()
+    real_walk = shadow.os.walk
+
+    def _walk(root, *, topdown, followlinks, onerror):
+        if Path(root) == scan_root:
+            onerror(OSError(errno.EACCES, "Permission denied", str(scan_root)))
+            return iter(())
+        return real_walk(root, topdown=topdown, followlinks=followlinks, onerror=onerror)
+
+    monkeypatch.setattr(shadow.os, "walk", _walk)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert plan.degraded is True
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
+
+
+def test_shadow_linked_asset_scan_entry_cap_marks_target_uninspectable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-cap"
+    external.mkdir()
+    (external / "bg.png").write_bytes(b"png")
+    (external / "cg.png").write_bytes(b"png")
+    _link_directory_or_simulate(monkeypatch, project.root / "game" / "images", external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    monkeypatch.setattr(shadow, "MAX_LINKED_SOURCE_SCAN_ENTRIES", 1)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
+
+
+def test_shadow_linked_directory_with_nested_link_is_uninspectable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import os
+    import stat as stat_module
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    external = tmp_path / "external-nested"
+    external.mkdir()
+    nested = external / "nested"
+    nested.mkdir()
+    (nested / "bg.png").write_bytes(b"png")
+    (external / "bg.png").write_bytes(b"png")
+    link = project.root / "game" / "images"
+    _link_directory_or_simulate(monkeypatch, link, external)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_FILES", raising=False)
+    monkeypatch.delenv("RENFORGE_SHADOW_MAX_BYTES", raising=False)
+    scan_root = link.resolve()
+    nested_scan_path = scan_root / "nested"
+    real_lstat = Path.lstat
+
+    def _fake_lstat(self: Path):
+        result = real_lstat(self)
+        if self == nested_scan_path:
+            return os.stat_result(
+                (stat_module.S_IFLNK | stat_module.S_IMODE(result.st_mode), *tuple(result)[1:])
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", _fake_lstat)
+
+    plan = shadow.plan_shadow_project(project)
+
+    assert plan.complete is False
+    assert not any(entry.placeholder for entry in plan.entries)
+    assert plan.skipped_links == (
+        {"path": "game/images", "reason": "linked_directory_uninspectable"},
+    )
+
+
+def test_shadow_unreadable_directory_fails_instead_of_looking_complete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import errno
+
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    unreadable = project.root / "game" / "locked"
+
+    def _walk(_root, *, topdown, followlinks, onerror):
+        assert topdown is True
+        assert followlinks is False
+        onerror(OSError(errno.EACCES, "Permission denied", str(unreadable)))
+        return iter(())
+
+    monkeypatch.setattr(shadow.os, "walk", _walk)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(project)
+
+    assert excinfo.value.code == "SHADOW_COPY_FAILED"
+    assert excinfo.value.details["path"] == str(unreadable)
+
+
+def test_shadow_lint_failure_is_not_success(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-failing-lint"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_fail").write_text("1\n", encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+    )
+
+    assert result.returncode == 1
+    assert result.timed_out is False
+    assert result.ok is False
+    assert "lint-failed" in result.stderr
+
+
+def test_shadow_lint_command_requests_error_exit_code(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+    from renforge.util.subprocess import CommandResult
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-command"
+    shadow_root.mkdir()
+    commands: list[list[str]] = []
+
+    def _run(command, *, timeout):
+        commands.append(list(command))
+        return CommandResult(
+            command=tuple(command),
+            returncode=0,
+            stdout="",
+            stderr="",
+            timeout=timeout,
+            cwd=None,
+            env=None,
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(shadow, "run_command", _run)
+
+    result = shadow.run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+    )
+
+    assert result.ok is True
+    # Ren'Py lint only exits non-zero on reported errors with --error-code.
+    assert commands[0][-2:] == ["lint", "--error-code"]
+
+
+def test_editor_gate_uses_lenient_lint_by_default(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.coordinator as coordinator_module
+    from renforge.editor.shadow import ShadowLintResult
+
+    project, _source = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    seen: list[bool] = []
+
+    def fake_validate(*_args, **kwargs):
+        seen.append(bool(kwargs.get("error_code")))
+        return ShadowLintResult(
+            ok=True,
+            returncode=0,
+            timed_out=False,
+            stdout="",
+            stderr="",
+            truncated=False,
+        )
+
+    monkeypatch.setattr(coordinator_module, "validate_shadow_project", fake_validate)
+    transaction = SimpleNamespace(
+        transaction_id="tx-lenient",
+        source_relative_path="script.rpy",
+        staged_bytes=b"label start:\n    return\n",
+    )
+
+    monkeypatch.delenv("RENFORGE_SHADOW_STRICT_LINT", raising=False)
+    coordinator._validate_shadow(transaction)
+    monkeypatch.setenv("RENFORGE_SHADOW_STRICT_LINT", "1")
+    coordinator._validate_shadow(transaction)
+
+    assert seen == [False, True]
+
+
+def test_shadow_lint_truncation_is_not_success(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-truncated"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_stdout").write_text("x" * 70000, encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+    )
+
+    assert result.returncode == 0
+    assert result.timed_out is False
+    assert result.truncated is True
+    assert result.ok is False
+
+
+def test_shadow_lint_truncation_does_not_block_the_lenient_gate(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-truncated-lenient"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_stdout").write_text("x" * 70000, encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=15,
+        error_code=False,
+    )
+
+    assert result.truncated is True
+    assert result.ok is True
+
+
+def test_shadow_lint_timeout_is_not_success(tmp_path: Path) -> None:
+    from renforge.editor.shadow import run_shadow_lint
+
+    project, _source = _make_project(tmp_path)
+    shadow_root = tmp_path / "shadow-timeout"
+    shadow_root.mkdir()
+    (shadow_root / ".lint_sleep").write_text("1\n", encoding="utf-8")
+
+    result = run_shadow_lint(
+        project,
+        _make_sdk(tmp_path),
+        shadow_root=shadow_root,
+        timeout=0.2,
+    )
+
+    assert result.timed_out is True
+    assert result.returncode == -1
+    assert result.ok is False
 
 
 def test_commit_timeout_rolls_back_and_conflict_is_fail_closed(tmp_path: Path) -> None:

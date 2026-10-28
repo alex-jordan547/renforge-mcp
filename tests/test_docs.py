@@ -29,6 +29,24 @@ def test_mcp_safety_docs_include_runtime_mutations() -> None:
     assert "POLICY.md" in safety or "authorize=true" in safety
 
 
+def test_mcp_docs_document_shadow_validation_limits_and_links() -> None:
+    text = (Path(__file__).parents[1] / "docs" / "MCP.md").read_text(encoding="utf-8")
+
+    assert "`renforge_validate`" in text
+    assert "clean shadow copy" in text.lower()
+    assert "RENFORGE_SHADOW_MAX_FILES" in text
+    assert "RENFORGE_SHADOW_MAX_BYTES" in text
+    assert "SHADOW_QUOTA_EXCEEDED" in text
+    assert "skipped_links" in text
+    assert "complete=false" in text
+    assert "linked_directory_with_source" in text
+    assert "linked_directory_uninspectable" in text
+    assert "linked_directory_assets_placeholders" in text
+    assert "zero-byte placeholder" in text
+    assert "keep_shadow=true" in text
+    assert ".renforge/activity.jsonl" in text
+
+
 def test_runtime_policy_docs_cover_model_and_compatibility() -> None:
     root = Path(__file__).parents[1]
     policy = (root / "docs" / "POLICY.md").read_text(encoding="utf-8")

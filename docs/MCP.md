@@ -380,6 +380,7 @@ guards: each capture hashes a new frame.
 | `renforge_scan_project` | Scan scripts, labels, links, and metadata. Use filters and pagination for large projects. |
 | `renforge_find_references` | Exact Ren'Py definitions and usages, including text interpolations. |
 | `renforge_parse_lint` | Parse `renpy lint` output. |
+| `renforge_validate` | Lint a clean shadow copy of the project with optional staged bytes; reports the resolved `sdk_version`, shadow measurements, quota limits, and skipped linked directories. Media files are zero-byte placeholders, so asset-heavy projects lint without copying media bytes. |
 | `renforge_inspect_image` | Inspect a local image, with optional crop and zoom. |
 
 ### Game lifecycle
@@ -450,6 +451,90 @@ guards: each capture hashes a new frame.
 | `renforge_get_doc` | Read an offline Ren'Py documentation page. |
 | `renforge_list_docs` | List available offline documentation pages. |
 
+### Shadow validation
+
+`renforge_validate` runs `renpy lint` against a **clean shadow copy** of the
+project tree. It never publishes to project sources and does not create an
+editor transaction. The shadow excludes ignored caches and compiled files, and
+omits RenForge-injected session artifacts: manifest names from
+`.renforge/control/artifacts.json` when that manifest is available, but only
+when they carry the known `zzrenforge_*` or `00renforge_session_*` prefixes. A
+crafted or stale manifest therefore cannot hide user source. The result
+describes this clean tree, not a live session.
+
+`staged` overlays UTF-8 text into the shadow without touching the project. Keys
+may be project-relative (`game/script.rpy`) or game-relative (`script.rpy`);
+absolute paths, `..`, and duplicate normalized paths are rejected. Staged bytes
+count against the shadow quotas.
+
+Shadow quotas default to **10,000 files** and **500 MiB**. Media files
+(images, audio, fonts, and video) are represented by **zero-byte placeholders**
+by default, so an asset-heavy project lints without copying media bytes; lint
+resolves names, not contents, and `init python` code that opens media bytes sees
+empty files. Media placeholders count as files but not bytes. Other files are
+copied and count normally. The result reports `placeholders`, the number of
+files materialized by name only. Override the limits with positive integers:
+
+```bash
+RENFORGE_SHADOW_MAX_FILES=25000
+RENFORGE_SHADOW_MAX_BYTES=2147483648  # 2 GiB
+```
+
+Invalid values fail closed with `SHADOW_QUOTA_INVALID` rather than silently
+using the defaults. A quota breach returns `SHADOW_QUOTA_EXCEEDED` with
+`files`, `bytes`, `max_files`, `max_bytes`, the `offending_path`/size that
+crossed the ceiling, and the `largest_path`/size top-level contributor
+(`game/images`, `game`, or `.` for project-root files).
+
+Linked directories (symlinks/junctions) are **never copied byte-for-byte**.
+Each skip is recorded in `skipped_links` with a reason. A linked directory under
+`game/` (matched case-insensitively) is scanned read-only for `.rpy`/`.rpym`
+source: the scan never reads file contents, is capped at 50,000 entries, and
+checks a 5-second budget between entries. A hung network/UNC operation may still
+block until the OS call returns. If any
+source is found the reason is `linked_directory_with_source` and
+`complete=false` (and `ok=false`). If the target cannot be fully scanned (broken
+link, nested link or special file, unreadable subtree, entry cap, or timeout)
+the reason is `linked_directory_uninspectable` and `complete` is also false.
+When the target is fully scanned and contains no source, the shadow mirrors its
+directory structure and creates **zero-byte placeholder files** for its regular
+files, so lint still sees the expected image/audio names without copying any
+bytes; the reason is `linked_directory_assets_placeholders`, `complete` stays
+true, and `degraded=true`. Placeholders count as files but contribute zero
+bytes to the quota, and none are created for `.rpy`/`.rpym` or compiled-artifact
+suffixes. Links outside `game/` cannot affect source lint, so they never clear
+`complete`; their reason is `linked_directory_not_followed`. Linked regular
+files and other special files remain fatal (`SHADOW_SPECIAL_FILE`). The Live
+Editor commit and undo gates refuse a shadow with skipped source directories
+(`SHADOW_SOURCE_INCOMPLETE`); a source-free linked asset directory stays
+eligible because its placeholders let lint validate references.
+
+`checks` currently accepts only `["lint"]`. `version` selects the Ren'Py SDK:
+`stable` (default, honoring `RENPY_SDK_STABLE_VERSION`) or an explicit version
+such as `8.5.3`; the result reports the resolved `sdk_version`. `timeout=0`
+derives
+`min(180, max(1, attestation_timeout*3))` (90 seconds with the default 30-second
+attestation budget); explicit values are clamped to 1-600 seconds. Lint runs
+with `--error-code`, so reported lint errors produce a non-zero return code.
+`ok` is false for a timeout. `renforge_validate` also reports `ok=false` for a
+truncated transcript, because it always uses `--error-code` and a report it
+cannot show is not a verdict it can return. Reported lint errors fail the tool.
+The Live Editor commit/undo gate keeps the legacy exit code by default so
+pre-existing lint errors do not block unrelated edits; in that lenient mode a
+long transcript is recorded as `truncated` but does not fail the commit by
+itself. Set `RENFORGE_SHADOW_STRICT_LINT=1` to make that gate strict as well. Set
+`keep_shadow=true` to retain the temporary tree and receive its
+`shadow_path` (the caller owns cleanup). The tool may download and cache the
+Ren'Py SDK. It uses the requested `version` or the managed cache, never a
+launcher discovered inside the project being validated: a project-controlled
+fake SDK must not become executable code. Linting is not a sandbox: like
+`renforge_launch`, `renpy lint` executes the project's `init python` blocks with
+the current user's privileges, so validating a project you would not run runs
+its code. The shadow isolates writes, not execution. Project sources are unchanged, but runtime state may be created:
+`RenpyProject` initialization can create `.renforge/`, and the tool wrapper
+appends `.renforge/activity.jsonl`. Errors use the standard tool shape:
+`ok=false` with a string `error` and top-level `code`/`details`.
+
 ## Writes and safety
 
 These tools change game or project state: `renforge_launch`, `renforge_jump`,
@@ -459,6 +544,12 @@ These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_position_element`, `renforge_set_var`,
 `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
+
+`renforge_validate` is non-destructive: project sources are unchanged. It
+builds a temporary clean shadow and never publishes to project sources or
+records an editor transaction, but runtime state and the SDK cache may be
+created (`.renforge/`, including the wrapper's `.renforge/activity.jsonl`, and
+the downloaded SDK cache).
 
 `renforge_send_input` is also stateful: supply exactly one mode per call. Text
 input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh
