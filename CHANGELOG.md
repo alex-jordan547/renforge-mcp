@@ -11,6 +11,10 @@ versioning.
 
 ### Fixed
 
+- Live Editor Save keeps polling after `reload_script` resets the bridge
+  connection, instead of failing the status read with "Connection reset by
+  peer".
+
 ## [0.7.3] - 2026-10-07
 
 ### Added

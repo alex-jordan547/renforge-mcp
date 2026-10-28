@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..autopilot import autopilot as _autopilot
-from ..bridge.client import BridgeClient, BridgeError
+from ..bridge.client import BridgeClient, BridgeError, poll_command
 from ..bridge.launcher import (
     BridgeSession,
     launch_with_bridge,
@@ -1369,16 +1369,22 @@ def _editor_wait_until_analyzed(client: BridgeClient) -> dict[str, Any]:
     return last
 
 
+def _save_settled(status: dict[str, Any]) -> bool:
+    in_progress = bool(status.get("save_in_progress") or status.get("save_requested"))
+    return bool(status.get("save_error")) or not in_progress
+
+
 def _editor_wait_until_save_settled(client: BridgeClient) -> dict[str, Any]:
-    deadline = time.monotonic() + _EDITOR_SAVE_WAIT_SECONDS
-    last = _editor_read_status(client)
-    while time.monotonic() < deadline:
-        in_progress = bool(last.get("save_in_progress") or last.get("save_requested"))
-        if last.get("save_error") or not in_progress:
-            return last
-        time.sleep(0.1)
-        last = _editor_read_status(client)
-    return last
+    # reload_script() resets the one-shot bridge socket while Save commits.
+    # Status is idempotent, so ride out that reset instead of failing the save.
+    return poll_command(
+        client,
+        _EDITOR_STATUS_RPC,
+        _save_settled,
+        timeout=_EDITOR_SAVE_WAIT_SECONDS,
+        pause=0.1,
+        payload={},
+    )
 
 
 def _editor_wait_until_dry_run_settled(client: BridgeClient) -> dict[str, Any]:

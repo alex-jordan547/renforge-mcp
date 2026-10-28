@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from renforge.bridge.client import BridgeClient, BridgeConfig, BridgeProtocolError
+from renforge.bridge.client import (
+    BridgeClient,
+    BridgeConfig,
+    BridgeError,
+    BridgeProtocolError,
+    poll_command,
+)
+from renforge.editor_runner_status import is_reload_committed
+from renforge.util.frames import FRAME_TIMEOUT, FRAME_TOO_LARGE
 
 
 def _start_test_server(handler):
@@ -313,6 +321,90 @@ def test_bridge_client_get_ui_element_bounds_helper():
         },
     }
     assert reply["painted_bounds_available"] is False
+
+
+class _StatusScript:
+    def __init__(self, steps: list) -> None:
+        self.steps = list(steps)
+        self.calls = 0
+
+    def request(self, command: str, payload: dict | None = None) -> dict:
+        assert command == "editor_task0_status"
+        self.calls += 1
+        step = self.steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+
+def test_poll_command_retries_connection_reset_until_reload_committed():
+    client = _StatusScript(
+        [
+            BridgeProtocolError(
+                "socket read failed: [Errno 104] Connection reset by peer",
+                code=FRAME_TIMEOUT,
+            ),
+            BridgeError("bridge connection failed: [Errno 111] Connection refused"),
+            {"ok": True, "save_in_progress": True, "status_code": "saving"},
+            {
+                "ok": True,
+                "save_in_progress": False,
+                "status_code": "reload_committed",
+            },
+        ]
+    )
+
+    status = poll_command(
+        client,
+        "editor_task0_status",
+        is_reload_committed,
+        timeout=2.0,
+        pause=0.0,
+    )
+
+    assert status["status_code"] == "reload_committed"
+    assert client.calls == 4
+    assert client.steps == []
+
+
+def test_poll_command_does_not_retry_oversized_frames():
+    client = _StatusScript(
+        [BridgeProtocolError("frame exceeds limit", code=FRAME_TOO_LARGE)]
+    )
+
+    with pytest.raises(BridgeProtocolError, match="frame exceeds limit"):
+        poll_command(
+            client,
+            "editor_task0_status",
+            lambda _status: True,
+            timeout=1.0,
+            pause=0.0,
+        )
+
+    assert client.calls == 1
+
+
+def test_poll_command_reraises_when_the_bridge_never_returns():
+    client = _StatusScript(
+        [
+            BridgeProtocolError(
+                "socket read failed: [Errno 104] Connection reset by peer",
+                code=FRAME_TIMEOUT,
+            )
+        ]
+        * 8
+    )
+
+    with pytest.raises(BridgeProtocolError, match="Connection reset by peer"):
+        poll_command(
+            client,
+            "editor_task0_status",
+            is_reload_committed,
+            timeout=0.05,
+            pause=0.01,
+        )
+
+    assert client.calls >= 1
 
 
 def test_bridge_client_invalid_json_response():

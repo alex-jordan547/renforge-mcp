@@ -8,7 +8,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from renforge.util.frames import (
     BRIDGE_REQUEST_MAX_BYTES,
@@ -37,6 +37,61 @@ class BridgeProtocolError(BridgeError):
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+
+
+# reload_script() keeps the listener alive but aborts the in-flight one-shot
+# socket. Those reads look like a timeout or a truncated frame. A refused
+# reconnect is a plain BridgeError / OSError. Oversized frames are not retries.
+_TRANSIENT_PROTOCOL_CODES = frozenset({FRAME_TIMEOUT, TRUNCATED_FRAME})
+
+
+def is_transient_bridge_failure(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a transport drop during script reload."""
+    if isinstance(exc, BridgeProtocolError):
+        return exc.code in _TRANSIENT_PROTOCOL_CODES
+    return isinstance(exc, (BridgeError, OSError))
+
+
+def poll_command(
+    client: Any,
+    command: str,
+    predicate: Callable[[dict], bool],
+    *,
+    timeout: float,
+    pause: float = 0.25,
+    payload: dict[str, Any] | None = None,
+) -> dict:
+    """Poll an idempotent command until ``predicate`` matches or time runs out.
+
+    Live Editor Save calls ``renpy.reload_script()`` on the main thread. The
+    bridge listener survives, but the socket already accepted for a status
+    read is reset ("Connection reset by peer") or the next connect is refused
+    until ``accept()`` resumes. ``command`` must be safe to send again; this
+    does not retry clicks, saves, or other mutating calls.
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    last: dict = {}
+    last_error: BaseException | None = None
+    while True:
+        try:
+            reply = client.request(command, payload)
+        except (BridgeError, OSError) as exc:
+            if not is_transient_bridge_failure(exc):
+                raise
+            last_error = exc
+        else:
+            last_error = None
+            if not isinstance(reply, dict):
+                raise BridgeProtocolError(f"bridge reply for {command!r} was not an object")
+            last = reply
+            if predicate(reply):
+                return reply
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if last_error is not None and not last:
+                raise last_error
+            return last
+        time.sleep(min(max(0.0, pause), remaining))
 
 
 @dataclass
