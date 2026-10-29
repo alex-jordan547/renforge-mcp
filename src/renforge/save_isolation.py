@@ -27,6 +27,10 @@ from typing import Any, Iterable, Mapping
 EXISTING_TOKENS: frozenset[str] = frozenset({"existing", "default"})
 TEMPORARY_TOKENS: frozenset[str] = frozenset({"", "temporary"})
 AUTO_TOKENS: frozenset[str] = frozenset({"auto"})
+# Non-empty persistent/preferences values resolve_launch_isolation accepts.
+STATE_MODE_TOKENS: frozenset[str] = (
+    AUTO_TOKENS | EXISTING_TOKENS | TEMPORARY_TOKENS | {"empty"}
+) - {""}
 ISOLATION_ENV: str = "RENFORGE_ISOLATION"
 SESSION_PREFIX: str = "renforge-session-"
 SESSION_ID_PREFIX: str = "sess_"

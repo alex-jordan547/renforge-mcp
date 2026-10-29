@@ -725,6 +725,8 @@ def test_poll_bridge_connects_with_timeout_kwarg_and_broadcasts(tmp_path: Path, 
     [
         ("home", {"path": "/elsewhere"}, "launch_home_invalid"),
         ("preferences", 1, "launch_preferences_invalid"),
+        ("preferences", "fresh", "launch_preferences_invalid"),
+        ("persistent", "bogus", "launch_persistent_invalid"),
         ("savedir", ["existing"], "launch_savedir_invalid"),
     ],
 )
@@ -745,3 +747,23 @@ def test_api_warp_validates_isolation_options_like_launch(
 
     assert response.status_code == 400
     assert response.json()["error_code"] == code
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+def test_api_live_launch_rejects_an_unknown_state_mode(tmp_path: Path, monkeypatch, field: str) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/live/launch?token=token", json={field: "bogus"})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == f"launch_{field}_invalid"
+    assert {"auto", "existing", "empty"} <= server.STATE_MODE_TOKENS
