@@ -16,7 +16,6 @@ import shutil
 import signal
 import subprocess
 import sys  # retained for tests that patch renforge.bridge.launcher.sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -29,6 +28,7 @@ from ..launch_env import (
     resolve_display_strategy,
 )
 from ..project import RenpyProject
+from ..save_isolation import LaunchIsolation, resolve_launch_isolation
 from ..sdk import RenpySdk
 from .artifacts import (
     ArtifactOwnershipError,
@@ -540,23 +540,31 @@ class BridgeSession:
         *,
         display_mode: str = "native",
         temporary_savedir: Path | None = None,
+        temporary_home: Path | None = None,
+        session_root: Path | None = None,
         cleanup_savedir: bool = False,
         environment: dict[str, Any] | None = None,
         startup_ms: int | None = None,
         phases: list[dict[str, Any]] | None = None,
         project_lock: ProjectBridgeLock | None = None,
         editor_coordinator: EditorCoordinator | None = None,
+        isolation: LaunchIsolation | None = None,
+        session_id: str | None = None,
     ):
         self.process = process
         self.client = client
         self.headless = headless
         self.display_mode = display_mode
         self.temporary_savedir = temporary_savedir
+        self.temporary_home = temporary_home
+        self.session_root = session_root
         self.cleanup_savedir = cleanup_savedir
         self.environment = environment or {}
         self.startup_ms = startup_ms
         self.phases = phases or []
         self.editor = editor_coordinator is not None
+        self.isolation = isolation
+        self.session_id = session_id
         self._project_root = project_root
         self._cleaned: dict[str, Any] = {}
         self._project_lock = project_lock
@@ -590,7 +598,13 @@ class BridgeSession:
                 result["files_deleted"] = []
                 return result
             self._close_result = self._close_resources(timeout)
-            ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir", "editor_coordinator"}
+            ownership_failures = {
+                "process_alive",
+                "bridge_artifacts",
+                "temporary_savedir",
+                "session_root",
+                "editor_coordinator",
+            }
             if ownership_failures.intersection(self._close_result.get("failed", [])):
                 return self._close_result
             if self._project_lock is not None:
@@ -605,6 +619,7 @@ class BridgeSession:
             "process_group": False,
             "bridge_artifacts": False,
             "temporary_savedir": False,
+            "session_root": False,
             "editor_coordinator": self._editor_coordinator is None,
         }
         failed: list[str] = []
@@ -668,24 +683,33 @@ class BridgeSession:
         except Exception:
             failed.append("bridge_artifacts")
 
-        if self.cleanup_savedir and self.temporary_savedir is not None:
-            savedir = self.temporary_savedir
+        # An isolated session's root holds its savedir and HOME; without one,
+        # a temporary savedir stands alone.
+        cleanup_target = self.session_root if self.session_root is not None else self.temporary_savedir
+        if self.cleanup_savedir and cleanup_target is not None:
+            is_root = self.session_root is not None
             # A failed rmtree may still have removed part of the tree, and the
             # receipt has to name what is actually gone rather than nothing.
-            known_paths = _existing_paths(savedir)
+            known_paths = _existing_paths(cleanup_target)
+            removed_all = True
             try:
-                shutil.rmtree(savedir, ignore_errors=False)
-                cleaned["temporary_savedir"] = True
+                shutil.rmtree(cleanup_target, ignore_errors=False)
             except FileNotFoundError:
                 # Already gone: cleanup succeeded, but nothing was deleted.
-                cleaned["temporary_savedir"] = True
+                pass
             except Exception:
-                failed.append("temporary_savedir")
+                removed_all = False
                 for path in sorted(known_paths, key=lambda item: len(item.parts), reverse=True):
                     if not path.exists():
                         removed.append(_deletion_receipt(self._project_root, path))
             else:
-                removed.append(_deletion_receipt(self._project_root, savedir))
+                removed.append(_deletion_receipt(self._project_root, cleanup_target))
+            if removed_all:
+                cleaned["temporary_savedir"] = True
+                if is_root:
+                    cleaned["session_root"] = True
+            else:
+                failed.append("session_root" if is_root else "temporary_savedir")
 
         self._cleaned = cleaned
         result: dict[str, Any] = {"cleaned": cleaned, "files_deleted": removed}
@@ -856,9 +880,10 @@ def _launch_after_project_lock(
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
-    persistent: str = "existing",
+    persistent: str | None = None,
     cleanup_on_stop: bool = True,
-    preferences: str = "existing",
+    preferences: str | None = None,
+    home: str | None = None,
     editor_endpoint: EditorEndpoint | None = None,
     editor_coordinator: EditorCoordinator | None = None,
     language: str | None = None,
@@ -869,8 +894,11 @@ def _launch_after_project_lock(
     capabilities, fall back to Xvfb and ``SDL_AUDIODRIVER=dummy`` when needed,
     and fail fast with a structured :class:`LaunchError` otherwise.
 
-    ``savedir='temporary'`` isolates saves under a temp directory that is
-    removed on session close when ``cleanup_on_stop`` is true.
+    ``savedir='temporary'`` isolates saves under a disposable session directory
+    that is removed on session close when ``cleanup_on_stop`` is true. Isolated
+    launches also get a private HOME so preferences and ``~/.renpy`` writes miss
+    the user's files. All launch paths isolate by default; pass
+    savedir='existing' to opt into the game's normal locations.
 
     ``language`` sets ``RENPY_LANGUAGE`` for this process. Ren'Py's
     ``change_language`` persists the result as ``preferences.language``, so the
@@ -901,30 +929,18 @@ def _launch_after_project_lock(
     env.update(audio_env)
 
     headless = display_mode == "xvfb"
-    temporary_savedir: Path | None = None
-    cleanup_savedir = False
-
-    if savedir == "temporary":
-        temporary_savedir = Path(tempfile.mkdtemp(prefix="renforge-saves-"))
-        env["RENFORGE_SAVEDIR"] = str(temporary_savedir)
-        cleanup_savedir = bool(cleanup_on_stop)
-        savedir_path = str(temporary_savedir)
-    elif savedir and savedir not in {"existing", "default"}:
-        temporary_savedir = Path(savedir).expanduser().resolve()
-        temporary_savedir.mkdir(parents=True, exist_ok=True)
-        env["RENFORGE_SAVEDIR"] = str(temporary_savedir)
-        cleanup_savedir = False
-        savedir_path = str(temporary_savedir)
-    else:
-        savedir_path = None
-
-    if persistent in {"empty", "existing", "copy", "fixture"}:
-        env["RENFORGE_PERSISTENT_MODE"] = persistent
-    elif persistent:
-        env["RENFORGE_PERSISTENT_MODE"] = str(persistent)
-
-    # preferences reserved for future fixture support; accepted for API stability.
-    _ = preferences
+    isolation = resolve_launch_isolation(
+        savedir,
+        home=home,
+        persistent=persistent,
+        preferences=preferences,
+        cleanup_on_stop=cleanup_on_stop,
+        host_env=env,
+    )
+    temporary_savedir = isolation.savedir
+    cleanup_savedir = isolation.cleanup
+    env.update(isolation.environ(host_env=env))
+    savedir_path = str(isolation.savedir) if isolation.savedir is not None else None
 
     # Token may be caller-supplied; session id is allocated with the artifact
     # intent so names, ownership, and bridge.json share one identity.
@@ -1016,7 +1032,11 @@ def _launch_after_project_lock(
             )
         )
 
-    command = project.renpy_command(sdk, ("run", "--warp", warp) if warp is not None else ("run",))
+    run_args: list[str] = ["run"]
+    if warp is not None:
+        run_args.extend(["--warp", warp])
+    run_args.extend(isolation.command_args())
+    command = project.renpy_command(sdk, tuple(run_args))
     if headless:
         if shutil.which("xvfb-run") is None:
             remove_bridge_artifacts(project.root, expected_session_id=session_id)
@@ -1133,12 +1153,16 @@ def _launch_after_project_lock(
                     headless=headless,
                     display_mode=display_mode,
                     temporary_savedir=temporary_savedir,
+                    temporary_home=isolation.home,
+                    session_root=isolation.session_root,
                     cleanup_savedir=cleanup_savedir,
                     environment=capabilities.to_dict(),
                     startup_ms=startup_ms,
                     phases=phases,
                     project_lock=project_lock,
                     editor_coordinator=editor_coordinator,
+                    isolation=isolation,
+                    session_id=session_id,
                 )
             except Exception:
                 time.sleep(0.3)
@@ -1148,7 +1172,7 @@ def _launch_after_project_lock(
             process,
             headless,
             project.root,
-            temporary_savedir if cleanup_savedir else None,
+            isolation.session_root if cleanup_savedir else None,
             project_lock,
             expected_session_id=session_id,
         )
@@ -1158,7 +1182,7 @@ def _launch_after_project_lock(
             process,
             headless,
             project.root,
-            temporary_savedir if cleanup_savedir else None,
+            isolation.session_root if cleanup_savedir else None,
             project_lock,
             expected_session_id=session_id,
         )
@@ -1168,7 +1192,7 @@ def _launch_after_project_lock(
         process,
         headless,
         project.root,
-        temporary_savedir if cleanup_savedir else None,
+        isolation.session_root if cleanup_savedir else None,
         project_lock,
         expected_session_id=session_id,
     )
@@ -1195,9 +1219,10 @@ def launch_with_bridge(
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
-    persistent: str = "existing",
+    persistent: str | None = None,
     cleanup_on_stop: bool = True,
-    preferences: str = "existing",
+    preferences: str | None = None,
+    home: str | None = None,
     editor: bool = False,
     language: str | None = None,
 ) -> BridgeSession:
@@ -1229,6 +1254,7 @@ def launch_with_bridge(
             persistent=persistent,
             cleanup_on_stop=cleanup_on_stop,
             preferences=preferences,
+            home=home,
             editor_endpoint=editor_endpoint,
             editor_coordinator=editor_coordinator,
             language=language,

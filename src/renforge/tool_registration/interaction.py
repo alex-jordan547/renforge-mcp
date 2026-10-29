@@ -120,11 +120,15 @@ def build_wrappers(context):
         slot: str | None = None,
         extra_info: str | None = None,
         regexp: str | None = None,
+        slots: list[str] | None = None,
         authorize: bool = False,
     ) -> dict:
-        """Save, load, or list named save slots without screenshot payloads.
+        """Save, load, list, list host slots, or import selected host slots.
 
-        ``load`` requires authorize=true when RENFORGE_POLICY=enforce.
+        ``list`` reads the running session. ``list_user`` observes host saves
+        without a running game. ``import`` copies selected host slots into the
+        isolated session savedir and refuses when the session exposes the user
+        tree. ``load`` requires authorize=true when RENFORGE_POLICY=enforce.
         """
         return _log_tool_call(
             name="renforge_saves",
@@ -134,12 +138,18 @@ def build_wrappers(context):
                 "slot": slot,
                 "extra_info": extra_info,
                 "regexp": regexp,
+                "slots": slots,
                 "authorize": authorize,
             },
             project_root=project_path,
             fn=live.saves,
             args=(project_path, action),
-            kwargs={"slot": slot, "extra_info": extra_info, "regexp": regexp},
+            kwargs={
+                "slot": slot,
+                "extra_info": extra_info,
+                "regexp": regexp,
+                "slots": slots,
+            },
         )
 
 

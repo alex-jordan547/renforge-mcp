@@ -9,6 +9,20 @@ versioning.
 
 ### Changed
 
+- `renforge_launch`, `renforge_jump`, `renforge_new_game`, and dashboard
+  launches now isolate the running game from the user's Ren'Py state by
+  default. Each session gets a disposable save directory (`savedir=temporary`,
+  native `--savedir` plus `RENFORGE_SAVEDIR` / `RENPY_PATH_TO_SAVES` /
+  `RENPY_MULTIPERSISTENT`), a private HOME/XDG/temp tree, empty persistent
+  data, and reset preferences. Ready payloads include `session_id` and an
+  `isolation` object so an agent can see the mode. Pass `savedir=existing`
+  (which also keeps host HOME unless `home` is set) or set
+  `RENFORGE_ISOLATION=existing` to use the user's files; that is classified
+  destructive and needs `authorize=true` when `RENFORGE_POLICY=enforce`.
+  `renforge_saves` gains `list_user` (observational host listing) and `import`
+  (copy selected host slots into the isolated session; never bind-mounts the
+  user tree). This is application-layer isolation, not an OS sandbox.
+
 ### Fixed
 
 ## [0.7.5] - 2026-11-14
