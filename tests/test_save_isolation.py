@@ -354,6 +354,22 @@ def test_parse_save_directory_and_list_host_slots(
     assert [item["name"] for item in filtered["slots"]] == ["branch-a"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_host_slots_ignores_a_linked_sidecar(tmp_path: Path, host_save_root: Path) -> None:
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "private"}', encoding="utf-8")
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (saves / "1-1-LT1.save.json").symlink_to(secret)
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert [item["extra_info"] for item in listed["slots"]] == [""]
+
+
 def test_import_copies_selected_slots_and_refuses_user_tree(
     tmp_path: Path, monkeypatch, host_save_root: Path
 ) -> None:

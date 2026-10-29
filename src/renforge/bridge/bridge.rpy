@@ -1200,6 +1200,7 @@ init python:
         if not isinstance(slot, str) or not slot.strip():
             return {"ok": False, "error": "save slot is required"}
 
+        _renforge_rescan_saves()
         can_load = getattr(renpy, "can_load", None)
         if callable(can_load):
             try:
@@ -1235,6 +1236,13 @@ init python:
         )
         return {"ok": True, "slot": slot, "restored_label": restored_label}
 
+    def _renforge_rescan_saves():
+        """See save files copied in since Ren'Py's own scan, which runs every few seconds."""
+        try:
+            renpy.loadsave.location.scan()
+        except Exception:
+            pass
+
     def _renforge_h_list_slots(payload):
         payload = payload or {}
         regexp = payload.get("regexp")
@@ -1244,6 +1252,7 @@ init python:
         list_slots = getattr(renpy, "list_slots", None)
         if not callable(list_slots):
             return {"ok": False, "error": "save slot listing is unavailable"}
+        _renforge_rescan_saves()
         try:
             slot_names = list_slots(regexp=regexp)
         except Exception as exc:

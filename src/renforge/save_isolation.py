@@ -657,10 +657,13 @@ def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
 
 
 def extra_info_from_sidecar(path: Path) -> str:
-    if not path.is_file():
-        return ""
+    # A linked sidecar could point at any JSON file this process can read.
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        if path.is_symlink() or not path.is_file():
+            return ""
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            payload = json.load(handle)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return ""
     if isinstance(payload, dict):
