@@ -2208,3 +2208,26 @@ def test_pipe_reader_handles_split_chunk_stream() -> None:
     finally:
         os.close(w_fd)
         r_file.close()
+
+
+def test_a_launch_that_fails_before_spawning_removes_its_session_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(save_isolation.tempfile, "tempdir", str(temp_root))
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, _root = _make_project(tmp_path)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("Popen must not be reached with an invalid token")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project, token="not-a-token")
+
+    assert excinfo.value.code == "BRIDGE_TOKEN_INVALID"
+    assert not list(temp_root.glob(save_isolation.SESSION_PREFIX + "*"))

@@ -21,7 +21,12 @@ versioning.
   destructive and needs `authorize=true` when `RENFORGE_POLICY=enforce`.
   `renforge_saves` gains `list_user` (observational host listing) and `import`
   (copy selected host slots into the isolated session; never bind-mounts the
-  user tree). This is application-layer isolation, not an OS sandbox.
+  user tree). `list_user` and `import` read only the folder that the game's
+  `config.save_directory` names directly under the Ren'Py save root, plus a
+  `game/saves` inside the project. A launch reuses a running game only when
+  both reach the player's saves or neither does; otherwise it returns
+  `SESSION_ISOLATION_MISMATCH`. This is application-layer isolation, not an
+  OS sandbox.
 
 ### Fixed
 

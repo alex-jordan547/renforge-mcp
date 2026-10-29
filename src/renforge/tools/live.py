@@ -39,6 +39,7 @@ from ..save_isolation import (
     agent_session_id,
     import_host_slots,
     isolation_report,
+    launch_exposes_user_saves,
     list_host_slots,
     path_exposes_user_saves,
 )
@@ -504,7 +505,11 @@ def _isolation_result(session: Any) -> dict[str, Any]:
     session_id = agent_session_id(artifact_id)
     result: dict[str, Any] = {}
     if isolation is not None:
-        report = isolation_report(isolation, session_id=session_id)
+        report = isolation_report(
+            isolation,
+            session_id=session_id,
+            project_path=getattr(session, "project_root", None),
+        )
         result.update(report)
         isolation_obj = report.get("isolation") or {}
         if isolation_obj.get("savedir"):
@@ -584,6 +589,15 @@ def _session_mode_mismatch(
     }
     result.update(_failed_language_verdict(requested_language))
     return result
+
+
+def _session_exposes_user_saves(session: Any) -> bool:
+    """Whether an owned session reads or writes the player's saves or HOME."""
+    report = _isolation_result(session).get("isolation")
+    if not isinstance(report, dict):
+        # Without an isolation record the session's storage is unknown.
+        return True
+    return bool(report.get("exposes_user_saves"))
 
 
 def launch_game(
@@ -672,6 +686,33 @@ def launch_game(
         # answers; otherwise tear it down (a warp needs a fresh --warp launch,
         # and a dead process must be reaped so it does not linger as a zombie).
         if warp is None and existing.process.poll() is None:
+            # Reuse may not change what the launch can reach: the policy gate
+            # classified this request by its own savedir/home, not the running game's.
+            requested_exposes = launch_exposes_user_saves(
+                savedir=savedir,
+                home=home,
+                persistent=persistent,
+                preferences=preferences,
+                project_path=project.root,
+            )
+            existing_exposes = _session_exposes_user_saves(existing)
+            if requested_exposes != existing_exposes:
+                message = (
+                    "The running session's save isolation does not match this launch "
+                    "(exposes_user_saves=%s, requested %s). Stop it before launching "
+                    "with different savedir/home options."
+                    % (str(existing_exposes).lower(), str(requested_exposes).lower())
+                )
+                return {
+                    "ok": False,
+                    "ready": False,
+                    "code": "SESSION_ISOLATION_MISMATCH",
+                    "phase": "validating_session_mode",
+                    "message": message,
+                    "error": message,
+                    "requested_exposes_user_saves": requested_exposes,
+                    "existing_exposes_user_saves": existing_exposes,
+                }
             try:
                 state = existing.client.get_state()
                 active_language = state.get("language")

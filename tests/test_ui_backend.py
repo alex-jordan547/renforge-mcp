@@ -717,3 +717,31 @@ def test_poll_bridge_connects_with_timeout_kwarg_and_broadcasts(tmp_path: Path, 
     assert "event" in broadcast_types
     # Screenshots are served over HTTP, never streamed on the socket.
     assert "screenshot" not in broadcast_types
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("home", {"path": "/elsewhere"}, "launch_home_invalid"),
+        ("preferences", 1, "launch_preferences_invalid"),
+        ("savedir", ["existing"], "launch_savedir_invalid"),
+    ],
+)
+def test_api_warp_validates_isolation_options_like_launch(
+    tmp_path: Path, monkeypatch, field: str, value, code: str
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/warp?token=token", json={"target": "start", field: value})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == code

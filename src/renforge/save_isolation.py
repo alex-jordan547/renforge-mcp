@@ -21,7 +21,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
 EXISTING_TOKENS: frozenset[str] = frozenset({"existing", "default"})
@@ -160,7 +160,8 @@ class LaunchIsolation:
         if self.savedir_mode == "existing" or self.home_mode == "existing":
             return True
         if self.savedir_mode == "path" and self.savedir is not None:
-            return path_exposes_user_saves(self.savedir)
+            if path_exposes_user_saves(self.savedir):
+                return True
         if self.home_mode == "path" and self.home is not None:
             return path_is_host_home(self.home)
         return False
@@ -242,25 +243,30 @@ def resolve_launch_isolation(
         session_root = Path(tempfile.mkdtemp(prefix=SESSION_PREFIX))
         cleanup = bool(cleanup_on_stop)
 
-    if savedir_mode == "temporary":
-        assert session_root is not None
-        savedir_path = session_root / SAVES_DIRNAME
-        savedir_path.mkdir(parents=True, exist_ok=True)
-        (savedir_path / MULTIPERSISTENT_DIRNAME).mkdir(parents=True, exist_ok=True)
-    elif savedir_mode == "path":
-        assert savedir is not None
-        savedir_path = Path(savedir).expanduser().resolve()
-        savedir_path.mkdir(parents=True, exist_ok=True)
-        (savedir_path / MULTIPERSISTENT_DIRNAME).mkdir(parents=True, exist_ok=True)
+    try:
+        if savedir_mode == "temporary":
+            assert session_root is not None
+            savedir_path = session_root / SAVES_DIRNAME
+            savedir_path.mkdir(parents=True, exist_ok=True)
+            (savedir_path / MULTIPERSISTENT_DIRNAME).mkdir(parents=True, exist_ok=True)
+        elif savedir_mode == "path":
+            assert savedir is not None
+            savedir_path = Path(savedir).expanduser().resolve()
+            savedir_path.mkdir(parents=True, exist_ok=True)
+            (savedir_path / MULTIPERSISTENT_DIRNAME).mkdir(parents=True, exist_ok=True)
 
-    if home_mode == "temporary":
-        assert session_root is not None
-        home_path = session_root / HOME_DIRNAME
-        _prepare_isolated_home(home_path)
-    elif home_mode == "path":
-        assert home is not None
-        home_path = Path(home).expanduser().resolve()
-        _prepare_isolated_home(home_path)
+        if home_mode == "temporary":
+            assert session_root is not None
+            home_path = session_root / HOME_DIRNAME
+            _prepare_isolated_home(home_path)
+        elif home_mode == "path":
+            assert home is not None
+            home_path = Path(home).expanduser().resolve()
+            _prepare_isolated_home(home_path)
+    except BaseException:
+        if session_root is not None:
+            shutil.rmtree(session_root, ignore_errors=True)
+        raise
 
     return LaunchIsolation(
         savedir_mode=savedir_mode,
@@ -446,12 +452,24 @@ def host_save_directories(
     """Existing host directories that may contain this project's user saves."""
     directories: list[Path] = []
     save_name = parse_save_directory(project_root)
-    if save_name:
-        host_dir = host_renpy_root(home=home) / save_name
-        if host_dir.is_dir():
+    # The name comes from the game, so it must stay one folder of the Ren'Py
+    # root: "../OtherGame" would read another game's (or any) saves.
+    if (
+        save_name
+        and save_name not in (".", "..")
+        and PurePath(save_name).name == save_name
+        and PureWindowsPath(save_name).name == save_name
+    ):
+        root = host_renpy_root(home=home)
+        host_dir = root / save_name
+        if host_dir.is_dir() and host_dir.resolve().parent == root.resolve():
             directories.append(host_dir)
     project_saves = Path(project_root) / "game" / "saves"
-    if project_saves.is_dir() and project_saves not in directories:
+    if (
+        project_saves.is_dir()
+        and project_saves not in directories
+        and _is_relative_to(project_saves.resolve(), Path(project_root).resolve())
+    ):
         directories.append(project_saves)
     return directories
 
@@ -529,6 +547,9 @@ def import_host_slots(
             continue
         directory = Path(record["directory"])
         copied = _copy_slot_files(directory, dest, name)
+        if not copied:
+            missing.append(name)
+            continue
         imported.append({"name": name, "files": copied, "directory": str(directory)})
 
     if not imported:

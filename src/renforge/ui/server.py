@@ -659,6 +659,42 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             language=launch_kwargs.get("language"),
         )
 
+    def _isolation_option_error(payload: dict[str, Any]):
+        """400 response for a malformed savedir/persistent/home/preferences, else None."""
+        savedir = payload.get("savedir")
+        persistent = payload.get("persistent")
+        home = payload.get("home")
+        preferences = payload.get("preferences")
+        if savedir is not None and not isinstance(savedir, str):
+            return error_response(
+                code="launch_savedir_invalid",
+                error="savedir must be a string",
+                status_code=400,
+                details={"savedir": savedir},
+            )
+        if persistent is not None and (not isinstance(persistent, str) or not persistent):
+            return error_response(
+                code="launch_persistent_invalid",
+                error="persistent must be a non-empty string",
+                status_code=400,
+                details={"persistent": persistent},
+            )
+        if home is not None and not isinstance(home, str):
+            return error_response(
+                code="launch_home_invalid",
+                error="home must be a string",
+                status_code=400,
+                details={"home": home},
+            )
+        if preferences is not None and (not isinstance(preferences, str) or not preferences):
+            return error_response(
+                code="launch_preferences_invalid",
+                error="preferences must be a non-empty string",
+                status_code=400,
+                details={"preferences": preferences},
+            )
+        return None
+
     async def warp(request: Request):
         if not await _check_token(request):
             return _unauthorized(request)
@@ -671,6 +707,9 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"target": target},
             )
+        isolation_error = _isolation_option_error(payload)
+        if isolation_error is not None:
+            return isolation_error
         resolved = resolve_warp_target(str(runtime.root), target)
         if not resolved.get("ok"):
             error = str(resolved.get("error", "invalid warp target"))
@@ -766,34 +805,9 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"audio": audio},
             )
-        if savedir is not None and not isinstance(savedir, str):
-            return error_response(
-                code="launch_savedir_invalid",
-                error="savedir must be a string",
-                status_code=400,
-                details={"savedir": savedir},
-            )
-        if persistent is not None and (not isinstance(persistent, str) or not persistent):
-            return error_response(
-                code="launch_persistent_invalid",
-                error="persistent must be a non-empty string",
-                status_code=400,
-                details={"persistent": persistent},
-            )
-        if home is not None and not isinstance(home, str):
-            return error_response(
-                code="launch_home_invalid",
-                error="home must be a string",
-                status_code=400,
-                details={"home": home},
-            )
-        if preferences is not None and (not isinstance(preferences, str) or not preferences):
-            return error_response(
-                code="launch_preferences_invalid",
-                error="preferences must be a non-empty string",
-                status_code=400,
-                details={"preferences": preferences},
-            )
+        isolation_error = _isolation_option_error(payload)
+        if isolation_error is not None:
+            return isolation_error
         if not isinstance(cleanup_on_stop, bool):
             return error_response(
                 code="launch_cleanup_on_stop_invalid",

@@ -15,7 +15,9 @@ from renforge.save_isolation import (
     classify_savedir,
     configured_isolation_mode,
     default_launch_savedir,
+    LaunchIsolation,
     host_renpy_root,
+    host_save_directories,
     import_host_slots,
     isolation_report,
     launch_exposes_user_saves,
@@ -455,3 +457,82 @@ def test_live_saves_list_user_and_import(
         assert blocked["code"] == "SAVE_IMPORT_NOT_ISOLATED"
     finally:
         live._SESSIONS.pop(live._key(project), None)
+
+
+@pytest.mark.parametrize("save_directory", ["../OtherGame", "nested/../../escape", "/abs/elsewhere", "..", "."])
+def test_host_saves_stay_in_the_renpy_root_whatever_the_game_declares(
+    tmp_path: Path, host_save_root: Path, save_directory: str
+) -> None:
+    """config.save_directory comes from the game; it must not steer reads elsewhere."""
+    project = tmp_path / "game-root"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "options.rpy").write_text(
+        f'define config.save_directory = "{save_directory}"\n', encoding="utf-8")
+    other = host_save_root.parent / "OtherGame"
+    other.mkdir(parents=True)
+    (other / "1-1-LT1.save").write_bytes(b"OTHER")
+    (host_save_root / "OtherGame").mkdir(parents=True)
+    (host_save_root / "OtherGame" / "1-1-LT1.save").write_bytes(b"OTHER")
+
+    assert host_save_directories(project) == []
+    assert list_host_slots(project)["slots"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_game_saves_symlink_out_of_the_project_is_not_a_host_save_folder(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project = tmp_path / "game-root"
+    (project / "game").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "1-1-LT1.save").write_bytes(b"OTHER")
+    (project / "game" / "saves").symlink_to(elsewhere, target_is_directory=True)
+
+    assert host_save_directories(project) == []
+
+
+def test_an_explicit_host_home_exposes_user_saves_beside_an_unrelated_savedir(tmp_path: Path) -> None:
+    isolation = LaunchIsolation(
+        savedir_mode="path",
+        home_mode="path",
+        persistent_mode="existing",
+        preferences_mode="existing",
+        savedir=tmp_path / "scratch",
+        home=Path.home(),
+        session_root=None,
+        cleanup=False,
+    )
+    assert isolation.exposes_user_saves is True
+    assert isolation_report(isolation)["isolation"]["exposes_user_saves"] is True
+
+
+def test_failed_isolation_setup_removes_its_session_root(tmp_path: Path, monkeypatch) -> None:
+    import renforge.save_isolation as save_isolation
+
+    monkeypatch.setattr(save_isolation.tempfile, "tempdir", str(tmp_path))
+
+    def full_disk(_home: Path) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(save_isolation, "_prepare_isolated_home", full_disk)
+    with pytest.raises(OSError):
+        resolve_launch_isolation("temporary", home="temporary")
+    assert not list(tmp_path.glob(save_isolation.SESSION_PREFIX + "*"))
+
+
+def test_import_reports_a_slot_whose_files_vanished_as_missing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", lambda *_args: [])
+
+    result = import_host_slots(project, tmp_path / "session" / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["missing"] == ["1-1"]
