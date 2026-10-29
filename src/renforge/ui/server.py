@@ -24,6 +24,7 @@ from .. import session_registry
 from ..tools import live
 from ..tools import project_ops
 from ..lint import run_lint
+from ..save_isolation import STATE_MODE_TOKENS
 from .activity import read_recent_activity, tail_activity
 from .graph import build_story_map, resolve_game_file_path, resolve_warp_target
 from .errors import error_response
@@ -656,6 +657,46 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             editor=bool(launch_kwargs.get("editor", True)),
         )
 
+    def _isolation_option_error(payload: dict[str, Any]):
+        """400 response for a malformed savedir/persistent/home/preferences, else None."""
+        savedir = payload.get("savedir")
+        persistent = payload.get("persistent")
+        home = payload.get("home")
+        preferences = payload.get("preferences")
+        if savedir is not None and not isinstance(savedir, str):
+            return error_response(
+                code="launch_savedir_invalid",
+                error="savedir must be a string",
+                status_code=400,
+                details={"savedir": savedir},
+            )
+        if persistent is not None and (
+            not isinstance(persistent, str) or persistent.strip() not in STATE_MODE_TOKENS
+        ):
+            return error_response(
+                code="launch_persistent_invalid",
+                error="persistent must be 'auto', 'existing', or 'empty'",
+                status_code=400,
+                details={"persistent": persistent},
+            )
+        if home is not None and not isinstance(home, str):
+            return error_response(
+                code="launch_home_invalid",
+                error="home must be a string",
+                status_code=400,
+                details={"home": home},
+            )
+        if preferences is not None and (
+            not isinstance(preferences, str) or preferences.strip() not in STATE_MODE_TOKENS
+        ):
+            return error_response(
+                code="launch_preferences_invalid",
+                error="preferences must be 'auto', 'existing', or 'empty'",
+                status_code=400,
+                details={"preferences": preferences},
+            )
+        return None
+
     async def warp(request: Request):
         if not await _check_token(request):
             return _unauthorized(request)
@@ -668,6 +709,9 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"target": target},
             )
+        isolation_error = _isolation_option_error(payload)
+        if isolation_error is not None:
+            return isolation_error
         resolved = resolve_warp_target(str(runtime.root), target)
         if not resolved.get("ok"):
             error = str(resolved.get("error", "invalid warp target"))
@@ -685,9 +729,11 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             display=str(payload.get("display") or "auto"),
             audio=str(payload.get("audio") or "auto"),
             savedir=payload.get("savedir"),
-            persistent=str(payload.get("persistent") or "existing"),
+            persistent=payload.get("persistent"),
             cleanup_on_stop=bool(payload.get("cleanup_on_stop", True)),
             timeout=payload.get("timeout"),
+            home=payload.get("home"),
+            preferences=payload.get("preferences"),
         )
         return JSONResponse(result)
 
@@ -720,7 +766,9 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         display = payload.get("display", "auto")
         audio = payload.get("audio", "auto")
         savedir = payload.get("savedir")
-        persistent = payload.get("persistent", "existing")
+        persistent = payload.get("persistent")
+        home = payload.get("home")
+        preferences = payload.get("preferences")
         cleanup_on_stop = payload.get("cleanup_on_stop", True)
         timeout = payload.get("timeout")
         if not isinstance(version, str) or not version:
@@ -758,20 +806,9 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 status_code=400,
                 details={"audio": audio},
             )
-        if savedir is not None and not isinstance(savedir, str):
-            return error_response(
-                code="launch_savedir_invalid",
-                error="savedir must be a string",
-                status_code=400,
-                details={"savedir": savedir},
-            )
-        if not isinstance(persistent, str) or not persistent:
-            return error_response(
-                code="launch_persistent_invalid",
-                error="persistent must be a non-empty string",
-                status_code=400,
-                details={"persistent": persistent},
-            )
+        isolation_error = _isolation_option_error(payload)
+        if isolation_error is not None:
+            return isolation_error
         if not isinstance(cleanup_on_stop, bool):
             return error_response(
                 code="launch_cleanup_on_stop_invalid",
@@ -797,6 +834,8 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
             persistent=persistent,
             cleanup_on_stop=cleanup_on_stop,
             timeout=float(timeout) if timeout is not None else None,
+            home=home,
+            preferences=preferences,
         )
         return JSONResponse(result)
 

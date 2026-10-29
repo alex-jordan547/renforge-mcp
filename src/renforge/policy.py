@@ -48,6 +48,8 @@ CONTROL_ACTIONS: dict[str, str] = {
 
 SAVES_ACTIONS: dict[str, str] = {
     "list": RISK_OBSERVATIONAL,
+    "list_user": RISK_OBSERVATIONAL,
+    "import": RISK_MUTATING,
     "save": RISK_MUTATING,
     "load": RISK_DESTRUCTIVE,
 }
@@ -76,11 +78,16 @@ SCENARIO_STEP_RISKS: dict[str, str] = {
 
 _SENSITIVE_PARAM_KEYS = frozenset({"expr", "steps", "value", "text", "extra_info"})
 
+_LAUNCH_TOOLS: frozenset[str] = frozenset(
+    {"renforge_launch", "renforge_jump", "renforge_new_game"}
+)
+
 _REASONS = {
     RISK_OBSERVATIONAL: "This operation only observes the project or running game.",
     RISK_MUTATING: "This operation changes live game state in a recoverable way.",
     RISK_DESTRUCTIVE: (
-        "This operation can discard or replace live state (quit, load, or reload)."
+        "This operation can discard or replace live state, or read and write "
+        "the user's Ren'Py saves (quit, load, reload, or savedir=existing)."
     ),
     RISK_OPEN_WORLD: (
         "Arbitrary Python can touch the filesystem, processes, network, and game state."
@@ -217,6 +224,8 @@ def classify(name: str, params: Mapping[str, Any] | None = None) -> tuple[str, s
         return "renforge_eval", RISK_OPEN_WORLD
     if name == "renforge_run_scenario":
         return _classify_scenario(payload.get("steps"))
+    if name in _LAUNCH_TOOLS:
+        return _classify_launch(name, payload)
     return name, RISK_UNMANAGED
 
 
@@ -337,6 +346,28 @@ def _classify_scenario_step(step: Any) -> tuple[str, str]:
             return "renforge_run_scenario.assert", RISK_MALFORMED
         return "renforge_run_scenario.assert", RISK_OPEN_WORLD
     return f"renforge_run_scenario.{action}", SCENARIO_STEP_RISKS[action]
+
+
+def _classify_launch(name: str, payload: Mapping[str, Any]) -> tuple[str, str]:
+    from .save_isolation import launch_exposes_user_saves
+
+    if launch_exposes_user_saves(
+        savedir=payload.get("savedir") if isinstance(payload.get("savedir"), str) else None,
+        home=payload.get("home") if isinstance(payload.get("home"), str) else None,
+        persistent=(
+            payload.get("persistent")
+            if isinstance(payload.get("persistent"), str)
+            else None
+        ),
+        preferences=(
+            payload.get("preferences")
+            if isinstance(payload.get("preferences"), str)
+            else None
+        ),
+        project_path=payload.get("project_path"),
+    ):
+        return name, RISK_DESTRUCTIVE
+    return name, RISK_MUTATING
 
 
 def _control_payload_action(payload: Any) -> str | None:

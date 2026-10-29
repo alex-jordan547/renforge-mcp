@@ -16,7 +16,6 @@ import shutil
 import signal
 import subprocess
 import sys  # retained for tests that patch renforge.bridge.launcher.sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -29,6 +28,7 @@ from ..launch_env import (
     resolve_display_strategy,
 )
 from ..project import RenpyProject
+from ..save_isolation import LaunchIsolation, resolve_launch_isolation
 from ..sdk import RenpySdk
 from .artifacts import (
     ArtifactOwnershipError,
@@ -512,23 +512,31 @@ class BridgeSession:
         *,
         display_mode: str = "native",
         temporary_savedir: Path | None = None,
+        temporary_home: Path | None = None,
+        session_root: Path | None = None,
         cleanup_savedir: bool = False,
         environment: dict[str, Any] | None = None,
         startup_ms: int | None = None,
         phases: list[dict[str, Any]] | None = None,
         project_lock: ProjectBridgeLock | None = None,
         editor_coordinator: EditorCoordinator | None = None,
+        isolation: LaunchIsolation | None = None,
+        session_id: str | None = None,
     ):
         self.process = process
         self.client = client
         self.headless = headless
         self.display_mode = display_mode
         self.temporary_savedir = temporary_savedir
+        self.temporary_home = temporary_home
+        self.session_root = session_root
         self.cleanup_savedir = cleanup_savedir
         self.environment = environment or {}
         self.startup_ms = startup_ms
         self.phases = phases or []
         self.editor = editor_coordinator is not None
+        self.isolation = isolation
+        self.session_id = session_id
         self._project_root = project_root
         self._cleaned: dict[str, Any] = {}
         self._project_lock = project_lock
@@ -536,6 +544,10 @@ class BridgeSession:
         self._close_lock = threading.Lock()
         self._closed = False
         self._close_result: dict[str, Any] | None = None
+
+    @property
+    def project_root(self) -> Path:
+        return self._project_root
 
     def __enter__(self) -> "BridgeSession":
         return self
@@ -554,7 +566,13 @@ class BridgeSession:
             if self._closed:
                 return self._close_result or {"cleaned": self._cleaned, "failed": ["close"]}
             self._close_result = self._close_resources(timeout)
-            ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir", "editor_coordinator"}
+            ownership_failures = {
+                "process_alive",
+                "bridge_artifacts",
+                "temporary_savedir",
+                "session_root",
+                "editor_coordinator",
+            }
             if ownership_failures.intersection(self._close_result.get("failed", [])):
                 return self._close_result
             if self._project_lock is not None:
@@ -569,6 +587,7 @@ class BridgeSession:
             "process_group": False,
             "bridge_artifacts": False,
             "temporary_savedir": False,
+            "session_root": False,
             "editor_coordinator": self._editor_coordinator is None,
         }
         failed: list[str] = []
@@ -627,7 +646,17 @@ class BridgeSession:
         except Exception:
             failed.append("bridge_artifacts")
 
-        if self.cleanup_savedir and self.temporary_savedir is not None:
+        if self.cleanup_savedir and self.session_root is not None:
+            try:
+                shutil.rmtree(self.session_root, ignore_errors=False)
+                cleaned["session_root"] = True
+                cleaned["temporary_savedir"] = True
+            except FileNotFoundError:
+                cleaned["session_root"] = True
+                cleaned["temporary_savedir"] = True
+            except Exception:
+                failed.append("session_root")
+        elif self.cleanup_savedir and self.temporary_savedir is not None:
             try:
                 shutil.rmtree(self.temporary_savedir, ignore_errors=False)
                 cleaned["temporary_savedir"] = True
@@ -772,9 +801,10 @@ def _launch_after_project_lock(
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
-    persistent: str = "existing",
+    persistent: str | None = None,
     cleanup_on_stop: bool = True,
-    preferences: str = "existing",
+    preferences: str | None = None,
+    home: str | None = None,
     editor_endpoint: EditorEndpoint | None = None,
     editor_coordinator: EditorCoordinator | None = None,
 ) -> BridgeSession:
@@ -784,8 +814,11 @@ def _launch_after_project_lock(
     capabilities, fall back to Xvfb and ``SDL_AUDIODRIVER=dummy`` when needed,
     and fail fast with a structured :class:`LaunchError` otherwise.
 
-    ``savedir='temporary'`` isolates saves under a temp directory that is
-    removed on session close when ``cleanup_on_stop`` is true.
+    ``savedir='temporary'`` isolates saves under a disposable session directory
+    that is removed on session close when ``cleanup_on_stop`` is true. Isolated
+    launches also get a private HOME so preferences and ``~/.renpy`` writes miss
+    the user's files. All launch paths isolate by default; pass
+    savedir='existing' to opt into the game's normal locations.
     """
     started = time.monotonic()
     phases: list[dict[str, Any]] = []
@@ -809,159 +842,157 @@ def _launch_after_project_lock(
     env.update(audio_env)
 
     headless = display_mode == "xvfb"
-    temporary_savedir: Path | None = None
-    cleanup_savedir = False
-
-    if savedir == "temporary":
-        temporary_savedir = Path(tempfile.mkdtemp(prefix="renforge-saves-"))
-        env["RENFORGE_SAVEDIR"] = str(temporary_savedir)
-        cleanup_savedir = bool(cleanup_on_stop)
-        savedir_path = str(temporary_savedir)
-    elif savedir and savedir not in {"existing", "default"}:
-        temporary_savedir = Path(savedir).expanduser().resolve()
-        temporary_savedir.mkdir(parents=True, exist_ok=True)
-        env["RENFORGE_SAVEDIR"] = str(temporary_savedir)
-        cleanup_savedir = False
-        savedir_path = str(temporary_savedir)
-    else:
-        savedir_path = None
-
-    if persistent in {"empty", "existing", "copy", "fixture"}:
-        env["RENFORGE_PERSISTENT_MODE"] = persistent
-    elif persistent:
-        env["RENFORGE_PERSISTENT_MODE"] = str(persistent)
-
-    # preferences reserved for future fixture support; accepted for API stability.
-    _ = preferences
-
-    # Token may be caller-supplied; session id is allocated with the artifact
-    # intent so names, ownership, and bridge.json share one identity.
-    if token is not None and not _is_bridge_token(token):
-        raise LaunchError(
-            "BRIDGE_TOKEN_INVALID",
-            "Bridge token must be 64 lowercase hexadecimal characters.",
-            phase="preparing_bridge_metadata",
-            suggested_fix="Omit token to let RenForge generate one, or pass secrets.token_hex(32).",
-        )
-    if token is None:
-        token = secrets.token_hex(32)
-
-    _phase("injecting_bridge")
-    editor_assets_dirname: str | None = None
-    editor_font_relative: str = ""
+    isolation = resolve_launch_isolation(
+        savedir,
+        home=home,
+        persistent=persistent,
+        preferences=preferences,
+        cleanup_on_stop=cleanup_on_stop,
+        host_env=env,
+    )
+    temporary_savedir = isolation.savedir
+    cleanup_savedir = isolation.cleanup
     try:
-        editor_payload: bytes | None = None
-        editor_assets: list[tuple[str, bytes]] | None = None
-        if editor_endpoint is not None:
-            _phase("injecting_editor")
-            editor_payload = _editor_payload()
-            editor_assets, editor_font_relative = _prepare_editor_asset_payloads()
-        materialized = allocate_and_materialize(
-            project,
-            bridge_payload=_BRIDGE_RESOURCE.read_bytes(),
-            include_session_init=bool(savedir_path),
-            editor_payload=editor_payload,
-            editor_asset_files=editor_assets,
-            editor_font_relative=editor_font_relative,
-        )
-        session_id = materialized.session_id
-        editor_assets_dirname = materialized.editor_assets_dirname
-        if materialized.editor_font_relative:
-            editor_font_relative = materialized.editor_font_relative
-    except LaunchError:
-        raise
-    except OSError as exc:
-        raise LaunchError(
-            "BRIDGE_FILE_NOT_CREATED",
-            f"Could not inject the bridge into the project: {exc}",
-            phase="injecting_bridge",
-            suggested_fix="Check project write permissions under game/.",
-        ) from exc
+        env.update(isolation.environ(host_env=env))
+        savedir_path = str(isolation.savedir) if isolation.savedir is not None else None
 
-    _phase("reserving_bridge_metadata")
-    try:
-        write_starting_bridge_info(
-            project.root,
-            session_id=session_id,
-            token=token,
-        )
-    except LaunchError:
-        # Do not cleanup against a failed reservation (unsafe preplanted metadata).
-        raise
-    except BridgeProtocolError as exc:
-        raise LaunchError(
-            "BRIDGE_INFO_CONFLICT",
-            "Bridge metadata conflicted with the reserved launch identity.",
-            phase="reserving_bridge_metadata",
-            suggested_fix="Remove the conflicting .renforge/control/bridge.json and retry.",
-        ) from exc
-    except PrivatePathError as exc:
-        raise LaunchError(
-            "BRIDGE_CONTROL_DIRECTORY_UNSAFE",
-            "Bridge metadata path is unsafe and was left untouched.",
-            phase="reserving_bridge_metadata",
-            suggested_fix="Remove unsafe paths under .renforge/control and retry.",
-        ) from exc
-    except Exception as exc:
-        raise LaunchError(
-            "BRIDGE_MANIFEST_PUBLICATION_FAILED",
-            f"Could not reserve starting bridge metadata: {exc}",
-            phase="reserving_bridge_metadata",
-            suggested_fix="Check write permissions under .renforge/control/.",
-        ) from exc
-    project_lock.owned_session_id = session_id
-
-    env["RENFORGE_BRIDGE_TOKEN"] = token
-    env["RENFORGE_BRIDGE_SESSION_ID"] = session_id
-    env["RENFORGE_BRIDGE_PROJECT_ROOT"] = str(project.root)
-    env["RENFORGE_BRIDGE_PORT"] = str(port)
-    if editor_endpoint is not None:
-        env.update(
-            _editor_environment(
-                editor_endpoint,
-                assets_dirname=editor_assets_dirname or "",
-                font_relative=editor_font_relative,
+        # Token may be caller-supplied; session id is allocated with the artifact
+        # intent so names, ownership, and bridge.json share one identity.
+        if token is not None and not _is_bridge_token(token):
+            raise LaunchError(
+                "BRIDGE_TOKEN_INVALID",
+                "Bridge token must be 64 lowercase hexadecimal characters.",
+                phase="preparing_bridge_metadata",
+                suggested_fix="Omit token to let RenForge generate one, or pass secrets.token_hex(32).",
             )
-        )
+        if token is None:
+            token = secrets.token_hex(32)
 
-    command = project.renpy_command(sdk, ("run", "--warp", warp) if warp is not None else ("run",))
-    if headless:
-        if shutil.which("xvfb-run") is None:
+        _phase("injecting_bridge")
+        editor_assets_dirname: str | None = None
+        editor_font_relative: str = ""
+        try:
+            editor_payload: bytes | None = None
+            editor_assets: list[tuple[str, bytes]] | None = None
+            if editor_endpoint is not None:
+                _phase("injecting_editor")
+                editor_payload = _editor_payload()
+                editor_assets, editor_font_relative = _prepare_editor_asset_payloads()
+            materialized = allocate_and_materialize(
+                project,
+                bridge_payload=_BRIDGE_RESOURCE.read_bytes(),
+                include_session_init=bool(savedir_path),
+                editor_payload=editor_payload,
+                editor_asset_files=editor_assets,
+                editor_font_relative=editor_font_relative,
+            )
+            session_id = materialized.session_id
+            editor_assets_dirname = materialized.editor_assets_dirname
+            if materialized.editor_font_relative:
+                editor_font_relative = materialized.editor_font_relative
+        except LaunchError:
+            raise
+        except OSError as exc:
+            raise LaunchError(
+                "BRIDGE_FILE_NOT_CREATED",
+                f"Could not inject the bridge into the project: {exc}",
+                phase="injecting_bridge",
+                suggested_fix="Check project write permissions under game/.",
+            ) from exc
+
+        _phase("reserving_bridge_metadata")
+        try:
+            write_starting_bridge_info(
+                project.root,
+                session_id=session_id,
+                token=token,
+            )
+        except LaunchError:
+            # Do not cleanup against a failed reservation (unsafe preplanted metadata).
+            raise
+        except BridgeProtocolError as exc:
+            raise LaunchError(
+                "BRIDGE_INFO_CONFLICT",
+                "Bridge metadata conflicted with the reserved launch identity.",
+                phase="reserving_bridge_metadata",
+                suggested_fix="Remove the conflicting .renforge/control/bridge.json and retry.",
+            ) from exc
+        except PrivatePathError as exc:
+            raise LaunchError(
+                "BRIDGE_CONTROL_DIRECTORY_UNSAFE",
+                "Bridge metadata path is unsafe and was left untouched.",
+                phase="reserving_bridge_metadata",
+                suggested_fix="Remove unsafe paths under .renforge/control and retry.",
+            ) from exc
+        except Exception as exc:
+            raise LaunchError(
+                "BRIDGE_MANIFEST_PUBLICATION_FAILED",
+                f"Could not reserve starting bridge metadata: {exc}",
+                phase="reserving_bridge_metadata",
+                suggested_fix="Check write permissions under .renforge/control/.",
+            ) from exc
+        project_lock.owned_session_id = session_id
+
+        env["RENFORGE_BRIDGE_TOKEN"] = token
+        env["RENFORGE_BRIDGE_SESSION_ID"] = session_id
+        env["RENFORGE_BRIDGE_PROJECT_ROOT"] = str(project.root)
+        env["RENFORGE_BRIDGE_PORT"] = str(port)
+        if editor_endpoint is not None:
+            env.update(
+                _editor_environment(
+                    editor_endpoint,
+                    assets_dirname=editor_assets_dirname or "",
+                    font_relative=editor_font_relative,
+                )
+            )
+
+        run_args: list[str] = ["run"]
+        if warp is not None:
+            run_args.extend(["--warp", warp])
+        run_args.extend(isolation.command_args())
+        command = project.renpy_command(sdk, tuple(run_args))
+        if headless:
+            if shutil.which("xvfb-run") is None:
+                remove_bridge_artifacts(project.root, expected_session_id=session_id)
+                raise LaunchError(
+                    "DISPLAY_START_FAILED",
+                    "Xvfb fallback selected but xvfb-run is not on PATH.",
+                    phase="starting_virtual_display",
+                    suggested_fix="Install xvfb or provide a DISPLAY.",
+                )
+            _phase("starting_virtual_display")
+            command = ["xvfb-run", "-a", *command]
+
+        _phase("starting_renpy")
+        try:
+            process = subprocess.Popen(
+                command,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=headless,
+            )
+        except FileNotFoundError as exc:
             remove_bridge_artifacts(project.root, expected_session_id=session_id)
             raise LaunchError(
-                "DISPLAY_START_FAILED",
-                "Xvfb fallback selected but xvfb-run is not on PATH.",
-                phase="starting_virtual_display",
-                suggested_fix="Install xvfb or provide a DISPLAY.",
-            )
-        _phase("starting_virtual_display")
-        command = ["xvfb-run", "-a", *command]
-
-    _phase("starting_renpy")
-    try:
-        process = subprocess.Popen(
-            command,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=headless,
-        )
-    except FileNotFoundError as exc:
-        remove_bridge_artifacts(project.root, expected_session_id=session_id)
-        raise LaunchError(
-            "RENPY_EXECUTABLE_NOT_FOUND",
-            f"Could not start Ren'Py: {exc}",
-            phase="starting_renpy",
-            suggested_fix="Install a Ren'Py SDK via renforge or pass a valid version.",
-        ) from exc
-    except OSError as exc:
-        remove_bridge_artifacts(project.root, expected_session_id=session_id)
-        raise LaunchError(
-            "RENPY_PROCESS_EXITED",
-            f"Failed to spawn Ren'Py: {exc}",
-            phase="starting_renpy",
-            suggested_fix="Check the SDK install and project path.",
-        ) from exc
+                "RENPY_EXECUTABLE_NOT_FOUND",
+                f"Could not start Ren'Py: {exc}",
+                phase="starting_renpy",
+                suggested_fix="Install a Ren'Py SDK via renforge or pass a valid version.",
+            ) from exc
+        except OSError as exc:
+            remove_bridge_artifacts(project.root, expected_session_id=session_id)
+            raise LaunchError(
+                "RENPY_PROCESS_EXITED",
+                f"Failed to spawn Ren'Py: {exc}",
+                phase="starting_renpy",
+                suggested_fix="Check the SDK install and project path.",
+            ) from exc
+    except BaseException:
+        # Nothing was spawned, so no session will remove the session root.
+        if cleanup_savedir and isolation.session_root is not None:
+            shutil.rmtree(isolation.session_root, ignore_errors=True)
+        raise
 
     startup_event = threading.Event()
     startup_code: list[str | None] = [None]
@@ -1041,12 +1072,16 @@ def _launch_after_project_lock(
                     headless=headless,
                     display_mode=display_mode,
                     temporary_savedir=temporary_savedir,
+                    temporary_home=isolation.home,
+                    session_root=isolation.session_root,
                     cleanup_savedir=cleanup_savedir,
                     environment=capabilities.to_dict(),
                     startup_ms=startup_ms,
                     phases=phases,
                     project_lock=project_lock,
                     editor_coordinator=editor_coordinator,
+                    isolation=isolation,
+                    session_id=session_id,
                 )
             except Exception:
                 time.sleep(0.3)
@@ -1056,7 +1091,7 @@ def _launch_after_project_lock(
             process,
             headless,
             project.root,
-            temporary_savedir if cleanup_savedir else None,
+            isolation.session_root if cleanup_savedir else None,
             project_lock,
             expected_session_id=session_id,
         )
@@ -1066,7 +1101,7 @@ def _launch_after_project_lock(
             process,
             headless,
             project.root,
-            temporary_savedir if cleanup_savedir else None,
+            isolation.session_root if cleanup_savedir else None,
             project_lock,
             expected_session_id=session_id,
         )
@@ -1076,7 +1111,7 @@ def _launch_after_project_lock(
         process,
         headless,
         project.root,
-        temporary_savedir if cleanup_savedir else None,
+        isolation.session_root if cleanup_savedir else None,
         project_lock,
         expected_session_id=session_id,
     )
@@ -1103,9 +1138,10 @@ def launch_with_bridge(
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
-    persistent: str = "existing",
+    persistent: str | None = None,
     cleanup_on_stop: bool = True,
-    preferences: str = "existing",
+    preferences: str | None = None,
+    home: str | None = None,
     editor: bool = False,
 ) -> BridgeSession:
     """Launch a bridge while exclusively owning this project's artifacts."""
@@ -1135,6 +1171,7 @@ def launch_with_bridge(
             persistent=persistent,
             cleanup_on_stop=cleanup_on_stop,
             preferences=preferences,
+            home=home,
             editor_endpoint=editor_endpoint,
             editor_coordinator=editor_coordinator,
         )

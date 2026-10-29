@@ -28,16 +28,32 @@ def build_wrappers(context):
         display: str = "auto",
         audio: str = "auto",
         savedir: str | None = None,
-        persistent: str = "existing",
+        persistent: str | None = None,
         cleanup_on_stop: bool = True,
         timeout: float | None = None,
         session: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
+        home: str | None = None,
+        preferences: str | None = None,
     ) -> dict:
+        from ..dashboard_client import (
+            launch_game as launch_via_dashboard,
+            stop_game as stop_via_dashboard,
+        )
+        from ..save_isolation import apply_launch_isolation_defaults
+
         canonical_editor = bool(editor)
         session_cfg = dict(session or {})
-        effective_savedir = session_cfg.get("savedir", savedir)
-        effective_persistent = str(session_cfg.get("persistent", persistent) or "existing")
+        isolation_defaults = apply_launch_isolation_defaults(
+            savedir=session_cfg.get("savedir", savedir),
+            home=session_cfg.get("home", home),
+            persistent=session_cfg.get("persistent", persistent),
+            preferences=session_cfg.get("preferences", preferences),
+        )
+        effective_savedir = isolation_defaults["savedir"]
+        effective_home = isolation_defaults["home"]
+        effective_persistent = isolation_defaults["persistent"]
+        effective_preferences = isolation_defaults["preferences"]
         effective_cleanup = (
             session_cfg["cleanup_on_stop"]
             if isinstance(session_cfg.get("cleanup_on_stop"), bool)
@@ -45,10 +61,6 @@ def build_wrappers(context):
         )
         if cancel_event is not None and cancel_event.is_set():
             return live.cancelled_launch_result(phase="detecting_environment")
-        from ..dashboard_client import (
-            launch_game as launch_via_dashboard,
-            stop_game as stop_via_dashboard,
-        )
 
         # None = no matching dashboard. Any dict (including failure) is final:
         # never fall back to a local launch after a contacted dashboard errors.
@@ -59,10 +71,12 @@ def build_wrappers(context):
             editor=canonical_editor,
             display=display,
             audio=audio,
-            savedir=effective_savedir if isinstance(effective_savedir, str) else None,
+            savedir=effective_savedir,
             persistent=effective_persistent,
             cleanup_on_stop=bool(effective_cleanup),
             timeout=timeout,
+            home=effective_home,
+            preferences=effective_preferences,
         )
         if delegated is not None:
             if cancel_event is not None and cancel_event.is_set():
@@ -105,12 +119,14 @@ def build_wrappers(context):
             editor=canonical_editor,
             display=display,
             audio=audio,
-            savedir=effective_savedir if isinstance(effective_savedir, str) else None,
+            savedir=effective_savedir,
             persistent=effective_persistent,
             cleanup_on_stop=bool(effective_cleanup),
             timeout=timeout,
             session=session,
             cancel_event=cancel_event,
+            home=effective_home,
+            preferences=effective_preferences,
         )
 
 
@@ -150,10 +166,13 @@ def build_wrappers(context):
         editor: bool = True,
         display: str = "auto",
         audio: str = "auto",
-        savedir: str = "",
-        persistent: str = "existing",
+        savedir: str = "auto",
+        persistent: str = "auto",
         cleanup_on_stop: bool = True,
         timeout: float = 0,
+        home: str = "auto",
+        preferences: str = "auto",
+        authorize: bool = False,
     ) -> dict:
         """Launch or reuse a game with the Live Editor enabled by default.
 
@@ -168,8 +187,14 @@ def build_wrappers(context):
         The call waits at most 20 seconds for readiness, then returns
         ``status="starting"`` while startup continues in the background. Poll
         ``renforge_launch_status`` until it reports ``ready`` or ``failed``.
-        display/audio default to auto; savedir='temporary' isolates saves.
-        timeout controls the background startup deadline, not the MCP call.
+        display/audio default to auto. Saves, preferences, and HOME default to
+        isolated temporary locations so this session does not read or write the
+        user's normal Ren'Py state. The ready payload includes ``session_id``
+        and an ``isolation`` object. Pass savedir='existing' (and home='existing'
+        if needed) to use the user's files, or set RENFORGE_ISOLATION=existing
+        as a server-wide default; that requires authorize=true when
+        RENFORGE_POLICY=enforce. timeout controls the background startup
+        deadline, not the MCP call.
         """
         kwargs: dict[str, Any] = {
             "version": version,
@@ -177,11 +202,12 @@ def build_wrappers(context):
             "editor": editor,
             "display": display or "auto",
             "audio": audio or "auto",
-            "persistent": persistent or "existing",
+            "persistent": persistent,
             "cleanup_on_stop": cleanup_on_stop,
+            "savedir": savedir,
+            "home": home,
+            "preferences": preferences,
         }
-        if savedir:
-            kwargs["savedir"] = savedir
         if timeout and timeout > 0:
             kwargs["timeout"] = float(timeout)
         return _log_tool_call(
@@ -197,6 +223,9 @@ def build_wrappers(context):
                 "persistent": persistent,
                 "cleanup_on_stop": cleanup_on_stop,
                 "timeout": timeout,
+                "home": home,
+                "preferences": preferences,
+                "authorize": authorize,
             },
             project_root=project_path,
             fn=_start_launch,
@@ -217,8 +246,21 @@ def build_wrappers(context):
         )
 
 
-    def renforge_jump(project_path: str, target: str, version: str = "stable") -> dict:
-        """Restart at a label or file:line; poll launch status when still starting."""
+    def renforge_jump(
+        project_path: str,
+        target: str,
+        version: str = "stable",
+        savedir: str = "auto",
+        persistent: str = "auto",
+        home: str = "auto",
+        preferences: str = "auto",
+        authorize: bool = False,
+    ) -> dict:
+        """Restart at a label or file:line; poll launch status when still starting.
+
+        Isolation knobs match ``renforge_launch``. Exposing the user save tree
+        requires authorize=true when RENFORGE_POLICY=enforce.
+        """
         from ..navigation import resolve_warp_target
 
         def _jump() -> dict:
@@ -229,11 +271,24 @@ def build_wrappers(context):
                 project_path,
                 version=version,
                 warp=str(resolved["target"]),
+                savedir=savedir,
+                persistent=persistent,
+                home=home,
+                preferences=preferences,
             )
 
         return _log_tool_call(
             name="renforge_jump",
-            params={"project_path": project_path, "target": target, "version": version},
+            params={
+                "project_path": project_path,
+                "target": target,
+                "version": version,
+                "savedir": savedir,
+                "persistent": persistent,
+                "home": home,
+                "preferences": preferences,
+                "authorize": authorize,
+            },
             project_root=project_path,
             fn=_jump,
             args=(),
@@ -241,8 +296,20 @@ def build_wrappers(context):
         )
 
 
-    def renforge_new_game(project_path: str, version: str = "stable") -> dict:
-        """Start at the ``start`` label; poll launch status when still starting."""
+    def renforge_new_game(
+        project_path: str,
+        version: str = "stable",
+        savedir: str = "auto",
+        persistent: str = "auto",
+        home: str = "auto",
+        preferences: str = "auto",
+        authorize: bool = False,
+    ) -> dict:
+        """Start at the ``start`` label; poll launch status when still starting.
+
+        Isolation knobs match ``renforge_launch``. Exposing the user save tree
+        requires authorize=true when RENFORGE_POLICY=enforce.
+        """
         from ..navigation import resolve_warp_target
 
         def _new_game() -> dict:
@@ -253,11 +320,23 @@ def build_wrappers(context):
                 project_path,
                 version=version,
                 warp=str(resolved["target"]),
+                savedir=savedir,
+                persistent=persistent,
+                home=home,
+                preferences=preferences,
             )
 
         return _log_tool_call(
             name="renforge_new_game",
-            params={"project_path": project_path, "version": version},
+            params={
+                "project_path": project_path,
+                "version": version,
+                "savedir": savedir,
+                "persistent": persistent,
+                "home": home,
+                "preferences": preferences,
+                "authorize": authorize,
+            },
             project_root=project_path,
             fn=_new_game,
             args=(),

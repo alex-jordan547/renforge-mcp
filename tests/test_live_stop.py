@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from renforge.save_isolation import LaunchIsolation
 from renforge.tools import live
 
 
@@ -129,9 +130,23 @@ class _RunningProcess:
         return None
 
 
+def _isolation(*, savedir_mode: str = "temporary", home_mode: str = "temporary") -> LaunchIsolation:
+    return LaunchIsolation(
+        savedir_mode=savedir_mode,
+        home_mode=home_mode,
+        persistent_mode="empty" if savedir_mode == "temporary" else "existing",
+        preferences_mode="empty" if savedir_mode == "temporary" else "existing",
+        savedir=None,
+        home=None,
+        session_root=None,
+        cleanup=False,
+    )
+
+
 class _OwnedRunningSession:
-    def __init__(self, *, editor: bool = False) -> None:
+    def __init__(self, *, editor: bool = False, isolation: LaunchIsolation | None = None) -> None:
         self.editor = editor
+        self.isolation = isolation or _isolation()
         self.client = _StateClient()
         self.process = _RunningProcess()
         self.close_calls = 0
@@ -338,16 +353,45 @@ def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Pat
     assert session.close_calls == 0
 
     matched = live.launch_game(str(project), editor=True)
-    assert matched == {
+    assert {k: matched[k] for k in ("ok", "already_running", "ready", "current_label", "editor")} == {
         "ok": True,
         "already_running": True,
         "ready": True,
         "current_label": "dashboard_scene",
         "editor": True,
     }
+    assert matched["isolation"]["exposes_user_saves"] is False
     assert live._SESSIONS[key] is session
     assert session.close_calls == 0
     live._SESSIONS.pop(key, None)
+
+
+@pytest.mark.parametrize(
+    ("running", "request_kwargs"),
+    [
+        ({"savedir_mode": "existing", "home_mode": "existing"}, {}),
+        ({}, {"savedir": "existing"}),
+    ],
+)
+def test_launch_reuses_owned_session_only_when_save_isolation_matches(
+    tmp_path: Path, monkeypatch, running: dict, request_kwargs: dict
+) -> None:
+    # The policy gate classified the request by its own savedir/home, so a
+    # reused game must not reach more (or less) than the request asked for.
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    project = _make_project(tmp_path)
+    key = live._key(project)
+    session = _OwnedRunningSession(editor=True, isolation=_isolation(**running))
+    live._SESSIONS[key] = session
+    try:
+        result = live.launch_game(str(project), editor=True, **request_kwargs)
+    finally:
+        live._SESSIONS.pop(key, None)
+
+    assert result["ok"] is False
+    assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+    assert result["requested_exposes_user_saves"] is not result["existing_exposes_user_saves"]
+    assert session.close_calls == 0
 
 
 def test_launch_rejects_editor_mode_for_unproven_external_bridge(tmp_path: Path, monkeypatch) -> None:
@@ -389,6 +433,10 @@ def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkey
     assert result["ok"] is True
     assert result["editor"] is True
     assert launch_kwargs["editor"] is True
+    assert launch_kwargs["savedir"] == "temporary"
+    assert launch_kwargs["home"] == "temporary"
+    assert launch_kwargs["persistent"] == "empty"
+    assert launch_kwargs["preferences"] == "empty"
 
     live._SESSIONS.pop(live._key(project), None)
     launch_kwargs.clear()
@@ -409,13 +457,14 @@ def test_launch_status_preserves_editor_for_owned_session(tmp_path: Path) -> Non
 
     result = live.launch_status(str(project))
 
-    assert result == {
+    assert {k: result[k] for k in ("ok", "ready", "status", "current_label", "editor")} == {
         "ok": True,
         "ready": True,
         "status": "ready",
         "current_label": "dashboard_scene",
         "editor": True,
     }
+    assert result["isolation"]["exposes_user_saves"] is False
     live._SESSIONS.pop(key, None)
 
 

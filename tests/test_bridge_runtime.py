@@ -3065,6 +3065,28 @@ def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
     assert calls == {"slot": "branch-a"}
 
 
+def test_list_and_load_rescan_saves_copied_in_since_the_last_scan(running_bridge):
+    events = []
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=lambda: events.append("scan"))
+    )
+
+    def list_slots(regexp=None):
+        events.append("list")
+        return []
+
+    def can_load(slot):
+        events.append("can_load")
+        return False
+
+    running_bridge.renpy.list_slots = list_slots
+    running_bridge.renpy.can_load = can_load
+
+    assert running_bridge.client.list_slots()["ok"] is True
+    assert running_bridge.client.load_slot("imported")["ok"] is False
+    assert events == ["scan", "list", "scan", "can_load"]
+
+
 def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge):
     calls = []
     running_bridge.renpy.list_slots = lambda regexp=None: ["branch-a", "branch-b"]

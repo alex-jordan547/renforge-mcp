@@ -27,6 +27,18 @@ def test_mcp_safety_docs_include_runtime_mutations() -> None:
     assert "`renforge_control`" in safety
     assert "`renforge_saves`" in safety
     assert "POLICY.md" in safety or "authorize=true" in safety
+    assert "savedir=existing" in safety
+
+
+def test_mcp_docs_cover_save_isolation_recipes() -> None:
+    text = (Path(__file__).parents[1] / "docs" / "MCP.md").read_text(encoding="utf-8")
+    isolation = text.split("## Save isolation", 1)[1].split("\n## ", 1)[0]
+    assert "session_id" in isolation
+    assert "list_user" in isolation
+    assert 'action="import"' in isolation
+    assert 'savedir="existing"' in isolation
+    assert "authorize=true" in isolation
+    assert "bind-mount" in isolation
 
 
 def test_runtime_policy_docs_cover_model_and_compatibility() -> None:

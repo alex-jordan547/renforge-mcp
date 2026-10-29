@@ -83,7 +83,10 @@ def test_emitted_tool_schemas_encode_options_limits_and_required_relationships()
     launch = schemas["renforge_launch"]["properties"]
     assert launch["display"]["enum"] == ["auto", "native", "xvfb", "external", "none"]
     assert launch["audio"]["enum"] == ["auto", "native", "dummy", "none"]
-    assert launch["persistent"]["enum"] == ["existing", "empty", "copy", "fixture"]
+    assert launch["persistent"]["enum"] == ["auto", "existing", "empty"]
+    assert launch["preferences"]["enum"] == ["auto", "existing", "empty"]
+    assert launch["savedir"]["default"] == "auto"
+    assert launch["home"]["default"] == "auto"
     assert launch["timeout"]["minimum"] == 0
 
     compact = schemas["renforge_game_state_compact"]["properties"]
@@ -224,12 +227,12 @@ def test_tool_definitions_describe_real_side_effects_and_exact_options() -> None
     assert "renforge_launch_status" in parameter("renforge_launch", "timeout")
     assert all(
         mode in parameter("renforge_launch", "persistent")
-        for mode in ("existing", "empty", "copy", "fixture")
+        for mode in ("existing", "empty")
     )
 
     assert all(
         action in parameter("renforge_saves", "action")
-        for action in ("save", "load", "list")
+        for action in ("save", "load", "list", "list_user", "import")
     )
     assert "delete" not in parameter("renforge_saves", "action")
     assert "clear" not in description("renforge_saves")
@@ -394,12 +397,27 @@ def test_catalog_states_exact_runtime_and_filesystem_contracts() -> None:
     launch = definitions["renforge_launch"]
     assert "file.rpy:line" in launch.parameters["warp"]
     assert "does not resolve label names" in launch.parameters["warp"].lower()
-    assert "environment marker only" in launch.parameters["persistent"].lower()
+    assert "never deletes" in launch.parameters["persistent"].lower()
     assert "game/" in launch.description
     assert ".renforge/control" in launch.description
     assert "arbitrary save directory" in launch.parameters["savedir"].lower()
+    assert "user's normal" in launch.parameters["savedir"].lower()
+    assert "`existing`" in launch.parameters["savedir"]
+    assert "renforge_isolation" in launch.parameters["savedir"].lower()
+    assert "authorize=true" in launch.parameters["savedir"]
+    assert "private directory" in launch.parameters["home"].lower()
+    assert "preference" in launch.parameters["preferences"].lower()
     assert "only" in launch.parameters["cleanup_on_stop"].lower()
-    assert "temporary" in launch.parameters["cleanup_on_stop"].lower()
+    assert "disposable session directory" in launch.parameters["cleanup_on_stop"].lower()
+    assert "authorize=true" in launch.parameters["authorize"]
+    assert "session_id" in launch.description
+    assert "isolation" in launch.description.lower()
+
+    jump = definitions["renforge_jump"]
+    assert "savedir" in jump.parameters
+    assert "authorize" in jump.parameters
+    assert "temporary" in jump.description.lower()
+    assert "authorize=true" in definitions["renforge_new_game"].description
 
     launch_status = definitions["renforge_launch_status"].description.lower()
     for status in ("idle", "starting", "ready", "failed", "closing", "closed"):

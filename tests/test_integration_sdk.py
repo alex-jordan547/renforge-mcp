@@ -1090,3 +1090,151 @@ def test_live_scene_tree_reports_nested_nodes_custom_layers_and_limits(sdk, demo
         assert len(node_limited["nodes"]) == 1
         assert node_limited["truncated"] is True
         assert node_limited["omitted"]["by_reason"]["max_nodes"] > 0
+
+
+def _state_snapshot(root: Path) -> dict[str, bytes]:
+    return {str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob('*') if path.is_file()}
+
+
+def test_game_state_isolation_before_load_and_after_save(
+    sdk, demo_copy: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Real state must neither leak into a session nor be changed by its writes."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.save_isolation import host_renpy_root
+
+    project = RenpyProject(demo_copy)
+    home = tmp_path / 'host-home'
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('APPDATA', str(home / 'AppData' / 'Roaming'))
+    monkeypatch.delenv('RENFORGE_ISOLATION', raising=False)
+    (demo_copy / 'game' / 'script.rpy').write_text('''
+default isolation_value = 0
+label main_menu:
+    return
+label start:
+    $ isolation_value = 41
+    "Isolation test ready."
+    while True:
+        pause
+''', encoding='utf-8')
+    fixture = demo_copy / 'game' / 'zz_isolation_fixture.rpy'
+    fixture.write_text('''
+define config.save_directory = "renforge-isolation-canary"
+define isolation_mp = MultiPersistent("renforge-isolation-canary")
+''', encoding='utf-8')
+
+    # Generate valid persistent, preference, multipersistent and slot canaries
+    # with the same engine, rather than relying on invalid placeholder files.
+    seed = tmp_path / 'seed'
+    with launch_with_bridge(sdk, project, savedir=str(seed), startup_timeout=90) as session:
+        client = session.client
+        client.eval_expr("setattr(persistent, 'renforge_host_canary', 'HOST-STATE')")
+        client.eval_expr("setattr(_preferences, 'text_cps', 13)")
+        client.eval_expr("setattr(isolation_mp, 'marker', 'HOST-MULTIPERSISTENT')")
+        client.eval_expr("isolation_mp.save()")
+        client.eval_expr("renpy.save_persistent()")
+        assert client.save_slot('host-canary', extra_info='HOST-SLOT')['ok']
+    assert (seed / 'persistent').is_file()
+    assert list(seed.glob('host-canary*.save'))
+
+    host_saves = host_renpy_root() / 'renforge-isolation-canary'
+    local_saves = demo_copy / 'game' / 'saves'
+    extra_saves = tmp_path / 'extra-saves'
+    host_mp = tmp_path / 'host-multipersistent'
+    for target in (host_saves, local_saves, extra_saves):
+        shutil.copytree(seed, target, dirs_exist_ok=True)
+    shutil.copytree(seed / 'multipersistent', host_mp)
+    assert (host_mp / 'renforge-isolation-canary').is_file()
+    # Register an extra location during script loading, before persistent reads.
+    # Also record those reads, so a later reset cannot hide an initial leak.
+    with fixture.open('a', encoding='utf-8') as handle:
+        handle.write('''
+python early:
+    import renpy as _isolation_test_engine
+    _isolation_test_engine.config.extra_savedirs = [%r]
+    _isolation_test_engine._isolation_test_reads = []
+    _isolation_test_load = _isolation_test_engine.persistent.load
+    def _isolation_test_record_load(filename, _original=_isolation_test_load):
+        _isolation_test_engine._isolation_test_reads.append(filename)
+        return _original(filename)
+    _isolation_test_engine.persistent.load = _isolation_test_record_load
+''' % str(extra_saves))
+    # The explicit opt-out must still use ordinary engine discovery and state.
+    with launch_with_bridge(
+        sdk, project, savedir='existing', startup_timeout=90,
+        extra_env={'RENPY_MULTIPERSISTENT': str(host_mp)},
+    ) as session:
+        assert session.client.eval_expr('persistent.renforge_host_canary') == 'HOST-STATE'
+        assert session.client.eval_expr('_preferences.text_cps') == 13
+        assert session.client.eval_expr('isolation_mp.marker') == 'HOST-MULTIPERSISTENT'
+        assert session.session_root is None
+    protected = (home, local_saves, extra_saves, host_mp)
+    before = [_state_snapshot(root) for root in protected]
+
+    with launch_with_bridge(
+        sdk, project, startup_timeout=90,
+        extra_env={'RENPY_MULTIPERSISTENT': str(host_mp)},
+    ) as session:
+        client = session.client
+        root = session.session_root
+        assert root is not None
+        assert client.eval_expr("persistent.renforge_host_canary") is None
+        assert client.eval_expr("_preferences.text_cps") != 13
+        assert client.eval_expr("isolation_mp.marker") is None
+        assert client.list_slots()['slots'] == []
+        reads = client.eval_expr("__import__('renpy')._isolation_test_reads")
+        assert reads
+        assert all(Path(path).is_relative_to(session.temporary_savedir) for path in reads)
+        locations = client.eval_expr("[item.directory for item in __import__('renpy').loadsave.location.locations]")
+        assert locations == [str(session.temporary_savedir)]
+        assert client.eval_expr("__import__('os').path.expanduser('~')") == str(session.temporary_home)
+        # Every reinitialization must retain the invariant, including reload's
+        # storage reinitialization, even if the game sets extra_savedirs again.
+        client.eval_expr('__import__("renpy").savelocation.init()')
+        assert client.eval_expr("[item.directory for item in __import__('renpy').loadsave.location.locations]") == locations
+        from renforge.save_isolation import import_host_slots
+
+        imported = import_host_slots(project.root, session.temporary_savedir, slot='host-canary')
+        assert imported['ok'], imported
+        client.eval_expr("__import__('renpy').loadsave.location.scan()")
+        assert [slot['name'] for slot in client.list_slots()['slots']] == ['host-canary']
+        client.eval_expr("setattr(persistent, 'renforge_host_canary', 'SESSION-STATE')")
+        client.eval_expr("setattr(isolation_mp, 'marker', 'SESSION-MULTIPERSISTENT')")
+        client.eval_expr('isolation_mp.save()')
+        client.eval_expr('renpy.save_persistent()')
+        deadline = time.monotonic() + 10
+        while client.get_var('isolation_value') != 41 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert client.get_var('isolation_value') == 41
+        assert client.save_slot('session-canary', extra_info='SESSION-SLOT')['ok']
+        client.set_var('isolation_value', 42)
+        assert client.load_slot('session-canary')['ok']
+        deadline = time.monotonic() + 10
+        while client.get_var('isolation_value') != 41 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert client.get_var('isolation_value') == 41
+        assert client.control('reload_script')['ok']
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                if client.ping().get('pong'):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        else:
+            pytest.fail('isolated bridge did not return after script reload')
+        assert client.eval_expr("[item.directory for item in __import__('renpy').loadsave.location.locations]") == locations
+        assert client.eval_expr('persistent.renforge_host_canary') == 'SESSION-STATE'
+        reads = client.eval_expr("__import__('renpy')._isolation_test_reads")
+        assert all(Path(path).is_relative_to(session.temporary_savedir) for path in reads)
+        assert (session.temporary_savedir / 'persistent').is_file()
+        assert list(session.temporary_savedir.glob('session-canary*.save'))
+        assert (session.temporary_savedir / 'multipersistent' / 'renforge-isolation-canary').is_file()
+        assert [_state_snapshot(path) for path in protected] == before
+    assert not root.exists()
+    assert [_state_snapshot(path) for path in protected] == before

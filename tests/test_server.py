@@ -139,8 +139,14 @@ def test_register_tools_preserves_metadata_on_mcp_fastmcp_backend() -> None:
     tool = app._tool_manager._tools["renforge_saves"]
     assert tool.description == TOOL_DEFINITIONS["renforge_saves"].description
     assert tool.annotations.destructiveHint is True
-    assert tool.parameters["properties"]["action"]["enum"] == ["save", "load", "list"]
-    assert len(tool.parameters["oneOf"]) == 3
+    assert tool.parameters["properties"]["action"]["enum"] == [
+        "save",
+        "load",
+        "list",
+        "list_user",
+        "import",
+    ]
+    assert len(tool.parameters["oneOf"]) == 5
 
 
 def test_register_tools_does_not_retry_internal_decorator_type_errors() -> None:
@@ -445,6 +451,10 @@ def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
     assert calls["version"] == "stable"
     assert calls["warp"] is None
     assert calls["kwargs"]["editor"] is True
+    assert calls["kwargs"]["savedir"] == "temporary"
+    assert calls["kwargs"]["home"] == "temporary"
+    assert calls["kwargs"]["persistent"] == "empty"
+    assert calls["kwargs"]["preferences"] == "empty"
 
 
 def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch) -> None:
@@ -471,6 +481,10 @@ def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch
     assert calls["version"] == "stable"
     assert calls["warp"] is None
     assert calls["kwargs"]["editor"] is True
+    assert calls["kwargs"]["savedir"] == "temporary"
+    assert calls["kwargs"]["home"] == "temporary"
+    assert calls["kwargs"]["persistent"] == "empty"
+    assert calls["kwargs"]["preferences"] == "empty"
 
 
 def test_launch_tool_honors_editor_opt_out(tmp_path, monkeypatch) -> None:
@@ -499,6 +513,55 @@ def test_launch_tool_honors_editor_opt_out(tmp_path, monkeypatch) -> None:
 
     assert result["ok"] is True
     assert calls["kwargs"]["editor"] is False
+
+
+def test_launch_tool_can_opt_into_existing_saves(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setattr(dashboard_client, "launch_game", lambda *_args, **_kwargs: None)
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
+        calls["kwargs"] = kwargs
+        return {"ok": True, "ready": True, "already_running": False, "editor": True}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path), savedir="existing")
+
+    assert result["ok"] is True
+    assert calls["kwargs"]["savedir"] == "existing"
+    assert calls["kwargs"]["home"] == "existing"
+
+
+def test_launch_tool_honors_renforge_isolation_env(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {}
+    monkeypatch.setenv("RENFORGE_ISOLATION", "existing")
+    monkeypatch.setattr(dashboard_client, "launch_game", lambda *_args, **_kwargs: None)
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
+        calls["kwargs"] = kwargs
+        return {"ok": True, "ready": True, "already_running": False, "editor": True}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path))
+
+    assert result["ok"] is True
+    assert calls["kwargs"]["savedir"] == "existing"
+    assert calls["kwargs"]["home"] == "existing"
+    assert calls["kwargs"]["persistent"] == "existing"
+    assert calls["kwargs"]["preferences"] == "existing"
 
 
 def test_launch_tool_prefers_the_active_dashboard_process(tmp_path, monkeypatch) -> None:
@@ -866,13 +929,14 @@ def test_saves_tool_dispatches_grouped_save_action(tmp_path, monkeypatch) -> Non
 
     calls = {}
 
-    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None):
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None):
         calls.update(
             project_path=project_path,
             action=action,
             slot=slot,
             extra_info=extra_info,
             regexp=regexp,
+            slots=slots,
         )
         return {"ok": True, "slot": slot, "extra_info": extra_info}
 
@@ -900,6 +964,7 @@ def test_saves_tool_dispatches_grouped_save_action(tmp_path, monkeypatch) -> Non
         "slot": "branch-a",
         "extra_info": "before menu",
         "regexp": None,
+        "slots": None,
     }
 
 
@@ -919,7 +984,7 @@ def test_saves_tool_validates_action_and_required_slot(tmp_path) -> None:
     missing_slot = asyncio.run(_call("save"))
 
     assert invalid_action.is_error is True
-    assert "Input should be 'save', 'load' or 'list'" in invalid_action.content[0].text
+    assert "Input should be 'save', 'load', 'list', 'list_user' or 'import'" in invalid_action.content[0].text
     missing_payload = json.loads(next(block.text for block in missing_slot.content if block.type == "text"))
     assert missing_payload == {
         "ok": False,
@@ -939,7 +1004,7 @@ def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> N
 
     calls = []
 
-    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None):
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None):
         calls.append(
             {
                 "project_path": project_path,
@@ -947,6 +1012,7 @@ def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> N
                 "slot": slot,
                 "extra_info": extra_info,
                 "regexp": regexp,
+                "slots": slots,
             }
         )
         return {"ok": True, "action": action}
@@ -979,6 +1045,7 @@ def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> N
             "slot": "branch-a",
             "extra_info": None,
             "regexp": None,
+            "slots": None,
         },
         {
             "project_path": str(tmp_path),
@@ -986,6 +1053,7 @@ def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> N
             "slot": None,
             "extra_info": None,
             "regexp": "branch",
+            "slots": None,
         },
     ]
 
@@ -996,7 +1064,7 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
     tools = asyncio.run(create_app().list_tools())
     tool = next(tool for tool in tools if tool.name == "renforge_saves")
 
-    assert all(action in tool.description for action in ("save", "load", "list"))
+    assert all(action in tool.description for action in ("save", "load", "list", "list_user", "import"))
     assert tool.parameters["required"] == ["project_path", "action"]
     assert set(tool.parameters["properties"]) == {
         "project_path",
@@ -1004,6 +1072,7 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
         "slot",
         "extra_info",
         "regexp",
+        "slots",
         "authorize",
     }
 
