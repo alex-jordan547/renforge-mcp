@@ -89,8 +89,19 @@ def build_wrappers(context):
         `omitted` completeness hint. `detail` is `semantic` (default), `layout`
         or `raw`; `layers`/`types`/`screen`/`ids` scope the result.
         `include=["color","style","overflow"]` opts into composited colour,
-        declared style, and best-effort text overflow. `format="wireframe"` adds
-        an ASCII map. `save_as` persists a snapshot under `.renforge/scenes/`;
+        declared style (including integer `xmaximum`/`ymaximum`), and a text
+        overflow verdict. Only `text`, `button`, and `input` nodes get a verdict:
+        the effective ceiling is the tighter of the widget's absolute
+        `xmaximum`/`ymaximum` (minus integer padding and margins) and the child
+        text's own absolute maximum; the unwrapped text size is compared with
+        the inner box, text that must wrap counts as x overflow, and the wrapped
+        height is compared with the inner height for y clipping. A y verdict
+        requires an absolute x maximum; a y-only request is unavailable. An
+        x-only result is `complete: false` with `unmeasured_axes: ["y"]`.
+        Relative maximums are recorded but not compared, vertical text is not
+        measured, and absent pixel maximums return `available: false` with a
+        reason. `format="wireframe"` adds an
+        ASCII map. `save_as` persists a snapshot under `.renforge/scenes/`;
         `diff_against` diffs the live scene against a saved snapshot.
         """
         return _log_tool_call(

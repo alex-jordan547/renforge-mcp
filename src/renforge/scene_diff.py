@@ -80,6 +80,14 @@ def diff_scenes(
         if old_zorder != new_zorder:
             node_changes["z_changed"] = {"from": old_zorder, "to": new_zorder}
 
+        old_overflow = old.get("overflow")
+        new_overflow = new.get("overflow")
+        if old_overflow != new_overflow:
+            node_changes["overflow_changed"] = {
+                "from": old_overflow,
+                "to": new_overflow,
+            }
+
         if not node_changes:
             unchanged += 1
             continue
