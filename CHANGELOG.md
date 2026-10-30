@@ -7,6 +7,10 @@ versioning.
 
 ### Added
 
+- Activity log write receipts: mutating tools report `files_touched` /
+  `files_deleted`, `stop` lists the paths it removed, and path lists too large
+  for the journal spill to 0600 sidecars capped at the newest 200. (#104)
+
 ### Changed
 
 ### Fixed

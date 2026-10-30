@@ -293,8 +293,10 @@ def build_wrappers(context):
             project_root, target = write_project_capture(project_path, name, png)
             with Image.open(BytesIO(png)) as image:
                 size = {"width": image.width, "height": image.height}
+            relative_path = target.relative_to(project_root).as_posix()
             return {"ok": True, "name": name, "path": str(target),
-                    "relative_path": str(target.relative_to(project_root)),
+                    "relative_path": relative_path,
+                    "files_touched": [relative_path],
                     "sha256": hashlib.sha256(png).hexdigest(), "size": size}
 
         return _log_tool_call(

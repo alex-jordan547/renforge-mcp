@@ -387,6 +387,25 @@ def _key(project_path: str | Path) -> str:
     return os.path.normcase(str(canonical))
 
 
+def _project_relative_path(project_path: str | Path, path: str | Path) -> str:
+    """Return a project-relative POSIX path, or an absolute POSIX path outside."""
+    project_root = Path(project_path).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        # Receipts name files inside the project, so a relative path is
+        # relative to the project root, never to the server's working
+        # directory.
+        candidate = project_root / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        resolved = candidate.absolute()
+    try:
+        return resolved.relative_to(project_root).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def _client(project_path: str | Path) -> BridgeClient:
     project = RenpyProject(Path(project_path))
     return BridgeClient.from_project(project.root)
@@ -649,6 +668,7 @@ def stop_game(project_path: str) -> dict:
                 "was_running": True,
                 "launch_cancel_requested": True,
                 "external_stopped": bool(external.get("was_running")),
+                "files_deleted": list(external.get("files_deleted") or []),
             }
         with _LAUNCH_LOCK:
             if task.lifecycle == "starting":
@@ -742,7 +762,7 @@ def stop_external_game(project_path: str, *, timeout: float = 5.0) -> dict:
     try:
         info = read_bridge_info(project.root, require_ready=True)
     except Exception:
-        return {"ok": True, "was_running": False}
+        return {"ok": True, "was_running": False, "files_deleted": []}
 
     old_session_id = info.session_id
     remaining = max(0.05, deadline - time.monotonic())
@@ -854,8 +874,13 @@ def stop_external_game(project_path: str, *, timeout: float = 5.0) -> dict:
             "was_running": True,
         }
 
+    removed: list[str] = []
     try:
-        remove_bridge_artifacts(project.root, expected_session_id=old_session_id)
+        remove_bridge_artifacts(
+            project.root,
+            expected_session_id=old_session_id,
+            removed=removed,
+        )
     except Exception as exc:
         return {
             "ok": False,
@@ -865,7 +890,7 @@ def stop_external_game(project_path: str, *, timeout: float = 5.0) -> dict:
     finally:
         lock.release()
 
-    return {"ok": True, "was_running": True}
+    return {"ok": True, "was_running": True, "files_deleted": removed}
 
 
 def stop_all() -> dict[str, dict[str, Any]]:
@@ -1040,6 +1065,39 @@ def send_input(
     )
 
 
+def _known_savedir(project_path: str | Path) -> str | None:
+    """Return the savedir of the in-process session, when one is known."""
+    key = _key(project_path)
+    with _LAUNCH_LOCK:
+        task = _LAUNCHES.get(key)
+        session = task.session if task is not None else None
+        if session is None:
+            session = _SESSIONS.get(key)
+    savedir = getattr(session, "temporary_savedir", None)
+    return str(savedir) if savedir is not None else None
+
+
+def _save_slot_with_receipt(
+    project_path: str,
+    slot: str,
+    extra_info: str,
+    client: BridgeClient,
+) -> dict:
+    """Save a slot and attach the external savedir as the write receipt."""
+    reply = client.save_slot(slot, extra_info=extra_info)
+    reply["files_touched"] = []
+    if reply.get("ok"):
+        savedir = reply.get("savedir")
+        if not isinstance(savedir, str) or not savedir:
+            savedir = _known_savedir(project_path)
+        if savedir:
+            # This path is outside the project (Ren'Py savedir), so it stays
+            # absolute and is labeled by the explicit ``savedir`` field.
+            reply["savedir"] = savedir
+            reply["files_touched"] = [savedir]
+    return reply
+
+
 def saves(
     project_path: str,
     action: str,
@@ -1065,7 +1123,9 @@ def saves(
             return {"ok": False, "error": "extra_info must be a string"}
         return _with_client(
             project_path,
-            lambda client: client.save_slot(slot, extra_info=extra_info or ""),
+            lambda client: _save_slot_with_receipt(
+                project_path, slot, extra_info or "", client
+            ),
         )
 
     if action == "load":
@@ -1339,6 +1399,32 @@ def _editor_public_view(
     return view
 
 
+def _editor_saved_paths(raw: dict[str, Any]) -> list[str]:
+    """Return the project-relative source path of the commit this save produced.
+
+    Editor transaction records store ``source_relative_path`` relative to the
+    ``game/`` directory (for example ``screens.rpy``). Every receipt is
+    project-relative, so add the ``game/`` base unless it is already present.
+    A record that is absolute or escapes its own base is not a shape this
+    contract can describe, so no receipt is emitted rather than a guessed one.
+    """
+    commit = raw.get("last_commit_status")
+    if not isinstance(commit, dict):
+        return []
+    if commit.get("state") not in {"published", "committed"}:
+        return []
+    source = commit.get("source_relative_path")
+    if not isinstance(source, str) or not source:
+        return []
+    normalized = source.replace("\\", "/").removeprefix("./")
+    parts = normalized.split("/")
+    if not normalized or normalized.startswith("/") or ":" in parts[0] or ".." in parts:
+        return []
+    if normalized.startswith("game/"):
+        return [normalized]
+    return ["game/" + normalized]
+
+
 def _editor_read_status(client: BridgeClient) -> dict[str, Any]:
     reply = client.request(_EDITOR_STATUS_RPC, {})
     if not isinstance(reply, dict):
@@ -1510,6 +1596,13 @@ def editor(
         if settled.get("save_error"):
             view["ok"] = False
             view["error"] = settled.get("save_error")
+        elif settled.get("save_in_progress") or settled.get("save_requested"):
+            view["ok"] = False
+            view["error"] = "SAVE_TIMEOUT"
+        else:
+            saved_paths = _editor_saved_paths(settled)
+            if saved_paths:
+                view["files_touched"] = saved_paths
         return view
 
     return _with_client(project_path, _handler)
@@ -1971,6 +2064,7 @@ def run_scenario(
     started = time.monotonic()
     deadline = started + float(timeout)
     results: list[dict[str, Any]] = []
+    capture_paths: list[str] = []
     last_action: str | None = None
     overall_ok = True
 
@@ -2140,6 +2234,7 @@ def run_scenario(
                 _, path = write_project_capture(project_path, label, png)
                 step_result["status"] = "passed"
                 step_result["path"] = str(path)
+                capture_paths.append(str(path))
                 last_action = "capture"
             elif action == "save":
                 slot = payload if isinstance(payload, str) else (payload or {}).get("slot")
@@ -2188,13 +2283,17 @@ def run_scenario(
             step_result["status"] = "failed"
             step_result["error"] = str(exc)
             if capture_on_failure:
-                step_result["diagnostics"] = _scenario_collect_failure(
+                diagnostics = _scenario_collect_failure(
                     project_path,
                     step_index=index,
                     expected=payload if action == "assert" else action,
                     actual=str(exc),
                     last_action=last_action,
                 )
+                step_result["diagnostics"] = diagnostics
+                screenshot = diagnostics.get("screenshot")
+                if isinstance(screenshot, str) and screenshot:
+                    capture_paths.append(screenshot)
             results.append(
                 {
                     **step_result,
@@ -2217,6 +2316,9 @@ def run_scenario(
         "passed": passed,
         "failed": failed,
         "duration_ms": duration_ms,
+        "files_touched": [
+            _project_relative_path(project_path, path) for path in capture_paths
+        ],
         "steps": results,
     }
     if not report["ok"]:
@@ -2430,11 +2532,14 @@ def scene_tree(
             reasons["max_items"] = reasons.get("max_items", 0) + omitted_count
             reply.setdefault("limits", {})["max_items"] = max_nodes
         reply["truncated"] = bool(reply.get("truncated")) or node_limit_hit
+        reply["files_touched"] = []
         window = reply.get("window") or {}
         if "color" in include_list and nodes:
             _attach_colors(client, nodes, window)
         if save_as:
-            reply["saved_as"] = _save_scene_snapshot(project_path, save_as, reply)
+            saved_path = _save_scene_snapshot(project_path, save_as, reply)
+            reply["saved_as"] = saved_path
+            reply["files_touched"] = [_project_relative_path(project_path, saved_path)]
         if diff_against:
             before = _load_scene_snapshot(project_path, diff_against, max_nodes=max_nodes)
             if before is None:
