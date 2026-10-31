@@ -9,6 +9,13 @@ versioning.
 
 ### Changed
 
+- `renforge_scene_tree(include=["overflow"])`: dropped the `clipped` alias
+  (it duplicated `overflow`), added per-axis `overflow_axes` and `wrapped`
+  values, and now reports `overflow` only for actual vertical clipping.
+  Horizontal wrapping is reported in `overflow_axes.x` / `wrapped.x`, not as
+  overflow. Verdicts also cover text inside `button` and `input` nodes, and
+  `include=["style"]` now includes integer `xmaximum`/`ymaximum`. (#105, #108)
+
 ### Fixed
 
 - Live Editor Save keeps polling after `reload_script` resets the bridge

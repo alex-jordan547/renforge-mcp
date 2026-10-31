@@ -303,7 +303,12 @@ renforge_scene_tree(project_path)
      omitted{by_type,by_layer,by_reason}, truncated,
      limits{max_depth,max_nodes,max_text_chars}
 renforge_scene_tree(project_path, include=["color","style","overflow"])
-  -> per node: composited color.dominant, declared style, best-effort text overflow
+  -> per node: composited color.dominant, declared style (with integer
+     xmaximum/ymaximum), and on text/button/input nodes only an overflow verdict
+     (overflow is true only when the wrapped height exceeds the inner height;
+     horizontal wrapping is reported in overflow_axes.x / wrapped.x, not as
+     overflow, integer padding/margins are subtracted, vertical text is not
+     measured; available:false + reason when no absolute maximum is declared)
 renforge_scene_tree(project_path, format="wireframe")
   -> an ASCII map plus a legend mapping labels to ids/bounds/text
 renforge_scene_tree(project_path, save_as="before")   # persist a snapshot
@@ -331,6 +336,20 @@ Notes:
   and types; truncated values retain up to that many characters and end with `…`.
   IDs use a fixed 256-character cap so they remain stable across output budgets
   and can be passed unchanged to `renforge_measure`.
+- The `overflow` verdict uses pixel maximums only: the effective ceiling is the
+  tighter of the widget's int `xmaximum`/`ymaximum` (minus integer padding and
+  margins) and the child text's own int maximum. The unwrapped width and the
+  wrapped height are compared with that box. `overflow` is true only when the
+  wrapped height exceeds the inner height, i.e. the text is actually clipped
+  vertically; horizontal wrapping is reported in `overflow_axes.x` and
+  `wrapped.x`, not as overflow. `overflow_px` is the vertical clip amount. Float
+  (relative) maximums are reported but not compared, and vertical text is not
+  measured because `Text.size` does not rotate it. A y verdict requires an
+  absolute x maximum to know the wrap width; a y-only request is unavailable.
+  An x-only result is `complete: false` with `unmeasured_axes: ["y"]` and null
+  `overflow`/`overflow_px`.
+  Unavailable verdicts keep `overflow` and `overflow_px` as `null` and add a
+  reason.
 - When a focusable scan hits `max_nodes`, `covered` and `clickable` are `null` with
   `coverage_reason="max_nodes"` because omitted higher controls may overlap them.
 - MCP replies default to `max_items=50`, `max_output_depth=6`, and
@@ -418,7 +437,7 @@ guards: each capture hashes a new frame.
 | `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
 | `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |
 | `renforge_diff_screenshots` | Diff two frames (or a saved PNG against the live frame) and return the changed region's bounding box. |
-| `renforge_scene_tree` | Perceive the whole scene as logical-coordinate nodes — every layer displayable, focusable control, and text block — with `id`, `type`, `bounds`, `center`, `zorder`, `screen`, and an `omitted` completeness hint. Unlike `renforge_list_ui_elements` (focusables only) it also reports non-focusable text and images. `detail` is `semantic` (default), `layout`, or `raw`; `layers`/`types`/`screen`/`ids` scope it; `include=["color","style","overflow"]` adds composited colour, declared style, and best-effort text overflow; `format="wireframe"` adds an ASCII map; `save_as`/`diff_against` persist and diff snapshots under `<project>/.renforge/scenes/`. |
+| `renforge_scene_tree` | Perceive the whole scene as logical-coordinate nodes — every layer displayable, focusable control, and text block — with `id`, `type`, `bounds`, `center`, `zorder`, `screen`, and an `omitted` completeness hint. Unlike `renforge_list_ui_elements` (focusables only) it also reports non-focusable text and images. `detail` is `semantic` (default), `layout`, or `raw`; `layers`/`types`/`screen`/`ids` scope it; `include=["color","style","overflow"]` adds composited colour, declared style (including integer `xmaximum`/`ymaximum`), and a text overflow verdict on `text`/`button`/`input` nodes only (`overflow` means actual vertical clipping; horizontal wrapping is reported in `overflow_axes.x`/`wrapped.x`, integer padding/margins are subtracted, vertical text is not measured; absent or relative maximums return `available: false` with a reason); `format="wireframe"` adds an ASCII map; `save_as`/`diff_against` persist and diff snapshots under `<project>/.renforge/scenes/`. |
 | `renforge_measure` | Measure pixel relationships between scene nodes (by `id`) or literal bounds without vision: `align`, `gap`, `distribute`, `center`, `overlap`, `fit`, and WCAG `contrast`. Returns logical-pixel deltas and, with `tolerance`, a `pass` verdict. |
 
 ### State and controlled execution
