@@ -1180,7 +1180,11 @@ init python:
             return {"ok": False, "error": "save failed: %s" % exc}
 
         _renforge_emit_business("save.completed", slot=slot, extra_info=extra_info)
-        return {"ok": True, "slot": slot, "extra_info": extra_info}
+        result = {"ok": True, "slot": slot, "extra_info": extra_info}
+        savedir = getattr(getattr(renpy, "config", None), "savedir", None)
+        if savedir:
+            result["savedir"] = str(savedir)
+        return result
 
     def _renforge_h_load_slot(payload):
         payload = payload or {}

@@ -509,6 +509,38 @@ writes a JSON snapshot under `<project>/.renforge/scenes/` for later diffing.
 `renforge_scene_tree` is the structured alternative to the `renforge_eval` style
 escape hatch above.
 
+### Write receipts
+
+Mutating tools that can enumerate their outputs report a write receipt:
+`files_touched` lists the files or directories written, and cleanup tools also
+return `files_deleted`. A cleanup that fails part-way still lists the paths that
+are actually gone, and `failed` names the resource it could not finish. Paths inside the project are project-relative POSIX
+(for example `game/screens.rpy`, `game/tl/french`, or `dialogue.txt`); paths
+outside the project (an external build destination or Ren'Py's savedir) stay
+absolute. A tool that cannot enumerate its outputs — `renforge_launch`, lint
+analysis, a failed build or translation, or a build that used Ren'Py's default
+destination because no `destination` was passed — omits the key instead of
+returning an empty list, so an empty list always means "wrote nothing". The
+journal's `files_touched_recorded` flag tells those two cases apart without
+having to remember which tools are which.
+`renforge_saves` additionally labels the external savedir with `savedir`.
+Because that directory is outside the project, its receipt path is absolute and
+can contain the user's home directory; the journal is 0600 and project-local.
+
+Each `.renforge/activity.jsonl` entry carries `files_touched_recorded` and
+`files_deleted_recorded` (true only when the result supplied a non-null
+explicit list) plus `files_touched_truncated` (true when only a compact list is
+stored). Entries keep at most 32 paths, and a path longer than 512 characters
+counts as truncated. On truncation the full lists are spilled to
+`files_touched_file` — a 0600 JSON sidecar under `.renforge/activity-files/`
+shaped `{"files_touched": [...], "files_deleted": [...]}` with the same path
+base rules. Only the newest 200 sidecars and at most 50 MiB are kept; older
+ones are pruned after each write, the newest receipt is always kept, and files
+that do not match the sidecar name pattern are never touched. If the sidecar
+cannot be written safely, the compact entry is
+still recorded and `files_touched_file` is omitted. On overflow, verbose params
+and result details are dropped first, never the write receipt.
+
 Recommended practices:
 
 - prefer `renforge_game_state_compact` to the full state;

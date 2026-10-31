@@ -577,11 +577,11 @@ def test_live_named_save_state_round_trip(sdk, demo_copy: Path) -> None:
         assert client.get_var("courage") == 1
 
         saved = client.save_slot("branch-a", extra_info="before menu")
-        assert saved == {
-            "ok": True,
-            "slot": "branch-a",
-            "extra_info": "before menu",
-        }
+        assert saved["ok"] is True
+        assert saved["slot"] == "branch-a"
+        assert saved["extra_info"] == "before menu"
+        # The bridge also reports the Ren'Py savedir as a write receipt.
+        assert isinstance(saved.get("savedir"), str) and saved["savedir"]
 
         listed = client.list_slots(regexp="branch")
         assert listed["ok"] is True

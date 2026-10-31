@@ -1546,7 +1546,12 @@ class EditorCoordinator:
         self._publish_transaction_bytes(transaction)
         self._schedule_attestation_timeout(transaction)
 
-        return {"transaction_id": transaction_id, "state": "published", "reload_required": True}
+        return {
+            "transaction_id": transaction_id,
+            "state": "published",
+            "reload_required": True,
+            "source_relative_path": transaction.source_relative_path,
+        }
 
     def _expected_target_for_intent(
         self,
@@ -1743,6 +1748,7 @@ class EditorCoordinator:
         return {
             "transaction_id": transaction_id,
             "state": record.state,
+            "source_relative_path": record.source_relative_path,
             "diagnostics": dict(record.diagnostics),
             "uncertain_paths": list(record.uncertain_paths),
         }

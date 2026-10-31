@@ -83,6 +83,30 @@ def test_scene_tree_wireframe_has_legend(monkeypatch):
     assert "hero" in out["wireframe"]
 
 
+def test_capture_screenshot_reports_a_project_relative_receipt(tmp_path):
+    from types import SimpleNamespace
+
+    from renforge.tool_registration import inspection
+
+    png = _png_bytes(2, 2, (10, 20, 30, 255))
+
+    def call_logged(**kwargs):
+        return kwargs["fn"](*kwargs["args"], **kwargs["kwargs"])
+
+    context = SimpleNamespace(
+        live=SimpleNamespace(screenshot_png=lambda *args, **kwargs: png),
+        log_tool_call=call_logged,
+        png_content=lambda data: data,
+    )
+    capture = inspection.build_wrappers(context)["renforge_capture_screenshot"]
+
+    out = capture(str(tmp_path), name="shot")
+
+    assert out["ok"] is True
+    assert out["files_touched"] == [".renforge/captures/shot.png"]
+    assert out["relative_path"] == ".renforge/captures/shot.png"
+
+
 def test_scene_tree_truncates_to_max_items(monkeypatch):
     nodes = [_node("n%d" % i, i, i, 5, 5) for i in range(10)]
     client = _FakeClient(_reply(nodes))
@@ -90,6 +114,7 @@ def test_scene_tree_truncates_to_max_items(monkeypatch):
     out = live.scene_tree("proj", types=["image"], max_items=4)
     assert out["truncated"] is True
     assert len(out["nodes"]) == 4
+    assert out["files_touched"] == []
     assert "max_nodes" not in client.calls[-1]
 
 
@@ -124,6 +149,7 @@ def test_scene_tree_save_then_diff_detects_move(tmp_path, monkeypatch):
     live = _patch(monkeypatch, _FakeClient(_reply([_node("hero", 0, 0, 10, 10)])))
     saved = live.scene_tree(str(tmp_path), save_as="before")
     assert saved.get("saved_as")
+    assert saved["files_touched"] == [".renforge/scenes/before.json"]
 
     _patch(monkeypatch, _FakeClient(_reply([_node("hero", 30, 0, 10, 10)])))
     out = live.scene_tree(str(tmp_path), diff_against="before")
