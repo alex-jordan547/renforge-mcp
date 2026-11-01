@@ -366,31 +366,28 @@ def test_launch_reuses_owned_session_only_when_editor_mode_matches(tmp_path: Pat
     live._SESSIONS.pop(key, None)
 
 
-@pytest.mark.parametrize(
-    ("running", "request_kwargs"),
-    [
-        ({"savedir_mode": "existing", "home_mode": "existing"}, {}),
-        ({}, {"savedir": "existing"}),
-    ],
-)
-def test_launch_reuses_owned_session_only_when_save_isolation_matches(
-    tmp_path: Path, monkeypatch, running: dict, request_kwargs: dict
+def test_an_isolated_launch_is_not_handed_a_game_using_the_players_saves(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    # The policy gate classified the request by its own savedir/home, so a
-    # reused game must not reach more (or less) than the request asked for.
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
     project = _make_project(tmp_path)
     key = live._key(project)
-    session = _OwnedRunningSession(editor=True, isolation=_isolation(**running))
+    session = _OwnedRunningSession(
+        editor=True, isolation=_isolation(savedir_mode="existing", home_mode="existing")
+    )
     live._SESSIONS[key] = session
     try:
-        result = live.launch_game(str(project), editor=True, **request_kwargs)
+        refused = live.launch_game(str(project), editor=True, savedir="temporary")
+        reused = live.launch_game(str(project), editor=True)
     finally:
         live._SESSIONS.pop(key, None)
 
-    assert result["ok"] is False
-    assert result["code"] == "SESSION_ISOLATION_MISMATCH"
-    assert result["requested_exposes_user_saves"] is not result["existing_exposes_user_saves"]
+    assert refused["ok"] is False
+    assert refused["code"] == "SESSION_ISOLATION_MISMATCH"
+    assert refused["existing_exposes_user_saves"] is True
+    # A launch that asked for nothing gets the running game, as before.
+    assert reused["already_running"] is True
+    assert session.close_calls == 0
     assert session.close_calls == 0
 
 
@@ -433,10 +430,11 @@ def test_new_launch_passes_editor_mode_to_bridge_launcher(tmp_path: Path, monkey
     assert result["ok"] is True
     assert result["editor"] is True
     assert launch_kwargs["editor"] is True
-    assert launch_kwargs["savedir"] == "temporary"
-    assert launch_kwargs["home"] == "temporary"
-    assert launch_kwargs["persistent"] == "empty"
-    assert launch_kwargs["preferences"] == "empty"
+    # Isolation is opt-in: a plain launch keeps the player's saves and HOME.
+    assert launch_kwargs["savedir"] == "existing"
+    assert launch_kwargs["home"] == "existing"
+    assert launch_kwargs["persistent"] == "existing"
+    assert launch_kwargs["preferences"] == "existing"
 
     live._SESSIONS.pop(live._key(project), None)
     launch_kwargs.clear()

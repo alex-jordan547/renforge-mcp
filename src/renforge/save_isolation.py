@@ -15,6 +15,7 @@ as the user and can reach any path it names explicitly.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -69,12 +70,17 @@ def classify_savedir(savedir: str | None) -> str:
 
 
 def configured_isolation_mode(environ: Mapping[str, str] | None = None) -> str:
-    """Server-wide default: ``temporary`` unless ``RENFORGE_ISOLATION=existing``."""
+    """Server-wide default: the user's own saves unless ``RENFORGE_ISOLATION=temporary``.
+
+    Isolation is opt-in: changing every launch's default to isolated saves,
+    persistent data, preferences and HOME is a separate contract decision.
+    A single launch opts in with ``savedir=temporary``.
+    """
     source = os.environ if environ is None else environ
-    token = str(source.get(ISOLATION_ENV, "temporary") or "temporary").strip()
-    if token in EXISTING_TOKENS:
-        return "existing"
-    return "temporary"
+    token = str(source.get(ISOLATION_ENV, "") or "").strip()
+    if token == "temporary":
+        return "temporary"
+    return "existing"
 
 
 def default_launch_value(
@@ -112,7 +118,7 @@ def apply_launch_isolation_defaults(
 ) -> dict[str, str]:
     """Resolve MCP/dashboard isolation knobs.
 
-    Omitted fields follow ``RENFORGE_ISOLATION`` (default ``temporary``).
+    Omitted fields follow ``RENFORGE_ISOLATION`` (default ``existing``).
     ``savedir=existing`` also selects ``home=existing`` unless *home* was set
     explicitly, so user saves under ``~/.renpy`` remain reachable. Explicit
     ``savedir=temporary`` isolates HOME the same way unless *home* is set.
@@ -478,21 +484,31 @@ def host_save_directories(
     return directories
 
 
+def _slot_pattern_error(pattern: Any) -> str | None:
+    if pattern is not None and not isinstance(pattern, str):
+        return "pattern must be a string"
+    return None
+
+
+def _matches(name: str, pattern: str) -> bool:
+    # A glob, not a regex: fnmatch matching cannot backtrack catastrophically,
+    # so a caller's pattern cannot stall the server on a long slot name.
+    return fnmatch.fnmatchcase(name, pattern)
+
+
 def list_host_slots(
     project_root: str | Path,
     *,
-    regexp: str | None = None,
+    pattern: str | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
-    """List host save slots without touching a running game or writing files."""
-    compiled = None
-    if regexp is not None:
-        if not isinstance(regexp, str):
-            return {"ok": False, "error": "regexp must be a string"}
-        try:
-            compiled = re.compile(regexp)
-        except re.error as exc:
-            return {"ok": False, "error": f"invalid regexp: {exc}"}
+    """List host save slots without touching a running game or writing files.
+
+    ``pattern`` is a glob matched against the whole slot name (``1-*``).
+    """
+    error = _slot_pattern_error(pattern)
+    if error is not None:
+        return {"ok": False, "error": error}
 
     directories = host_save_directories(project_root, home=home)
     slots: list[dict[str, Any]] = []
@@ -502,7 +518,7 @@ def list_host_slots(
             name = slot["name"]
             if name in seen:
                 continue
-            if compiled is not None and compiled.search(name) is None:
+            if pattern is not None and not _matches(name, pattern):
                 continue
             seen.add(name)
             slots.append(slot)
@@ -519,7 +535,7 @@ def import_host_slots(
     *,
     slot: str | None = None,
     slots: Iterable[str] | None = None,
-    regexp: str | None = None,
+    pattern: str | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
     """Copy selected host slot files into an isolated session savedir."""
@@ -545,13 +561,13 @@ def import_host_slots(
         }
 
     resolved = select_host_slot_names(
-        project_root, slot=slot, slots=slots, regexp=regexp, home=home
+        project_root, slot=slot, slots=slots, pattern=pattern, home=home
     )
     if not resolved.get("ok"):
         return resolved
     selected = list(resolved.get("names") or [])
     missing = list(resolved.get("missing") or [])
-    listed = list_host_slots(project_root, regexp=None, home=home)
+    listed = list_host_slots(project_root, home=home)
     if not listed.get("ok"):
         return listed
     available = {item["name"]: item for item in listed.get("slots", [])}
@@ -590,7 +606,7 @@ def select_host_slot_names(
     *,
     slot: str | None = None,
     slots: Iterable[str] | None = None,
-    regexp: str | None = None,
+    pattern: str | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve import selectors to host slot names."""
@@ -618,19 +634,14 @@ def select_host_slot_names(
             if error is not None:
                 return {"ok": False, "error": error}
 
-    compiled = None
-    if regexp is not None:
-        if not isinstance(regexp, str):
-            return {"ok": False, "error": "regexp must be a string"}
-        try:
-            compiled = re.compile(regexp)
-        except re.error as exc:
-            return {"ok": False, "error": f"invalid regexp: {exc}"}
+    error = _slot_pattern_error(pattern)
+    if error is not None:
+        return {"ok": False, "error": error}
 
-    if not names and compiled is None:
-        return {"ok": False, "error": "import requires slot, slots, or regexp"}
+    if not names and pattern is None:
+        return {"ok": False, "error": "import requires slot, slots, or pattern"}
 
-    listed = list_host_slots(project_root, regexp=None, home=home)
+    listed = list_host_slots(project_root, home=home)
     if not listed.get("ok"):
         return listed
     available = [item["name"] for item in listed.get("slots", [])]
@@ -643,11 +654,11 @@ def select_host_slot_names(
                 selected.append(name)
             else:
                 missing.append(name)
-    if compiled is not None:
+    if pattern is not None:
         for name in available:
             if name in selected:
                 continue
-            if compiled.search(name) is not None:
+            if _matches(name, pattern):
                 selected.append(name)
     return {
         "ok": True,

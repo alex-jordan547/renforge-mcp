@@ -140,18 +140,21 @@ editor — never private test-only `editor_task0_*` handlers.
 
 ## Save isolation
 
-MCP launches do **not** read or write the user's normal Ren'Py saves,
-preferences, or `$HOME/.renpy` unless the agent opts in. The ready payload from
+Isolation is **opt-in**. Pass `savedir="temporary"` to a launch, or set
+`RENFORGE_ISOLATION=temporary` for every launch of a server, and the game does
+not read or write the user's normal Ren'Py saves, preferences, or
+`$HOME/.renpy`. Without either, launches use the game's normal locations, as
+before. The ready payload from
 `renforge_launch` / `renforge_launch_status` includes `session_id` and an
 `isolation` object (`savedir_mode`, `home_mode`, `persistent_mode`,
 `preferences_mode`, resolved paths, and `exposes_user_saves`). Copy selected
 host slots into the isolated session; never bind-mount the user tree.
 
 There is no MCP-protocol isolation flag and no Roots-based save exposure.
-Isolation is tool arguments plus host enforcement (`RENFORGE_POLICY=enforce`).
+Isolation is tool arguments and the `RENFORGE_ISOLATION` server default.
 
-All bridge launch paths, including the low-level Python launcher, use the same
-isolated default. One disposable session root owns saves, multipersistent data,
+All bridge launch paths, including the low-level Python launcher, resolve
+isolation the same way. One disposable session root owns saves, multipersistent data,
 HOME, XDG directories, and temporary files. A `python early` adapter installs a
 single Ren'Py save location before persistent/preferences load and keeps it on
 subsequent storage initialization and script reload. It excludes the original
@@ -170,10 +173,10 @@ This is game-state isolation for ordinary Ren'Py operations. It adds no OS
 sandbox, namespace, mount, network restriction, or arbitrary-Python containment.
 Project source, bytecode, caches, and logs still use the project directory.
 
-### Recipe 1 — default isolated session
+### Recipe 1 — isolated session
 
 ```text
-renforge_launch(project_path=project)
+renforge_launch(project_path=project, savedir="temporary")
   -> session_id, isolation.exposes_user_saves=false
 renforge_saves(project_path=project, action="list")
   -> slots in the disposable session savedir only
@@ -184,25 +187,28 @@ renforge_saves(project_path=project, action="list")
 ```text
 renforge_saves(project_path=project, action="list_user")
   -> host slots under ~/.renpy/<config.save_directory> and game/saves
-renforge_launch(project_path=project)
+renforge_launch(project_path=project, savedir="temporary")
 renforge_saves(project_path=project, action="import", slots=["1-1", "branch-a"])
+  (or pattern="1-*" to take every slot whose name matches the glob)
   -> copies those slot files into the isolated savedir
 renforge_saves(project_path=project, action="load", slot="1-1", authorize=true)
 ```
 
 `list_user` is observational and does not need a running game. `import` is
-mutating, copies files (`.save` and `.save.json`), and is refused when the
-session already exposes the user tree (`savedir=existing`).
+mutating, copies files (`.save` and `.save.json`), and is refused unless the
+session was launched isolated. Both select slots by name (`slot`, `slots`) or
+by `pattern`, a glob matched against the whole slot name (`1-*`, `auto-?`).
+`authorize=true` is needed only for `load`, and only when
+`RENFORGE_POLICY=enforce`.
 
-### Recipe 3 — run against the user's save tree (all-or-nothing)
+### Recipe 3 — run against the user's save tree (the default)
 
 ```text
-renforge_launch(project_path=project, savedir="existing", authorize=true)
+renforge_launch(project_path=project)
 ```
 
-`savedir=existing` (and `RENFORGE_ISOLATION=existing`) is destructive: the game
-can read and write host saves. When `RENFORGE_POLICY=enforce`, pass
-`authorize=true`. The same isolation knobs exist on `renforge_jump` and
+Without `savedir="temporary"` the game reads and writes the user's normal saves,
+as launches always have. The same isolation knobs exist on `renforge_jump` and
 `renforge_new_game`.
 
 ## Recommended workflow
@@ -453,7 +459,7 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`; **saves, preferences, and HOME default to isolated temporary locations** so the session does not read or write the user's normal Ren'Py state (`~/.renpy` / `game/saves` / host preferences). Ready payloads include `session_id` and an `isolation` object. Pass `savedir=existing` (host HOME follows unless `home` is set) or set `RENFORGE_ISOLATION=existing` to use the user's files; that requires `authorize=true` when `RENFORGE_POLICY=enforce`. Prefer `renforge_saves(action="import")` to copy selected host slots. `timeout` controls the background startup deadline. |
+| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`. Pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) to **isolate saves, preferences, and HOME** in a disposable folder so the session does not read or write the user's normal Ren'Py state (`~/.renpy` / `game/saves` / host preferences); without it, launches use them as before. Ready payloads include `session_id` and an `isolation` object. A launch that asked for isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses the user's saves. Use `renforge_saves(action="import")` to copy selected host slots into an isolated session. `timeout` controls the background startup deadline. |
 | `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. Ready payloads repeat `session_id` and `isolation`. |
 | `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle and the same isolation knobs as `renforge_launch`. |
 | `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle and isolation knobs as `renforge_launch`. |
@@ -463,7 +469,7 @@ guards: each capture hashes a new frame.
 | `renforge_advance` | Advance the current dialogue. |
 | `renforge_control` | Run one action: `advance`, `rollback`, `toggle_skip`, `toggle_auto`, `toggle_afm`, `game_menu`, `hide_windows`, `quick_save`, `quick_load`, `reload_script`, `restart_interaction`, or `quit`. Emits correlated business events; `wait_for_effect=true` waits for the matching event. |
 | `renforge_send_input` | Send exactly one `text`, named `key`, or logical-coordinate `scroll` operation. Text posts character-by-character events to a focused Ren'Py `Input`; `submit=true` presses Enter. Supported keys include `enter`, `esc`, arrows, `pageup`, `pagedown`, `backspace`, `delete`, `home`, `end`, `space`, `tab`, and `f1`-`f12`. Scroll uses `{"x": ..., "y": ..., "direction": "up"|"down", "amount": 1}`. |
-| `renforge_saves` | Run `save`, `load`, `list`, `list_user`, or `import` for named slots. `list` reads the running session; `list_user` observes host slots without a running game; `import` copies selected host slots (`slot`, `slots`, or `regexp`) into the isolated session and refuses when the session exposes the user tree. Save/load require `slot`; save accepts optional `extra_info`; load returns `restored_label`; list/list_user accept optional `regexp` and return `name`, `extra_info`, and `mtime` without screenshots. |
+| `renforge_saves` | Run `save`, `load`, `list`, `list_user`, or `import` for named slots. `list` reads the running session; `list_user` observes host slots without a running game; `import` copies selected host slots (`slot`, `slots`, or a glob `pattern`) into the isolated session and refuses when the session exposes the user tree. Save/load require `slot`; save accepts optional `extra_info`; load returns `restored_label`; `list` accepts an optional `regexp` (applied by Ren'Py) and `list_user` an optional glob `pattern`; both return `name`, `extra_info`, and `mtime` without screenshots. |
 | `renforge_screenshot` | Capture a frame; width, height, crop, scale, and `grid`/`rulers`/`crosshair` overlays are optional. Passing only one of `width`/`height` keeps the game's aspect ratio. |
 
 ### Choices and user interface
@@ -546,11 +552,12 @@ tool yet: use `renforge_eval` as the controlled style-introspection escape
 hatch when the active screen's resolved style needs investigation. Treat
 `renforge_eval` as arbitrary Python execution and use it only on a trusted
 local project. When `RENFORGE_POLICY=enforce`, `renforge_eval`, destructive
-`renforge_control` / `renforge_saves` actions, launches that expose the user
-save tree (`savedir=existing` or a host save path), and matching
+`renforge_control` / `renforge_saves` actions, and matching
 `renforge_run_scenario` steps are denied unless `authorize=true` or an
 allowlist permits them. See [POLICY.md](POLICY.md) for the operation-level
-model, its relationship to MCP `ToolAnnotations`, and the compatibility plan.
+model, its relationship to MCP `ToolAnnotations`, and the compatibility plan. Launches are not gated: isolation is chosen with `savedir=temporary` (see
+[Save isolation](#save-isolation)); without it a launch uses the user's
+`savedir=existing` saves, as before.
 
 `renforge_scene_tree` is read-mostly: it never changes game state, but `save_as`
 writes a JSON snapshot under `<project>/.renforge/scenes/` for later diffing.

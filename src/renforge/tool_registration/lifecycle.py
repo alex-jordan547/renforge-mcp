@@ -172,7 +172,6 @@ def build_wrappers(context):
         timeout: float = 0,
         home: str = "auto",
         preferences: str = "auto",
-        authorize: bool = False,
     ) -> dict:
         """Launch or reuse a game with the Live Editor enabled by default.
 
@@ -187,13 +186,11 @@ def build_wrappers(context):
         The call waits at most 20 seconds for readiness, then returns
         ``status="starting"`` while startup continues in the background. Poll
         ``renforge_launch_status`` until it reports ``ready`` or ``failed``.
-        display/audio default to auto. Saves, preferences, and HOME default to
-        isolated temporary locations so this session does not read or write the
-        user's normal Ren'Py state. The ready payload includes ``session_id``
-        and an ``isolation`` object. Pass savedir='existing' (and home='existing'
-        if needed) to use the user's files, or set RENFORGE_ISOLATION=existing
-        as a server-wide default; that requires authorize=true when
-        RENFORGE_POLICY=enforce. timeout controls the background startup
+        display/audio default to auto. Saves and HOME default to the user's own,
+        as before; pass savedir='temporary' (or set RENFORGE_ISOLATION=temporary
+        server-wide) to isolate saves, persistent data, preferences, and HOME in
+        a disposable session folder. The ready payload includes ``session_id``
+        and an ``isolation`` object. timeout controls the background startup
         deadline, not the MCP call.
         """
         kwargs: dict[str, Any] = {
@@ -225,7 +222,6 @@ def build_wrappers(context):
                 "timeout": timeout,
                 "home": home,
                 "preferences": preferences,
-                "authorize": authorize,
             },
             project_root=project_path,
             fn=_start_launch,
@@ -254,12 +250,10 @@ def build_wrappers(context):
         persistent: str = "auto",
         home: str = "auto",
         preferences: str = "auto",
-        authorize: bool = False,
     ) -> dict:
         """Restart at a label or file:line; poll launch status when still starting.
 
-        Isolation knobs match ``renforge_launch``. Exposing the user save tree
-        requires authorize=true when RENFORGE_POLICY=enforce.
+        Isolation knobs match ``renforge_launch``.
         """
         from ..navigation import resolve_warp_target
 
@@ -287,7 +281,6 @@ def build_wrappers(context):
                 "persistent": persistent,
                 "home": home,
                 "preferences": preferences,
-                "authorize": authorize,
             },
             project_root=project_path,
             fn=_jump,
@@ -303,12 +296,10 @@ def build_wrappers(context):
         persistent: str = "auto",
         home: str = "auto",
         preferences: str = "auto",
-        authorize: bool = False,
     ) -> dict:
         """Start at the ``start`` label; poll launch status when still starting.
 
-        Isolation knobs match ``renforge_launch``. Exposing the user save tree
-        requires authorize=true when RENFORGE_POLICY=enforce.
+        Isolation knobs match ``renforge_launch``.
         """
         from ..navigation import resolve_warp_target
 
@@ -335,7 +326,6 @@ def build_wrappers(context):
                 "persistent": persistent,
                 "home": home,
                 "preferences": preferences,
-                "authorize": authorize,
             },
             project_root=project_path,
             fn=_new_game,

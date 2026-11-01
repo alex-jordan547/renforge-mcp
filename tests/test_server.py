@@ -451,10 +451,10 @@ def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
     assert calls["version"] == "stable"
     assert calls["warp"] is None
     assert calls["kwargs"]["editor"] is True
-    assert calls["kwargs"]["savedir"] == "temporary"
-    assert calls["kwargs"]["home"] == "temporary"
-    assert calls["kwargs"]["persistent"] == "empty"
-    assert calls["kwargs"]["preferences"] == "empty"
+    assert calls["kwargs"]["savedir"] == "existing"
+    assert calls["kwargs"]["home"] == "existing"
+    assert calls["kwargs"]["persistent"] == "existing"
+    assert calls["kwargs"]["preferences"] == "existing"
 
 
 def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch) -> None:
@@ -481,10 +481,10 @@ def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch
     assert calls["version"] == "stable"
     assert calls["warp"] is None
     assert calls["kwargs"]["editor"] is True
-    assert calls["kwargs"]["savedir"] == "temporary"
-    assert calls["kwargs"]["home"] == "temporary"
-    assert calls["kwargs"]["persistent"] == "empty"
-    assert calls["kwargs"]["preferences"] == "empty"
+    assert calls["kwargs"]["savedir"] == "existing"
+    assert calls["kwargs"]["home"] == "existing"
+    assert calls["kwargs"]["persistent"] == "existing"
+    assert calls["kwargs"]["preferences"] == "existing"
 
 
 def test_launch_tool_honors_editor_opt_out(tmp_path, monkeypatch) -> None:
@@ -929,7 +929,7 @@ def test_saves_tool_dispatches_grouped_save_action(tmp_path, monkeypatch) -> Non
 
     calls = {}
 
-    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None):
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None, pattern=None):
         calls.update(
             project_path=project_path,
             action=action,
@@ -1004,7 +1004,7 @@ def test_saves_tool_dispatches_load_and_list_actions(tmp_path, monkeypatch) -> N
 
     calls = []
 
-    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None):
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None, pattern=None):
         calls.append(
             {
                 "project_path": project_path,
@@ -1073,6 +1073,7 @@ def test_saves_tool_is_listed_with_grouped_actions() -> None:
         "extra_info",
         "regexp",
         "slots",
+        "pattern",
         "authorize",
     }
 

@@ -404,20 +404,21 @@ def test_catalog_states_exact_runtime_and_filesystem_contracts() -> None:
     assert "user's normal" in launch.parameters["savedir"].lower()
     assert "`existing`" in launch.parameters["savedir"]
     assert "renforge_isolation" in launch.parameters["savedir"].lower()
-    assert "authorize=true" in launch.parameters["savedir"]
+    assert "`temporary` isolates" in launch.parameters["savedir"]
     assert "private directory" in launch.parameters["home"].lower()
     assert "preference" in launch.parameters["preferences"].lower()
     assert "only" in launch.parameters["cleanup_on_stop"].lower()
     assert "disposable session directory" in launch.parameters["cleanup_on_stop"].lower()
-    assert "authorize=true" in launch.parameters["authorize"]
+    # Isolation is opt-in, so launches are not policy-gated and take no authorize.
+    assert "authorize" not in launch.parameters
     assert "session_id" in launch.description
     assert "isolation" in launch.description.lower()
 
     jump = definitions["renforge_jump"]
     assert "savedir" in jump.parameters
-    assert "authorize" in jump.parameters
+    assert "authorize" not in jump.parameters
     assert "temporary" in jump.description.lower()
-    assert "authorize=true" in definitions["renforge_new_game"].description
+    assert "savedir=temporary" in definitions["renforge_new_game"].description
 
     launch_status = definitions["renforge_launch_status"].description.lower()
     for status in ("idle", "starting", "ready", "failed", "closing", "closed"):

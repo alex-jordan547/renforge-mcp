@@ -10,23 +10,23 @@ versioning.
 ### Changed
 
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, and dashboard
-  launches now isolate the running game from the user's Ren'Py state by
-  default. Each session gets a disposable save directory (`savedir=temporary`,
-  native `--savedir` plus `RENFORGE_SAVEDIR` / `RENPY_PATH_TO_SAVES` /
+  launches can isolate the running game from the user's Ren'Py state. It is
+  opt-in: pass `savedir=temporary`, or set `RENFORGE_ISOLATION=temporary` for
+  every launch of a server; launches otherwise use the game's normal saves, as
+  before. An isolated session gets a disposable save directory (native
+  `--savedir` plus `RENFORGE_SAVEDIR` / `RENPY_PATH_TO_SAVES` /
   `RENPY_MULTIPERSISTENT`), a private HOME/XDG/temp tree, empty persistent
   data, and reset preferences. Ready payloads include `session_id` and an
-  `isolation` object so an agent can see the mode. Pass `savedir=existing`
-  (which also keeps host HOME unless `home` is set) or set
-  `RENFORGE_ISOLATION=existing` to use the user's files; that is classified
-  destructive and needs `authorize=true` when `RENFORGE_POLICY=enforce`.
+  `isolation` object so an agent can see the mode. A launch that asked for
+  isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a
+  running game that uses the user's saves.
   `renforge_saves` gains `list_user` (observational host listing) and `import`
-  (copy selected host slots into the isolated session; never bind-mounts the
-  user tree). `list_user` and `import` read only the folder that the game's
-  `config.save_directory` names directly under the Ren'Py save root, plus a
-  `game/saves` inside the project. A launch reuses a running game only when
-  both reach the player's saves or neither does; otherwise it returns
-  `SESSION_ISOLATION_MISMATCH`. This is application-layer isolation, not an
-  OS sandbox.
+  (copy selected host slots into an isolated session; never bind-mounts the
+  user tree). Both select slots by name or by `pattern`, a glob matched against
+  the whole slot name; `list` keeps its `regexp`, which Ren'Py applies. They
+  read only the folder that the game's `config.save_directory` names directly
+  under the Ren'Py save root, plus a `game/saves` inside the project. This is
+  application-layer isolation, not an OS sandbox.
 
 ### Fixed
 

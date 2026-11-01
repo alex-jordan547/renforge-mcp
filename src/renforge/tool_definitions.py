@@ -56,13 +56,13 @@ def _ann(
 
 _ISOLATION_PARAMETERS = {
     "savedir": (
-        "Save location. Omitted, empty, or `auto` follows `RENFORGE_ISOLATION` "
-        "(default isolated `temporary`) so this session cannot read or write the "
-        "user's normal Ren'Py saves. Pass `existing` (or `default`) to use the "
-        "game's normal save directory; that is destructive and requires "
-        "`authorize=true` when `RENFORGE_POLICY=enforce`. Any other non-empty "
-        "value is an arbitrary save directory path that is created if missing "
-        "and is never removed by stop. Prefer `renforge_saves(action=\"import\")` "
+        "Save location. `temporary` isolates the session: saves, persistent data, "
+        "preferences, and HOME go to a disposable folder, so the game cannot read "
+        "or write the user's normal Ren'Py saves. Omitted, empty, or `auto` follows "
+        "`RENFORGE_ISOLATION` (`temporary` to isolate every launch; otherwise the "
+        "game's normal save directory, as `existing` or `default` selects). Any other "
+        "non-empty value is an arbitrary save directory path that is created if "
+        "missing and is never removed by stop. Use `renforge_saves(action=\"import\")` "
         "to copy selected host slots into an isolated session."
     ),
     "persistent": (
@@ -73,10 +73,10 @@ _ISOLATION_PARAMETERS = {
     ),
     "home": (
         "Process HOME for the launched game. Omitted, empty, or `auto` follows "
-        "`RENFORGE_ISOLATION` (default a private directory) so preferences and "
-        "`~/.renpy` writes miss the user's files. Pass `existing` to keep the host "
-        "HOME. `savedir=existing` also selects `home=existing` unless this is set. "
-        "Any other non-empty value is an explicit HOME path."
+        "`savedir`: a private directory for `savedir=temporary`, so preferences "
+        "and `~/.renpy` writes miss the user's files, otherwise the host HOME. "
+        "Pass `temporary` or `existing` to choose explicitly. Any other non-empty "
+        "value is an explicit HOME path."
     ),
     "preferences": (
         "Preferences share Ren'Py's persistent storage. Omitted, empty, or `auto` "
@@ -85,13 +85,6 @@ _ISOLATION_PARAMETERS = {
         "are isolated by storage selection, without resetting host state."
     ),
 }
-
-_LAUNCH_AUTHORIZE = (
-    "Explicitly authorize launching against the user's Ren'Py saves with "
-    "`authorize=true` (`savedir=existing`, a host save path, `home=existing`, or "
-    "`RENFORGE_ISOLATION=existing`) when `RENFORGE_POLICY=enforce`. Isolated "
-    "launches do not need this."
-)
 
 _ISOLATION_PARAMETER_SCHEMAS = {
     "persistent": _enum("auto", "existing", "empty"),
@@ -239,13 +232,13 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Start or attach a running game session with Live Editor enabled by default (pass editor=false for non-editor "
             "runtime launch). Launch starts the background startup flow, usually returning while startup is still in progress; "
             "poll `renforge_launch_status` and capture with `renforge_screenshot` before interaction. "
-            "Saves, preferences, and HOME default to isolated temporary locations so the session does not read or write the "
-            "user's normal Ren'Py state; the ready payload includes `session_id` and an `isolation` object. "
+            "Saves and HOME default to the user's own; pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) "
+            "to isolate saves, persistent data, preferences, and HOME so the session does not read or write the user's "
+            "normal Ren'Py state. The ready payload includes `session_id` and an `isolation` object. "
             "It may download/cache the selected SDK, inject session-owned `.rpy` files and editor assets under `game/`, and "
             "publish authenticated ownership/bridge metadata under `.renforge/control/`. `renforge_stop` removes only owned "
-            "session artifacts. Exposing the user save tree (`savedir=existing`) requires `authorize=true` when "
-            "`RENFORGE_POLICY=enforce`. Copy selected host slots with `renforge_saves(action=\"import\")` instead of "
-            "bind-mounting the user tree."
+            "session artifacts. Copy selected host slots into an isolated session with "
+            "`renforge_saves(action=\"import\")` instead of bind-mounting the user tree."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -273,7 +266,6 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                 "Ren'Py background startup deadline in seconds (0 uses the launcher default). This does not control the MCP "
                 "response wait; poll `renforge_launch_status` after a `starting` result."
             ),
-            "authorize": _LAUNCH_AUTHORIZE,
         },
         parameter_schemas={
             "display": _enum("auto", "native", "xvfb", "external", "none"),
@@ -299,9 +291,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_jump": ToolDefinition(
         description=(
             "Restart into a specific label/file position and keep interacting in a fresh game session. If needed, this may "
-            "download and cache the required SDK before restart. Isolation matches `renforge_launch`: saves, preferences, "
-            "and HOME default to temporary locations. Exposing the user save tree requires `authorize=true` when "
-            "`RENFORGE_POLICY=enforce`. Use for deterministic positioning before scripted checks."
+            "download and cache the required SDK before restart. Isolation matches `renforge_launch` (opt in with "
+            "`savedir=temporary`). Use for deterministic positioning before scripted checks."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -314,15 +305,13 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "target": "Label name or `file:line` destination for relaunch.",
             "version": "Runtime version to use when restarting at target.",
             **_ISOLATION_PARAMETERS,
-            "authorize": _LAUNCH_AUTHORIZE,
         },
         parameter_schemas=dict(_ISOLATION_PARAMETER_SCHEMAS),
     ),
     "renforge_new_game": ToolDefinition(
         description=(
             "Restart at `start` and begin a new story progression. This may download and cache the required SDK before the "
-            "fresh launch. Isolation matches `renforge_launch`: saves, preferences, and HOME default to temporary locations. "
-            "Exposing the user save tree requires `authorize=true` when `RENFORGE_POLICY=enforce`. Prefer this for clean "
+            "fresh launch. Isolation matches `renforge_launch` (opt in with `savedir=temporary`). Prefer this for clean "
             "scenario entry rather than reusing unstable runtime state."
         ),
         annotations=_ann(
@@ -335,7 +324,6 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "project_path": "Project root containing the game to restart.",
             "version": "Runtime version used for the fresh launch.",
             **_ISOLATION_PARAMETERS,
-            "authorize": _LAUNCH_AUTHORIZE,
         },
         parameter_schemas=dict(_ISOLATION_PARAMETER_SCHEMAS),
     ),
@@ -497,10 +485,14 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         parameters={
             "project_path": "Project root of the live game (or of the project whose host saves should be listed or imported).",
             "action": "One of `list`, `list_user`, `import`, `load`, or `save`.",
-            "slot": "Slot label used by save/load/import. Import also accepts `slots` or `regexp`.",
+            "slot": "Slot label used by save/load/import. Import also accepts `slots` or `pattern`.",
             "slots": "Optional list of host slot names to copy for `import`.",
             "extra_info": "Optional save metadata for save actions.",
-            "regexp": "Optional regex filter for `list`, `list_user`, or `import`.",
+            "regexp": "Optional regex filter for `list`, applied by Ren'Py's `renpy.list_slots` in the game.",
+            "pattern": (
+                "Optional glob for `list_user` or `import`, matched against the whole slot name: `*` any run of "
+                "characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`)."
+            ),
             "authorize": (
                 "Explicitly authorize `load` when `RENFORGE_POLICY=enforce`; ignored for list, list_user, import, and save."
             ),
@@ -517,6 +509,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "slot": {"type": "string", "minLength": 1},
                         "regexp": {"type": "null"},
                         "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
                     },
                     "required": ["action", "slot"],
                 },
@@ -527,6 +520,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "extra_info": {"type": "null"},
                         "regexp": {"type": "null"},
                         "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
                     },
                     "required": ["action", "slot"],
                 },
@@ -536,6 +530,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "slot": {"type": "null"},
                         "extra_info": {"type": "null"},
                         "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
                     },
                     "required": ["action"],
                 },
@@ -545,6 +540,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "slot": {"type": "null"},
                         "extra_info": {"type": "null"},
                         "slots": {"type": "null"},
+                        "regexp": {"type": "null"},
                     },
                     "required": ["action"],
                 },
@@ -552,6 +548,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                     "properties": {
                         "action": {"const": "import"},
                         "extra_info": {"type": "null"},
+                        "regexp": {"type": "null"},
                     },
                     "required": ["action"],
                 },

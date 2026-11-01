@@ -817,8 +817,8 @@ def _launch_after_project_lock(
     ``savedir='temporary'`` isolates saves under a disposable session directory
     that is removed on session close when ``cleanup_on_stop`` is true. Isolated
     launches also get a private HOME so preferences and ``~/.renpy`` writes miss
-    the user's files. All launch paths isolate by default; pass
-    savedir='existing' to opt into the game's normal locations.
+    the user's files. Isolation is opt-in: omitted values follow
+    ``RENFORGE_ISOLATION`` and otherwise use the game's normal locations.
     """
     started = time.monotonic()
     phases: list[dict[str, Any]] = []

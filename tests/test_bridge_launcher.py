@@ -178,7 +178,7 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
     assert command[0].endswith(_LAUNCHER_NAME)
     assert command[1] == str(project_root.resolve())
     if warp is None:
-        assert command[2:] == ["run", "--savedir", str(session.isolation.savedir)]
+        assert command[2:] == ["run"]
     else:
         assert command[2:5] == ["run", "--warp", warp]
     env = captured["env"]
@@ -915,7 +915,7 @@ def test_launch_without_editor_does_not_start_editor_flow(monkeypatch, tmp_path:
     assert not any(key.startswith("RENFORGE_EDITOR_") for key in env)
     assert session.editor is False
     manifest = _load_artifacts(project_root)
-    assert [entry["role"] for entry in manifest["sources"]] == ["bridge", "session_init"]
+    assert [entry["role"] for entry in manifest["sources"]] == ["bridge"]
     assert manifest["asset_tree"] is None
     assert not list((project_root / "game").glob("zzrenforge_editor_*"))
     session.close(timeout=0.1)

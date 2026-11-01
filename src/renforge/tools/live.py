@@ -498,11 +498,10 @@ def launch_game(
     """Launch the project with the bridge injected, or reuse a live session.
 
     ``display`` / ``audio`` default to ``auto`` (native when available, else
-    Xvfb + dummy SDL audio). Saves, preferences, and HOME default to isolated
-    temporary locations so the session cannot read or write the user's normal
-    Ren'Py state. Pass ``savedir='existing'`` (and optionally
-    ``home='existing'``) to use the game's normal save location, or set
-    ``RENFORGE_ISOLATION=existing`` to change the server-wide default.
+    Xvfb + dummy SDL audio). Saves and HOME default to the user's own; pass
+    ``savedir='temporary'`` (or set ``RENFORGE_ISOLATION=temporary``
+    server-wide) to isolate saves, persistent data, preferences, and HOME so
+    the session cannot read or write the user's normal Ren'Py state.
     """
     try:
         project = RenpyProject(Path(project_path))
@@ -547,8 +546,9 @@ def launch_game(
         # answers; otherwise tear it down (a warp needs a fresh --warp launch,
         # and a dead process must be reaped so it does not linger as a zombie).
         if warp is None and existing.process.poll() is None:
-            # Reuse may not change what the launch can reach: the policy gate
-            # classified this request by its own savedir/home, not the running game's.
+            # A launch that asked for isolation must not be handed a game that
+            # uses the player's saves. Reusing an isolated game for any request
+            # is harmless, so only that direction is refused.
             requested_exposes = launch_exposes_user_saves(
                 savedir=savedir,
                 home=home,
@@ -557,12 +557,10 @@ def launch_game(
                 project_path=project.root,
             )
             existing_exposes = _session_exposes_user_saves(existing)
-            if requested_exposes != existing_exposes:
+            if existing_exposes and not requested_exposes:
                 message = (
-                    "The running session's save isolation does not match this launch "
-                    "(exposes_user_saves=%s, requested %s). Stop it before launching "
-                    "with different savedir/home options."
-                    % (str(existing_exposes).lower(), str(requested_exposes).lower())
+                    "The running game uses the player's saves or HOME, but this launch "
+                    "asked for an isolated session. Stop it before launching again."
                 )
                 return {
                     "ok": False,
@@ -1145,8 +1143,14 @@ def saves(
     extra_info: str | None = None,
     regexp: str | None = None,
     slots: list[str] | None = None,
+    pattern: str | None = None,
 ) -> dict:
-    """Save, load, or list named save slots, or copy selected host slots in."""
+    """Save, load, or list named save slots, or copy selected host slots in.
+
+    ``list`` filters with ``regexp``, which Ren'Py's own ``list_slots``
+    applies in the game. ``list_user`` and ``import`` read host folders in
+    this process, so they filter with a glob ``pattern`` instead.
+    """
     if action not in {"save", "load", "list", "list_user", "import"}:
         return {
             "ok": False,
@@ -1167,9 +1171,17 @@ def saves(
     if action != "import" and slots is not None:
         return {"ok": False, "error": "slots is only valid for action 'import'"}
 
+    if action in {"save", "load", "list"} and pattern is not None:
+        return {"ok": False, "error": "pattern is only valid for list_user or import"}
+    if action in {"list_user", "import"} and regexp is not None:
+        return {
+            "ok": False,
+            "error": "list_user and import take pattern, a glob such as `1-*`, not regexp",
+        }
+
     if action == "save":
         if regexp is not None:
-            return {"ok": False, "error": "regexp is only valid for list, list_user, or import"}
+            return {"ok": False, "error": "regexp is only valid for list"}
         if extra_info is not None and not isinstance(extra_info, str):
             return {"ok": False, "error": "extra_info must be a string"}
         return _with_client(
@@ -1181,7 +1193,7 @@ def saves(
         if extra_info is not None:
             return {"ok": False, "error": "extra_info is only valid for action 'save'"}
         if regexp is not None:
-            return {"ok": False, "error": "regexp is only valid for list, list_user, or import"}
+            return {"ok": False, "error": "regexp is only valid for list"}
         return _with_client(project_path, lambda client: client.load_slot(slot))
 
     if extra_info is not None:
@@ -1201,7 +1213,7 @@ def saves(
         }
 
     if action == "list_user":
-        return list_host_slots(project.root, regexp=regexp)
+        return list_host_slots(project.root, pattern=pattern)
 
     session = _owned_session(project.root)
     destination = getattr(session, "temporary_savedir", None) if session is not None else None
@@ -1226,7 +1238,7 @@ def saves(
         destination,
         slot=slot,
         slots=slots,
-        regexp=regexp,
+        pattern=pattern,
     )
 
 
