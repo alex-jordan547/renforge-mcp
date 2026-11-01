@@ -532,7 +532,24 @@ def test_import_reports_a_slot_whose_files_vanished_as_missing(
     (saves / "1-1-LT1.save").write_bytes(b"SLOT")
     monkeypatch.setattr(save_isolation, "_copy_slot_files", lambda *_args: [])
 
+    (tmp_path / "session").mkdir()
     result = import_host_slots(project, tmp_path / "session" / "saves", slot="1-1")
 
     assert result["ok"] is False
     assert result["missing"] == ["1-1"]
+
+
+def test_import_into_a_stopped_session_creates_nothing(tmp_path: Path, host_save_root: Path) -> None:
+    # A stop that removed the session root while the import was starting
+    # must not get it back, full of copies of the player's saves.
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert not session_root.exists()
