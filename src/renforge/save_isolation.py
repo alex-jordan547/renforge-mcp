@@ -530,7 +530,19 @@ def import_host_slots(
             "code": "SAVE_IMPORT_NOT_ISOLATED",
             "error": "import refuses to copy into the user's save tree; launch an isolated session first",
         }
-    dest.mkdir(parents=True, exist_ok=True)
+    # Stopping the session removes its root. Creating it again here, after a
+    # concurrent stop, would leave copies of the player's saves in a folder
+    # nothing cleans up, so only the savedir itself is ever created.
+    try:
+        if not dest.parent.is_dir():
+            raise FileNotFoundError(dest.parent)
+        dest.mkdir(exist_ok=True)
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "code": "NO_ISOLATED_SESSION",
+            "error": "the session's save folder is gone; the session has stopped",
+        }
 
     resolved = select_host_slot_names(
         project_root, slot=slot, slots=slots, regexp=regexp, home=home
