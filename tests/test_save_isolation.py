@@ -77,23 +77,38 @@ def test_classify_treats_other_values_as_explicit_paths() -> None:
     assert classify_savedir("~/renforge-saves") == "path"
 
 
-def test_mcp_and_dashboard_default_to_temporary_isolation() -> None:
-    assert default_launch_savedir(None) == "temporary"
-    assert default_launch_savedir("") == "temporary"
-    assert default_launch_savedir("auto") == "temporary"
-    assert default_launch_savedir("   ") == "temporary"
-    assert default_launch_savedir("existing") == "existing"
+def test_isolation_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    assert default_launch_savedir(None) == "existing"
+    assert default_launch_savedir("") == "existing"
+    assert default_launch_savedir("auto") == "existing"
+    assert default_launch_savedir("   ") == "existing"
+    assert default_launch_savedir("temporary") == "temporary"
     assert default_launch_savedir("/opt/saves") == "/opt/saves"
+    opted_in = {"RENFORGE_ISOLATION": "temporary"}
+    assert default_launch_savedir(None, environ=opted_in) == "temporary"
+    assert default_launch_savedir("existing", environ=opted_in) == "existing"
+    assert configured_isolation_mode({}) == "existing"
+    assert configured_isolation_mode({"RENFORGE_ISOLATION": "bogus"}) == "existing"
 
 
-def test_apply_defaults_isolate_saves_home_and_preferences() -> None:
-    resolved = apply_launch_isolation_defaults()
-    assert resolved == {
-        "savedir": "temporary",
-        "home": "temporary",
-        "persistent": "empty",
-        "preferences": "empty",
+def test_apply_defaults_isolate_saves_home_and_preferences_when_opted_in() -> None:
+    assert apply_launch_isolation_defaults(environ={}) == {
+        "savedir": "existing",
+        "home": "existing",
+        "persistent": "existing",
+        "preferences": "existing",
     }
+    for opted_in in (
+        apply_launch_isolation_defaults(environ={"RENFORGE_ISOLATION": "temporary"}),
+        apply_launch_isolation_defaults(savedir="temporary", environ={}),
+    ):
+        assert opted_in == {
+            "savedir": "temporary",
+            "home": "temporary",
+            "persistent": "empty",
+            "preferences": "empty",
+        }
 
 
 def test_apply_defaults_honor_server_wide_existing_config() -> None:
@@ -190,13 +205,15 @@ def test_explicit_path_is_created_and_not_removed_on_stop(tmp_path: Path) -> Non
     try:
         assert isolation.mode == "path"
         assert isolation.savedir == target.resolve()
-        assert isolation.home_mode == "temporary"
-        assert isolation.home is not None
-        assert isolation.cleanup is True
+        # An explicit savedir does not isolate HOME on its own (opt-in).
+        assert isolation.home_mode == "existing"
+        assert isolation.home is None
+        assert isolation.cleanup is False
         assert (target / "multipersistent").is_dir()
         assert isolation.command_args() == ["--savedir", str(target.resolve())]
+        # Nothing temporary was created, so there is nothing for stop to remove.
+        assert isolation.session_root is None
     finally:
-        _cleanup(isolation)
         assert target.is_dir()
         shutil.rmtree(target, ignore_errors=True)
 
@@ -254,6 +271,10 @@ def test_session_init_payload_installs_storage_before_persistent_load() -> None:
 
 def test_low_level_defaults_match_mcp_defaults(monkeypatch) -> None:
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    default = resolve_launch_isolation()
+    assert default.savedir_mode == "existing"
+    assert default.home_mode == "existing"
+    monkeypatch.setenv("RENFORGE_ISOLATION", "temporary")
     isolation = resolve_launch_isolation()
     try:
         assert isolation.savedir_mode == "temporary"
@@ -305,7 +326,7 @@ def test_launch_exposes_user_saves_classifies_existing_and_host_paths(
     tmp_path: Path, monkeypatch, host_save_root: Path
 ) -> None:
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
-    assert launch_exposes_user_saves() is False
+    assert launch_exposes_user_saves() is True
     assert launch_exposes_user_saves(savedir="temporary") is False
     assert launch_exposes_user_saves(savedir="existing") is True
     assert launch_exposes_user_saves(savedir="auto", home="existing") is True
@@ -352,8 +373,10 @@ def test_parse_save_directory_and_list_host_slots(
     assert by_name["1-1"]["extra_info"] == "after menu"
     assert str(host_saves) in listed["directories"]
 
-    filtered = list_host_slots(project, regexp="branch", home=host)
+    filtered = list_host_slots(project, pattern="branch-*", home=host)
     assert [item["name"] for item in filtered["slots"]] == ["branch-a"]
+    # A glob matches the whole name, not a substring.
+    assert list_host_slots(project, pattern="branch", home=host)["slots"] == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
@@ -553,3 +576,29 @@ def test_import_into_a_stopped_session_creates_nothing(tmp_path: Path, host_save
     assert result["ok"] is False
     assert result["code"] == "NO_ISOLATED_SESSION"
     assert not session_root.exists()
+
+
+def test_saves_takes_regexp_for_list_and_a_glob_pattern_for_host_actions(tmp_path: Path) -> None:
+    from renforge.tools import live
+
+    (tmp_path / "game").mkdir()
+    refused = live.saves(str(tmp_path), "list_user", regexp="1-.*")
+    assert refused["ok"] is False and "pattern" in refused["error"]
+    assert live.saves(str(tmp_path), "import", regexp="1-.*")["ok"] is False
+    assert "only valid for list_user or import" in live.saves(str(tmp_path), "list", pattern="1-*")["error"]
+    assert live.saves(str(tmp_path), "list_user", pattern="1-*")["ok"] is True
+
+
+def test_a_slot_pattern_cannot_stall_on_a_long_name(tmp_path: Path, host_save_root: Path) -> None:
+    # The regexp this replaced backtracked catastrophically on (a+)+$; a glob
+    # is matched without backtracking, so a hostile pattern stays fast.
+    import time
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / ("a" * 200 + "-LT1.save")).write_bytes(b"SLOT")
+    started = time.monotonic()
+    listed = list_host_slots(project, pattern="*a*a*a*a*a*a*a*a*a*a*b", home=tmp_path / "home")
+    assert listed["slots"] == []
+    assert time.monotonic() - started < 2.0

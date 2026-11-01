@@ -121,6 +121,7 @@ def build_wrappers(context):
         extra_info: str | None = None,
         regexp: str | None = None,
         slots: list[str] | None = None,
+        pattern: str | None = None,
         authorize: bool = False,
     ) -> dict:
         """Save, load, list, list host slots, or import selected host slots.
@@ -139,6 +140,7 @@ def build_wrappers(context):
                 "extra_info": extra_info,
                 "regexp": regexp,
                 "slots": slots,
+                "pattern": pattern,
                 "authorize": authorize,
             },
             project_root=project_path,
@@ -149,6 +151,7 @@ def build_wrappers(context):
                 "extra_info": extra_info,
                 "regexp": regexp,
                 "slots": slots,
+                "pattern": pattern,
             },
         )
 

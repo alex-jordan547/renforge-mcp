@@ -1130,7 +1130,9 @@ define isolation_mp = MultiPersistent("renforge-isolation-canary")
     # Generate valid persistent, preference, multipersistent and slot canaries
     # with the same engine, rather than relying on invalid placeholder files.
     seed = tmp_path / 'seed'
-    with launch_with_bridge(sdk, project, savedir=str(seed), startup_timeout=90) as session:
+    with launch_with_bridge(
+        sdk, project, savedir=str(seed), home='temporary', startup_timeout=90,
+    ) as session:
         client = session.client
         client.eval_expr("setattr(persistent, 'renforge_host_canary', 'HOST-STATE')")
         client.eval_expr("setattr(_preferences, 'text_cps', 13)")
@@ -1176,7 +1178,7 @@ python early:
     before = [_state_snapshot(root) for root in protected]
 
     with launch_with_bridge(
-        sdk, project, startup_timeout=90,
+        sdk, project, savedir='temporary', startup_timeout=90,
         extra_env={'RENPY_MULTIPERSISTENT': str(host_mp)},
     ) as session:
         client = session.client
