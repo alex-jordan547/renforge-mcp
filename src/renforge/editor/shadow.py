@@ -53,6 +53,14 @@ _MEDIA_SUFFIXES = {
     ".gif",
     ".bmp",
     ".tga",
+    ".tif",
+    ".tiff",
+    ".ico",
+    ".psd",
+    ".xcf",
+    ".heic",
+    ".jxl",
+    ".svg",
     ".ogg",
     ".opus",
     ".mp3",
@@ -60,16 +68,30 @@ _MEDIA_SUFFIXES = {
     ".flac",
     ".m4a",
     ".aac",
+    ".aiff",
+    ".aif",
+    ".oga",
+    ".wma",
+    ".mid",
+    ".midi",
     ".ttf",
     ".otf",
+    ".ttc",
     ".woff",
     ".woff2",
     ".webm",
     ".mp4",
+    ".m4v",
     ".mkv",
     ".ogv",
     ".avi",
     ".mov",
+    ".wmv",
+    ".flv",
+    ".mpg",
+    ".mpeg",
+    ".ts",
+    ".m2ts",
 }
 
 _POSITIVE_INT_RE = re.compile(r"^[0-9]+$")
@@ -368,7 +390,7 @@ def _add_largest_group(
     size: int,
 ) -> None:
     parts = relative_path.split("/")
-    if parts[0] == "game" and len(parts) > 2:
+    if parts[0].casefold() == "game" and len(parts) > 2:
         # Keep the informative first content directory (game/images, ...)
         # instead of collapsing every asset under "game".
         top_level = "/".join(parts[:2])
@@ -456,6 +478,8 @@ def plan_shadow_project(
     base_largest_totals: dict[str, int] = {}
     first_offender_path: str | None = None
     first_offender_size = 0
+    directory_count = 0
+    first_directory_offender: str | None = None
     skipped_links: list[dict[str, str]] = []
     complete = True
 
@@ -487,18 +511,15 @@ def plan_shadow_project(
                 )
             )
 
-    def _check_directory_quota() -> None:
+    def _record_directory(relative_path: str) -> None:
+        nonlocal directory_count, first_directory_offender
+        directory_count += 1
+        if first_directory_offender is None and directory_count > resolved_limits.max_dirs:
+            first_directory_offender = relative_path
+        # Keep only enough directories to report the first offender; the walk
+        # still counts the rest so a breach reports full totals.
         if len(directories) <= resolved_limits.max_dirs:
-            return
-        _raise_quota_error(
-            files=base_file_count,
-            byte_count=base_bytes,
-            limits=resolved_limits,
-            offending_path=directories[-1],
-            offending_size=0,
-            largest=_largest_from_totals(base_largest_totals),
-            directories=len(directories),
-        )
+            directories.append(relative_path)
 
     def _on_walk_error(exc: OSError) -> None:
         # os.walk otherwise skips unreadable directories silently, which would
@@ -543,11 +564,9 @@ def plan_shadow_project(
                             # still resolves expected image/audio names.
                             reason = "linked_directory_assets_placeholders"
                             prefix = PurePosixPath(relative_dir)
-                            directories.append(relative_dir)
-                            directories.extend(
-                                (prefix / item).as_posix() for item in scan.directories
-                            )
-                            _check_directory_quota()
+                            _record_directory(relative_dir)
+                            for item in scan.directories:
+                                _record_directory((prefix / item).as_posix())
                             for item in scan.files:
                                 _record_base_entry(
                                     (prefix / item).as_posix(),
@@ -566,8 +585,7 @@ def plan_shadow_project(
                 kept_dirs.append(dirname)
                 relative_dir = _relative_posix(root, directory)
                 if relative_dir != ".":
-                    directories.append(relative_dir)
-                    _check_directory_quota()
+                    _record_directory(relative_dir)
             dirs[:] = sorted(kept_dirs)
 
             for filename in sorted(files):
@@ -614,7 +632,17 @@ def plan_shadow_project(
             offending_path=first_offender_path,
             offending_size=first_offender_size,
             largest=_largest_from_totals(base_largest_totals),
-            directories=len(directories),
+            directories=directory_count,
+        )
+    if first_directory_offender is not None:
+        _raise_quota_error(
+            files=base_file_count,
+            byte_count=base_bytes,
+            limits=resolved_limits,
+            offending_path=first_directory_offender,
+            offending_size=0,
+            largest=_largest_from_totals(base_largest_totals),
+            directories=directory_count,
         )
 
     entries = list(base_entries)
@@ -625,6 +653,29 @@ def plan_shadow_project(
     directory_set = {_path_key(path) for path in directories}
     file_set = set(index_by_relative)
     staged_paths = {_path_key(path) for path in staged}
+    for relative_path in staged:
+        parent = PurePosixPath(relative_path).parent
+        missing: list[str] = []
+        while parent.parts:
+            parent_posix = parent.as_posix()
+            parent_key = _path_key(parent_posix)
+            if parent_key in directory_set:
+                break
+            missing.append(parent_posix)
+            parent = parent.parent
+        for missing_dir in reversed(missing):
+            _record_directory(missing_dir)
+            directory_set.add(_path_key(missing_dir))
+    if first_directory_offender is not None:
+        _raise_quota_error(
+            files=base_file_count,
+            byte_count=base_bytes,
+            limits=resolved_limits,
+            offending_path=first_directory_offender,
+            offending_size=0,
+            largest=_largest_from_totals(base_largest_totals),
+            directories=directory_count,
+        )
     for relative_path, payload in staged.items():
         key = _path_key(relative_path)
         if key in directory_set:

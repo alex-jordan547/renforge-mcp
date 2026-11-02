@@ -614,7 +614,8 @@ def test_validate_tool_documents_the_clean_shadow_contract() -> None:
     assert "clean shadow" in description
     assert "no live session artifacts" in description
     assert "staged bytes" in description
-    assert "project sources are never modified" in description
+    assert "never publishes staged or copied bytes" in description
+    assert "does not sandbox arbitrary writes" in description
     assert "skipped_links" in description
     assert "zero-byte placeholder" in description
     assert "degraded=true" in description

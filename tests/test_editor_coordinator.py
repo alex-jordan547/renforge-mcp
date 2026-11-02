@@ -1299,6 +1299,34 @@ def test_shadow_directory_quota_is_enforced(tmp_path: Path) -> None:
     assert details["max_dirs"] == 1
 
 
+def test_shadow_staged_parent_directories_count_toward_dir_quota(
+    tmp_path: Path,
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={"game/new/deep/extra.rpy": b"label extra:\n    return\n"},
+            limits=shadow.ShadowLimits(max_files=100, max_bytes=10**9, max_dirs=1),
+        )
+
+    details = excinfo.value.details
+    assert details["directories"] == 3
+    assert details["max_dirs"] == 1
+
+
+def test_shadow_largest_group_names_game_dir_case_insensitively() -> None:
+    import renforge.editor.shadow as shadow
+
+    totals: dict[str, int] = {}
+    shadow._add_largest_group(totals, "Game/images/bg.png", 100)
+
+    assert totals == {"Game/images": 100}
+
+
 def test_shadow_staged_replacement_is_checked_after_overlay(tmp_path: Path) -> None:
     import renforge.editor.shadow as shadow
 

@@ -586,11 +586,13 @@ These tools change game or project state: `renforge_launch`, `renforge_jump`,
 `renforge_generate_translations`, `renforge_web_build`, and
 `renforge_distribute`.
 
-`renforge_validate` is non-destructive: project sources are unchanged. It
-builds a temporary clean shadow and never publishes to project sources or
-records an editor transaction, but runtime state and the SDK cache may be
-created (`.renforge/`, including the wrapper's `.renforge/activity.jsonl`, and
-the downloaded SDK cache).
+`renforge_validate` does not publish to project sources: it builds a temporary
+clean shadow and never records an editor transaction, but runtime state and the
+SDK cache may be created (`.renforge/`, including the wrapper's
+`.renforge/activity.jsonl`, and the downloaded SDK cache). This guarantee covers
+RenForge, not the project's own code: lint executes `init python` with the
+caller's privileges, so a project that writes an absolute path can still
+change files.
 
 `renforge_send_input` is also stateful: supply exactly one mode per call. Text
 input fails explicitly when Ren'Py cannot verify a focused `Input`, so refresh

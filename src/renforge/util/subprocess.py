@@ -103,8 +103,12 @@ def _run_command_bounded(
         except subprocess.TimeoutExpired:
             pass
         returncode = -1
-    for reader in readers:
+    for index, reader in enumerate(readers):
         reader.join(timeout=5)
+        if reader.is_alive():
+            # A descendant still holds the pipe after the runner returned, so
+            # the captured transcript is incomplete even if the exit code is 0.
+            truncated[index] = True
 
     stdout = _decode_bounded_output(bytes(buffers[0]))
     if timed_out:
