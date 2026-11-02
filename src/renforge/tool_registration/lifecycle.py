@@ -30,7 +30,8 @@ def _annotate_language_result(
     needs the persistence warning, because Ren'Py stores the language there.
     """
     annotated = dict(result)
-    if language is not None and not any(key in annotated for key in _LANGUAGE_RESULT_KEYS):
+    reported_language = any(key in annotated for key in _LANGUAGE_RESULT_KEYS)
+    if language is not None and annotated.get("ok") and not reported_language:
         note = (
             "The dashboard did not report language support, so the requested "
             f"language {language!r} was not confirmed. Upgrade the dashboard or "
@@ -42,7 +43,12 @@ def _annotate_language_result(
         annotated["message"] = f"{message} {note}" if isinstance(message, str) and message else note
     if language is not None and not annotated.get("ok"):
         annotated["language_applied"] = False
-    if warning is not None and annotated.get("ok"):
+    if (
+        warning is not None
+        and annotated.get("ok")
+        and not annotated.get("already_running")
+        and reported_language
+    ):
         annotated.setdefault("warning", warning)
     return annotated
 

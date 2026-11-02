@@ -248,9 +248,10 @@ def language_persistence_warning(language: str | None, savedir: str | None) -> s
 
     Ren'Py stores the language in preferences, which live in the savedir. The
     default savedir is the player's real one; ``temporary`` and explicit custom
-    directories contain the change instead.
+    directories contain the change instead. ``existing`` and ``default`` are
+    sentinels for that real savedir, not isolated directories.
     """
-    if language is None or savedir:
+    if language is None or (savedir and savedir not in {"existing", "default"}):
         return None
     return (
         "Ren'Py stores the language in preferences, so this launch changed the "

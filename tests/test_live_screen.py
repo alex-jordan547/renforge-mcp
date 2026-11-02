@@ -272,6 +272,13 @@ def test_launch_game_does_not_warn_when_the_language_is_isolated(tmp_path, monke
     live._SESSIONS.pop(live._key(tmp_path), None)
 
 
+def test_language_persistence_warning_treats_savedir_sentinels_as_the_default():
+    assert live.language_persistence_warning("japanese", "existing") is not None
+    assert live.language_persistence_warning("japanese", "default") is not None
+    assert live.language_persistence_warning("japanese", "temporary") is None
+    assert live.language_persistence_warning("japanese", "/tmp/saves") is None
+
+
 def test_launch_game_reports_language_cannot_change_a_running_session(tmp_path, monkeypatch):
     (tmp_path / "game").mkdir()
     session = types.SimpleNamespace(
