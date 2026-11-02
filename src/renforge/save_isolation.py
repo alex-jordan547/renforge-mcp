@@ -578,7 +578,17 @@ def import_host_slots(
         if record is None:
             continue
         directory = Path(record["directory"])
-        copied = _copy_slot_files(directory, dest, name)
+        try:
+            copied = _copy_slot_files(directory, dest, name)
+        except FileNotFoundError:
+            if dest.is_dir():
+                raise
+            # The session stopped mid-copy and its savedir went with it.
+            return {
+                "ok": False,
+                "code": "NO_ISOLATED_SESSION",
+                "error": "the session's save folder is gone; the session has stopped",
+            }
         if not copied:
             missing.append(name)
             continue
