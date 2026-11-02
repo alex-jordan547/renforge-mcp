@@ -62,7 +62,9 @@ def _run_command_bounded(
     check: bool,
     max_output_bytes: int,
 ) -> CommandResult:
-    process = subprocess.Popen(
+    # The command is an internal argv sequence and shell=False (the default),
+    # so no argument is ever interpreted by a shell.
+    process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         normalized_command,
         cwd=cwd,
         env=env,
