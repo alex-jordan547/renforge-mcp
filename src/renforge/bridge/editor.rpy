@@ -443,6 +443,8 @@ init 1090 python:
         "status.reset": "Reset",
         "status.saving": "Saving",
         "status.commit_queued": "Commit queued",
+        "status.dry_run_ready": "Preview ready",
+        "status.dry_run_failed": "Preview failed",
         "status.undo_queued": "Undo queued",
         "status.redo_queued": "Redo queued",
         "status.committed": "Committed",
@@ -725,6 +727,9 @@ init 1100 python:
             state.save_requested = False
             state.save_last_error = None
             state.save_error = None
+            state.dry_run_result = None
+            state.dry_run_error = None
+            state.dry_run_request_id = None
             _renforge_editor_clear_current_analysis(state)
             state.selected_analysis_pending = False
             state.history = []
@@ -761,6 +766,12 @@ init 1100 python:
             state.last_restore_method = None
             state.last_preview_method = None
             state.main_thread_id = None
+        if not hasattr(state, "dry_run_result"):
+            state.dry_run_result = None
+        if not hasattr(state, "dry_run_error"):
+            state.dry_run_error = None
+        if not hasattr(state, "dry_run_request_id"):
+            state.dry_run_request_id = None
         if not hasattr(state, "snap_offset_x"):
             state.snap_offset_x = None
         if not hasattr(state, "snap_offset_y"):
@@ -1792,9 +1803,24 @@ init 1100 python:
 
 
 
+    def _renforge_editor_reset_dry_run(state):
+        """Forget the previous preview result; it belongs to another attempt."""
+        if state.dry_run_request_id is not None:
+            # A preview reply may still arrive after the selection that
+            # requested it is gone. Release the in-flight save flags now so
+            # that late reply cannot leave Save rejected until a restart.
+            state.save_in_progress = False
+            state.save_requested = False
+            state.save_button_state = "idle"
+        state.dry_run_result = None
+        state.dry_run_error = None
+        state.dry_run_request_id = None
+
+
     def _renforge_editor_clear_selection():
         """Clear selection chrome/analysis while preserving targets and history."""
         state = _renforge_editor_state()
+        _renforge_editor_reset_dry_run(state)
         state.selected_runtime_key = None
         state.selected_widget_id = None
         state.selected_screen = None
@@ -2527,11 +2553,17 @@ init 1100 python:
             config = _renforge_editor_host_config()
             if config is None:
                 raise RuntimeError("editor host is unavailable")
+            # A dry-run may observe several intents before it can produce the
+            # diff; give the coordinator the same window as the MCP caller
+            # instead of the short real-save request timeout.
+            request_timeout = 35.0 if (request.get("context") or {}).get("dry_run") is True else 5.0
             last_error = None
             for _attempt in range(2):
                 try:
-                    with socket.create_connection((config["host"], config["port"]), timeout=5.0) as sock:
-                        sock.settimeout(5.0)
+                    with socket.create_connection(
+                        (config["host"], config["port"]), timeout=request_timeout
+                    ) as sock:
+                        sock.settimeout(request_timeout)
                         file_obj = sock.makefile("rb")
                         auth_frame = {
                             "protocol": "renforge-editor",
@@ -5200,6 +5232,9 @@ init 1100 python:
                 "guide_x": state.guide_x,
                 "guide_y": state.guide_y,
             }
+        # The live position is about to move: a preview diff from before the
+        # move no longer describes the pending edit.
+        _renforge_editor_reset_dry_run(state)
         if record:
             _renforge_editor_push_history([int(snapped_x), int(snapped_y)])
         result = _renforge_editor_set_target_position(
@@ -5602,6 +5637,7 @@ init 1100 python:
 
     def _renforge_editor_select(x, y, requested_candidate=None):
         state = _renforge_editor_state()
+        _renforge_editor_reset_dry_run(state)
         screen_x, screen_y = None, None
         if requested_candidate is None:
             screen_x, screen_y = x, y
@@ -6102,6 +6138,16 @@ init 1100 python:
             analyze_runtime_key = context.get("runtime_key")
             state.coordinator_applied.append(applied_item)
             state.last_coordinator_apply = applied_item
+            is_dry_run = command in ("commit", "undo_commit") and context.get("dry_run") is True
+            if is_dry_run and (
+                state.dry_run_request_id is None
+                or applied_item.get("request_id") != state.dry_run_request_id
+            ):
+                # A preview reply belongs to the selection that requested it.
+                # Ignore late replies so an old diff cannot masquerade as the
+                # current selection's preview.
+                applied_item["stale_dry_run"] = True
+                continue
             if reply.get("ok") is True:
                 result = reply.get("result")
                 if not isinstance(result, builtins.dict):
@@ -6117,6 +6163,13 @@ init 1100 python:
                         state.selected_analysis_pending = False
                         _renforge_editor_clear_current_analysis(state)
                         _renforge_editor_set_status("analyze_failed")
+                    elif is_dry_run:
+                        state.dry_run_result = None
+                        state.dry_run_error = state.save_last_error
+                        state.dry_run_request_id = None
+                        state.save_in_progress = False
+                        state.save_requested = False
+                        _renforge_editor_set_status("dry_run_failed")
                     elif command in ("commit", "undo_commit"):
                         state.save_in_progress = False
                         state.save_enabled = False
@@ -6225,6 +6278,18 @@ init 1100 python:
                         state.selected_lock_reason = _renforge_editor_lock_code(lock_reason)
                         state.save_enabled = False
                         _renforge_editor_set_status("locked")
+                elif is_dry_run:
+                    # Preview only: no pending transaction, handshake, reload,
+                    # or save_enabled changes.
+                    state.dry_run_result = builtins.dict(result)
+                    state.dry_run_error = None
+                    state.dry_run_request_id = None
+                    state.save_in_progress = False
+                    state.save_requested = False
+                    state.save_error = None
+                    state.save_last_error = None
+                    state.save_button_state = "idle"
+                    _renforge_editor_set_status("dry_run_ready")
                 elif command in ("commit", "undo_commit"):
                     operation = str(context.get("operation") or command)
                     state.pending_transaction_id = result.get("transaction_id")
@@ -6351,6 +6416,14 @@ init 1100 python:
                     state.selected_analysis_pending = False
                     _renforge_editor_clear_current_analysis(state)
                     _renforge_editor_set_status("analyze_failed")
+                elif is_dry_run:
+                    state.dry_run_result = None
+                    state.dry_run_error = str(state.save_error or state.save_last_error or "DRY_RUN_FAILED")
+                    state.dry_run_request_id = None
+                    state.save_in_progress = False
+                    state.save_requested = False
+                    state.save_button_state = "idle"
+                    _renforge_editor_set_status("dry_run_failed")
                 elif command in ("commit", "undo_commit"):
                     state.save_in_progress = False
                     state.save_enabled = False
@@ -6555,8 +6628,9 @@ init 1100 python:
         }
 
 
-    def _renforge_editor_save():
+    def _renforge_editor_save(dry_run=False):
         state = _renforge_editor_state()
+        _renforge_editor_reset_dry_run(state)
         if state.selected_lock_reason:
             return {"ok": False, "error": "TARGET_LOCKED"}
         if state.current_analysis_id is None:
@@ -6566,11 +6640,13 @@ init 1100 python:
         intents = _renforge_editor_collect_intents()
         if not intents:
             return {"ok": False, "error": "NO_INTENTS"}
+        dry_run = bool(dry_run)
         state.save_in_progress = True
         state.save_button_state = "saving"
         state.save_requested = True
         state.save_error = None
         state.save_last_error = None
+        state.last_commit_status = None
         state.pending_commit_is_style_color = bool(
             intents
             and all(
@@ -6599,18 +6675,26 @@ init 1100 python:
             )
         )
         _renforge_editor_set_status("saving")
+        payload = {"intents": intents}
+        context = {"command": "commit"}
+        if dry_run:
+            payload["dry_run"] = True
+            context["dry_run"] = True
         pending = _renforge_editor_ensure_coordinator().submit_host(
             "commit",
-            {"intents": intents},
-            {"command": "commit"},
+            payload,
+            context,
         )
         state.pending_commit_request_id = pending
+        if dry_run:
+            state.dry_run_request_id = pending
         renpy.restart_interaction()
-        return {"ok": True, "request_id": pending, "intents": intents}
+        return {"ok": True, "request_id": pending, "intents": intents, "dry_run": dry_run}
 
 
     def _renforge_editor_h_save(payload):
-        return _renforge_editor_save()
+        payload = payload or {}
+        return _renforge_editor_save(dry_run=bool(payload.get("dry_run", False)))
 
 
     def _renforge_editor_h_select(payload):
@@ -7150,6 +7234,7 @@ init 1100 python:
             "ok": True,
             "active": bool(state.active),
             "save_enabled": bool(state.save_enabled),
+            "dry_run_supported": True,
             "save_button_state": state.save_button_state,
             "dirty_target_count": len([target for target in state.targets.values() if target.get("dirty")]),
             "selected_widget_id": state.selected_widget_id,
@@ -7165,6 +7250,8 @@ init 1100 python:
             "save_in_progress": bool(state.save_in_progress),
             "save_requested": bool(state.save_requested),
             "save_error": state.save_error,
+            "dry_run_result": state.dry_run_result,
+            "dry_run_error": state.dry_run_error,
             "status_code": _renforge_editor_status_code(),
             "status_text": _renforge_editor_status_text(),
             "selected_original_position": state.selected_original_position,
@@ -7197,6 +7284,7 @@ init 1100 python:
             ),
             "pending_transaction_id": state.pending_transaction_id,
             "pending_operation": state.pending_operation,
+            "last_commit_status": state.last_commit_status,
             "last_committed_transaction_id": state.last_committed_transaction_id,
             "last_undone_transaction_id": state.last_undone_transaction_id,
             "style_color_input": state.style_color_input,

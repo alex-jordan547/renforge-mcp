@@ -455,6 +455,8 @@ def test_status_catalogue_keys_match_plan():
         "status.reset",
         "status.saving",
         "status.commit_queued",
+        "status.dry_run_ready",
+        "status.dry_run_failed",
         "status.undo_queued",
         "status.committed",
         "status.reload_committed",

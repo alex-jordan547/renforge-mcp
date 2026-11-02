@@ -381,11 +381,22 @@ def test_remove_bridge_artifacts_deletes_injected_and_runtime_files(tmp_path: Pa
     assert owned_source.exists()
     assert artifacts_path(tmp_path).exists()
 
-    assert remove_bridge_artifacts(tmp_path, expected_session_id=materialized.session_id) is True
+    removed: list[str] = []
+    assert (
+        remove_bridge_artifacts(
+            tmp_path,
+            expected_session_id=materialized.session_id,
+            removed=removed,
+        )
+        is True
+    )
 
     assert not owned_source.exists()
     assert not owned_info.exists()
     assert not artifacts_path(tmp_path).exists()
+    assert f"game/{owned_source.name}" in removed
+    assert ".renforge/control/bridge.json" in removed
+    assert ".renforge/control/artifacts.json" in removed
     # Unowned / legacy paths preserved.
     assert legacy_inject.exists()
     assert (game / "renforge_bridge.rpyc").exists()
@@ -405,12 +416,74 @@ def test_bridge_session_close_kills_running_game(tmp_path: Path) -> None:
     assert process.killed is True
     assert process.terminated is False
     assert session.closed is True
+    assert session.close()["files_deleted"] == []
 
     injected = tmp_path / "game" / "renforge_bridge.rpy"
     injected.parent.mkdir()
     injected.write_text("# belongs to a later session\n", encoding="utf-8")
     session.close()
     assert injected.exists()
+
+
+def test_bridge_session_close_reports_a_removed_temporary_savedir(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    savedir = tmp_path / "renforge-saves"
+    savedir.mkdir()
+    (savedir / "1-1-LT1.save").write_text("save", encoding="utf-8")
+
+    session = BridgeSession(
+        _FakeProcess(),
+        _FakeClient(),
+        project_root,
+        temporary_savedir=savedir,
+        cleanup_savedir=True,
+    )
+
+    result = session.close()
+
+    assert not savedir.exists()
+    assert result["cleaned"]["temporary_savedir"] is True
+    # The temporary savedir lives outside the project, so its receipt stays
+    # absolute.
+    assert result["files_deleted"] == [savedir.resolve().as_posix()]
+
+
+def test_partial_savedir_cleanup_still_reports_the_paths_it_removed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    savedir = tmp_path / "renforge-saves"
+    (savedir / "nested").mkdir(parents=True)
+    removed_file = savedir / "nested" / "1-1-LT1.save"
+    removed_file.write_text("save", encoding="utf-8")
+    surviving_file = savedir / "2-1-LT1.save"
+    surviving_file.write_text("save", encoding="utf-8")
+
+    from renforge.bridge import launcher as launcher_module
+
+    def partial_rmtree(_path, **_kwargs):
+        removed_file.unlink()
+        raise OSError("locked")
+
+    monkeypatch.setattr(launcher_module.shutil, "rmtree", partial_rmtree)
+    session = BridgeSession(
+        _FakeProcess(),
+        _FakeClient(),
+        project_root,
+        temporary_savedir=savedir,
+        cleanup_savedir=True,
+    )
+
+    result = session.close()
+
+    assert result["cleaned"]["temporary_savedir"] is False
+    assert "temporary_savedir" in result["failed"]
+    assert result["files_deleted"] == [removed_file.resolve().as_posix()]
+    assert surviving_file.exists()
 
 
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -1104,6 +1177,32 @@ def test_bridge_session_close_is_idempotent(tmp_path: Path) -> None:
     assert first == second
     assert process.killed is True
     assert second["cleaned"]["renpy_process"] is True
+
+
+def test_repeated_close_does_not_repeat_the_first_calls_deletions(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    savedir = tmp_path / "renforge-saves"
+    savedir.mkdir()
+    (savedir / "1-1-LT1.save").write_text("save", encoding="utf-8")
+    session = BridgeSession(
+        _FakeProcess(),
+        _FakeClient(),
+        project_root,
+        temporary_savedir=savedir,
+        cleanup_savedir=True,
+    )
+
+    first = session.close()
+    second = session.close()
+
+    assert first["files_deleted"] == [savedir.resolve().as_posix()]
+    # The second call deleted nothing, so it reports no deletions even though
+    # the cleanup state still names what the first call did.
+    assert second["files_deleted"] == []
+    assert second["cleaned"]["temporary_savedir"] is True
 
 
 def test_editor_launch_failure_cleans_resources_and_closes_coordinator(

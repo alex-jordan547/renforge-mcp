@@ -616,6 +616,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Drive the in-game Live Editor with public actions `status`, `select`, and `save`. "
             "`select` uses the overlay hit path in `logical` or `screenshot` coordinates. "
             "`save` is the overlay Save (reload + attest), not a silent source write. "
+            "`save` with `dry_run=true` returns a unified source diff and applies nothing: it skips "
+            "shadow validation, publish, reload, and attestation, and creates no transaction. "
             "Never call private `editor_task0_*` handlers."
         ),
         annotations=_ann(
@@ -631,10 +633,15 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "y": "Required for `select`. Optional destination for `save` when applying a move.",
             "coordinate_space": "`logical` (default) or `screenshot` coordinates.",
             "expected_frame_id": "Optional frame id from a recent screenshot or listing; rejects a stale frame.",
+            "dry_run": (
+                "`save` only. Preview the source diff without writing, linting, reloading, "
+                "or creating a transaction. Cannot be combined with x/y."
+            ),
         },
         parameter_schemas={
             "action": _enum("status", "select", "save"),
             "coordinate_space": _enum("logical", "screenshot"),
+            "dry_run": {"type": "boolean"},
         },
         input_schema={
             "oneOf": [
@@ -651,7 +658,10 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                     "required": ["action", "x", "y"],
                 },
                 {
-                    "properties": {"action": {"const": "save"}},
+                    "properties": {
+                        "action": {"const": "save"},
+                        "dry_run": {"type": "boolean"},
+                    },
                     "required": ["action"],
                 },
             ]
@@ -885,7 +895,16 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Read the full scene graph (logical scene data). Unlike `renforge_list_ui_elements` this is broad and includes non-"
             "focusable nodes, so use it for full-tree inspection when semantic selectors are ambiguous. `save_as` or "
             "`diff_against` may create `.renforge/scenes/`; `save_as` writes and overwrites the named JSON snapshot. Omit both "
-            "options for read-only inspection."
+            "options for read-only inspection. With `include=[\"overflow\"]` only `text`, `button`, and `input` nodes get an "
+            "overflow verdict: the effective ceiling is the tighter of the widget's absolute `xmaximum`/`ymaximum` "
+            "(minus integer padding and margins) and the child text's own absolute maximum; the unwrapped width and "
+            "the wrapped height are compared with that inner box. `overflow` is true only when the wrapped height "
+            "exceeds the inner height (actual vertical clipping); horizontal wrapping is reported in "
+            "`overflow_axes.x` and `wrapped.x`, not as overflow. `overflow_px` is the vertical clip amount. A y verdict "
+            "requires an absolute x maximum to know the wrap width; a y-only request is unavailable. An x-only result "
+            "is `complete: false` with `unmeasured_axes: [\"y\"]` and null `overflow`/`overflow_px`. Relative maximums "
+            "are recorded but not compared, and vertical text is not measured. When no absolute maximum is declared "
+            "the verdict is `available: false` with a reason."
         ),
         annotations=_ann(
             readOnlyHint=False,

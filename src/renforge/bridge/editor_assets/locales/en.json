@@ -83,6 +83,8 @@
   "status.reset": "Reset",
   "status.saving": "Saving",
   "status.commit_queued": "Commit queued",
+  "status.dry_run_ready": "Preview ready",
+  "status.dry_run_failed": "Preview failed",
   "status.undo_queued": "Undo queued",
   "status.redo_queued": "Redo queued",
   "status.committed": "Committed",

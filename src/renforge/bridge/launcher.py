@@ -476,11 +476,36 @@ def _editor_environment(
     }
 
 
+def _existing_paths(root: Path) -> list[Path]:
+    """Every existing path under ``root``, so a partial delete can be reported."""
+    if not root.exists():
+        return []
+    paths: list[Path] = []
+    for current, _directories, filenames in os.walk(root):
+        base = Path(current)
+        paths.append(base)
+        paths.extend(base / name for name in filenames)
+    return paths
+
+
+def _deletion_receipt(project_root: Path, path: Path) -> str:
+    """Render a removed path for ``files_deleted``.
+
+    Paths inside the project stay project-relative POSIX; a temporary savedir
+    usually lives outside the project and stays absolute.
+    """
+    try:
+        return path.resolve().relative_to(project_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.as_posix()
+
+
 def remove_bridge_artifacts(
     project_root: Path,
     *,
     expected_session_id: str | None = None,
     remove_bridge_info: bool = True,
+    removed: list[str] | None = None,
 ) -> bool:
     """Remove schema-3 owned session artifacts after full ownership validation.
 
@@ -488,12 +513,15 @@ def remove_bridge_artifacts(
     complete proven removal. Legacy fixed names, ``traceback.txt``,
     ``errors.txt``, and unowned pre-migration metadata are never touched.
     ``remove_bridge_info=False`` removes only source and asset artifacts.
+    When ``removed`` is given, deleted project-relative POSIX paths are
+    appended to it.
     """
     try:
         return remove_owned_artifacts(
             Path(project_root),
             expected_session_id=expected_session_id,
             remove_bridge_info=remove_bridge_info,
+            removed=removed,
         )
     except ArtifactOwnershipError as exc:
         # Preserve fail-closed cleanup for BridgeSession retries.
@@ -552,7 +580,15 @@ class BridgeSession:
         """Stop the game, Xvfb group if any, and temporary session files."""
         with self._close_lock:
             if self._closed:
-                return self._close_result or {"cleaned": self._cleaned, "failed": ["close"]}
+                result = dict(
+                    self._close_result
+                    or {"cleaned": self._cleaned, "failed": ["close"]}
+                )
+                # A receipt belongs to the call that performed the deletion.
+                # This call deleted nothing, so it must not claim the paths an
+                # earlier close already removed.
+                result["files_deleted"] = []
+                return result
             self._close_result = self._close_resources(timeout)
             ownership_failures = {"process_alive", "bridge_artifacts", "temporary_savedir", "editor_coordinator"}
             if ownership_failures.intersection(self._close_result.get("failed", [])):
@@ -572,6 +608,7 @@ class BridgeSession:
             "editor_coordinator": self._editor_coordinator is None,
         }
         failed: list[str] = []
+        removed: list[str] = []
 
         if self._editor_coordinator is not None:
             try:
@@ -606,7 +643,7 @@ class BridgeSession:
             if self.process.poll() is None:
                 failed.append("process_alive")
                 self._cleaned = cleaned
-                return {"cleaned": cleaned, "failed": failed}
+                return {"cleaned": cleaned, "failed": failed, "files_deleted": removed}
             cleaned["renpy_process"] = True
         else:
             # Already exited: reap it so it does not linger as a zombie.
@@ -622,22 +659,36 @@ class BridgeSession:
                 if self._project_lock is not None
                 else None
             )
-            remove_bridge_artifacts(self._project_root, expected_session_id=expected)
+            remove_bridge_artifacts(
+                self._project_root,
+                expected_session_id=expected,
+                removed=removed,
+            )
             cleaned["bridge_artifacts"] = True
         except Exception:
             failed.append("bridge_artifacts")
 
         if self.cleanup_savedir and self.temporary_savedir is not None:
+            savedir = self.temporary_savedir
+            # A failed rmtree may still have removed part of the tree, and the
+            # receipt has to name what is actually gone rather than nothing.
+            known_paths = _existing_paths(savedir)
             try:
-                shutil.rmtree(self.temporary_savedir, ignore_errors=False)
+                shutil.rmtree(savedir, ignore_errors=False)
                 cleaned["temporary_savedir"] = True
             except FileNotFoundError:
+                # Already gone: cleanup succeeded, but nothing was deleted.
                 cleaned["temporary_savedir"] = True
             except Exception:
                 failed.append("temporary_savedir")
+                for path in sorted(known_paths, key=lambda item: len(item.parts), reverse=True):
+                    if not path.exists():
+                        removed.append(_deletion_receipt(self._project_root, path))
+            else:
+                removed.append(_deletion_receipt(self._project_root, savedir))
 
         self._cleaned = cleaned
-        result: dict[str, Any] = {"cleaned": cleaned}
+        result: dict[str, Any] = {"cleaned": cleaned, "files_deleted": removed}
         if failed:
             result["failed"] = failed
         return result

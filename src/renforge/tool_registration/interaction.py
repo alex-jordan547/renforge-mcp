@@ -317,6 +317,7 @@ def build_wrappers(context):
         y: float | None = None,
         coordinate_space: str = "logical",
         expected_frame_id: str = "",
+        dry_run: bool = False,
     ) -> dict:
         """Status, select, or Save through the public Live Editor tool."""
         return _log_tool_call(
@@ -328,6 +329,7 @@ def build_wrappers(context):
                 "y": y,
                 "coordinate_space": coordinate_space,
                 "expected_frame_id": expected_frame_id,
+                "dry_run": dry_run,
             },
             project_root=project_path,
             fn=live.editor,
@@ -337,6 +339,7 @@ def build_wrappers(context):
                 "y": y,
                 "coordinate_space": coordinate_space,
                 "expected_frame_id": expected_frame_id or None,
+                "dry_run": dry_run,
             },
         )
 

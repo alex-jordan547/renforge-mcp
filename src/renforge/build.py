@@ -29,13 +29,38 @@ def _launcher_command(sdk: RenpySdk, command: str, *args: str) -> list[str]:
     return [*base, str(launcher), command, *args]
 
 
+def _destination_receipt(project: RenpyProject, destination: str | Path | None) -> list[str] | None:
+    """Return the destination as a write receipt when it is explicitly known.
+
+    Ren'Py chooses a default destination when none is given, so an unknown
+    destination cannot be enumerated and yields no receipt at all.
+    """
+    if destination is None:
+        return None
+    path = Path(destination).expanduser().resolve()
+    try:
+        return [path.relative_to(project.abs_root).as_posix()]
+    except ValueError:
+        # Builds may be written outside the project; keep the absolute path.
+        return [path.as_posix()]
+
+
+def _build_receipt(
+    project: RenpyProject, destination: str | Path | None, ok: bool
+) -> list[str] | None:
+    """Only a successful build with an explicit destination has a receipt."""
+    if not ok:
+        return None
+    return _destination_receipt(project, destination)
+
+
 def web_build(sdk: RenpySdk, project: RenpyProject, *, destination: str | Path | None = None, timeout: int = 600) -> dict[str, Any]:
     """Package ``project`` as a browser-playable build (needs the web DLC)."""
     args: list[str] = [str(project.abs_root)]
     if destination is not None:
         args += ["--destination", str(Path(destination).expanduser().resolve())]
     result = run_command(_launcher_command(sdk, "web_build", *args), timeout=timeout)
-    return {
+    payload: dict[str, Any] = {
         "ok": result.returncode == 0,
         "returncode": result.returncode,
         "destination": str(destination) if destination else None,
@@ -43,6 +68,10 @@ def web_build(sdk: RenpySdk, project: RenpyProject, *, destination: str | Path |
         "stderr": result.stderr[-4000:],
         "timed_out": result.timed_out,
     }
+    receipt = _build_receipt(project, destination, result.returncode == 0)
+    if receipt is not None:
+        payload["files_touched"] = receipt
+    return payload
 
 
 def distribute(
@@ -65,7 +94,7 @@ def distribute(
     args.append(str(project.abs_root))
 
     result = run_command(_launcher_command(sdk, "distribute", *args), timeout=timeout)
-    return {
+    payload: dict[str, Any] = {
         "ok": result.returncode == 0,
         "returncode": result.returncode,
         "packages": list(packages) if packages else None,
@@ -74,6 +103,10 @@ def distribute(
         "stderr": result.stderr[-4000:],
         "timed_out": result.timed_out,
     }
+    receipt = _build_receipt(project, destination, result.returncode == 0)
+    if receipt is not None:
+        payload["files_touched"] = receipt
+    return payload
 
 
 __all__ = ["web_build", "distribute"]

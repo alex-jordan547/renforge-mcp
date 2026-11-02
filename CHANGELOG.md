@@ -11,13 +11,26 @@ versioning.
   process. Results report `language_applied` (`true`/`false`, or `null` when the
   bridge does not report a language) and a `warning` when the default savedir
   lets the preference persist. (#112)
+- Activity log write receipts: mutating tools report `files_touched` /
+  `files_deleted`, `stop` lists the paths it removed, and path lists too large
+  for the journal spill to 0600 sidecars capped at the newest 200. (#104)
 
 ### Changed
+
+- `renforge_scene_tree(include=["overflow"])`: dropped the `clipped` alias
+  (it duplicated `overflow`), added per-axis `overflow_axes` and `wrapped`
+  values, and now reports `overflow` only for actual vertical clipping.
+  Horizontal wrapping is reported in `overflow_axes.x` / `wrapped.x`, not as
+  overflow. Verdicts also cover text inside `button` and `input` nodes, and
+  `include=["style"]` now includes integer `xmaximum`/`ymaximum`. (#105, #108)
 
 ### Fixed
 
 - A failed launch no longer reports `language_applied: true` just because the
   requested language was already active in another session. (#112)
+- Live Editor Save keeps polling after `reload_script` resets the bridge
+  connection, instead of failing the status read with "Connection reset by
+  peer".
 
 ## [0.7.3] - 2026-10-07
 

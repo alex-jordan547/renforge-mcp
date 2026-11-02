@@ -80,6 +80,51 @@ class _FakeImageButtonWidget:
         return self._child
 
 
+class _FakeTextDisplayable:
+    """Minimal Text stand-in: natural size plus style maximums."""
+
+    def __init__(self, width, height, **style):
+        self._natural = (width, height)
+        self.style = types.SimpleNamespace(**style)
+
+    def size(self, width, height, st, at):
+        return self._natural
+
+
+class _FakeWrappingTextDisplayable:
+    """Text stand-in that grows taller when wrapped to a constrained width."""
+
+    def __init__(self, width, height, wrapped_width, wrapped_height, **style):
+        self._natural = (width, height)
+        self._wrapped = (wrapped_width, wrapped_height)
+        self.style = types.SimpleNamespace(**style)
+
+    def size(self, width, height, st, at):
+        if width < self._natural[0]:
+            return self._wrapped
+        return self._natural
+
+
+class _FakeTextButtonDisplayable:
+    """Minimal Window-style control that wraps a text child."""
+
+    def __init__(self, child, **style):
+        self.child = child
+        self.style = types.SimpleNamespace(**style)
+
+
+class _FakeImageDisplayable:
+    """Non-text child that must not be mistaken for the label."""
+
+
+class _FakeChildrenButtonDisplayable:
+    """Control with several children, such as an icon plus a label."""
+
+    def __init__(self, *children, **style):
+        self.children = list(children)
+        self.style = types.SimpleNamespace(**style)
+
+
 class _FakeFocus:
     def __init__(self, text, x, y, w, h, widget=None):
         if widget is not None:
@@ -3363,6 +3408,319 @@ def test_editor_status_exposes_current_host_capabilities(
         globs["_renforge_editor_stop_coordinator"]()
 
 
+def test_editor_status_exposes_source_position_and_dry_run(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.selected_source_position = [12, 34]
+        state.preview_position = [56, 78]
+        state.dry_run_result = {"dry_run": True, "state": "dry_run", "changed": True}
+        state.dry_run_error = None
+
+        status = globs["_renforge_editor_h_status"]({})
+
+        assert status["selected_source_position"] == [12, 34]
+        assert status["preview_position"] == [56, 78]
+        assert status["dry_run_supported"] is True
+        assert status["dry_run_result"] == {
+            "dry_run": True,
+            "state": "dry_run",
+            "changed": True,
+        }
+        assert status["dry_run_error"] is None
+
+        state.dry_run_result = None
+        state.dry_run_error = "VALIDATION_FAILED"
+        failed = globs["_renforge_editor_h_status"]({})
+        assert failed["dry_run_result"] is None
+        assert failed["dry_run_error"] == "VALIDATION_FAILED"
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_save_dry_run_submits_flag_and_applies_preview_result(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        submissions = []
+
+        class Submitter:
+            def submit_host(self, command, payload, context=None):
+                submissions.append((command, payload, context))
+                return "dry-run-request"
+
+            def collect_nowait(self):
+                return []
+
+        globs["_renforge_editor_ensure_coordinator"] = lambda: Submitter()
+        state = globs["_renforge_editor_state"]()
+        state.save_enabled = True
+        state.selected_lock_reason = None
+        state.current_analysis_id = "analysis-1"
+        state.targets["target"] = {
+            "analysis_id": "analysis-1",
+            "source_key": {
+                "relative_path": "script.rpy",
+                "line": 2,
+                "widget_id": "start_btn",
+            },
+            "capabilities": {"move": True},
+            "position": [40, 50],
+            "runtime_baseline": [12, 10],
+            "source_position": [12, 10],
+            "dirty": True,
+        }
+
+        reply = globs["_renforge_editor_h_save"]({"dry_run": True})
+
+        assert reply["ok"] is True
+        assert reply["dry_run"] is True
+        assert len(submissions) == 1
+        command, payload, context = submissions[0]
+        assert command == "commit"
+        assert payload["dry_run"] is True
+        assert payload["intents"][0]["x"] == 40
+        assert payload["intents"][0]["y"] == 50
+        assert context == {"command": "commit", "dry_run": True}
+        assert state.dry_run_request_id == "dry-run-request"
+        assert state.save_in_progress is True
+
+        result = {
+            "dry_run": True,
+            "state": "dry_run",
+            "source_relative_path": "script.rpy",
+            "changed": True,
+            "diff": "--- a/script.rpy\n+++ b/script.rpy\n",
+        }
+
+        class Collector:
+            def collect_nowait(self):
+                return [
+                    {
+                        "request_id": "dry-run-request",
+                        "command": "commit",
+                        "context": {"command": "commit", "dry_run": True},
+                        "reply": {"ok": True, "result": result},
+                    }
+                ]
+
+        globs["_renforge_editor_ensure_coordinator"] = lambda: Collector()
+        applied = globs["_renforge_editor_apply_coordinator_results"]()
+
+        assert len(applied) == 1
+        assert state.dry_run_result == result
+        assert state.dry_run_error is None
+        assert state.save_in_progress is False
+        assert state.save_requested is False
+        assert state.save_enabled is True
+        assert state.pending_transaction_id is None
+        assert state.pending_handshake_generation is None
+        assert state.pending_reload_requested is False
+        assert state.status_code == "dry_run_ready"
+        assert globs["_renforge_editor_h_status"]({})["dry_run_result"] == result
+
+        class FailingCollector:
+            def collect_nowait(self):
+                return [
+                    {
+                        "request_id": "dry-run-request-2",
+                        "command": "commit",
+                        "context": {"command": "commit", "dry_run": True},
+                        "reply": {
+                            "ok": False,
+                            "error": {
+                                "code": "VALIDATION_FAILED",
+                                "message": "lint failed",
+                            },
+                        },
+                    }
+                ]
+
+        globs["_renforge_editor_ensure_coordinator"] = lambda: FailingCollector()
+        state.dry_run_request_id = "dry-run-request-2"
+        globs["_renforge_editor_apply_coordinator_results"]()
+
+        assert state.dry_run_result is None
+        assert state.dry_run_error == "lint failed"
+        assert state.save_in_progress is False
+        assert state.save_requested is False
+        assert state.save_enabled is True
+        assert state.pending_transaction_id is None
+        assert state.status_code == "dry_run_failed"
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_late_dry_run_result_after_select_is_ignored(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.show_screen = lambda *args, **kwargs: None
+    renpy.restart_interaction = lambda: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.active = True
+        state.dry_run_request_id = "dry-old"
+        state.save_in_progress = True
+        state.save_requested = True
+        state.save_button_state = "saving"
+        state.selected_lock_reason = None
+        runtime_key = {"screen": "late_screen", "widget_id": "late_target"}
+        candidate = {
+            "rect": [10, 20, 100, 20],
+            "runtime_key": runtime_key,
+            "editor_owned": False,
+        }
+        globs["_renforge_editor_hit_candidates"] = lambda *_args: [candidate]
+        globs["_renforge_editor_candidate_hit"] = lambda *_args: True
+        globs["_renforge_editor_validate_runtime_key"] = lambda _key: None
+        globs["_renforge_editor_observation_for_candidate"] = lambda _candidate: (
+            {"runtime_key": runtime_key},
+            None,
+        )
+        globs["_renforge_editor_target_key"] = lambda _key: "late-target"
+        globs["_renforge_editor_set_label"] = lambda _x, _y: None
+        globs["_renforge_editor_show_target_overrides"] = lambda _screen: None
+
+        selected = globs["_renforge_editor_select"](15, 25)
+
+        assert selected["ok"] is True
+        assert state.dry_run_request_id is None
+        assert state.save_in_progress is False
+        assert state.save_requested is False
+        assert state.save_button_state == "idle"
+
+        class LateCollector:
+            def collect_nowait(self):
+                return [
+                    {
+                        "request_id": "dry-old",
+                        "command": "commit",
+                        "context": {"command": "commit", "dry_run": True},
+                        "reply": {
+                            "ok": True,
+                            "result": {
+                                "dry_run": True,
+                                "state": "dry_run",
+                                "diff": "-old\n+new\n",
+                            },
+                        },
+                    }
+                ]
+
+        globs["_renforge_editor_ensure_coordinator"] = lambda: LateCollector()
+        applied = globs["_renforge_editor_apply_coordinator_results"]()
+
+        assert applied == []
+        assert state.coordinator_applied[-1]["stale_dry_run"] is True
+        assert state.dry_run_result is None
+        assert state.dry_run_error is None
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
+def test_editor_preview_move_invalidates_dry_run_result(
+    running_bridge,
+    monkeypatch,
+) -> None:
+    renpy = running_bridge.renpy
+    globs = running_bridge.globs
+    for name in (
+        "RENFORGE_EDITOR_HOST",
+        "RENFORGE_EDITOR_PORT",
+        "RENFORGE_EDITOR_TOKEN",
+        "RENFORGE_EDITOR_PROTOCOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    renpy.config.after_load_callbacks = []
+    renpy.Displayable = object
+    renpy.Render = lambda width, height: types.SimpleNamespace(
+        width=width, height=height
+    )
+    renpy.IgnoreEvent = type("IgnoreEvent", (Exception,), {})
+    renpy.restart_interaction = lambda: None
+    exec(compile(_load_editor_body(), "editor.rpy", "exec"), globs)
+    try:
+        state = globs["_renforge_editor_state"]()
+        state.selected_screen = "move_screen"
+        state.selected_target_key = "move-target"
+        state.selected_lock_reason = None
+        state.preview_position = [10, 10]
+        state.dry_run_result = {"dry_run": True, "diff": "-old\n+new\n"}
+        state.targets["move-target"] = {
+            "source_key": {},
+            "position": [10, 10],
+            "dirty": True,
+        }
+        globs["_renforge_editor_refuse_structural_mix"] = lambda for_zorder=False: None
+        globs["_renforge_editor_apply_snap"] = lambda x, y, shift: (
+            int(x),
+            int(y),
+            {"snapped_x": False, "snapped_y": False},
+        )
+        globs["_renforge_editor_set_target_position"] = lambda _key, _pos: {"ok": True}
+        globs["_renforge_editor_refresh_save_enabled"] = lambda: None
+
+        moved = globs["_renforge_editor_apply_preview"](40, 50)
+
+        assert moved["ok"] is True
+        assert state.dry_run_result is None
+        assert state.dry_run_error is None
+    finally:
+        globs["_renforge_editor_stop_coordinator"]()
+
+
 def test_editor_discovers_anonymous_text_from_screen_cache(
     running_bridge,
     monkeypatch,
@@ -4103,3 +4461,334 @@ def test_bridge_rpy_windows_read_write_adapter_and_version_enforcement(tmp_path:
         with simulate_nt():
             globs["_renforge_bridge_read_starting_info"](project_root)
     assert len(calls["close_handle"]) == 1
+
+
+def test_scene_overflow_compares_text_size_to_int_maximum(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40, xmaximum=200)
+    )
+
+    assert overflow["available"] is True
+    assert overflow["overflow"] is None
+    assert overflow["overflow_axes"] == {"x": 100, "y": None}
+    assert overflow["overflow_px"] is None
+    assert overflow["wrapped"] == {"x": True, "y": False}
+    assert overflow["natural"] == {"width": 300, "height": 40}
+    assert overflow["rendered"] == {"width": 300, "height": 40}
+    assert overflow["constraints"] == {
+        "host_xmaximum": 200,
+        "subject_xmaximum": 200,
+        "host_ymaximum": None,
+        "subject_ymaximum": None,
+        "effective_xmaximum": 200,
+        "effective_ymaximum": None,
+        "maximum_source": {"x": "host", "y": None},
+    }
+    assert overflow["basis"] == (
+        "unwrapped text width and rendered wrapped height vs effective pixel maximum"
+    )
+
+
+def test_scene_overflow_reports_unset_maximum(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40)
+    )
+
+    assert overflow == {
+        "available": False,
+        "reason": "no absolute maximum declared",
+        "overflow": None,
+        "overflow_px": None,
+        "natural": {"width": 300, "height": 40},
+        "constraints": {
+            "host_xmaximum": None,
+            "subject_xmaximum": None,
+            "host_ymaximum": None,
+            "subject_ymaximum": None,
+            "effective_xmaximum": None,
+            "effective_ymaximum": None,
+            "maximum_source": {"x": None, "y": None},
+        },
+    }
+
+
+def test_scene_overflow_does_not_treat_float_maximum_as_pixels(running_bridge):
+    overflow_fn = running_bridge.globs["_renforge_scene_overflow"]
+
+    partial = overflow_fn(_FakeTextDisplayable(300, 40, xmaximum=0.5, ymaximum=40))
+    assert partial["available"] is False
+    assert partial["reason"] == "no absolute x maximum; wrapped height unknown"
+    assert partial["natural"] == {"width": 300, "height": 40}
+    assert partial["constraints"] == {
+        "host_xmaximum": 0.5,
+        "subject_xmaximum": 0.5,
+        "host_ymaximum": 40,
+        "subject_ymaximum": 40,
+        "effective_xmaximum": None,
+        "effective_ymaximum": 40,
+        "maximum_source": {"x": None, "y": "host"},
+    }
+
+    float_only = overflow_fn(_FakeTextDisplayable(300, 40, xmaximum=0.5, ymaximum=0.5))
+    assert float_only["available"] is False
+    assert float_only["reason"] == "no absolute maximum declared"
+    assert float_only["overflow"] is None
+    assert float_only["overflow_px"] is None
+    assert float_only["natural"] == {"width": 300, "height": 40}
+    assert float_only["constraints"]["host_xmaximum"] == 0.5
+    assert float_only["constraints"]["host_ymaximum"] == 0.5
+    assert float_only["constraints"]["effective_xmaximum"] is None
+    assert float_only["constraints"]["effective_ymaximum"] is None
+
+    # A relative widget maximum does not shadow the child text's pixel maximum.
+    relative_host = overflow_fn(
+        _FakeTextButtonDisplayable(
+            _FakeTextDisplayable(300, 40, xmaximum=200), xmaximum=0.5
+        )
+    )
+    assert relative_host["constraints"]["host_xmaximum"] == 0.5
+    assert relative_host["constraints"]["effective_xmaximum"] == 200
+    assert relative_host["constraints"]["maximum_source"] == {"x": "subject", "y": None}
+
+
+def test_scene_overflow_x_only_marks_y_unmeasured(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40, xmaximum=200)
+    )
+
+    assert overflow["available"] is True
+    assert overflow["complete"] is False
+    assert overflow["unmeasured_axes"] == ["y"]
+    assert overflow["overflow_axes"] == {"x": 100, "y": None}
+    assert overflow["overflow"] is None
+
+
+def test_scene_overflow_y_only_is_not_a_verdict(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40, ymaximum=20)
+    )
+
+    assert overflow["available"] is False
+    assert overflow["reason"] == "no absolute x maximum; wrapped height unknown"
+    assert overflow["overflow"] is None
+    assert overflow["overflow_px"] is None
+
+
+def test_scene_overflow_reads_button_child_text(running_bridge):
+    text = _FakeTextDisplayable(280, 20)
+    button = _FakeTextButtonDisplayable(text, xmaximum=200, ymaximum=100)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["overflow"] is False
+    assert overflow["overflow_axes"] == {"x": 80, "y": 0}
+    assert overflow["overflow_px"] == 0
+    assert overflow["wrapped"] == {"x": True, "y": False}
+    assert overflow["natural"] == {"width": 280, "height": 20}
+    assert overflow["constraints"] == {
+        "host_xmaximum": 200,
+        "subject_xmaximum": None,
+        "host_ymaximum": 100,
+        "subject_ymaximum": None,
+        "effective_xmaximum": 200,
+        "effective_ymaximum": 100,
+        "maximum_source": {"x": "host", "y": "host"},
+        "padding": {},
+        "margin": {},
+    }
+
+
+def test_scene_overflow_does_not_call_horizontal_wrapping_an_overflow(running_bridge):
+    # The paragraph wraps but still fits vertically, so it is not clipped.
+    text = _FakeWrappingTextDisplayable(320, 20, 200, 60)
+    button = _FakeTextButtonDisplayable(text, xmaximum=200, ymaximum=100)
+
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["overflow_axes"] == {"x": 120, "y": 0}
+    assert overflow["overflow"] is False
+    assert overflow["overflow_px"] == 0
+    assert overflow["wrapped"] == {"x": True, "y": False}
+
+
+def test_scene_overflow_measures_the_label_after_an_icon(running_bridge):
+    button = _FakeChildrenButtonDisplayable(
+        _FakeImageDisplayable(),
+        _FakeTextDisplayable(280, 20),
+        xmaximum=200,
+        ymaximum=100,
+    )
+
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["natural"] == {"width": 280, "height": 20}
+    assert overflow["overflow_axes"] == {"x": 80, "y": 0}
+    assert overflow["overflow"] is False
+    assert overflow["overflow_px"] == 0
+
+
+def test_scene_overflow_measures_wrapped_height_against_inner_box(running_bridge):
+    # A caption wider than the button wraps; the wrapped height must be
+    # compared with the button maximum instead of the unwrapped height.
+    text = _FakeWrappingTextDisplayable(320, 20, 200, 160)
+    button = _FakeTextButtonDisplayable(text, xmaximum=200, ymaximum=100)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["natural"] == {"width": 320, "height": 20}
+    assert overflow["rendered"] == {"width": 200, "height": 160}
+    assert overflow["overflow_axes"] == {"x": 120, "y": 60}
+    assert overflow["overflow_px"] == 60
+    assert overflow["overflow"] is True
+    assert overflow["wrapped"] == {"x": True, "y": True}
+
+
+def test_scene_overflow_subtracts_integer_button_padding(running_bridge):
+    text = _FakeTextDisplayable(280, 20)
+    button = _FakeTextButtonDisplayable(
+        text, xmaximum=300, left_padding=20, right_padding=20, left_margin=0.5
+    )
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["overflow_axes"] == {"x": 20, "y": None}
+    assert overflow["overflow_px"] is None
+    assert overflow["constraints"]["effective_xmaximum"] == 260
+    assert overflow["constraints"]["padding"] == {"left": 20, "right": 20}
+    # A non-integer margin is recorded nowhere and never subtracted.
+    assert overflow["constraints"]["margin"] == {}
+
+
+def test_scene_overflow_subtracts_integer_button_margins(running_bridge):
+    text = _FakeTextDisplayable(280, 20)
+    button = _FakeTextButtonDisplayable(
+        text, xmaximum=300, left_margin=15, right_margin=15
+    )
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["overflow_axes"] == {"x": 10, "y": None}
+    assert overflow["constraints"]["effective_xmaximum"] == 270
+    assert overflow["constraints"]["margin"] == {"left": 15, "right": 15}
+    assert overflow["constraints"]["padding"] == {}
+
+
+def test_scene_overflow_uses_child_text_maximum_when_host_has_none(running_bridge):
+    text = _FakeTextDisplayable(300, 40, xmaximum=200)
+    button = _FakeTextButtonDisplayable(text)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["overflow_axes"] == {"x": 100, "y": None}
+    assert overflow["constraints"]["host_xmaximum"] is None
+    assert overflow["constraints"]["subject_xmaximum"] == 200
+    assert overflow["constraints"]["effective_xmaximum"] == 200
+    assert overflow["constraints"]["maximum_source"] == {"x": "subject", "y": None}
+
+
+def test_scene_overflow_takes_tighter_of_host_and_subject_maximums(running_bridge):
+    # Ren'Py applies the host box maximum and the child Text maximum together,
+    # so the effective ceiling is the tighter of the two, not the host one.
+    text = _FakeTextDisplayable(280, 20, xmaximum=120)
+    button = _FakeTextButtonDisplayable(text, xmaximum=300)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["available"] is True
+    assert overflow["overflow"] is None
+    assert overflow["overflow_axes"] == {"x": 160, "y": None}
+    assert overflow["overflow_px"] is None
+    assert overflow["constraints"]["host_xmaximum"] == 300
+    assert overflow["constraints"]["subject_xmaximum"] == 120
+    assert overflow["constraints"]["effective_xmaximum"] == 120
+    assert overflow["constraints"]["maximum_source"] == {"x": "both", "y": None}
+
+
+def test_scene_overflow_keeps_host_maximum_when_it_is_tighter(running_bridge):
+    text = _FakeTextDisplayable(280, 20, xmaximum=460)
+    button = _FakeTextButtonDisplayable(text, xmaximum=300)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](button)
+
+    assert overflow["overflow_axes"] == {"x": 0, "y": None}
+    assert overflow["constraints"]["effective_xmaximum"] == 300
+    assert overflow["constraints"]["maximum_source"] == {"x": "both", "y": None}
+
+
+def test_scene_overflow_host_is_subject_uses_its_own_maximum_once(running_bridge):
+    # A Text node hosts itself: its maximum applies once and its own padding
+    # must never narrow it a second time.
+    text = _FakeTextDisplayable(280, 40, xmaximum=200, left_padding=20, right_padding=20)
+    overflow = running_bridge.globs["_renforge_scene_overflow"](text)
+
+    assert overflow["available"] is True
+    assert overflow["overflow_axes"] == {"x": 80, "y": None}
+    assert overflow["constraints"]["host_xmaximum"] == 200
+    assert overflow["constraints"]["subject_xmaximum"] == 200
+    assert overflow["constraints"]["effective_xmaximum"] == 200
+    assert overflow["constraints"]["maximum_source"] == {"x": "host", "y": None}
+    assert "padding" not in overflow["constraints"]
+
+
+def test_scene_overflow_unavailable_keeps_null_legacy_keys(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](object())
+
+    assert overflow == {
+        "available": False,
+        "reason": "no text subject",
+        "overflow": None,
+        "overflow_px": None,
+    }
+
+
+def test_scene_overflow_does_not_measure_vertical_text(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40, xmaximum=200, vertical=True)
+    )
+
+    assert overflow == {
+        "available": False,
+        "reason": "vertical text is not measured",
+        "overflow": None,
+        "overflow_px": None,
+    }
+
+
+def test_scene_finalize_attaches_overflow_to_text_button_and_input(running_bridge):
+    text = _FakeTextDisplayable(280, 20)
+    button = _FakeTextButtonDisplayable(text, xmaximum=200)
+    nodes = [
+        {"type": "text", "_d": _FakeTextDisplayable(300, 40, xmaximum=250)},
+        {"type": "button", "_d": button},
+        {"type": "input", "_d": object()},
+        {"type": "image", "_d": object()},
+    ]
+
+    running_bridge.globs["_renforge_scene_finalize"](nodes, {"overflow"})
+
+    assert nodes[0]["overflow"]["overflow_axes"] == {"x": 50, "y": None}
+    assert nodes[1]["overflow"]["available"] is True
+    assert nodes[1]["overflow"]["overflow_axes"] == {"x": 80, "y": None}
+    assert nodes[2]["overflow"] == {
+        "available": False,
+        "reason": "no text subject",
+        "overflow": None,
+        "overflow_px": None,
+    }
+    assert "overflow" not in nodes[3]
+    assert all("_d" not in node for node in nodes)
+
+
+def test_scene_overflow_has_no_clipped_alias(running_bridge):
+    overflow = running_bridge.globs["_renforge_scene_overflow"](
+        _FakeTextDisplayable(300, 40, xmaximum=200)
+    )
+
+    assert "clipped" not in overflow
+
+
+def test_scene_style_reports_integer_maximums_only(running_bridge):
+    style = running_bridge.globs["_renforge_scene_style"](
+        _FakeTextDisplayable(300, 40, xmaximum=200, ymaximum=0.5)
+    )
+
+    assert style["xmaximum"] == 200
+    assert "ymaximum" not in style

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from copy import deepcopy
+import difflib
 import ipaddress
 import json
 import os
@@ -79,6 +80,7 @@ from .source import (
     textbutton_patch_kwargs,
     uses_runtime_delta_position,
 )
+from .scope import require_in_scope
 
 
 def expected_measurement_method(statement_kind: str) -> str:
@@ -182,6 +184,84 @@ class _TransactionRecord:
     diagnostics: dict[str, Any] = field(default_factory=dict)
     uncertain_paths: list[str] = field(default_factory=list)
     timer: threading.Timer | None = None
+
+
+# Preview diffs are encoded as UTF-8 text; stop at a line boundary so a
+# truncated diff stays readable instead of splitting a multibyte character.
+DRY_RUN_DIFF_MAX_BYTES = 64 * 1024
+
+
+def _decode_diff_text(data: bytes) -> str:
+    """Decode source bytes for a line diff without ever raising.
+
+    Valid UTF-8 decodes exactly. Invalid UTF-8 falls back to replacement
+    characters: a binary-ish source still produces a visible diff instead
+    of an error, and the replacement glyphs make the loss obvious.
+    """
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="surrogateescape")
+
+
+def _truncate_unified_diff(diff_text: str, max_bytes: int) -> str:
+    """Keep whole diff lines up to ``max_bytes`` of encoded UTF-8."""
+    kept: list[str] = []
+    used = 0
+    for line in diff_text.splitlines(keepends=True):
+        encoded_size = len(line.encode("utf-8"))
+        if used + encoded_size > max_bytes:
+            break
+        kept.append(line)
+        used += encoded_size
+    return "".join(kept)
+
+
+def _diff_input_lines(text: str) -> list[str]:
+    """Split source text into lines difflib can render losslessly.
+
+    A final line without a newline is annotated with the standard
+    ``\\ No newline at end of file`` marker *inside* the same element.
+    difflib then puts the marker on its own output line; splitting first
+    would instead glue ``-beta`` and ``+BETA`` into ``-beta+BETA``.
+    """
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        lines[-1] += "\n\\ No newline at end of file\n"
+    return lines
+
+
+def _dry_run_result(transaction: _TransactionRecord) -> dict[str, Any]:
+    """Describe a staged transaction as a unified diff, touching nothing."""
+    original_text = _decode_diff_text(transaction.original_bytes)
+    staged_text = _decode_diff_text(transaction.staged_bytes)
+    diff_text = "".join(
+        difflib.unified_diff(
+            _diff_input_lines(original_text),
+            _diff_input_lines(staged_text),
+            fromfile=f"a/{transaction.source_relative_path}",
+            tofile=f"b/{transaction.source_relative_path}",
+            n=3,
+        )
+    )
+    diff_bytes = len(diff_text.encode("utf-8"))
+    truncated = diff_bytes > DRY_RUN_DIFF_MAX_BYTES
+    if truncated:
+        diff_text = _truncate_unified_diff(diff_text, DRY_RUN_DIFF_MAX_BYTES)
+    return {
+        "dry_run": True,
+        "state": "dry_run",
+        "source_relative_path": transaction.source_relative_path,
+        "original_sha256": transaction.original_sha256,
+        "staged_sha256": transaction.staged_sha256,
+        "changed": transaction.original_bytes != transaction.staged_bytes,
+        "diff": diff_text,
+        "diff_format": "unified",
+        "diff_truncated": truncated,
+        "diff_bytes": diff_bytes,
+        "diff_encoding": "utf-8",
+    }
 
 
 class EditorCoordinator:
@@ -1109,6 +1189,7 @@ class EditorCoordinator:
         session_id = self._require_string(payload, "session_id")
         if session_id != self._session_id:
             raise EditorError("SESSION_ID_MISMATCH", "commit session_id does not match current editor session")
+        dry_run = bool(payload.get("dry_run", False))
         intents = payload.get("intents")
         if not isinstance(intents, list) or not intents:
             raise EditorError("INTENTS_INVALID", "commit requires a non-empty intents list")
@@ -1346,6 +1427,7 @@ class EditorCoordinator:
                 raise EditorError("GUI_RPY_PATH_MISSING", "gui.rpy path is missing from source_key")
 
             gui_absolute = resolve_game_path(self._project.root, gui_rpy_path)
+            require_in_scope(self._project.root, gui_rpy_path)
             gui_current_bytes = gui_absolute.read_bytes()
             gui_current_sha = sha256_bytes(gui_current_bytes)
 
@@ -1422,7 +1504,10 @@ class EditorCoordinator:
                 state="staged",
             )
         else:
-            # Normal single-file transaction (screens.rpy)
+            # Normal single-file transaction (screens.rpy). Only this file is
+            # written, so scope is enforced against it rather than against the
+            # identity file of a style-backed gui write.
+            require_in_scope(self._project.root, relative_path)
             transaction_id = uuid.uuid4().hex
             transaction = _TransactionRecord(
                 transaction_id=transaction_id,
@@ -1436,6 +1521,12 @@ class EditorCoordinator:
                 expected_targets=[self._expected_target_for_intent(selected, swap_locations) for selected in selected_records],
                 state="staged",
             )
+
+        # A dry run stops here: staging is complete in memory, and no
+        # transaction, lint shadow, publish, or attestation is created.
+        if dry_run:
+            return _dry_run_result(transaction)
+
         with self._lock:
             self._transactions[transaction_id] = transaction
         self._persist_transaction(transaction)
@@ -1455,7 +1546,12 @@ class EditorCoordinator:
         self._publish_transaction_bytes(transaction)
         self._schedule_attestation_timeout(transaction)
 
-        return {"transaction_id": transaction_id, "state": "published", "reload_required": True}
+        return {
+            "transaction_id": transaction_id,
+            "state": "published",
+            "reload_required": True,
+            "source_relative_path": transaction.source_relative_path,
+        }
 
     def _expected_target_for_intent(
         self,
@@ -1552,6 +1648,7 @@ class EditorCoordinator:
         if not (is_style_color_tx or is_structural_tx or is_say_style_position_tx):
             raise EditorError("UNDO_STYLE_COLOR_ONLY", "product commit undo is limited to text style color, zorder structural swap, and say.what style position")
 
+        require_in_scope(self._project.root, prior.source_relative_path)
         current_bytes = prior.source_absolute_path.read_bytes()
         current_sha = sha256_bytes(current_bytes)
         if current_sha != prior.staged_sha256:
@@ -1651,6 +1748,7 @@ class EditorCoordinator:
         return {
             "transaction_id": transaction_id,
             "state": record.state,
+            "source_relative_path": record.source_relative_path,
             "diagnostics": dict(record.diagnostics),
             "uncertain_paths": list(record.uncertain_paths),
         }

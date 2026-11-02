@@ -83,6 +83,8 @@
   "status.reset": "重置",
   "status.saving": "正在保存",
   "status.commit_queued": "提交已排队",
+  "status.dry_run_ready": "预览已就绪",
+  "status.dry_run_failed": "预览失败",
   "status.undo_queued": "撤销已排队",
   "status.redo_queued": "重做已排队",
   "status.committed": "已提交",

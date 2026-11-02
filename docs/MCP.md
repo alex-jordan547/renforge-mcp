@@ -159,9 +159,12 @@ renforge_inspect_screen(project_path, name="say")
 renforge_list_ui_elements(project_path)
   -> visible controls and frame_id
 renforge_editor(project_path, action="status")
-  -> selected_widget_id, lock_reason, capabilities, frame_id
+  -> selected_widget_id, lock_reason, capabilities, frame_id,
+     selected_source_position, preview_position
 renforge_editor(project_path, action="select", x=..., y=..., expected_frame_id=frame_id)
   -> overlay hit path (not a game click)
+renforge_editor(project_path, action="save", dry_run=True)
+  -> unified source diff; no transaction, lint, publish, or reload
 renforge_editor(project_path, action="save")
   -> overlay Save: reload + attest, or the lock code
 renforge_hover_element(..., expected_frame_id=frame_id)
@@ -316,7 +319,12 @@ renforge_scene_tree(project_path)
      omitted{by_type,by_layer,by_reason}, truncated,
      limits{max_depth,max_nodes,max_text_chars}
 renforge_scene_tree(project_path, include=["color","style","overflow"])
-  -> per node: composited color.dominant, declared style, best-effort text overflow
+  -> per node: composited color.dominant, declared style (with integer
+     xmaximum/ymaximum), and on text/button/input nodes only an overflow verdict
+     (overflow is true only when the wrapped height exceeds the inner height;
+     horizontal wrapping is reported in overflow_axes.x / wrapped.x, not as
+     overflow, integer padding/margins are subtracted, vertical text is not
+     measured; available:false + reason when no absolute maximum is declared)
 renforge_scene_tree(project_path, format="wireframe")
   -> an ASCII map plus a legend mapping labels to ids/bounds/text
 renforge_scene_tree(project_path, save_as="before")   # persist a snapshot
@@ -344,6 +352,20 @@ Notes:
   and types; truncated values retain up to that many characters and end with `…`.
   IDs use a fixed 256-character cap so they remain stable across output budgets
   and can be passed unchanged to `renforge_measure`.
+- The `overflow` verdict uses pixel maximums only: the effective ceiling is the
+  tighter of the widget's int `xmaximum`/`ymaximum` (minus integer padding and
+  margins) and the child text's own int maximum. The unwrapped width and the
+  wrapped height are compared with that box. `overflow` is true only when the
+  wrapped height exceeds the inner height, i.e. the text is actually clipped
+  vertically; horizontal wrapping is reported in `overflow_axes.x` and
+  `wrapped.x`, not as overflow. `overflow_px` is the vertical clip amount. Float
+  (relative) maximums are reported but not compared, and vertical text is not
+  measured because `Text.size` does not rotate it. A y verdict requires an
+  absolute x maximum to know the wrap width; a y-only request is unavailable.
+  An x-only result is `complete: false` with `unmeasured_axes: ["y"]` and null
+  `overflow`/`overflow_px`.
+  Unavailable verdicts keep `overflow` and `overflow_px` as `null` and add a
+  reason.
 - When a focusable scan hits `max_nodes`, `covered` and `clickable` are `null` with
   `coverage_reason="max_nodes"` because omitted higher controls may overlap them.
 - MCP replies default to `max_items=50`, `max_output_depth=6`, and
@@ -422,7 +444,7 @@ guards: each capture hashes a new frame.
 | `renforge_hover_element` | Move the pointer over a control by ID or text without clicking. Supports `exact`, `screen`, and `expected_frame_id`. |
 | `renforge_get_ui_element_bounds` | Report `focus_bounds` and, for `ImageButton` controls, rendered `painted_bounds` for the active state. Returns `painted_bounds_available: false` with a reason when the painted content cannot be measured. |
 | `renforge_click_element` | Click a control by ID or text. Supports `exact`, `screen`, `expected_frame_id`, `interaction_id`, and `wait_for_effect`. Returns `received_by` when another control owns the hit point. |
-| `renforge_editor` | Public Live Editor: `status`, `select` (overlay hit path), and `save` (reload + attest). Locked targets return the lock code. Never call private `editor_task0_*` handlers. |
+| `renforge_editor` | Public Live Editor: `status`, `select` (overlay hit path), and `save` (reload + attest). `save` with `dry_run` returns a unified source diff without writing, linting, reloading, or creating a transaction; it rejects `x`/`y` and older bridges without dry-run support (`DRY_RUN_UNSUPPORTED`). Locked targets return the lock code. Never call private `editor_task0_*` handlers. |
 | `renforge_click_at` | Click `logical` or `screenshot` coordinates, with `expected_frame_id` and `expected_state` guards. |
 | `renforge_hit_test` | Inspect the interactive focus stack at a point (`topmost` + `underneath`) to diagnose overlays that intercept clicks. |
 | `renforge_capture_screenshot` | Persist the current frame as a named PNG under `<project>/.renforge/captures/` and return `path`, `relative_path`, SHA-256, and dimensions for later diff/translation tools. |
@@ -431,7 +453,7 @@ guards: each capture hashes a new frame.
 | `renforge_get_displayable_bounds` | Report the logical bounds and center where a shown image tag was rendered. |
 | `renforge_position_element` | Reposition a shown image tag live (`xpos`, `ypos`, anchors, align, offsets, `zoom`, `rotate`) and return its new bounds. |
 | `renforge_diff_screenshots` | Diff two frames (or a saved PNG against the live frame) and return the changed region's bounding box. |
-| `renforge_scene_tree` | Perceive the whole scene as logical-coordinate nodes — every layer displayable, focusable control, and text block — with `id`, `type`, `bounds`, `center`, `zorder`, `screen`, and an `omitted` completeness hint. Unlike `renforge_list_ui_elements` (focusables only) it also reports non-focusable text and images. `detail` is `semantic` (default), `layout`, or `raw`; `layers`/`types`/`screen`/`ids` scope it; `include=["color","style","overflow"]` adds composited colour, declared style, and best-effort text overflow; `format="wireframe"` adds an ASCII map; `save_as`/`diff_against` persist and diff snapshots under `<project>/.renforge/scenes/`. |
+| `renforge_scene_tree` | Perceive the whole scene as logical-coordinate nodes — every layer displayable, focusable control, and text block — with `id`, `type`, `bounds`, `center`, `zorder`, `screen`, and an `omitted` completeness hint. Unlike `renforge_list_ui_elements` (focusables only) it also reports non-focusable text and images. `detail` is `semantic` (default), `layout`, or `raw`; `layers`/`types`/`screen`/`ids` scope it; `include=["color","style","overflow"]` adds composited colour, declared style (including integer `xmaximum`/`ymaximum`), and a text overflow verdict on `text`/`button`/`input` nodes only (`overflow` means actual vertical clipping; horizontal wrapping is reported in `overflow_axes.x`/`wrapped.x`, integer padding/margins are subtracted, vertical text is not measured; absent or relative maximums return `available: false` with a reason); `format="wireframe"` adds an ASCII map; `save_as`/`diff_against` persist and diff snapshots under `<project>/.renforge/scenes/`. |
 | `renforge_measure` | Measure pixel relationships between scene nodes (by `id`) or literal bounds without vision: `align`, `gap`, `distribute`, `center`, `overlap`, `fit`, and WCAG `contrast`. Returns logical-pixel deltas and, with `tolerance`, a `pass` verdict. |
 
 ### State and controlled execution
@@ -503,6 +525,38 @@ writes a JSON snapshot under `<project>/.renforge/scenes/` for later diffing.
 `renforge_scene_tree` is the structured alternative to the `renforge_eval` style
 escape hatch above.
 
+### Write receipts
+
+Mutating tools that can enumerate their outputs report a write receipt:
+`files_touched` lists the files or directories written, and cleanup tools also
+return `files_deleted`. A cleanup that fails part-way still lists the paths that
+are actually gone, and `failed` names the resource it could not finish. Paths inside the project are project-relative POSIX
+(for example `game/screens.rpy`, `game/tl/french`, or `dialogue.txt`); paths
+outside the project (an external build destination or Ren'Py's savedir) stay
+absolute. A tool that cannot enumerate its outputs — `renforge_launch`, lint
+analysis, a failed build or translation, or a build that used Ren'Py's default
+destination because no `destination` was passed — omits the key instead of
+returning an empty list, so an empty list always means "wrote nothing". The
+journal's `files_touched_recorded` flag tells those two cases apart without
+having to remember which tools are which.
+`renforge_saves` additionally labels the external savedir with `savedir`.
+Because that directory is outside the project, its receipt path is absolute and
+can contain the user's home directory; the journal is 0600 and project-local.
+
+Each `.renforge/activity.jsonl` entry carries `files_touched_recorded` and
+`files_deleted_recorded` (true only when the result supplied a non-null
+explicit list) plus `files_touched_truncated` (true when only a compact list is
+stored). Entries keep at most 32 paths, and a path longer than 512 characters
+counts as truncated. On truncation the full lists are spilled to
+`files_touched_file` — a 0600 JSON sidecar under `.renforge/activity-files/`
+shaped `{"files_touched": [...], "files_deleted": [...]}` with the same path
+base rules. Only the newest 200 sidecars and at most 50 MiB are kept; older
+ones are pruned after each write, the newest receipt is always kept, and files
+that do not match the sidecar name pattern are never touched. If the sidecar
+cannot be written safely, the compact entry is
+still recorded and `files_touched_file` is omitted. On overflow, verbose params
+and result details are dropped first, never the write receipt.
+
 Recommended practices:
 
 - prefer `renforge_game_state_compact` to the full state;
@@ -533,3 +587,59 @@ After configuration, ask the agent:
 
 A successful response contains the active project, a project summary, and
 controls with bounds and a `frame_id`.
+
+## Scripted / non-interactive use
+
+For scripts and CI, call tools through the FastMCP CLI instead of an
+interactive MCP client. `--command` starts the stdio server, `--target` names
+the tool, `--input-json` passes the arguments as a JSON object, and `--json`
+prints FastMCP's result envelope.
+
+The primary install is `uvx renforge@latest serve`, so use the same launcher as
+your client config in place of `renforge serve`. If `renforge` is not on
+`PATH`, substitute the matching launcher. The `fastmcp` CLI ships with the
+`fastmcp` package, a RenForge dependency; install it if the command is not on
+your `PATH`.
+
+```bash
+fastmcp call --command "renforge serve" --target renforge_info --json
+```
+
+`--json` prints FastMCP's envelope, not just the tool payload: `content` (the
+result blocks), `is_error`, and `structured_content`. Read the tool payload from
+`structured_content`, or from the first text block when it is absent; the
+command exits 1 when `is_error` is true.
+
+```bash
+fastmcp call --command "renforge serve" --target renforge_inspect_project \
+  --input-json '{"project_path": "/path/to/game"}' --json
+```
+
+Plain `key=value` tokens are not usable with `--command`: they bind to the
+server-spec positional and the call is rejected, so pass arguments with
+`--input-json`.
+
+`renforge serve --project /path/to/game` only seeds the `active_project` that
+`renforge_info` reports (a dashboard selection wins). It does not supply a
+default project for tool calls: most project tools require `project_path`, so
+pass it explicitly on every project-scoped call, as in the second example.
+
+Under `RENFORGE_POLICY=enforce`, destructive and open-world calls are denied
+unless the arguments include `"authorize": true` in `--input-json`, for example
+`--input-json '{"project_path": "/path/to/game", "authorize": true}'`. See
+[POLICY.md](POLICY.md). With `RENFORGE_POLICY=off` (the default) the flag is
+unnecessary.
+
+A long-lived MCP stdio client is the other documented route. Each
+`fastmcp call` starts a fresh server process, so in-process state — including
+launch ownership — is not shared between calls; use one stdio session for
+multi-step launches that must stay under the same server's control. The
+dashboard's `/api/*` endpoints are a UI surface, not a documented scripting API.
+
+`renforge.server.create_app()` is used by the test suite to build the server
+in-process, but it is not a declared stable public API and no module-level app
+instance is provided; scripts should use the stdio/CLI route.
+
+> **Version note:** These flags were checked against FastMCP 4.0.5.
+> `pyproject.toml` only requires `fastmcp>=2.0.0`, so CLI flags may differ on
+> other releases; check `fastmcp call --help`.

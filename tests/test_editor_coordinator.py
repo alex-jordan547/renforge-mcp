@@ -228,6 +228,7 @@ def _commit(
     y: int,
     w: int | None = None,
     h: int | None = None,
+    dry_run: bool = False,
     request_id: str = "co-1",
 ) -> dict[str, Any]:
     # Temporarily raise the socket timeout so slow Windows CI hosts can finish
@@ -235,6 +236,20 @@ def _commit(
     previous_timeout = sock.gettimeout()
     sock.settimeout(max(float(previous_timeout or 0.0), _COMMIT_SOCKET_TIMEOUT_SECONDS))
     try:
+        payload: dict[str, Any] = {
+            "session_id": auth["session_id"],
+            "intents": [
+                {
+                    "analysis_id": analysis["result"]["analysis_id"],
+                    "source_key": analysis["result"]["source_key"],
+                    "x": x,
+                    "y": y,
+                    **({"w": w, "h": h} if w is not None and h is not None else {}),
+                }
+            ],
+        }
+        if dry_run:
+            payload["dry_run"] = True
         _send_json(
             sock,
             {
@@ -243,18 +258,7 @@ def _commit(
                 "connection_id": auth["connection_id"],
                 "request_id": request_id,
                 "command": "commit",
-                "payload": {
-                    "session_id": auth["session_id"],
-                    "intents": [
-                        {
-                            "analysis_id": analysis["result"]["analysis_id"],
-                            "source_key": analysis["result"]["source_key"],
-                            "x": x,
-                            "y": y,
-                            **({"w": w, "h": h} if w is not None and h is not None else {}),
-                        }
-                    ],
-                },
+                "payload": payload,
             },
         )
         return _recv_json(sock)
@@ -488,6 +492,169 @@ def test_button_statement_dispatches_through_analyze_and_commit(tmp_path: Path) 
         coordinator.close()
 
 
+def test_commit_dry_run_returns_diff_without_side_effects(tmp_path: Path) -> None:
+    project, source = _make_project(tmp_path)
+    baseline = source.read_bytes()
+    observation = _base_observation()
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-dry-run-frame",
+            "object_id": "obj-independent-dry-run",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = coordinator._transaction_root
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-dry")
+            assert analysis["ok"] is True
+
+            dry = _commit(
+                sock,
+                auth,
+                analysis,
+                x=333,
+                y=444,
+                dry_run=True,
+                request_id="co-dry",
+            )
+            assert dry["ok"] is True
+            preview = dry["result"]
+            assert preview["dry_run"] is True
+            assert preview["state"] == "dry_run"
+            assert preview["source_relative_path"] == "script.rpy"
+            assert preview["changed"] is True
+            assert preview["diff_format"] == "unified"
+            assert preview["diff_encoding"] == "utf-8"
+            assert preview["diff_truncated"] is False
+            assert preview["diff_bytes"] == len(preview["diff"].encode("utf-8"))
+            assert preview["original_sha256"] == hashlib.sha256(baseline).hexdigest()
+            assert preview["staged_sha256"] != preview["original_sha256"]
+            assert "--- a/script.rpy\n" in preview["diff"]
+            assert "+++ b/script.rpy\n" in preview["diff"]
+            assert (
+                '-    textbutton "Play" id "start_btn" xpos 12 ypos 10 action NullAction()'
+                in preview["diff"]
+            )
+            assert (
+                '+    textbutton "Play" id "start_btn" xpos 333 ypos 444 action NullAction()'
+                in preview["diff"]
+            )
+
+            # A dry run must not write source, register a transaction, or
+            # persist a transaction directory/manifest for the attempt.
+            assert source.read_bytes() == baseline
+            assert list(transaction_root.iterdir()) == []
+            assert coordinator._transactions == {}
+
+            real = _commit(
+                sock,
+                auth,
+                analysis,
+                x=333,
+                y=444,
+                request_id="co-real",
+            )
+            assert real["ok"] is True
+            assert real["result"]["state"] == "published"
+            committed = source.read_bytes()
+            assert committed == baseline.replace(b"xpos 12", b"xpos 333").replace(
+                b"ypos 10", b"ypos 444"
+            )
+            # The preview described exactly the change the real commit wrote.
+            assert preview["staged_sha256"] == hashlib.sha256(committed).hexdigest()
+    finally:
+        coordinator.close()
+
+
+def test_dry_run_diff_handles_identical_binary_and_truncation(tmp_path: Path) -> None:
+    from renforge.editor.coordinator import (
+        DRY_RUN_DIFF_MAX_BYTES,
+        _TransactionRecord,
+        _dry_run_result,
+    )
+
+    def record(original: bytes, staged: bytes) -> Any:
+        return _TransactionRecord(
+            transaction_id="dry-run-unit",
+            source_relative_path="script.rpy",
+            source_absolute_path=tmp_path / "script.rpy",
+            original_bytes=original,
+            staged_bytes=staged,
+            original_sha256=hashlib.sha256(original).hexdigest(),
+            staged_sha256=hashlib.sha256(staged).hexdigest(),
+            generation=1,
+            expected_targets=[],
+        )
+
+    unchanged = _dry_run_result(record(b"same\n", b"same\n"))
+    assert unchanged["changed"] is False
+    assert unchanged["diff"] == ""
+    assert unchanged["diff_bytes"] == 0
+    assert unchanged["diff_truncated"] is False
+
+    binary = _dry_run_result(record(b"\xff\xfe\x00", b"\xff\xfe\x01"))
+    assert binary["changed"] is True
+    assert "\ufffd" in binary["diff"]
+    assert binary["diff_encoding"] == "utf-8"
+
+    original = b"".join(b"line %d\n" % index for index in range(10000))
+    staged = b"".join(b"line %d preview\n" % index for index in range(10000))
+    large = _dry_run_result(record(original, staged))
+    import difflib
+
+    from renforge.editor.coordinator import _diff_input_lines
+
+    full_diff = "".join(
+        difflib.unified_diff(
+            _diff_input_lines(original.decode("utf-8")),
+            _diff_input_lines(staged.decode("utf-8")),
+            fromfile="a/script.rpy",
+            tofile="b/script.rpy",
+            n=3,
+        )
+    )
+    assert large["diff_truncated"] is True
+    assert large["diff_bytes"] == len(full_diff.encode("utf-8"))
+    assert large["diff_bytes"] > DRY_RUN_DIFF_MAX_BYTES
+    assert len(large["diff"].encode("utf-8")) <= DRY_RUN_DIFF_MAX_BYTES
+    assert large["diff"].startswith("--- a/script.rpy\n+++ b/script.rpy\n")
+    # A truncated diff is a prefix of the real one, never a rewritten report.
+    assert full_diff.startswith(large["diff"])
+    assert large["changed"] is True
+    assert "-line 0\n" in large["diff"]
+    assert "+line 0 preview\n" in full_diff
+    assert large["diff"].endswith("\n")
+
+
+def test_dry_run_diff_marks_missing_trailing_newline(tmp_path: Path) -> None:
+    from renforge.editor.coordinator import _TransactionRecord, _dry_run_result
+
+    def record(original: bytes, staged: bytes) -> Any:
+        return _TransactionRecord(
+            transaction_id="dry-run-newline",
+            source_relative_path="script.rpy",
+            source_absolute_path=tmp_path / "script.rpy",
+            original_bytes=original,
+            staged_bytes=staged,
+            original_sha256=hashlib.sha256(original).hexdigest(),
+            staged_sha256=hashlib.sha256(staged).hexdigest(),
+            generation=1,
+            expected_targets=[],
+        )
+
+    preview = _dry_run_result(record(b"alpha\nbeta", b"alpha\nBETA\n"))
+
+    assert "-beta+BETA" not in preview["diff"]
+    assert "-beta\n\\ No newline at end of file\n" in preview["diff"]
+    assert "+BETA\n" in preview["diff"]
+    assert preview["diff_bytes"] == len(preview["diff"].encode("utf-8"))
+
+
 def test_commit_refuses_stale_source_and_duplicate_intent_ids(tmp_path: Path) -> None:
     project, source = _make_project(tmp_path)
     observation = _base_observation()
@@ -544,6 +711,397 @@ def test_commit_refuses_stale_source_and_duplicate_intent_ids(tmp_path: Path) ->
             duplicate = _recv_json(sock)
             assert duplicate["ok"] is False
             assert duplicate["error"]["code"] == "DUPLICATE_ANALYSIS_ID"
+    finally:
+        coordinator.close()
+
+
+def test_commit_refuses_target_outside_write_scope_before_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation()
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-scope-frame",
+            "object_id": "obj-independent-scope",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = project.root / ".renforge" / "editor-transactions"
+    baseline = source.read_bytes()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-scope")
+            assert analysis["ok"] is True
+            assert analysis["result"]["lock_reason"] is None
+
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "screens/*.rpy")
+            refused = _commit(sock, auth, analysis, x=333, y=444, request_id="co-scope-refused")
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "PATH_OUT_OF_SCOPE"
+            assert refused["error"]["details"] == {
+                "path": "script.rpy",
+                "scope": ["screens/*.rpy"],
+            }
+            assert "script.rpy" in refused["error"]["message"]
+            assert "screens/*.rpy" in refused["error"]["message"]
+            assert source.read_bytes() == baseline
+            assert list(transaction_root.iterdir()) == []
+
+            # Unset scope keeps the old behavior on a retry of the same analysis.
+            monkeypatch.delenv("RENFORGE_ALLOW_PATHS")
+            committed = _commit(sock, auth, analysis, x=333, y=444, request_id="co-scope-unset")
+            assert committed["ok"] is True
+            assert "xpos 333 ypos 444" in source.read_text(encoding="utf-8")
+    finally:
+        coordinator.close()
+
+
+def test_style_backed_commit_refuses_gui_rpy_outside_write_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project_scope_gui"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    screens = game_dir / "screens.rpy"
+    screens_text = (
+        'screen say(who, what):\n'
+        '    text what id "what" style "say_dialogue"\n'
+        '\n'
+        'style say_dialogue:\n'
+        '    xpos gui.dialogue_xpos\n'
+        '    ypos gui.dialogue_ypos\n'
+    )
+    screens.write_text(screens_text, encoding="utf-8")
+    gui = game_dir / "gui.rpy"
+    gui_baseline = b"define gui.dialogue_xpos = gui.scale(268)\ndefine gui.dialogue_ypos = gui.scale(50)\n"
+    gui.write_bytes(gui_baseline)
+    observation = {
+        "runtime_key": {
+            "screen": "say",
+            "invocation_path": "say",
+            "widget_id": "what",
+            "source_location": ["screens.rpy", 2],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["screens.rpy", 1],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Text",
+                    "source_location": ["screens.rpy", 2],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+        "rect": [268, 585, 500, 30],
+        "measurement_method": "scene_tree_text",
+        "frame_id": "scope-gui-frame",
+        "script_generation": 4,
+        "object_id": "scope-gui-what",
+    }
+    probe = _Probe(observe_reply={**observation, "frame_id": "scope-gui-independent"})
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = root / ".renforge" / "editor-transactions"
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-scope-gui")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"]["move"] is True
+
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "screens.rpy")
+            refused = _commit(sock, auth, analysis, x=288, y=80, request_id="co-scope-gui")
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "PATH_OUT_OF_SCOPE"
+            assert refused["error"]["details"] == {"path": "gui.rpy", "scope": ["screens.rpy"]}
+            assert "gui.rpy" in refused["error"]["message"]
+            assert "screens.rpy" in refused["error"]["message"]
+            assert screens.read_text(encoding="utf-8") == screens_text
+            assert gui.read_bytes() == gui_baseline
+            assert list(transaction_root.iterdir()) == []
+    finally:
+        coordinator.close()
+
+
+def test_scope_with_only_gui_rpy_allows_style_backed_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Style-backed saves write gui.rpy, so that is the file scope must check."""
+    root = tmp_path / "project_scope_gui_only"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    screens = game_dir / "screens.rpy"
+    screens_text = (
+        'screen say(who, what):\n'
+        '    text what id "what" style "say_dialogue"\n'
+        '\n'
+        'style say_dialogue:\n'
+        '    xpos gui.dialogue_xpos\n'
+        '    ypos gui.dialogue_ypos\n'
+        '\n'
+        'screen hud:\n'
+        '    text "HUD" id "hud" xpos 12 ypos 10\n'
+    )
+    screens.write_text(screens_text, encoding="utf-8")
+    gui = game_dir / "gui.rpy"
+    gui_baseline = b"define gui.dialogue_xpos = gui.scale(268)\ndefine gui.dialogue_ypos = gui.scale(50)\n"
+    gui.write_bytes(gui_baseline)
+    say_observation = {
+        "runtime_key": {
+            "screen": "say",
+            "invocation_path": "say",
+            "widget_id": "what",
+            "source_location": ["screens.rpy", 2],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["screens.rpy", 1],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Text",
+                    "source_location": ["screens.rpy", 2],
+                    "screen_owner": "say",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+        "rect": [268, 585, 500, 30],
+        "measurement_method": "scene_tree_text",
+        "frame_id": "gui-only-say-frame",
+        "script_generation": 4,
+        "object_id": "gui-only-say-what",
+    }
+    hud_observation = {
+        "runtime_key": {
+            "screen": "hud",
+            "invocation_path": "hud",
+            "widget_id": "hud",
+            "source_location": ["screens.rpy", 9],
+            "instance_discriminator": {"kind": "singleton", "instance_count": 1},
+            "ancestry": [
+                {
+                    "index": 0,
+                    "type": "ScreenDisplayable",
+                    "source_location": ["screens.rpy", 8],
+                    "screen_owner": "hud",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+                {
+                    "index": 1,
+                    "type": "Text",
+                    "source_location": ["screens.rpy", 9],
+                    "screen_owner": "hud",
+                    "crop_state": "none",
+                    "editor_owned": False,
+                },
+            ],
+        },
+        "rect": [12, 10, 80, 24],
+        "measurement_method": "scene_tree_text",
+        "frame_id": "gui-only-hud-frame",
+        "script_generation": 4,
+        "object_id": "gui-only-hud-text",
+    }
+    probe = _Probe(
+        observe_reply={**say_observation, "frame_id": "gui-only-say-independent"}
+    )
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = root / ".renforge" / "editor-transactions"
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "gui.rpy")
+
+            analysis = _analyze(sock, auth, say_observation, request_id="an-gui-only")
+            assert analysis["ok"] is True
+            assert analysis["result"]["capabilities"]["move"] is True
+
+            committed = _commit(sock, auth, analysis, x=288, y=80, request_id="co-gui-only")
+            assert committed["ok"] is True
+            assert screens.read_text(encoding="utf-8") == screens_text
+            assert gui.read_bytes() == gui_baseline.replace(b"268", b"288").replace(b"50", b"80")
+            published = {child.name for child in transaction_root.iterdir()}
+
+            # A normal screens.rpy commit under the same scope is still refused.
+            probe.observe_reply = {**hud_observation, "frame_id": "gui-only-hud-independent"}
+            hud_analysis = _analyze(sock, auth, hud_observation, request_id="an-hud-scoped")
+            assert hud_analysis["ok"] is True
+            assert hud_analysis["result"]["lock_reason"] is None
+            refused = _commit(sock, auth, hud_analysis, x=40, y=50, request_id="co-hud-scoped")
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "PATH_OUT_OF_SCOPE"
+            assert refused["error"]["details"] == {"path": "screens.rpy", "scope": ["gui.rpy"]}
+            assert screens.read_text(encoding="utf-8") == screens_text
+            assert {child.name for child in transaction_root.iterdir()} == published
+    finally:
+        coordinator.close()
+
+
+def test_commit_refuses_invalid_write_scope_before_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation()
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-invalid-scope-frame",
+            "object_id": "obj-independent-invalid-scope",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = project.root / ".renforge" / "editor-transactions"
+    baseline = source.read_bytes()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-invalid-scope")
+            assert analysis["ok"] is True
+
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "C:/game/script.rpy")
+            refused = _commit(sock, auth, analysis, x=333, y=444, request_id="co-invalid-scope")
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "PATH_SCOPE_INVALID"
+            assert "RENFORGE_ALLOW_PATHS" in refused["error"]["message"]
+            assert source.read_bytes() == baseline
+            assert list(transaction_root.iterdir()) == []
+    finally:
+        coordinator.close()
+
+
+def test_commit_allowed_when_target_matches_write_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, source = _make_project(tmp_path)
+    observation = _base_observation()
+    probe = _Probe(
+        observe_reply={
+            **observation,
+            "frame_id": "independent-allowed-scope-frame",
+            "object_id": "obj-independent-allowed-scope",
+        }
+    )
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analysis = _analyze(sock, auth, observation, request_id="an-allowed-scope")
+            assert analysis["ok"] is True
+
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "script.rpy")
+            committed = _commit(sock, auth, analysis, x=333, y=444, request_id="co-allowed-scope")
+            assert committed["ok"] is True
+            assert "xpos 333 ypos 444" in source.read_text(encoding="utf-8")
+    finally:
+        coordinator.close()
+
+
+def test_undo_commit_refuses_target_outside_write_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project_undo_scope"
+    game_dir = root / "game"
+    game_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    baseline = (
+        "screen test_screen:\n"
+        '    text "STYLE" id "style_color_target" color "#e22b2b" size 96 xpos 240 ypos 220\n'
+    )
+    source.write_text(baseline, encoding="utf-8")
+    observation = _style_color_observation()
+    probe = _Probe(
+        observe_reply={
+            **json.loads(json.dumps(observation)),
+            "frame_id": "undo-scope-independent",
+        }
+    )
+    coordinator = EditorCoordinator(RenpyProject(root), _make_sdk(tmp_path), attestation_timeout=2.0)
+    coordinator.attach_runtime_probe(probe)
+    endpoint = coordinator.start()
+    transaction_root = root / ".renforge" / "editor-transactions"
+    try:
+        with socket.create_connection((endpoint.host, endpoint.port), timeout=2.0) as sock:
+            auth = _auth(sock, endpoint)
+            analyzed = _analyze(sock, auth, observation, request_id="an-undo-scope")
+            assert analyzed["ok"] is True
+            result = analyzed["result"]
+            probe.observe_reply["style_color"] = "#2457d6"
+            probe.observe_reply["rect"] = [260, 230, 286, 112]
+
+            committed = _send_editor_command(
+                sock,
+                auth,
+                command="commit",
+                payload={
+                    "session_id": auth["session_id"],
+                    "intents": [
+                        {
+                            "analysis_id": result["analysis_id"],
+                            "source_key": result["source_key"],
+                            "x": 260,
+                            "y": 230,
+                            "color": "#2457d6",
+                        }
+                    ],
+                },
+                request_id="co-undo-scope",
+            )
+            assert committed["ok"] is True
+            transaction_id = committed["result"]["transaction_id"]
+            handshake = _send_editor_command(
+                sock,
+                auth,
+                command="reload_handshake",
+                payload={"transaction_id": transaction_id, "script_generation": 21},
+                request_id="hs-undo-scope",
+            )
+            assert handshake["ok"] is True
+            assert handshake["result"]["state"] == "committed"
+            committed_bytes = source.read_bytes()
+
+            monkeypatch.setenv("RENFORGE_ALLOW_PATHS", "screens/*.rpy")
+            refused = _send_editor_command(
+                sock,
+                auth,
+                command="undo_commit",
+                payload={"session_id": auth["session_id"], "transaction_id": transaction_id},
+                request_id="undo-scope-refused",
+            )
+            assert refused["ok"] is False
+            assert refused["error"]["code"] == "PATH_OUT_OF_SCOPE"
+            assert "script.rpy" in refused["error"]["message"]
+            assert "screens/*.rpy" in refused["error"]["message"]
+            assert source.read_bytes() == committed_bytes
+            assert [child.name for child in transaction_root.iterdir()] == [transaction_id]
     finally:
         coordinator.close()
 
@@ -1876,6 +2434,7 @@ def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
                 f"error={committed.get('error')!r} diagnostics={committed.get('diagnostics')!r} full={committed!r}"
             )
             assert committed["result"]["state"] == "published"
+            assert committed["result"]["source_relative_path"] == "script.rpy"
             assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
             assert 'imagebutton id "start_btn"' in source.read_text(encoding="utf-8")
 
@@ -3629,3 +4188,60 @@ def test_expected_measurement_method_for_add_and_frame() -> None:
     assert expected_measurement_method("add") == "scene_tree_displayable"
     assert expected_measurement_method("frame") == "scene_tree_displayable"
     assert expected_measurement_method("textbutton") == "focus_list"
+
+
+def test_editor_save_receipt_reads_only_a_completed_commit() -> None:
+    from renforge.tools.live import _editor_public_view, _editor_saved_paths
+
+    raw = {
+        "ok": True,
+        "active": True,
+        "last_commit_status": {
+            "state": "published",
+            "source_relative_path": "screens.rpy",
+        },
+    }
+
+    assert _editor_saved_paths(raw) == ["game/screens.rpy"]
+    # The public view stays pure; the save path adds the receipt only after
+    # the current request has settled.
+    view = _editor_public_view(raw, action="save", frame_id="frame-1")
+    assert "files_touched" not in view
+
+    already_prefixed = {
+        "last_commit_status": {
+            "state": "committed",
+            "source_relative_path": "game/screens.rpy",
+        }
+    }
+    assert _editor_saved_paths(already_prefixed) == ["game/screens.rpy"]
+    assert _editor_saved_paths({"last_commit_status": {"state": "failed"}}) == []
+    assert _editor_saved_paths({"last_commit_status": None}) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["/abs/screens.rpy", "C:/proj/game/screens.rpy", "../outside.rpy", "game/../x.rpy"],
+)
+def test_editor_save_receipt_refuses_a_path_it_cannot_place(source: str) -> None:
+    from renforge.tools.live import _editor_saved_paths
+
+    raw = {"last_commit_status": {"state": "published", "source_relative_path": source}}
+
+    assert _editor_saved_paths(raw) == []
+
+
+def test_project_relative_receipt_anchors_relative_paths_to_the_project(tmp_path) -> None:
+    from renforge.tools.live import _project_relative_path
+
+    project = tmp_path / "proj"
+    (project / ".renforge" / "scenes").mkdir(parents=True)
+    (project / ".renforge" / "scenes" / "a.json").write_text("{}", encoding="utf-8")
+    outside = tmp_path / "elsewhere.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    assert _project_relative_path(project, ".renforge/scenes/a.json") == ".renforge/scenes/a.json"
+    assert _project_relative_path(project, project / ".renforge" / "scenes" / "a.json") == (
+        ".renforge/scenes/a.json"
+    )
+    assert _project_relative_path(project, outside) == outside.resolve().as_posix()
