@@ -578,6 +578,38 @@ def test_import_into_a_stopped_session_creates_nothing(tmp_path: Path, host_save
     assert not session_root.exists()
 
 
+def test_import_reports_a_session_that_stops_mid_copy(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+    (session_root / "saves").mkdir(parents=True)
+
+    def stopped_mid_copy(_source, dest, _slot):
+        shutil.rmtree(session_root)
+        raise FileNotFoundError(dest)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", stopped_mid_copy)
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert not session_root.exists()
+
+    # A missing source file while the session is still there is a real error.
+    (session_root / "saves").mkdir(parents=True)
+    monkeypatch.setattr(
+        save_isolation, "_copy_slot_files", lambda *_a: (_ for _ in ()).throw(FileNotFoundError("source"))
+    )
+    with pytest.raises(FileNotFoundError):
+        import_host_slots(project, session_root / "saves", slot="1-1")
+
+
 def test_saves_takes_regexp_for_list_and_a_glob_pattern_for_host_actions(tmp_path: Path) -> None:
     from renforge.tools import live
 

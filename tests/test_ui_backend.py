@@ -739,3 +739,30 @@ def test_api_live_launch_rejects_an_unknown_state_mode(tmp_path: Path, monkeypat
     assert response.status_code == 400
     assert response.json()["error_code"] == f"launch_{field}_invalid"
     assert {"auto", "existing", "empty"} <= server.STATE_MODE_TOKENS
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+@pytest.mark.parametrize("mode", ["auto", "existing", "empty"])
+def test_api_live_launch_forwards_supported_state_mode(
+    tmp_path: Path, monkeypatch, field: str, mode: str
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_launch(project_path: str, **kwargs):
+        calls.update({k: kwargs.get(k) for k in ("persistent", "preferences")})
+        return {"ok": True, "ready": True, "already_running": False, "current_label": "start", "editor": True}
+
+    monkeypatch.setattr(server.live, "launch_game", fake_launch)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable", "savedir": "temporary", field: mode},
+    )
+
+    assert response.status_code == 200
+    assert calls[field] == mode
