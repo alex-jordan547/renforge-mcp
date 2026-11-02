@@ -26,6 +26,8 @@ MAX_LINKED_SOURCE_SCAN_SECONDS = 5.0
 SHADOW_MAX_FILES_ENV = "RENFORGE_SHADOW_MAX_FILES"
 SHADOW_MAX_BYTES_ENV = "RENFORGE_SHADOW_MAX_BYTES"
 SHADOW_MAX_DIRS_ENV = "RENFORGE_SHADOW_MAX_DIRS"
+SHADOW_MEDIA_ENV = "RENFORGE_SHADOW_MEDIA"
+_SHADOW_MEDIA_MODES = frozenset({"placeholder", "copy"})
 
 _EXCLUDED_DIRS = {
     ".git",
@@ -294,6 +296,21 @@ def resolve_shadow_limits() -> ShadowLimits:
     )
 
 
+def resolve_shadow_media_mode() -> str:
+    """Return ``placeholder`` (default) or ``copy`` for media bytes."""
+    raw = os.environ.get(SHADOW_MEDIA_ENV)
+    if raw is None or not raw.strip():
+        return "placeholder"
+    value = raw.strip().lower()
+    if value not in _SHADOW_MEDIA_MODES:
+        raise EditorError(
+            "SHADOW_QUOTA_INVALID",
+            f"{SHADOW_MEDIA_ENV} must be 'placeholder' or 'copy'",
+            {"variable": SHADOW_MEDIA_ENV, "value": raw},
+        )
+    return value
+
+
 def _is_excluded_name(
     name: str,
     excluded_names: frozenset[str],
@@ -464,9 +481,17 @@ def plan_shadow_project(
     excluded_names: Iterable[str] = (),
     excluded_prefixes: Iterable[str] = (),
     limits: ShadowLimits | None = None,
+    media_mode: str | None = None,
 ) -> ShadowPlan:
     """Measure and plan a shadow copy without copying any bytes."""
     resolved_limits = limits or resolve_shadow_limits()
+    mode = media_mode or resolve_shadow_media_mode()
+    if mode not in _SHADOW_MEDIA_MODES:
+        raise EditorError(
+            "SHADOW_QUOTA_INVALID",
+            "media_mode must be 'placeholder' or 'copy'",
+            {"variable": SHADOW_MEDIA_ENV, "value": mode},
+        )
     root = project.root.resolve(strict=True)
     names = frozenset(excluded_names)
     prefixes = tuple(excluded_prefixes)
@@ -604,7 +629,7 @@ def plan_shadow_project(
                         {"path": str(source_path)},
                     )
                 relative_path = _relative_posix(root, source_path)
-                if source_path.suffix.casefold() in _MEDIA_SUFFIXES:
+                if mode == "placeholder" and source_path.suffix.casefold() in _MEDIA_SUFFIXES:
                     _record_base_entry(
                         relative_path,
                         source_path=None,

@@ -1407,6 +1407,48 @@ def test_shadow_media_files_use_zero_byte_placeholders(monkeypatch, tmp_path: Pa
     )
 
 
+def test_shadow_media_copy_mode_copies_bytes(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    media = project.root / "game" / "images" / "bg.png"
+    media.parent.mkdir()
+    media.write_bytes(b"x" * 4096)
+    monkeypatch.setenv("RENFORGE_SHADOW_MEDIA", "copy")
+
+    plan = shadow.plan_shadow_project(
+        project,
+        limits=shadow.ShadowLimits(max_files=100, max_bytes=10 * 1024 * 1024),
+    )
+
+    entry = next(
+        item for item in plan.entries if item.relative_path == "game/images/bg.png"
+    )
+    assert entry.placeholder is False
+    assert entry.size == 4096
+    assert plan.bytes >= 4096
+
+    shadow_root = tmp_path / "shadow-copy-media"
+    shadow.build_shadow_project(project, shadow_root=shadow_root, staged_replacements={})
+    assert (shadow_root / "game" / "images" / "bg.png").read_bytes() == b"x" * 4096
+
+
+def test_shadow_media_mode_invalid_fails_closed(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    monkeypatch.setenv("RENFORGE_SHADOW_MEDIA", "lossy")
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(project)
+
+    assert excinfo.value.code == "SHADOW_QUOTA_INVALID"
+    assert excinfo.value.details == {
+        "variable": "RENFORGE_SHADOW_MEDIA",
+        "value": "lossy",
+    }
+
+
 def test_shadow_env_limit_overrides_the_old_default(monkeypatch, tmp_path: Path) -> None:
     import renforge.editor.shadow as shadow
 

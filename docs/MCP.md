@@ -508,8 +508,10 @@ directories**. Media files
 by default, so an asset-heavy project lints without copying media bytes; lint
 resolves names, not contents, and `init python` code that opens media bytes sees
 empty files. Media placeholders count as files but not bytes. Other files are
-copied and count normally. The result reports `placeholders`, the number of
-files materialized by name only. Override the limits with positive integers:
+copied and count normally. Set `RENFORGE_SHADOW_MEDIA=copy` when a caller needs
+a faithful shadow: media bytes are then copied and count toward the byte quota.
+The result reports `placeholders`, the number of files materialized by name
+only. Override the limits with positive integers:
 
 ```bash
 RENFORGE_SHADOW_MAX_FILES=25000
