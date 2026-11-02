@@ -7,6 +7,10 @@ versioning.
 
 ### Added
 
+- `renforge_launch(language=...)` sets `RENPY_LANGUAGE` for a fresh game
+  process. Results report `language_applied` (`true`/`false`, or `null` when the
+  bridge does not report a language) and a `warning` when the default savedir
+  lets the preference persist. (#112)
 - Activity log write receipts: mutating tools report `files_touched` /
   `files_deleted`, `stop` lists the paths it removed, and path lists too large
   for the journal spill to 0600 sidecars capped at the newest 200. (#104)
@@ -22,6 +26,8 @@ versioning.
 
 ### Fixed
 
+- A failed launch no longer reports `language_applied: true` just because the
+  requested language was already active in another session. (#112)
 - Live Editor Save keeps polling after `reload_script` resets the bridge
   connection, instead of failing the status read with "Connection reset by
   peer".

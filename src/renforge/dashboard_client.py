@@ -115,6 +115,7 @@ def launch_game(
     persistent: str = "existing",
     cleanup_on_stop: bool = True,
     timeout: float | None = None,
+    language: str | None = None,
 ) -> dict[str, Any] | None:
     """Launch through the matching dashboard, or return ``None`` when none is registered."""
     body: dict[str, Any] = {
@@ -129,6 +130,8 @@ def launch_game(
     }
     if timeout is not None:
         body["timeout"] = timeout
+    if language is not None:
+        body["language"] = language
     return _request(
         project_path,
         "api/live/launch",

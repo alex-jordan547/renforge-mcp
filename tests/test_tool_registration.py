@@ -88,3 +88,157 @@ def test_public_tool_contract_matches_agent_safe_baseline() -> None:
     assert len(contract) == 55
     assert set(contract) == set(TOOL_DEFINITIONS)
     assert contract == snapshot
+
+
+def test_launch_marks_language_not_reported_by_an_old_dashboard(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ready": True,
+            "already_running": False,
+            "current_label": "start",
+            "via": "dashboard",
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    result = launch(str(project), language="german")
+
+    assert result["ok"] is True
+    assert result["requested_language"] == "german"
+    assert result["language_applied"] is False
+    assert "did not report language support" in result["message"]
+    assert result["via"] == "dashboard"
+
+
+def test_launch_warns_when_a_delegated_language_uses_the_default_savedir(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ready": True,
+            "requested_language": "german",
+            "active_language": "german",
+            "language_applied": True,
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    default_savedir = launch(str(project), language="german")
+    isolated = launch(str(project), language="german", savedir="temporary")
+
+    assert "warning" in default_savedir
+    assert "warning" not in isolated
+
+
+def test_failed_delegated_launch_never_claims_a_language(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "ready": False,
+            "error": "dashboard refused",
+            "language_applied": True,
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    result = launch(str(project), language="german")
+
+    assert result["ok"] is False
+    assert result["language_applied"] is False
+    assert "did not report language support" not in str(result.get("message", ""))
+
+
+def test_reused_delegated_session_skips_the_persistence_warning(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ready": True,
+            "already_running": True,
+            "requested_language": "german",
+            "active_language": "english",
+            "language_applied": False,
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    result = launch(str(project), language="german")
+
+    assert result["already_running"] is True
+    assert "warning" not in result
+
+
+def test_old_dashboard_result_skips_the_persistence_warning(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ready": True,
+            "already_running": False,
+            "current_label": "start",
+            "via": "dashboard",
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    result = launch(str(project), language="german")
+
+    assert "did not report language support" in result["message"]
+    assert "warning" not in result
+
+
+def test_delegated_launch_warns_for_default_savedir_sentinels(tmp_path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    monkeypatch.setattr(
+        dashboard_client,
+        "launch_game",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ready": True,
+            "requested_language": "german",
+            "active_language": "german",
+            "language_applied": True,
+        },
+    )
+    launch = build_tool_wrappers(_MetadataToolRegistry())["renforge_launch"]
+
+    for sentinel in ("existing", "default"):
+        result = launch(str(project), language="german", savedir=sentinel)
+        assert "warning" in result, sentinel
