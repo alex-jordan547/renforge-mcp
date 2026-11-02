@@ -7,6 +7,10 @@ versioning.
 
 ### Added
 
+- Activity log write receipts: mutating tools report `files_touched` /
+  `files_deleted`, `stop` lists the paths it removed, and path lists too large
+  for the journal spill to 0600 sidecars capped at the newest 200. (#104)
+
 ### Changed
 
 - `renforge_launch`, `renforge_jump`, `renforge_new_game`, and dashboard
@@ -27,6 +31,12 @@ versioning.
   read only the folder that the game's `config.save_directory` names directly
   under the Ren'Py save root, plus a `game/saves` inside the project. This is
   application-layer isolation, not an OS sandbox.
+- `renforge_scene_tree(include=["overflow"])`: dropped the `clipped` alias
+  (it duplicated `overflow`), added per-axis `overflow_axes` and `wrapped`
+  values, and now reports `overflow` only for actual vertical clipping.
+  Horizontal wrapping is reported in `overflow_axes.x` / `wrapped.x`, not as
+  overflow. Verdicts also cover text inside `button` and `input` nodes, and
+  `include=["style"]` now includes integer `xmaximum`/`ymaximum`. (#105, #108)
 
 ### Fixed
 

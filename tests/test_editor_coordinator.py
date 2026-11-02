@@ -2434,6 +2434,7 @@ def test_analyze_and_commit_imagebutton_statement(tmp_path: Path) -> None:
                 f"error={committed.get('error')!r} diagnostics={committed.get('diagnostics')!r} full={committed!r}"
             )
             assert committed["result"]["state"] == "published"
+            assert committed["result"]["source_relative_path"] == "script.rpy"
             assert "xpos 40 ypos 50" in source.read_text(encoding="utf-8")
             assert 'imagebutton id "start_btn"' in source.read_text(encoding="utf-8")
 
@@ -4187,3 +4188,60 @@ def test_expected_measurement_method_for_add_and_frame() -> None:
     assert expected_measurement_method("add") == "scene_tree_displayable"
     assert expected_measurement_method("frame") == "scene_tree_displayable"
     assert expected_measurement_method("textbutton") == "focus_list"
+
+
+def test_editor_save_receipt_reads_only_a_completed_commit() -> None:
+    from renforge.tools.live import _editor_public_view, _editor_saved_paths
+
+    raw = {
+        "ok": True,
+        "active": True,
+        "last_commit_status": {
+            "state": "published",
+            "source_relative_path": "screens.rpy",
+        },
+    }
+
+    assert _editor_saved_paths(raw) == ["game/screens.rpy"]
+    # The public view stays pure; the save path adds the receipt only after
+    # the current request has settled.
+    view = _editor_public_view(raw, action="save", frame_id="frame-1")
+    assert "files_touched" not in view
+
+    already_prefixed = {
+        "last_commit_status": {
+            "state": "committed",
+            "source_relative_path": "game/screens.rpy",
+        }
+    }
+    assert _editor_saved_paths(already_prefixed) == ["game/screens.rpy"]
+    assert _editor_saved_paths({"last_commit_status": {"state": "failed"}}) == []
+    assert _editor_saved_paths({"last_commit_status": None}) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["/abs/screens.rpy", "C:/proj/game/screens.rpy", "../outside.rpy", "game/../x.rpy"],
+)
+def test_editor_save_receipt_refuses_a_path_it_cannot_place(source: str) -> None:
+    from renforge.tools.live import _editor_saved_paths
+
+    raw = {"last_commit_status": {"state": "published", "source_relative_path": source}}
+
+    assert _editor_saved_paths(raw) == []
+
+
+def test_project_relative_receipt_anchors_relative_paths_to_the_project(tmp_path) -> None:
+    from renforge.tools.live import _project_relative_path
+
+    project = tmp_path / "proj"
+    (project / ".renforge" / "scenes").mkdir(parents=True)
+    (project / ".renforge" / "scenes" / "a.json").write_text("{}", encoding="utf-8")
+    outside = tmp_path / "elsewhere.json"
+    outside.write_text("{}", encoding="utf-8")
+
+    assert _project_relative_path(project, ".renforge/scenes/a.json") == ".renforge/scenes/a.json"
+    assert _project_relative_path(project, project / ".renforge" / "scenes" / "a.json") == (
+        ".renforge/scenes/a.json"
+    )
+    assert _project_relative_path(project, outside) == outside.resolve().as_posix()

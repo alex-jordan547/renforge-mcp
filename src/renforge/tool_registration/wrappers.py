@@ -72,7 +72,6 @@ def _record_tool_activity(
         return
     from .. import activity_log
 
-    summary = activity_log.summarize_result(result)
     try:
         activity_log.log_tool_call(
             project_root,
@@ -80,7 +79,6 @@ def _record_tool_activity(
             params,
             duration_ms,
             result,
-            files_touched=summary["files_touched"],
             policy=policy,
         )
     except Exception:

@@ -198,7 +198,11 @@ def _wait_for_launch_status(
 
 def test_stop_game_without_bridge_is_noop(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
-    assert live.stop_game(str(project)) == {"ok": True, "was_running": False}
+    assert live.stop_game(str(project)) == {
+        "ok": True,
+        "was_running": False,
+        "files_deleted": [],
+    }
 
 
 def test_stop_game_issues_authenticated_quit_when_bridge_alive(
@@ -211,7 +215,7 @@ def test_stop_game_issues_authenticated_quit_when_bridge_alive(
 
     result = live.stop_game(str(project))
 
-    assert result == {"ok": True, "was_running": True}
+    assert result == {"ok": True, "was_running": True, "files_deleted": []}
     assert client.control_calls == ["quit"]
 
 
@@ -232,7 +236,7 @@ def test_stop_game_ignores_legacy_bridge_metadata_without_live_client(
 
     result = live.stop_game(str(project))
 
-    assert result == {"ok": True, "was_running": False}
+    assert result == {"ok": True, "was_running": False, "files_deleted": []}
     assert (project / ".renforge" / "bridge.json").exists()
     assert (project / "game" / "renforge_bridge.rpy").exists()
     assert (project / "game" / "renforge_bridge.rpyc").exists()
