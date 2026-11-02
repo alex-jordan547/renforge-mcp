@@ -552,8 +552,10 @@ def test_validate_wrapper_returns_editor_error_measurements(monkeypatch, tmp_pat
     assert set(details) == {
         "files",
         "bytes",
+        "directories",
         "max_files",
         "max_bytes",
+        "max_dirs",
         "offending_path",
         "offending_size",
         "largest_path",
@@ -562,6 +564,7 @@ def test_validate_wrapper_returns_editor_error_measurements(monkeypatch, tmp_pat
     assert details["files"] == 2
     assert details["max_files"] == 1
     assert details["max_bytes"] == 500 * 1024 * 1024
+    assert details["max_dirs"] == 50_000
     assert details["offending_path"] == "game/extra.rpy"
     assert details["offending_size"] == len("label extra:\n    return\n")
     assert details["bytes"] >= details["offending_size"]

@@ -620,11 +620,12 @@ def test_validate_tool_documents_the_clean_shadow_contract() -> None:
     assert "degraded=true" in description
     assert "renforge_shadow_max_files" in description
     assert "renforge_shadow_max_bytes" in description
+    assert "renforge_shadow_max_dirs" in description
     assert "timeout or truncated" in description
     assert "--error-code" in description
     assert definition.annotations == {
         "readOnlyHint": False,
-        "idempotentHint": True,
+        "idempotentHint": False,
         "destructiveHint": False,
         "openWorldHint": True,
     }

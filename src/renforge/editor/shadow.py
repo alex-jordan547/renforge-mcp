@@ -20,10 +20,12 @@ from .exceptions import EditorError
 
 MAX_SHADOW_FILES = 10_000
 MAX_SHADOW_BYTES = 500 * 1024 * 1024
+MAX_SHADOW_DIRS = 50_000
 MAX_LINKED_SOURCE_SCAN_ENTRIES = 50_000
 MAX_LINKED_SOURCE_SCAN_SECONDS = 5.0
 SHADOW_MAX_FILES_ENV = "RENFORGE_SHADOW_MAX_FILES"
 SHADOW_MAX_BYTES_ENV = "RENFORGE_SHADOW_MAX_BYTES"
+SHADOW_MAX_DIRS_ENV = "RENFORGE_SHADOW_MAX_DIRS"
 
 _EXCLUDED_DIRS = {
     ".git",
@@ -76,7 +78,11 @@ _REPARSE_POINT_ATTRIBUTE = 0x400
 
 
 def _is_directory_link(directory_st: os.stat_result) -> bool:
-    """Treat symlinks and Windows junctions/reparse points as linked."""
+    """Treat symlinks and Windows junctions/reparse points as linked.
+
+    The name is historical; the attribute test applies to files as well, which
+    matters for reparse-point files inside a linked asset directory.
+    """
     return stat.S_ISLNK(directory_st.st_mode) or bool(
         getattr(directory_st, "st_file_attributes", 0) & _REPARSE_POINT_ATTRIBUTE
     )
@@ -164,9 +170,10 @@ def _scan_linked_directory(link: Path) -> _LinkedDirectoryScan:
             except OSError:
                 complete = False
                 continue
-            if stat.S_ISLNK(file_st.st_mode) or not stat.S_ISREG(file_st.st_mode):
-                # Linked or special files cannot be mirrored as placeholders
-                # and may hide source, so the target is not fully inspectable.
+            if _is_directory_link(file_st) or not stat.S_ISREG(file_st.st_mode):
+                # Linked, reparse-point, or special files cannot be mirrored
+                # as placeholders and may hide source, so the target is not
+                # fully inspectable.
                 complete = False
                 continue
             suffix = Path(filename).suffix.casefold()
@@ -208,6 +215,7 @@ class ShadowLintResult:
 class ShadowLimits:
     max_files: int
     max_bytes: int
+    max_dirs: int = MAX_SHADOW_DIRS
 
 
 @dataclass(frozen=True)
@@ -260,6 +268,7 @@ def resolve_shadow_limits() -> ShadowLimits:
     return ShadowLimits(
         max_files=_env_positive_int(SHADOW_MAX_FILES_ENV, MAX_SHADOW_FILES),
         max_bytes=_env_positive_int(SHADOW_MAX_BYTES_ENV, MAX_SHADOW_BYTES),
+        max_dirs=_env_positive_int(SHADOW_MAX_DIRS_ENV, MAX_SHADOW_DIRS),
     )
 
 
@@ -353,23 +362,35 @@ def _is_game_relative(relative_dir: str) -> bool:
     return bool(parts) and parts[0].casefold() == "game"
 
 
-def _largest_contributor(entries: list[_ShadowEntry]) -> dict[str, Any] | None:
-    totals: dict[str, int] = {}
-    for entry in entries:
-        parts = entry.relative_path.split("/")
-        if parts[0] == "game" and len(parts) > 2:
-            # Keep the informative first content directory (game/images, ...)
-            # instead of collapsing every asset under "game".
-            top_level = "/".join(parts[:2])
-        elif len(parts) > 1:
-            top_level = parts[0]
-        else:
-            top_level = "."
-        totals[top_level] = totals.get(top_level, 0) + entry.size
+def _add_largest_group(
+    totals: dict[str, int],
+    relative_path: str,
+    size: int,
+) -> None:
+    parts = relative_path.split("/")
+    if parts[0] == "game" and len(parts) > 2:
+        # Keep the informative first content directory (game/images, ...)
+        # instead of collapsing every asset under "game".
+        top_level = "/".join(parts[:2])
+    elif len(parts) > 1:
+        top_level = parts[0]
+    else:
+        top_level = "."
+    totals[top_level] = totals.get(top_level, 0) + size
+
+
+def _largest_from_totals(totals: dict[str, int]) -> dict[str, Any] | None:
     if not totals:
         return None
     path = sorted(totals, key=lambda item: (-totals[item], item))[0]
     return {"path": path, "size": totals[path]}
+
+
+def _largest_contributor(entries: list[_ShadowEntry]) -> dict[str, Any] | None:
+    totals: dict[str, int] = {}
+    for entry in entries:
+        _add_largest_group(totals, entry.relative_path, entry.size)
+    return _largest_from_totals(totals)
 
 
 def _first_quota_offender(
@@ -394,15 +415,18 @@ def _raise_quota_error(
     offending_path: str,
     offending_size: int,
     largest: dict[str, Any] | None,
+    directories: int = 0,
 ) -> None:
     raise EditorError(
         "SHADOW_QUOTA_EXCEEDED",
-        "shadow project exceeds its file or byte quota",
+        "shadow project exceeds its file, byte, or directory quota",
         {
             "files": int(files),
             "bytes": int(byte_count),
+            "directories": int(directories),
             "max_files": int(limits.max_files),
             "max_bytes": int(limits.max_bytes),
+            "max_dirs": int(limits.max_dirs),
             "offending_path": offending_path,
             "offending_size": int(offending_size),
             "largest_path": largest["path"] if largest is not None else None,
@@ -427,21 +451,53 @@ def plan_shadow_project(
     game_root = root / "game"
     directories: list[str] = []
     base_entries: list[_ShadowEntry] = []
+    base_file_count = 0
     base_bytes = 0
+    base_largest_totals: dict[str, int] = {}
+    first_offender_path: str | None = None
+    first_offender_size = 0
     skipped_links: list[dict[str, str]] = []
     complete = True
 
-    def _check_base_quota() -> None:
-        if len(base_entries) <= resolved_limits.max_files and base_bytes <= resolved_limits.max_bytes:
+    def _record_base_entry(
+        relative_path: str,
+        *,
+        source_path: Path | None,
+        size: int,
+        placeholder: bool = False,
+    ) -> None:
+        nonlocal base_file_count, base_bytes, first_offender_path, first_offender_size
+        base_file_count += 1
+        base_bytes += size
+        _add_largest_group(base_largest_totals, relative_path, size)
+        if first_offender_path is None and base_file_count > resolved_limits.max_files:
+            first_offender_path = relative_path
+            first_offender_size = size
+        # The walk continues after the file quota is crossed so the breach can
+        # report full totals, but entries beyond the first offender are not
+        # retained: a staged replacement never removes a file, so the final
+        # count cannot fall back under the limit.
+        if len(base_entries) <= resolved_limits.max_files:
+            base_entries.append(
+                _ShadowEntry(
+                    relative_path=relative_path,
+                    source_path=source_path,
+                    size=size,
+                    placeholder=placeholder,
+                )
+            )
+
+    def _check_directory_quota() -> None:
+        if len(directories) <= resolved_limits.max_dirs:
             return
-        offending = base_entries[-1]
         _raise_quota_error(
-            files=len(base_entries),
+            files=base_file_count,
             byte_count=base_bytes,
             limits=resolved_limits,
-            offending_path=offending.relative_path,
-            offending_size=offending.size,
-            largest=_largest_contributor(base_entries),
+            offending_path=directories[-1],
+            offending_size=0,
+            largest=_largest_from_totals(base_largest_totals),
+            directories=len(directories),
         )
 
     def _on_walk_error(exc: OSError) -> None:
@@ -491,16 +547,14 @@ def plan_shadow_project(
                             directories.extend(
                                 (prefix / item).as_posix() for item in scan.directories
                             )
-                            base_entries.extend(
-                                _ShadowEntry(
-                                    relative_path=(prefix / item).as_posix(),
+                            _check_directory_quota()
+                            for item in scan.files:
+                                _record_base_entry(
+                                    (prefix / item).as_posix(),
                                     source_path=None,
                                     size=0,
                                     placeholder=True,
                                 )
-                                for item in scan.files
-                            )
-                            _check_base_quota()
                     skipped_links.append({"path": relative_dir, "reason": reason})
                     continue
                 if not stat.S_ISDIR(directory_st.st_mode):
@@ -513,6 +567,7 @@ def plan_shadow_project(
                 relative_dir = _relative_posix(root, directory)
                 if relative_dir != ".":
                     directories.append(relative_dir)
+                    _check_directory_quota()
             dirs[:] = sorted(kept_dirs)
 
             for filename in sorted(files):
@@ -532,31 +587,35 @@ def plan_shadow_project(
                     )
                 relative_path = _relative_posix(root, source_path)
                 if source_path.suffix.casefold() in _MEDIA_SUFFIXES:
-                    base_entries.append(
-                        _ShadowEntry(
-                            relative_path=relative_path,
-                            source_path=None,
-                            size=0,
-                            placeholder=True,
-                        )
+                    _record_base_entry(
+                        relative_path,
+                        source_path=None,
+                        size=0,
+                        placeholder=True,
                     )
-                    _check_base_quota()
                     continue
-                base_entries.append(
-                    _ShadowEntry(
-                        relative_path=relative_path,
-                        source_path=source_path,
-                        size=source_st.st_size,
-                    )
+                _record_base_entry(
+                    relative_path,
+                    source_path=source_path,
+                    size=source_st.st_size,
                 )
-                base_bytes += source_st.st_size
-                _check_base_quota()
     except OSError as exc:
         raise EditorError(
             "SHADOW_COPY_FAILED",
             "could not inspect the project tree",
             {"path": str(exc.filename or root)},
         ) from exc
+
+    if first_offender_path is not None:
+        _raise_quota_error(
+            files=base_file_count,
+            byte_count=base_bytes,
+            limits=resolved_limits,
+            offending_path=first_offender_path,
+            offending_size=first_offender_size,
+            largest=_largest_from_totals(base_largest_totals),
+            directories=len(directories),
+        )
 
     entries = list(base_entries)
     base_paths = {_path_key(path): path for path in directories}
@@ -603,6 +662,7 @@ def plan_shadow_project(
             offending_path=offending.relative_path,
             offending_size=offending.size,
             largest=largest,
+            directories=len(directories),
         )
 
     return ShadowPlan(
@@ -664,6 +724,7 @@ def _build_shadow_from_plan(plan: ShadowPlan, *, shadow_root: Path) -> tuple[int
                         offending_path=entry.relative_path,
                         offending_size=entry.size,
                         largest=plan.largest,
+                        directories=len(plan.directories),
                     )
                 raise EditorError(
                     "SHADOW_COPY_FAILED",
@@ -687,6 +748,7 @@ def _build_shadow_from_plan(plan: ShadowPlan, *, shadow_root: Path) -> tuple[int
                     offending_path=relative_path,
                     offending_size=len(payload),
                     largest=plan.largest,
+                    directories=len(plan.directories),
                 )
             try:
                 write_exclusive_bytes(destination_path, payload, mode=0o644)
@@ -757,12 +819,21 @@ def run_shadow_lint(
     command = sdk.launch_command(shadow_root.resolve(strict=True), "lint")
     if error_code:
         command.append("--error-code")
-    result = run_command(command, timeout=timeout)
+    result = run_command(
+        command,
+        timeout=timeout,
+        max_output_bytes=MAX_DIAGNOSTICS_BYTES,
+    )
     stdout_text = result.stdout or ""
     stderr_text = result.stderr or ""
     bounded_stdout, trunc_stdout = _bounded_output(stdout_text, MAX_DIAGNOSTICS_BYTES)
     bounded_stderr, trunc_stderr = _bounded_output(stderr_text, MAX_DIAGNOSTICS_BYTES)
-    truncated = trunc_stdout or trunc_stderr
+    truncated = (
+        trunc_stdout
+        or trunc_stderr
+        or result.stdout_truncated
+        or result.stderr_truncated
+    )
     # With --error-code the return code is the verdict, so a truncated
     # transcript must not turn a failing lint into a passing one. Without it
     # the transcript is the only evidence, and the editor's lenient gate
@@ -843,7 +914,11 @@ def validate_shadow_project(
         files=file_count,
         bytes=byte_count,
         placeholders=sum(1 for entry in plan.entries if entry.placeholder),
-        limits={"max_files": limits.max_files, "max_bytes": limits.max_bytes},
+        limits={
+            "max_files": limits.max_files,
+            "max_bytes": limits.max_bytes,
+            "max_dirs": limits.max_dirs,
+        },
         largest=plan.largest,
         skipped_links=plan.skipped_links,
         shadow_path=str(shadow_root) if keep_shadow else None,

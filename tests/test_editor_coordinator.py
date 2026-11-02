@@ -1258,6 +1258,63 @@ def test_shadow_byte_quota_error_reports_measurements(
     assert not shadow_root.exists()
 
 
+def test_shadow_file_quota_reports_full_totals(tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    images = project.root / "game" / "images"
+    images.mkdir()
+    for index in range(4):
+        (images / f"f{index}.bin").write_bytes(b"x" * 1000)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            limits=shadow.ShadowLimits(max_files=2, max_bytes=10**9),
+        )
+
+    details = excinfo.value.details
+    assert details["files"] == 5
+    assert details["bytes"] == source.stat().st_size + 4000
+    assert details["directories"] == 2
+    assert details["max_dirs"] == shadow.MAX_SHADOW_DIRS
+    assert details["largest_path"] == "game/images"
+    assert details["largest_size"] == 4000
+
+
+def test_shadow_directory_quota_is_enforced(tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    (project.root / "game" / "nested").mkdir()
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            limits=shadow.ShadowLimits(max_files=100, max_bytes=10**9, max_dirs=1),
+        )
+
+    details = excinfo.value.details
+    assert details["directories"] == 2
+    assert details["max_dirs"] == 1
+
+
+def test_shadow_staged_replacement_is_checked_after_overlay(tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    (project.root / "game" / "big.bin").write_bytes(b"y" * 5000)
+
+    plan = shadow.plan_shadow_project(
+        project,
+        staged_replacements={"game/big.bin": b"z" * 10},
+        limits=shadow.ShadowLimits(max_files=100, max_bytes=4000),
+    )
+
+    assert plan.bytes <= 4000
+    assert plan.staged["game/big.bin"] == b"z" * 10
+
+
 def test_shadow_largest_contributor_names_the_asset_directory(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1340,6 +1397,22 @@ def test_shadow_env_limit_overrides_the_old_default(monkeypatch, tmp_path: Path)
 
     assert (shadow_root / "extra.bin").is_file()
     assert (shadow_root / "game" / "script.rpy").is_file()
+
+
+def test_shadow_quota_env_fails_closed_for_dirs(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, _source = _make_project(tmp_path)
+    monkeypatch.setenv("RENFORGE_SHADOW_MAX_DIRS", "0")
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(project)
+
+    assert excinfo.value.code == "SHADOW_QUOTA_INVALID"
+    assert excinfo.value.details == {
+        "variable": "RENFORGE_SHADOW_MAX_DIRS",
+        "value": "0",
+    }
 
 
 def test_shadow_quota_env_fails_closed(monkeypatch, tmp_path: Path) -> None:
@@ -1676,6 +1749,35 @@ def test_shadow_linked_directory_with_nested_link_is_uninspectable(
     )
 
 
+def test_shadow_linked_directory_reparse_file_is_uninspectable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import stat as stat_module
+
+    import renforge.editor.shadow as shadow
+
+    external = tmp_path / "external-reparse"
+    external.mkdir()
+    target = external / "pinned.bin"
+    target.write_bytes(b"x")
+    real_lstat = Path.lstat
+
+    def _fake_lstat(self: Path):
+        result = real_lstat(self)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=stat_module.S_IFREG | stat_module.S_IMODE(result.st_mode),
+                st_file_attributes=0x400,
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", _fake_lstat)
+
+    scan = shadow._scan_linked_directory(external)
+
+    assert scan.source_found is None
+
+
 def test_shadow_unreadable_directory_fails_instead_of_looking_complete(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1731,8 +1833,9 @@ def test_shadow_lint_command_requests_error_exit_code(monkeypatch, tmp_path: Pat
     shadow_root.mkdir()
     commands: list[list[str]] = []
 
-    def _run(command, *, timeout):
+    def _run(command, *, timeout, max_output_bytes=None):
         commands.append(list(command))
+        assert max_output_bytes == shadow.MAX_DIAGNOSTICS_BYTES
         return CommandResult(
             command=tuple(command),
             returncode=0,
@@ -1790,6 +1893,39 @@ def test_editor_gate_uses_lenient_lint_by_default(monkeypatch, tmp_path: Path) -
     coordinator._validate_shadow(transaction)
 
     assert seen == [False, True]
+
+
+def test_editor_shadow_stages_project_relative_key(monkeypatch, tmp_path: Path) -> None:
+    import renforge.editor.coordinator as coordinator_module
+    from renforge.editor.shadow import ShadowLintResult
+
+    project, _source = _make_project(tmp_path)
+    coordinator = EditorCoordinator(project, _make_sdk(tmp_path))
+    seen: dict[str, bytes] = {}
+
+    def fake_validate(*_args, **kwargs):
+        seen.update(kwargs.get("staged_replacements") or {})
+        return ShadowLintResult(
+            ok=True,
+            returncode=0,
+            timed_out=False,
+            stdout="",
+            stderr="",
+            truncated=False,
+        )
+
+    monkeypatch.setattr(coordinator_module, "validate_shadow_project", fake_validate)
+    transaction = SimpleNamespace(
+        transaction_id="tx-nested-game",
+        source_relative_path="game/foo.rpy",
+        staged_bytes=b"label start:\n    return\n",
+    )
+
+    coordinator._validate_shadow(transaction)
+
+    # The editor source path is game-relative; staging it as project-relative
+    # avoids colliding with game/foo.rpy when game/game/foo.rpy is the target.
+    assert seen == {"game/game/foo.rpy": transaction.staged_bytes}
 
 
 def test_shadow_lint_truncation_is_not_success(tmp_path: Path) -> None:

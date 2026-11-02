@@ -36,6 +36,7 @@ def test_mcp_docs_document_shadow_validation_limits_and_links() -> None:
     assert "clean shadow copy" in text.lower()
     assert "RENFORGE_SHADOW_MAX_FILES" in text
     assert "RENFORGE_SHADOW_MAX_BYTES" in text
+    assert "RENFORGE_SHADOW_MAX_DIRS" in text
     assert "SHADOW_QUOTA_EXCEEDED" in text
     assert "skipped_links" in text
     assert "complete=false" in text

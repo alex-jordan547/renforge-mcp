@@ -2292,7 +2292,10 @@ class EditorCoordinator:
             self._project,
             self._sdk,
             shadow_root=tx_dir / "shadow",
-            staged_replacements={transaction.source_relative_path: transaction.staged_bytes},
+            # source_relative_path is game-relative. Prefixing it makes the
+            # overlay unambiguous when the project has both game/game/x.rpy
+            # and game/x.rpy.
+            staged_replacements={f"game/{transaction.source_relative_path}": transaction.staged_bytes},
             timeout=min(180.0, max(1.0, self._attestation_timeout * 3)),
             # A linked source directory is not linted; a green gate would lie.
             require_source_complete=True,

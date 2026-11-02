@@ -502,7 +502,8 @@ may be project-relative (`game/script.rpy`) or game-relative (`script.rpy`);
 absolute paths, `..`, and duplicate normalized paths are rejected. Staged bytes
 count against the shadow quotas.
 
-Shadow quotas default to **10,000 files** and **500 MiB**. Media files
+Shadow quotas default to **10,000 files**, **500 MiB**, and **50,000
+directories**. Media files
 (images, audio, fonts, and video) are represented by **zero-byte placeholders**
 by default, so an asset-heavy project lints without copying media bytes; lint
 resolves names, not contents, and `init python` code that opens media bytes sees
@@ -513,13 +514,18 @@ files materialized by name only. Override the limits with positive integers:
 ```bash
 RENFORGE_SHADOW_MAX_FILES=25000
 RENFORGE_SHADOW_MAX_BYTES=2147483648  # 2 GiB
+RENFORGE_SHADOW_MAX_DIRS=100000
 ```
 
 Invalid values fail closed with `SHADOW_QUOTA_INVALID` rather than silently
 using the defaults. A quota breach returns `SHADOW_QUOTA_EXCEEDED` with
-`files`, `bytes`, `max_files`, `max_bytes`, the `offending_path`/size that
-crossed the ceiling, and the `largest_path`/size top-level contributor
-(`game/images`, `game`, or `.` for project-root files).
+`files`, `bytes`, `directories`, `max_files`, `max_bytes`, `max_dirs`, the
+`offending_path`/size that crossed the ceiling, and the `largest_path`/size
+top-level contributor (`game/images`, `game`, or `.` for project-root files).
+File and byte totals cover the whole walked tree, so they remain accurate after
+the first entry that crosses a limit. A staged replacement can shrink the final
+byte total, so the byte verdict is taken after applying staged text; the file
+and directory verdicts cannot be reduced by a staged replacement.
 
 Linked directories (symlinks/junctions) are **never copied byte-for-byte**.
 Each skip is recorded in `skipped_links` with a reason. A linked directory under

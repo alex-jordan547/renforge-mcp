@@ -21,9 +21,12 @@ versioning.
 
 ### Fixed
 
-- Shadow lint refuses to report success on reported lint errors, timeouts, or
-  truncated transcripts, and a validation exception marks the editor
-  transaction failed.
+- `renforge_validate` refuses to report success on reported lint errors,
+  timeouts, or truncated transcripts. The lenient editor commit/undo gate still
+  fails on timeouts and treats a long transcript as diagnostic; set
+  `RENFORGE_SHADOW_STRICT_LINT=1` to make reported lint errors and truncation
+  block that gate too. A validation exception marks the editor transaction
+  failed.
 
 ## [0.7.4] - 2026-11-12
 

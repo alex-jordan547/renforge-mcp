@@ -203,9 +203,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "files for lint (counted as files, not bytes; `degraded=true`), so expected image/audio names still "
             "resolve without copying asset bytes. Media files (images, audio, fonts, video) are also represented by "
             "zero-byte placeholders by default: lint resolves their names, not their contents, and init code that "
-            "opens media bytes sees empty files. Other files are copied. Quotas default to 10000 files "
-            "and 500 MiB (media placeholders count as files, not bytes) and are configurable with "
-            "`RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
+            "opens media bytes sees empty files. Other files are copied. Quotas default to 10000 files, "
+            "500 MiB, and 50000 directories (media placeholders count as files, not bytes) and are configurable with "
+            "`RENFORGE_SHADOW_MAX_FILES`, `RENFORGE_SHADOW_MAX_BYTES`, and `RENFORGE_SHADOW_MAX_DIRS`. Lint "
             "runs with `--error-code`, so reported errors produce a non-zero return code. This may download and cache "
             "the Ren'Py SDK; it uses the requested `version` (or `stable`), and never a launcher found inside the "
             "project being validated. The result reports `sdk_version` and `placeholders` (files materialized by name "
@@ -214,7 +214,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         ),
         annotations=_ann(
             readOnlyHint=False,
-            idempotentHint=True,
+            idempotentHint=False,
             destructiveHint=False,
             openWorldHint=True,
         ),
