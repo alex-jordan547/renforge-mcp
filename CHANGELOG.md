@@ -10,6 +10,9 @@ versioning.
 - Public `renforge_validate` tool: lint a clean shadow copy with optional staged
   text, measured quotas, skipped linked directories, an explicit Ren'Py
   `version`, and the resolved `sdk_version` in the result. (#107)
+- Activity log write receipts: mutating tools report `files_touched` /
+  `files_deleted`, `stop` lists the paths it removed, and path lists too large
+  for the journal spill to 0600 sidecars capped at the newest 200. (#104)
 
 ### Changed
 
@@ -18,12 +21,21 @@ versioning.
   skips linked directories with a recorded reason, and mirrors media files as
   zero-byte placeholders so asset-heavy projects fit the default byte quota.
   (#106)
+- `renforge_scene_tree(include=["overflow"])`: dropped the `clipped` alias
+  (it duplicated `overflow`), added per-axis `overflow_axes` and `wrapped`
+  values, and now reports `overflow` only for actual vertical clipping.
+  Horizontal wrapping is reported in `overflow_axes.x` / `wrapped.x`, not as
+  overflow. Verdicts also cover text inside `button` and `input` nodes, and
+  `include=["style"]` now includes integer `xmaximum`/`ymaximum`. (#105, #108)
 
 ### Fixed
 
 - Shadow lint refuses to report success on reported lint errors, timeouts, or
   truncated transcripts, and a validation exception marks the editor
   transaction failed.
+- Live Editor Save keeps polling after `reload_script` resets the bridge
+  connection, instead of failing the status read with "Connection reset by
+  peer".
 
 ## [0.7.3] - 2026-10-07
 

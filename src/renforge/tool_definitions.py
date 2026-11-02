@@ -938,7 +938,16 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Read the full scene graph (logical scene data). Unlike `renforge_list_ui_elements` this is broad and includes non-"
             "focusable nodes, so use it for full-tree inspection when semantic selectors are ambiguous. `save_as` or "
             "`diff_against` may create `.renforge/scenes/`; `save_as` writes and overwrites the named JSON snapshot. Omit both "
-            "options for read-only inspection."
+            "options for read-only inspection. With `include=[\"overflow\"]` only `text`, `button`, and `input` nodes get an "
+            "overflow verdict: the effective ceiling is the tighter of the widget's absolute `xmaximum`/`ymaximum` "
+            "(minus integer padding and margins) and the child text's own absolute maximum; the unwrapped width and "
+            "the wrapped height are compared with that inner box. `overflow` is true only when the wrapped height "
+            "exceeds the inner height (actual vertical clipping); horizontal wrapping is reported in "
+            "`overflow_axes.x` and `wrapped.x`, not as overflow. `overflow_px` is the vertical clip amount. A y verdict "
+            "requires an absolute x maximum to know the wrap width; a y-only request is unavailable. An x-only result "
+            "is `complete: false` with `unmeasured_axes: [\"y\"]` and null `overflow`/`overflow_px`. Relative maximums "
+            "are recorded but not compared, and vertical text is not measured. When no absolute maximum is declared "
+            "the verdict is `available: false` with a reason."
         ),
         annotations=_ann(
             readOnlyHint=False,

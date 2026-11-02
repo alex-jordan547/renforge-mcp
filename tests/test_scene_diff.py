@@ -66,6 +66,24 @@ def test_resized_reports_width_and_height_delta():
     ]
 
 
+def test_overflow_changes_are_reported():
+    before = _scene(_node("label", overflow={"available": True, "overflow": False}))
+    after = _scene(_node("label", overflow={"available": True, "overflow": True}))
+
+    result = diff_scenes(before, after)
+
+    assert result["changed"] == [
+        {
+            "id": "label",
+            "changes": ["overflow_changed"],
+            "overflow_changed": {
+                "from": {"available": True, "overflow": False},
+                "to": {"available": True, "overflow": True},
+            },
+        }
+    ]
+
+
 def test_text_color_and_zorder_changes_are_reported():
     before_node = _node(
         "label",

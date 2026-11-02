@@ -641,10 +641,30 @@ def _validate_owned_regular(path: Path, *, expected_sha256: str | None = None) -
     return True
 
 
-def _unlink_owned_regular(path: Path, *, expected_sha256: str | None = None) -> None:
+def _record_removed(
+    removed: list[str] | None,
+    root: Path | None,
+    path: Path,
+) -> None:
+    if removed is None or root is None:
+        return
+    try:
+        removed.append(path.relative_to(root).as_posix())
+    except ValueError:
+        removed.append(path.as_posix())
+
+
+def _unlink_owned_regular(
+    path: Path,
+    *,
+    expected_sha256: str | None = None,
+    removed: list[str] | None = None,
+    root: Path | None = None,
+) -> None:
     if not _validate_owned_regular(path, expected_sha256=expected_sha256):
         return
     path.unlink()
+    _record_removed(removed, root, path)
 
 
 def _validate_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
@@ -697,7 +717,13 @@ def _validate_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
                 )
 
 
-def _remove_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
+def _remove_asset_tree(
+    game_dir: Path,
+    asset_tree: Mapping[str, Any],
+    *,
+    removed: list[str] | None = None,
+    root: Path | None = None,
+) -> None:
     dirname = str(asset_tree["dirname"])
     assets_dir = game_dir / dirname
     try:
@@ -718,7 +744,12 @@ def _remove_asset_tree(game_dir: Path, asset_tree: Mapping[str, Any]) -> None:
         rel = str(file_entry["path"])
         expected = str(file_entry["sha256"])
         target = assets_dir / rel
-        _unlink_owned_regular(target, expected_sha256=expected)
+        _unlink_owned_regular(
+            target,
+            expected_sha256=expected,
+            removed=removed,
+            root=root,
+        )
     # Remove empty directories bottom-up; leave non-empty trees as conflicts.
     for dirpath, dirnames, filenames in os.walk(assets_dir, topdown=False):
         current = Path(dirpath)
@@ -780,6 +811,7 @@ def _remove_owned_bridge_info(
     project_root: Path,
     *,
     expected_session_id: str | None,
+    removed: list[str] | None = None,
 ) -> None:
     info_path = _validate_owned_bridge_info(
         project_root,
@@ -791,6 +823,7 @@ def _remove_owned_bridge_info(
         info_path.unlink()
     except FileNotFoundError:
         return
+    _record_removed(removed, project_root, info_path)
 
 
 def _validate_cleanup_targets(
@@ -822,10 +855,13 @@ def remove_owned_artifacts(
     *,
     expected_session_id: str | None = None,
     remove_bridge_info: bool = True,
+    removed: list[str] | None = None,
 ) -> bool:
     """Remove schema-3 owned artifacts only after full ownership validation.
 
     Returns ``False`` when no manifest exists, ``True`` after complete removal.
+    When ``removed`` is given, each project-relative POSIX path actually deleted
+    is appended to it.
     """
     root = Path(project_root)
     try:
@@ -847,7 +883,12 @@ def remove_owned_artifacts(
         basename = str(entry["basename"])
         digest = str(entry["sha256"])
         source_path = game_dir / basename
-        _unlink_owned_regular(source_path, expected_sha256=digest)
+        _unlink_owned_regular(
+            source_path,
+            expected_sha256=digest,
+            removed=removed,
+            root=root,
+        )
         for sibling in entry["generated_siblings"]:
             sibling_path = game_dir / str(sibling)
             # Compiled siblings may appear after Ren'Py runs; delete if regular.
@@ -866,13 +907,18 @@ def remove_owned_artifacts(
                     f"generated sibling is not a regular file: {sibling}",
                 )
             sibling_path.unlink()
+            _record_removed(removed, root, sibling_path)
 
     asset_tree = manifest.get("asset_tree")
     if asset_tree is not None:
-        _remove_asset_tree(game_dir, asset_tree)
+        _remove_asset_tree(game_dir, asset_tree, removed=removed, root=root)
 
     if remove_bridge_info:
-        _remove_owned_bridge_info(root, expected_session_id=str(manifest["session_id"]))
+        _remove_owned_bridge_info(
+            root,
+            expected_session_id=str(manifest["session_id"]),
+            removed=removed,
+        )
 
     manifest_path = artifacts_path(root)
     try:
@@ -885,6 +931,7 @@ def remove_owned_artifacts(
             "artifacts manifest became a symlink during cleanup",
         )
     manifest_path.unlink()
+    _record_removed(removed, root, manifest_path)
     return True
 
 

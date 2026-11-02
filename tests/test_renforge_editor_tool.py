@@ -363,6 +363,48 @@ def test_dry_run_is_rejected_for_status_and_select(
     assert client.requests == []
 
 
+def test_save_retries_status_after_reload_resets_the_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from renforge.bridge.client import BridgeProtocolError
+    from renforge.util.frames import FRAME_TIMEOUT
+
+    client = _FakeEditorClient()
+    client.status["selected_widget_id"] = "start_btn"
+    client.status["capabilities"] = {"move": True}
+    client.status["save_enabled"] = True
+    client.save_reply = {"ok": True, "request_id": "commit-1"}
+    resets = {"left": 1}
+    original = client.request
+
+    def request(command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        saved = any(item[0] == "editor_task0_save" for item in client.requests)
+        if command == "editor_task0_status" and saved and resets["left"]:
+            resets["left"] -= 1
+            raise BridgeProtocolError(
+                "socket read failed: [Errno 104] Connection reset by peer",
+                code=FRAME_TIMEOUT,
+            )
+        if command == "editor_task0_status" and saved:
+            client.status = {
+                **client.status,
+                "save_in_progress": False,
+                "save_requested": False,
+                "status_code": "reload_committed",
+            }
+        return original(command, payload)
+
+    client.request = request  # type: ignore[method-assign]
+    _install_client(monkeypatch, client)
+
+    result = live.editor("/tmp/game", "save")
+
+    assert resets["left"] == 0
+    assert result["ok"] is True
+    assert result["status_code"] == "reload_committed"
+    assert result["action"] == "save"
+
+
 def test_save_with_destination_applies_preview_then_overlay_save(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

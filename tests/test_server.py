@@ -587,7 +587,7 @@ def test_stop_tool_falls_back_when_dashboard_is_unavailable(tmp_path, monkeypatc
 
     def fake_direct_stop(project_path: str):
         calls["project_path"] = project_path
-        return {"ok": True, "was_running": False}
+        return {"ok": True, "was_running": False, "files_deleted": []}
 
     monkeypatch.setattr(live, "stop_game", fake_direct_stop)
 
@@ -595,7 +595,7 @@ def test_stop_tool_falls_back_when_dashboard_is_unavailable(tmp_path, monkeypatc
     _register_tools(app)
     result = app.tools["renforge_stop"](str(tmp_path))
 
-    assert result == {"ok": True, "was_running": False}
+    assert result == {"ok": True, "was_running": False, "files_deleted": []}
     assert calls == {"project_path": str(tmp_path)}
 
 
