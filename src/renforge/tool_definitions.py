@@ -189,6 +189,59 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         ),
         parameters={"text": "Existing Ren'Py lint output text to parse."},
     ),
+    "renforge_validate": ToolDefinition(
+        description=(
+            "Run Ren'Py `lint` against a clean shadow copy of the project tree: no live session artifacts, optional "
+            "staged bytes overlaid, and project sources are never modified. Lint executes the project's "
+            "`init python` blocks with your privileges, so the shadow isolates writes, not execution. The shadow "
+            "omits RenForge-injected files "
+            "using `.renforge/control/artifacts.json` when available plus the known `zzrenforge_*` and "
+            "`00renforge_session_*` prefixes. Linked directories are never copied byte-for-byte and are reported in "
+            "`skipped_links`; a link under `game/` (case-insensitive) is scanned read-only with an entry cap and time "
+            "budget for `.rpy`/`.rpym` source, and `complete`/`ok` are false when source is found or the target cannot "
+            "be inspected. A fully scanned source-free linked asset directory is represented by zero-byte placeholder "
+            "files for lint (counted as files, not bytes; `degraded=true`), so expected image/audio names still "
+            "resolve without copying asset bytes. Media files (images, audio, fonts, video) are also represented by "
+            "zero-byte placeholders by default: lint resolves their names, not their contents, and init code that "
+            "opens media bytes sees empty files. Other files are copied. Quotas default to 10000 files "
+            "and 500 MiB (media placeholders count as files, not bytes) and are configurable with "
+            "`RENFORGE_SHADOW_MAX_FILES` and `RENFORGE_SHADOW_MAX_BYTES`. Lint "
+            "runs with `--error-code`, so reported errors produce a non-zero return code. This may download and cache "
+            "the Ren'Py SDK; it uses the requested `version` (or `stable`), and never a launcher found inside the "
+            "project being validated. The result reports `sdk_version` and `placeholders` (files materialized by name "
+            "only). A timeout or truncated transcript is never "
+            "reported as success."
+        ),
+        annotations=_ann(
+            readOnlyHint=False,
+            idempotentHint=True,
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
+        parameters={
+            "project_path": "Ren'Py project root containing `game/`.",
+            "version": (
+                "Ren'Py SDK version selector: `stable` (default) or an explicit version such as `8.5.3`. "
+                "`stable` honors `RENPY_SDK_STABLE_VERSION`. The project tree is never searched for an SDK."
+            ),
+            "checks": "Optional checks. Only `[\"lint\"]` is supported; any other value is rejected.",
+            "staged": (
+                "Optional overlay map from a project-relative (`game/script.rpy`) or game-relative (`script.rpy`) "
+                "path to UTF-8 text. Staged bytes live only in the temporary shadow and count against shadow quotas."
+            ),
+            "keep_shadow": "Keep the temporary shadow after validation and return `shadow_path`; cleanup then belongs to the caller.",
+            "timeout": (
+                "Lint timeout in seconds. `0` derives `min(180, max(1, attestation_timeout*3))` (90 seconds by "
+                "default); explicit values are clamped to 1-600."
+            ),
+        },
+        parameter_schemas={
+            "checks": {"items": _enum("lint")},
+            "staged": {"type": "object", "additionalProperties": {"type": "string"}},
+            "timeout": _limits(0, 600),
+        },
+        parameter_types={"staged": dict[str, str] | None},
+    ),
     "renforge_launch": ToolDefinition(
         description=(
             "Start or attach a running game session with Live Editor enabled by default (pass editor=false for non-editor "
