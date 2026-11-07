@@ -196,8 +196,9 @@ renforge_saves(project_path=project, action="load", slot="1-1", authorize=true)
 
 `list_user` is observational and does not need a running game. `import` is
 mutating, copies files (`.save` and `.save.json`), and is refused unless the
-session was launched isolated. Both select slots by name (`slot`, `slots`) or
-by `pattern`, a glob matched against the whole slot name (`1-*`, `auto-?`).
+session was launched isolated. `list_user` filters only by `pattern`, a glob
+matched against the whole slot name (`1-*`, `auto-?`); `import` selects slots by
+name (`slot`, `slots`), by `pattern`, or both.
 `authorize=true` is needed only for `load`, and only when
 `RENFORGE_POLICY=enforce`.
 
