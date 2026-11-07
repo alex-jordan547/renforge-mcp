@@ -2161,8 +2161,22 @@ def test_a_launch_that_fails_before_spawning_removes_its_session_root(
 
     monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
 
+    # Only an isolated launch makes a session root, so ask for one; otherwise
+    # the glob below would pass without the pre-spawn cleanup.
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    created = []
+    real_resolve = save_isolation.resolve_launch_isolation
+
+    def tracking_resolve(*args, **kwargs):
+        isolation = real_resolve(*args, **kwargs)
+        created.append(isolation.session_root)
+        return isolation
+
+    monkeypatch.setattr("renforge.bridge.launcher.resolve_launch_isolation", tracking_resolve)
+
     with pytest.raises(LaunchError) as excinfo:
-        launch_with_bridge(sdk, project, token="not-a-token")
+        launch_with_bridge(sdk, project, token="not-a-token", savedir="temporary")
 
     assert excinfo.value.code == "BRIDGE_TOKEN_INVALID"
+    assert created and created[0] is not None
     assert not list(temp_root.glob(save_isolation.SESSION_PREFIX + "*"))

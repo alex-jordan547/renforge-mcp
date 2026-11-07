@@ -26,8 +26,10 @@ versioning.
   running game that uses the user's saves.
   `renforge_saves` gains `list_user` (observational host listing) and `import`
   (copy selected host slots into an isolated session; never bind-mounts the
-  user tree). Both select slots by name or by `pattern`, a glob matched against
-  the whole slot name; `list` keeps its `regexp`, which Ren'Py applies. They
+  user tree). `list_user` filters by `pattern`, a glob matched against the
+  whole slot name; `import` selects by name, by `pattern`, or both; `list`
+  keeps its `regexp`, which Ren'Py applies. A failed save rescan is reported
+  as `rescan_error` instead of leaving a stale slot list unexplained. They
   read only the folder that the game's `config.save_directory` names directly
   under the Ren'Py save root, plus a `game/saves` inside the project. This is
   application-layer isolation, not an OS sandbox.

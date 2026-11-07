@@ -24,7 +24,7 @@ from .. import session_registry
 from ..tools import live
 from ..tools import project_ops
 from ..lint import run_lint
-from ..save_isolation import STATE_MODE_TOKENS
+from ..save_isolation import STATE_MODE_TOKENS, launch_state_mode_error
 from .activity import read_recent_activity, tail_activity
 from .graph import build_story_map, resolve_game_file_path, resolve_warp_target
 from .errors import error_response
@@ -694,6 +694,22 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 error="preferences must be 'auto', 'existing', or 'empty'",
                 status_code=400,
                 details={"preferences": preferences},
+            )
+        # Each field is valid on its own; some pairs are not (empty state
+        # needs a temporary savedir). Refuse those before any SDK work.
+        combined = launch_state_mode_error(
+            savedir=savedir, home=home, persistent=persistent, preferences=preferences
+        )
+        if combined is not None:
+            return error_response(
+                code="launch_state_mode_conflict",
+                error=combined,
+                status_code=400,
+                details={
+                    "savedir": savedir,
+                    "persistent": persistent,
+                    "preferences": preferences,
+                },
             )
         return None
 

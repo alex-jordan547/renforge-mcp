@@ -968,6 +968,33 @@ def test_saves_tool_dispatches_grouped_save_action(tmp_path, monkeypatch) -> Non
     }
 
 
+@pytest.mark.parametrize("action", ["list_user", "import"])
+def test_saves_tool_forwards_pattern(tmp_path, monkeypatch, action) -> None:
+    pytest.importorskip("fastmcp", reason="fastmcp not installed")
+    from fastmcp import Client
+
+    from renforge.tools import live
+
+    calls = {}
+
+    def fake_saves(project_path, action, slot=None, extra_info=None, regexp=None, slots=None, pattern=None):
+        calls.update(action=action, pattern=pattern, regexp=regexp)
+        return {"ok": True}
+
+    monkeypatch.setattr(live, "saves", fake_saves)
+
+    async def _call():
+        async with Client(create_app()) as client:
+            return await client.call_tool(
+                "renforge_saves",
+                {"project_path": str(tmp_path), "action": action, "pattern": "1-*"},
+            )
+
+    asyncio.run(_call())
+
+    assert calls == {"action": action, "pattern": "1-*", "regexp": None}
+
+
 def test_saves_tool_validates_action_and_required_slot(tmp_path) -> None:
     pytest.importorskip("fastmcp", reason="fastmcp not installed")
     from fastmcp import Client

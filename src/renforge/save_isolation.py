@@ -1,9 +1,10 @@
 """Application-layer isolation of Ren'Py saves, preferences, and HOME.
 
-MCP and dashboard launches default to a disposable session root so a running
-game cannot read or write the user's normal Ren'Py state (saves, persistent
-data, preferences, and ``$HOME/.renpy``). Pass ``savedir=existing`` /
-``home=existing`` / ``RENFORGE_ISOLATION=existing`` to use the user's files.
+Isolation is opt-in. By default MCP and dashboard launches use the user's own
+saves and HOME, as they always have. Pass ``savedir=temporary`` (or set
+``RENFORGE_ISOLATION=temporary``) to start the game in a disposable session root
+so it cannot read or write the user's normal Ren'Py state (saves, persistent
+data, preferences, and ``$HOME/.renpy``).
 
 Selected host slots can be copied into an isolated session with
 ``renforge_saves(action="import")``. This module never bind-mounts the user
@@ -146,6 +147,40 @@ def apply_launch_isolation_defaults(
     }
 
 
+def _state_mode(value: str | None) -> str:
+    mode = classify_token(value, omitted="existing")
+    return "empty" if mode == "temporary" else mode
+
+
+def launch_state_mode_error(
+    *,
+    savedir: str | None = None,
+    home: str | None = None,
+    persistent: str | None = None,
+    preferences: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Why these launch knobs cannot be combined, or None.
+
+    The dashboard checks this before any launch work starts, and
+    :func:`resolve_launch_isolation` raises it, so both reject the same
+    requests.
+    """
+    resolved = apply_launch_isolation_defaults(
+        savedir=savedir, home=home, persistent=persistent,
+        preferences=preferences, environ=environ,
+    )
+    modes = {_state_mode(resolved["persistent"]), _state_mode(resolved["preferences"])}
+    if not modes <= {"existing", "empty"}:
+        return "Persistent/preferences modes must be 'auto', 'existing', or 'empty'."
+    if classify_savedir(resolved["savedir"]) != "temporary" and "empty" in modes:
+        return (
+            "Empty persistent/preferences state requires savedir='temporary'; "
+            "use 'existing' state modes to reuse a save directory."
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class LaunchIsolation:
     """Resolved save, preference, and HOME locations for one launch."""
@@ -213,9 +248,15 @@ def resolve_launch_isolation(
 ) -> LaunchIsolation:
     """Create or select isolated save/home directories for one Ren'Py process.
 
-    All launch paths use the same isolated defaults. ``savedir=existing``
-    opts into the game's normal locations and state; HOME follows that mode.
+    Omitted fields follow :func:`apply_launch_isolation_defaults`, so every
+    launch path resolves them the same way. HOME follows the savedir mode.
     """
+    error = launch_state_mode_error(
+        savedir=savedir, home=home, persistent=persistent,
+        preferences=preferences, environ=host_env,
+    )
+    if error is not None:
+        raise ValueError(error)
     resolved = apply_launch_isolation_defaults(
         savedir=savedir, home=home, persistent=persistent,
         preferences=preferences, environ=host_env,
@@ -227,21 +268,8 @@ def resolve_launch_isolation(
     if home_mode == "empty":
         home_mode = "temporary"
 
-    persistent_mode = classify_token(persistent, omitted="existing")
-    if persistent_mode == "temporary":
-        persistent_mode = "empty"
-    preferences_mode = classify_token(preferences, omitted="existing")
-    if preferences_mode == "temporary":
-        preferences_mode = "empty"
-
-    if not {persistent_mode, preferences_mode} <= {"existing", "empty"}:
-        raise ValueError("Persistent/preferences modes must be 'auto', 'existing', or 'empty'.")
-
-    if savedir_mode != "temporary" and "empty" in {persistent_mode, preferences_mode}:
-        raise ValueError(
-            "Empty persistent/preferences state requires savedir='temporary'; "
-            "use 'existing' state modes to reuse a save directory."
-        )
+    persistent_mode = _state_mode(persistent)
+    preferences_mode = _state_mode(preferences)
 
     needs_session = savedir_mode == "temporary" or home_mode == "temporary"
     session_root: Path | None = None

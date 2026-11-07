@@ -1192,7 +1192,7 @@ init python:
         if not isinstance(slot, str) or not slot.strip():
             return {"ok": False, "error": "save slot is required"}
 
-        _renforge_rescan_saves()
+        rescan_error = _renforge_rescan_saves()
         can_load = getattr(renpy, "can_load", None)
         if callable(can_load):
             try:
@@ -1209,7 +1209,12 @@ init python:
                 return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
 
         if not exists:
-            return {"ok": False, "error": "save slot not found: %s" % slot}
+            result = {"ok": False, "error": "save slot not found: %s" % slot}
+            if rescan_error is not None:
+                # The slot list may be stale, so say why it could be missing.
+                result["error"] += " (save rescan failed: %s)" % rescan_error
+                result["rescan_error"] = rescan_error
+            return result
 
         load = getattr(renpy, "load", None)
         if not callable(load):
@@ -1229,11 +1234,20 @@ init python:
         return {"ok": True, "slot": slot, "restored_label": restored_label}
 
     def _renforge_rescan_saves():
-        """See save files copied in since Ren'Py's own scan, which runs every few seconds."""
+        """See save files copied in since Ren'Py's own scan, which runs every few seconds.
+
+        Best effort: a failure leaves Ren'Py's previous slot list in place, so
+        it is returned (as text) for the caller to report, never raised.
+        """
+        location = getattr(getattr(renpy, "loadsave", None), "location", None)
+        scan = getattr(location, "scan", None)
+        if not callable(scan):
+            return None
         try:
-            renpy.loadsave.location.scan()
-        except Exception:
-            pass
+            scan()
+        except Exception as exc:
+            return "%s: %s" % (type(exc).__name__, exc)
+        return None
 
     def _renforge_h_list_slots(payload):
         payload = payload or {}
@@ -1244,7 +1258,7 @@ init python:
         list_slots = getattr(renpy, "list_slots", None)
         if not callable(list_slots):
             return {"ok": False, "error": "save slot listing is unavailable"}
-        _renforge_rescan_saves()
+        rescan_error = _renforge_rescan_saves()
         try:
             slot_names = list_slots(regexp=regexp)
         except Exception as exc:
@@ -1273,7 +1287,10 @@ init python:
                 }
             )
 
-        return {"ok": True, "slots": slots}
+        result = {"ok": True, "slots": slots}
+        if rescan_error is not None:
+            result["rescan_error"] = rescan_error
+        return result
 
     def _renforge_h_poll_events(payload):
         payload = payload or {}

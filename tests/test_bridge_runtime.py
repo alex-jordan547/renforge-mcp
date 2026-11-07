@@ -3132,6 +3132,26 @@ def test_list_and_load_rescan_saves_copied_in_since_the_last_scan(running_bridge
     assert events == ["scan", "list", "scan", "can_load"]
 
 
+def test_a_failed_save_rescan_is_reported_not_hidden(running_bridge):
+    def scan():
+        raise OSError("savedir unreadable")
+
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=scan)
+    )
+    running_bridge.renpy.list_slots = lambda regexp=None: []
+    running_bridge.renpy.can_load = lambda slot: False
+
+    listed = running_bridge.client.list_slots()
+    assert listed["ok"] is True
+    assert listed["rescan_error"] == "OSError: savedir unreadable"
+
+    loaded = running_bridge.client.load_slot("imported")
+    assert loaded["ok"] is False
+    assert loaded["rescan_error"] == "OSError: savedir unreadable"
+    assert "save rescan failed" in loaded["error"]
+
+
 def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge):
     calls = []
     running_bridge.renpy.list_slots = lambda regexp=None: ["branch-a", "branch-b"]

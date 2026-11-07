@@ -766,3 +766,33 @@ def test_api_live_launch_forwards_supported_state_mode(
 
     assert response.status_code == 200
     assert calls[field] == mode
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("endpoint", ["/api/live/launch", "/api/warp"])
+@pytest.mark.parametrize("savedir", ["existing", None])
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+def test_empty_state_without_a_temporary_savedir_is_a_400_before_launch(
+    tmp_path: Path, monkeypatch, endpoint: str, savedir: str | None, field: str
+) -> None:
+    import renforge.ui.server as server
+
+    # Omitted savedir resolves to the user's saves unless this says otherwise.
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    payload: dict[str, object] = {"target": "start", field: "empty"}
+    if savedir is not None:
+        payload["savedir"] = savedir
+
+    response = client.post(f"{endpoint}?token=token", json=payload)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "launch_state_mode_conflict"
+    assert "savedir='temporary'" in body["error"]
