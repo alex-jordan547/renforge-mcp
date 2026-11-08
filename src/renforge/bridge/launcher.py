@@ -18,8 +18,9 @@ import subprocess
 import sys  # retained for tests that patch renforge.bridge.launcher.sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..launch_env import (
     LaunchError,
@@ -587,6 +588,17 @@ class BridgeSession:
     def closed(self) -> bool:
         """Whether teardown completed and project ownership was released."""
         return self._closed
+
+    @contextmanager
+    def holding_open(self) -> Iterator[bool]:
+        """Keep :meth:`close` waiting while the caller writes into this session.
+
+        Yields ``False`` when the session is already closed. Copying into the
+        session root while a stop removes it would leave files nothing cleans
+        up, or make the removal fail and leave the session half-closed.
+        """
+        with self._close_lock:
+            yield not self._closed
 
     def close(self, timeout: float = 10.0) -> dict[str, Any]:
         """Stop the game, Xvfb group if any, and temporary session files."""

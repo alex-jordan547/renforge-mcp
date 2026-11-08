@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import sys
@@ -433,6 +434,19 @@ def test_import_copies_selected_slots_and_refuses_user_tree(
     assert "no matching" in missing["error"]
 
 
+class _ImportSession:
+    """What live.saves needs from an owned session for an import."""
+
+    def __init__(self, *, temporary_savedir, isolation, closed=False):
+        self.temporary_savedir = temporary_savedir
+        self.isolation = isolation
+        self.closed = closed
+
+    @contextlib.contextmanager
+    def holding_open(self):
+        yield not self.closed
+
+
 def test_live_saves_list_user_and_import(
     tmp_path: Path, monkeypatch, host_save_root: Path
 ) -> None:
@@ -464,13 +478,13 @@ def test_live_saves_list_user_and_import(
     assert refused["code"] == "NO_ISOLATED_SESSION"
 
     isolation = SimpleNamespace(savedir_mode="temporary", home_mode="temporary")
-    session = SimpleNamespace(temporary_savedir=dest, isolation=isolation)
+    session = _ImportSession(temporary_savedir=dest, isolation=isolation)
     live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
     try:
         imported = live.saves(str(project), "import", slot="1-1")
         assert imported["ok"] is True
         assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT-1-1"
-        existing = SimpleNamespace(
+        existing = _ImportSession(
             temporary_savedir=host_saves,
             isolation=SimpleNamespace(savedir_mode="existing"),
         )
@@ -608,6 +622,35 @@ def test_import_reports_a_session_that_stops_mid_copy(
     )
     with pytest.raises(FileNotFoundError):
         import_host_slots(project, session_root / "saves", slot="1-1")
+
+
+def test_live_import_into_a_session_that_closed_copies_nothing(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from renforge.tools import live
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+    session = _ImportSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(savedir_mode="temporary", home_mode="temporary"),
+        closed=True,
+    )
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert list(dest.iterdir()) == []
 
 
 def test_saves_takes_regexp_for_list_and_a_glob_pattern_for_host_actions(tmp_path: Path) -> None:
