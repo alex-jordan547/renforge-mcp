@@ -4825,11 +4825,40 @@ def test_session_info_reports_where_the_game_saves_and_its_home(running_bridge, 
     home_var = "USERPROFILE" if os.name == "nt" else "HOME"
     monkeypatch.setenv(home_var, str(tmp_path / "home"))
     running_bridge.renpy.config.savedir = str(tmp_path / "saves")
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(
+            locations=[
+                types.SimpleNamespace(directory=str(tmp_path / "saves")),
+                types.SimpleNamespace(directory=str(tmp_path / "game" / "saves")),
+            ]
+        )
+    )
 
     assert running_bridge.client.session_info() == {
         "savedir": str(tmp_path / "saves"),
         "home": str(tmp_path / "home"),
+        "save_locations": [str(tmp_path / "saves"), str(tmp_path / "game" / "saves")],
     }
 
+    # Without a readable location list the bridge says so instead of guessing.
     running_bridge.renpy.config.savedir = None
-    assert running_bridge.client.session_info()["savedir"] is None
+    running_bridge.renpy.loadsave = types.SimpleNamespace()
+    info = running_bridge.client.session_info()
+    assert info["savedir"] is None
+    assert info["save_locations"] is None
+
+
+def test_a_successful_load_still_reports_a_failed_rescan(running_bridge):
+    def scan():
+        raise OSError("savedir unreadable")
+
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=scan)
+    )
+    running_bridge.renpy.can_load = lambda slot: True
+    running_bridge.renpy.load = lambda slot: None
+
+    reply = running_bridge.client.load_slot("branch-a")
+
+    assert reply["ok"] is True
+    assert reply["rescan_error"] == "OSError: savedir unreadable"

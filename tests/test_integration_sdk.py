@@ -1194,6 +1194,10 @@ python early:
         locations = client.eval_expr("[item.directory for item in __import__('renpy').loadsave.location.locations]")
         assert locations == [str(session.temporary_savedir)]
         assert client.eval_expr("__import__('os').path.expanduser('~')") == str(session.temporary_home)
+        # What a server deciding whether to reuse this game is told.
+        info = client.session_info()
+        assert info["save_locations"] == locations
+        assert info["home"] == str(session.temporary_home)
         # Every reinitialization must retain the invariant, including reload's
         # storage reinitialization, even if the game sets extra_savedirs again.
         client.eval_expr('__import__("renpy").savelocation.init()')

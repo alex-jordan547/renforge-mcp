@@ -540,6 +540,17 @@ def test_close_waits_for_a_writer_holding_the_session_open(tmp_path: Path) -> No
         assert session_open is False
 
 
+def test_a_session_whose_game_exited_is_not_held_open_for_writes(tmp_path: Path) -> None:
+    # Nothing would read slots copied into it, and the next stop deletes them.
+    process = _FakeProcess()
+    session = BridgeSession(process, _FakeClient(), tmp_path)
+    with session.holding_open() as session_open:
+        assert session_open is True
+    process.returncode = 0
+    with session.holding_open() as session_open:
+        assert session_open is False
+
+
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, root = _make_project(tmp_path)

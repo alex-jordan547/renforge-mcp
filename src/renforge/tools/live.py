@@ -39,6 +39,7 @@ from ..save_isolation import (
     import_host_slots,
     isolation_report,
     launch_exposes_user_saves,
+    launch_state_mode_error,
     list_host_slots,
     path_exposes_user_saves,
     path_is_host_home,
@@ -376,7 +377,8 @@ def launch_status(project_path: str) -> dict[str, Any]:
                 pass
 
     try:
-        state = _client(project_path).get_state()
+        external = _client(project_path)
+        state = external.get_state()
     except Exception:
         return {
             "ok": True,
@@ -391,6 +393,7 @@ def launch_status(project_path: str) -> dict[str, Any]:
         "external": True,
         "current_label": state.get("current_label"),
         "editor": False,
+        "isolation": _external_session_isolation(external, Path(project_path)),
     }
 
 
@@ -489,20 +492,40 @@ def _session_mode_mismatch(
     }
 
 
-def _external_session_exposes_user_saves(client: Any, project_root: Path) -> bool:
-    """Whether a game this process did not start reaches the player's saves or HOME.
+def _external_session_isolation(client: Any, project_root: Path) -> dict[str, Any]:
+    """Where a game this process did not start keeps its saves and HOME.
 
-    A bridge that cannot say where it saves (an older one) counts as exposing:
-    an isolated launch must never be handed a game it cannot vouch for.
+    ``exposes_user_saves`` is true when any active save location (Ren'Py
+    also reads ``game/saves`` and ``config.extra_savedirs`` unless an
+    isolated launch removed them) or HOME belongs to the player. A bridge that
+    cannot list its locations (an older one) counts as exposing: an isolated
+    launch must never be handed a game it cannot vouch for.
     """
     try:
         info = client.session_info()
     except Exception:
-        return True
+        return {"exposes_user_saves": True}
     savedir, home = info.get("savedir"), info.get("home")
-    if not isinstance(savedir, str) or not savedir or not isinstance(home, str) or not home:
-        return True
-    return path_exposes_user_saves(savedir, project_path=project_root) or path_is_host_home(home)
+    locations = info.get("save_locations")
+    report: dict[str, Any] = {
+        "savedir": savedir if isinstance(savedir, str) and savedir else None,
+        "home": home if isinstance(home, str) and home else None,
+        "save_locations": locations if isinstance(locations, list) else None,
+    }
+    verifiable = (
+        report["home"] is not None
+        and report["save_locations"]
+        and all(isinstance(item, str) and item for item in report["save_locations"])
+    )
+    report["exposes_user_saves"] = (
+        not verifiable
+        or path_is_host_home(report["home"])
+        or any(
+            path_exposes_user_saves(item, project_path=project_root)
+            for item in report["save_locations"]
+        )
+    )
+    return report
 
 
 def _isolation_mismatch(*, requested_exposes: bool, existing_exposes: bool) -> dict[str, Any]:
@@ -581,6 +604,20 @@ def launch_game(
     if isinstance(session_cfg.get("cleanup_on_stop"), bool):
         cleanup_on_stop = session_cfg["cleanup_on_stop"]
     requested_editor = bool(editor)
+    # Refuse an impossible combination before reuse can report success for it
+    # (a fresh launch would reject it, so a reused one must too).
+    state_error = launch_state_mode_error(
+        savedir=savedir, home=home, persistent=persistent, preferences=preferences
+    )
+    if state_error is not None:
+        return {
+            "ok": False,
+            "ready": False,
+            "code": "LAUNCH_STATE_MODE_CONFLICT",
+            "phase": "validating_session_mode",
+            "message": state_error,
+            "error": state_error,
+        }
 
     key = _key(project.root)
     existing = _SESSIONS.get(key)
@@ -677,9 +714,8 @@ def launch_game(
                 preferences=preferences,
                 project_path=project.root,
             )
-            if not requested_exposes and _external_session_exposes_user_saves(
-                external, project.root
-            ):
+            external_isolation = _external_session_isolation(external, project.root)
+            if not requested_exposes and external_isolation["exposes_user_saves"]:
                 return _isolation_mismatch(
                     requested_exposes=False, existing_exposes=True
                 )
@@ -690,6 +726,8 @@ def launch_game(
                 "ready": True,
                 "current_label": state.get("current_label"),
                 "editor": False,
+                # What the game itself reports; it has no session of this process.
+                "isolation": external_isolation,
             }
         except Exception:
             pass

@@ -415,13 +415,75 @@ def test_an_isolated_launch_reuses_an_isolated_external_game(tmp_path: Path, mon
     session = tmp_path / "renforge-session-x"
     for path in (session / "saves", session / "home"):
         path.mkdir(parents=True)
-    client = _InfoClient({"savedir": str(session / "saves"), "home": str(session / "home")})
+    client = _InfoClient({
+        "savedir": str(session / "saves"),
+        "home": str(session / "home"),
+        "save_locations": [str(session / "saves")],
+    })
 
     result = _external_reuse(tmp_path, monkeypatch, client, savedir="temporary")
 
     assert result["ok"] is True
     assert result["external"] is True
     assert result["current_label"] == "dashboard_scene"
+    assert result["isolation"] == {
+        "savedir": str(session / "saves"),
+        "home": str(session / "home"),
+        "save_locations": [str(session / "saves")],
+        "exposes_user_saves": False,
+    }
+
+
+def test_an_isolated_launch_refuses_an_external_game_that_also_uses_game_saves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The reported savedir is private, but Ren'Py still writes to every
+    # registered location, and this game kept the project's game/saves.
+    _host_home(tmp_path, monkeypatch)
+    session = tmp_path / "renforge-session-x"
+    for path in (session / "saves", session / "home"):
+        path.mkdir(parents=True)
+    project_saves = tmp_path / "project" / "game" / "saves"  # _make_project's layout
+    client = _InfoClient({
+        "savedir": str(session / "saves"),
+        "home": str(session / "home"),
+        "save_locations": [str(session / "saves"), str(project_saves)],
+    })
+
+    result = _external_reuse(tmp_path, monkeypatch, client, savedir="temporary")
+
+    assert result["ok"] is False
+    assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+
+
+def test_launch_status_reports_an_external_games_storage(tmp_path: Path, monkeypatch) -> None:
+    project = _make_project(tmp_path)
+    monkeypatch.setattr(
+        live.BridgeClient,
+        "from_project",
+        classmethod(lambda cls, root, **_kwargs: _InfoClient(None)),
+    )
+
+    status = live.launch_status(str(project))
+
+    assert status["external"] is True
+    assert status["isolation"] == {"exposes_user_saves": True}
+
+
+@pytest.mark.parametrize(
+    ("savedir", "field"),
+    [("existing", "persistent"), ("existing", "preferences")],
+)
+def test_reuse_cannot_accept_state_modes_a_fresh_launch_rejects(
+    tmp_path: Path, monkeypatch, savedir: str, field: str
+) -> None:
+    result = _external_reuse(
+        tmp_path, monkeypatch, _InfoClient(None), savedir=savedir, **{field: "empty"}
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "LAUNCH_STATE_MODE_CONFLICT"
+    assert "savedir='temporary'" in result["error"]
 
 
 def test_a_default_launch_still_reuses_any_external_game(tmp_path: Path, monkeypatch) -> None:

@@ -430,10 +430,22 @@ init python:
         """Where this game keeps its saves and HOME, for a server deciding whether to reuse it."""
         savedir = getattr(renpy.config, "savedir", None)
         home = os.environ.get("USERPROFILE" if os.name == "nt" else "HOME")
+        # Ren'Py reads and writes every registered location (game/saves and
+        # config.extra_savedirs too), so report them all, or None when the
+        # list cannot be read.
+        save_locations = None
+        try:
+            location = getattr(getattr(renpy, "loadsave", None), "location", None)
+            directories = [getattr(item, "directory", None) for item in location.locations]
+            if all(isinstance(item, str) and item for item in directories):
+                save_locations = directories
+        except Exception:
+            save_locations = None
         return {
             "ok": True,
             "savedir": savedir if isinstance(savedir, str) and savedir else None,
             "home": home or None,
+            "save_locations": save_locations,
         }
 
     def _renforge_h_get_state(payload):
@@ -1241,7 +1253,10 @@ init python:
             slot=slot,
             restored_label=restored_label,
         )
-        return {"ok": True, "slot": slot, "restored_label": restored_label}
+        result = {"ok": True, "slot": slot, "restored_label": restored_label}
+        if rescan_error is not None:
+            result["rescan_error"] = rescan_error
+        return result
 
     def _renforge_rescan_saves():
         """See save files copied in since Ren'Py's own scan, which runs every few seconds.
