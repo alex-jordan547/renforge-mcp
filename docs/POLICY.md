@@ -25,7 +25,7 @@ runs. Denied calls return a structured `POLICY_DENIED` payload and never reach
 Covered tools:
 
 - `renforge_control` — classified by `action`
-- `renforge_saves` — classified by `action`
+- `renforge_saves` — classified by `action` (`list`/`list_user` observational, `save`/`import` mutating, `load` destructive)
 - `renforge_editor` — classified by `action` (`status` observational, `select`/`save` mutating)
 - `renforge_eval` — always `open_world` when `expr` is a non-empty string
 - `renforge_run_scenario` — classified by the highest-risk step, including nested `control` actions

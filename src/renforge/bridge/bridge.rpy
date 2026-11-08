@@ -426,6 +426,28 @@ init python:
                     pass
         return selected
 
+    def _renforge_h_session_info(payload):
+        """Where this game keeps its saves and HOME, for a server deciding whether to reuse it."""
+        savedir = getattr(renpy.config, "savedir", None)
+        home = os.environ.get("USERPROFILE" if os.name == "nt" else "HOME")
+        # Ren'Py reads and writes every registered location (game/saves and
+        # config.extra_savedirs too), so report them all, or None when the
+        # list cannot be read.
+        save_locations = None
+        try:
+            location = getattr(getattr(renpy, "loadsave", None), "location", None)
+            directories = [getattr(item, "directory", None) for item in location.locations]
+            if all(isinstance(item, str) and item for item in directories):
+                save_locations = directories
+        except Exception:
+            save_locations = None
+        return {
+            "ok": True,
+            "savedir": savedir if isinstance(savedir, str) and savedir else None,
+            "home": home or None,
+            "save_locations": save_locations,
+        }
+
     def _renforge_h_get_state(payload):
         include, include_error = _renforge_state_includes(payload)
         if include_error is not None:
@@ -1192,6 +1214,7 @@ init python:
         if not isinstance(slot, str) or not slot.strip():
             return {"ok": False, "error": "save slot is required"}
 
+        rescan_error = _renforge_rescan_saves()
         can_load = getattr(renpy, "can_load", None)
         if callable(can_load):
             try:
@@ -1208,7 +1231,12 @@ init python:
                 return {"ok": False, "error": "cannot inspect save slot: %s" % exc}
 
         if not exists:
-            return {"ok": False, "error": "save slot not found: %s" % slot}
+            result = {"ok": False, "error": "save slot not found: %s" % slot}
+            if rescan_error is not None:
+                # The slot list may be stale, so say why it could be missing.
+                result["error"] += " (save rescan failed: %s)" % rescan_error
+                result["rescan_error"] = rescan_error
+            return result
 
         load = getattr(renpy, "load", None)
         if not callable(load):
@@ -1225,7 +1253,26 @@ init python:
             slot=slot,
             restored_label=restored_label,
         )
-        return {"ok": True, "slot": slot, "restored_label": restored_label}
+        result = {"ok": True, "slot": slot, "restored_label": restored_label}
+        if rescan_error is not None:
+            result["rescan_error"] = rescan_error
+        return result
+
+    def _renforge_rescan_saves():
+        """See save files copied in since Ren'Py's own scan, which runs every few seconds.
+
+        Best effort: a failure leaves Ren'Py's previous slot list in place, so
+        it is returned (as text) for the caller to report, never raised.
+        """
+        location = getattr(getattr(renpy, "loadsave", None), "location", None)
+        scan = getattr(location, "scan", None)
+        if not callable(scan):
+            return None
+        try:
+            scan()
+        except Exception as exc:
+            return "%s: %s" % (type(exc).__name__, exc)
+        return None
 
     def _renforge_h_list_slots(payload):
         payload = payload or {}
@@ -1236,6 +1283,7 @@ init python:
         list_slots = getattr(renpy, "list_slots", None)
         if not callable(list_slots):
             return {"ok": False, "error": "save slot listing is unavailable"}
+        rescan_error = _renforge_rescan_saves()
         try:
             slot_names = list_slots(regexp=regexp)
         except Exception as exc:
@@ -1264,7 +1312,10 @@ init python:
                 }
             )
 
-        return {"ok": True, "slots": slots}
+        result = {"ok": True, "slots": slots}
+        if rescan_error is not None:
+            result["rescan_error"] = rescan_error
+        return result
 
     def _renforge_h_poll_events(payload):
         payload = payload or {}
@@ -3298,6 +3349,7 @@ init python:
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
+        "session_info": _renforge_h_session_info,
         "get_metrics": _renforge_h_get_metrics_handler,
         "get_audio_state": _renforge_h_get_audio_state_handler,
         "inspect_screen": _renforge_h_inspect_screen,

@@ -54,6 +54,44 @@ def _ann(
     }
 
 
+_ISOLATION_PARAMETERS = {
+    "savedir": (
+        "Save location. `temporary` isolates the session: saves, persistent data, "
+        "preferences, and HOME go to a disposable folder, so the game cannot read "
+        "or write the user's normal Ren'Py saves. Omitted, empty, or `auto` follows "
+        "`RENFORGE_ISOLATION` (`temporary` to isolate every launch; otherwise the "
+        "game's normal save directory, as `existing` or `default` selects). Any other "
+        "non-empty value is an arbitrary save directory path that is created if "
+        "missing and is never removed by stop. Use `renforge_saves(action=\"import\")` "
+        "to copy selected host slots into an isolated session."
+    ),
+    "persistent": (
+        "Persistent state follows the selected save directory. Omitted, empty, "
+        "or `auto` selects `empty` for a fresh temporary directory and `existing` "
+        "for a reused directory. `empty` requires `savedir=temporary`; it never "
+        "deletes existing persistent files. Use save import to copy selected slots."
+    ),
+    "home": (
+        "Process HOME for the launched game. Omitted, empty, or `auto` follows "
+        "`savedir`: a private directory for `savedir=temporary`, so preferences "
+        "and `~/.renpy` writes miss the user's files, otherwise the host HOME. "
+        "Pass `temporary` or `existing` to choose explicitly. Any other non-empty "
+        "value is an explicit HOME path."
+    ),
+    "preferences": (
+        "Preferences share Ren'Py's persistent storage. Omitted, empty, or `auto` "
+        "selects `empty` for a fresh temporary save directory and `existing` for "
+        "a reused directory. `empty` requires `savedir=temporary`; preferences "
+        "are isolated by storage selection, without resetting host state."
+    ),
+}
+
+_ISOLATION_PARAMETER_SCHEMAS = {
+    "persistent": _enum("auto", "existing", "empty"),
+    "preferences": _enum("auto", "existing", "empty"),
+}
+
+
 TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_info": ToolDefinition(
         description=(
@@ -194,9 +232,14 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "Start or attach a running game session with Live Editor enabled by default (pass editor=false for non-editor "
             "runtime launch). Launch starts the background startup flow, usually returning while startup is still in progress; "
             "poll `renforge_launch_status` and capture with `renforge_screenshot` before interaction. "
+            "Saves and HOME default to the user's own; pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) "
+            "to isolate saves, persistent data, preferences, and HOME so the session does not read or write the user's "
+            "normal Ren'Py state. The ready payload includes `session_id` and an `isolation` object (a reused game started "
+            "by another process has no `session_id`; its `isolation` is what its bridge reports). "
             "It may download/cache the selected SDK, inject session-owned `.rpy` files and editor assets under `game/`, and "
             "publish authenticated ownership/bridge metadata under `.renforge/control/`. `renforge_stop` removes only owned "
-            "session artifacts."
+            "session artifacts. Copy selected host slots into an isolated session with "
+            "`renforge_saves(action=\"import\")` instead of bind-mounting the user tree."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -214,17 +257,11 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                 "Ren'Py requires a display surface."
             ),
             "audio": "Audio strategy: `auto`, `native`, `dummy`, or `none`; both `dummy` and `none` use SDL dummy audio.",
-            "savedir": (
-                "Optional save directory override. `temporary` creates an isolated temporary directory; any other non-default "
-                "value is an arbitrary save directory path that is created if missing and is never removed by stop."
-            ),
-            "persistent": (
-                "Persistent mode: `existing` preserves current persistent data and `empty` removes it in the isolated session; "
-                "`copy` and `fixture` currently set an environment marker only and do not copy or load fixture data."
-            ),
+            **_ISOLATION_PARAMETERS,
             "cleanup_on_stop": (
-                "When true, stop removes only the temporary save directory created by `savedir=temporary`; arbitrary save "
-                "directories and existing saves are not deleted."
+                "When true, stop removes only the disposable session directory created for "
+                "isolated `savedir`/`home` (saves plus private HOME). Arbitrary save "
+                "directories, explicit HOME paths, and existing user files are not deleted."
             ),
             "timeout": (
                 "Ren'Py background startup deadline in seconds (0 uses the launcher default). This does not control the MCP "
@@ -234,14 +271,15 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         parameter_schemas={
             "display": _enum("auto", "native", "xvfb", "external", "none"),
             "audio": _enum("auto", "native", "dummy", "none"),
-            "persistent": _enum("existing", "empty", "copy", "fixture"),
+            **_ISOLATION_PARAMETER_SCHEMAS,
             "timeout": {"minimum": 0},
         },
     ),
     "renforge_launch_status": ToolDefinition(
         description=(
             "Poll launch progress and return `idle`, `starting`, `ready`, `failed`, `closing`, or `closed`. Use after any "
-            "launch start when the first call has not returned an immediate ready state."
+            "launch start when the first call has not returned an immediate ready state. A ready payload repeats "
+            "`session_id` and the `isolation` object from launch (only `isolation` for a game started by another process)."
         ),
         annotations=_ann(
             readOnlyHint=True,
@@ -254,7 +292,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_jump": ToolDefinition(
         description=(
             "Restart into a specific label/file position and keep interacting in a fresh game session. If needed, this may "
-            "download and cache the required SDK before restart. Use for deterministic positioning before scripted checks."
+            "download and cache the required SDK before restart. Isolation matches `renforge_launch` (opt in with "
+            "`savedir=temporary`). Use for deterministic positioning before scripted checks."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -266,12 +305,15 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "project_path": "Project root containing the target game.",
             "target": "Label name or `file:line` destination for relaunch.",
             "version": "Runtime version to use when restarting at target.",
+            **_ISOLATION_PARAMETERS,
         },
+        parameter_schemas=dict(_ISOLATION_PARAMETER_SCHEMAS),
     ),
     "renforge_new_game": ToolDefinition(
         description=(
             "Restart at `start` and begin a new story progression. This may download and cache the required SDK before the "
-            "fresh launch. Prefer this for clean scenario entry rather than reusing unstable runtime state."
+            "fresh launch. Isolation matches `renforge_launch` (opt in with `savedir=temporary`). Prefer this for clean "
+            "scenario entry rather than reusing unstable runtime state."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -282,7 +324,9 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         parameters={
             "project_path": "Project root containing the game to restart.",
             "version": "Runtime version used for the fresh launch.",
+            **_ISOLATION_PARAMETERS,
         },
+        parameter_schemas=dict(_ISOLATION_PARAMETER_SCHEMAS),
     ),
     "renforge_stop": ToolDefinition(
         description=(
@@ -427,9 +471,11 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     ),
     "renforge_saves": ToolDefinition(
         description=(
-            "List, load, or save named slots in a single command family. `list` is read-only; `load` replaces live state "
-            "and `save` can overwrite the chosen slot. Verify slot names before mutating gameplay progress. `load` requires "
-            "`authorize=true` when `RENFORGE_POLICY=enforce`."
+            "List, load, save, or import named slots in a single command family. `list` reads the running (usually isolated) "
+            "session; `list_user` observes host slots under `~/.renpy` / `game/saves` without a running game and never writes. "
+            "`import` copies selected host slots into the isolated session savedir (never bind-mounts the user tree) and is "
+            "refused when the session exposes user saves. `load` replaces live state and `save` can overwrite the chosen slot. "
+            "Verify slot names before mutating gameplay progress. `load` requires `authorize=true` when `RENFORGE_POLICY=enforce`."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -438,16 +484,24 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             openWorldHint=True,
         ),
         parameters={
-            "project_path": "Project root of the running live game.",
-            "action": "One of `list`, `load`, or `save`.",
-            "slot": "Slot label used by save/load actions.",
+            "project_path": "Project root of the live game (or of the project whose host saves should be listed or imported).",
+            "action": "One of `list`, `list_user`, `import`, `load`, or `save`.",
+            "slot": "Slot label used by save/load/import. Import also accepts `slots` or `pattern`.",
+            "slots": "Optional list of host slot names to copy for `import`.",
             "extra_info": "Optional save metadata for save actions.",
-            "regexp": "Optional regex filter for list only, selecting matching slots.",
+            "regexp": "Optional regex filter for `list`, applied by Ren'Py's `renpy.list_slots` in the game.",
+            "pattern": (
+                "Optional glob for `list_user` or `import`, matched against the whole slot name: `*` any run of "
+                "characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`)."
+            ),
             "authorize": (
-                "Explicitly authorize `load` when `RENFORGE_POLICY=enforce`; ignored for list/save."
+                "Explicitly authorize `load` when `RENFORGE_POLICY=enforce`; ignored for list, list_user, import, and save."
             ),
         },
-        parameter_schemas={"action": _enum("save", "load", "list")},
+        parameter_schemas={
+            "action": _enum("save", "load", "list", "list_user", "import"),
+            "slots": {"items": {"type": "string", "minLength": 1}},
+        },
         input_schema={
             "oneOf": [
                 {
@@ -455,6 +509,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "action": {"const": "save"},
                         "slot": {"type": "string", "minLength": 1},
                         "regexp": {"type": "null"},
+                        "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
                     },
                     "required": ["action", "slot"],
                 },
@@ -464,6 +520,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "slot": {"type": "string", "minLength": 1},
                         "extra_info": {"type": "null"},
                         "regexp": {"type": "null"},
+                        "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
                     },
                     "required": ["action", "slot"],
                 },
@@ -472,6 +530,26 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
                         "action": {"const": "list"},
                         "slot": {"type": "null"},
                         "extra_info": {"type": "null"},
+                        "slots": {"type": "null"},
+                        "pattern": {"type": "null"},
+                    },
+                    "required": ["action"],
+                },
+                {
+                    "properties": {
+                        "action": {"const": "list_user"},
+                        "slot": {"type": "null"},
+                        "extra_info": {"type": "null"},
+                        "slots": {"type": "null"},
+                        "regexp": {"type": "null"},
+                    },
+                    "required": ["action"],
+                },
+                {
+                    "properties": {
+                        "action": {"const": "import"},
+                        "extra_info": {"type": "null"},
+                        "regexp": {"type": "null"},
                     },
                     "required": ["action"],
                 },

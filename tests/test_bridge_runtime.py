@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import os
 import threading
 import time
 import types
@@ -3110,6 +3111,48 @@ def test_load_slot_acknowledges_before_scheduling_control_flow(running_bridge):
     assert calls == {"slot": "branch-a"}
 
 
+def test_list_and_load_rescan_saves_copied_in_since_the_last_scan(running_bridge):
+    events = []
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=lambda: events.append("scan"))
+    )
+
+    def list_slots(regexp=None):
+        events.append("list")
+        return []
+
+    def can_load(slot):
+        events.append("can_load")
+        return False
+
+    running_bridge.renpy.list_slots = list_slots
+    running_bridge.renpy.can_load = can_load
+
+    assert running_bridge.client.list_slots()["ok"] is True
+    assert running_bridge.client.load_slot("imported")["ok"] is False
+    assert events == ["scan", "list", "scan", "can_load"]
+
+
+def test_a_failed_save_rescan_is_reported_not_hidden(running_bridge):
+    def scan():
+        raise OSError("savedir unreadable")
+
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=scan)
+    )
+    running_bridge.renpy.list_slots = lambda regexp=None: []
+    running_bridge.renpy.can_load = lambda slot: False
+
+    listed = running_bridge.client.list_slots()
+    assert listed["ok"] is True
+    assert listed["rescan_error"] == "OSError: savedir unreadable"
+
+    loaded = running_bridge.client.load_slot("imported")
+    assert loaded["ok"] is False
+    assert loaded["rescan_error"] == "OSError: savedir unreadable"
+    assert "save rescan failed" in loaded["error"]
+
+
 def test_list_slots_returns_metadata_without_loading_screenshots(running_bridge):
     calls = []
     running_bridge.renpy.list_slots = lambda regexp=None: ["branch-a", "branch-b"]
@@ -4776,3 +4819,46 @@ def test_scene_style_reports_integer_maximums_only(running_bridge):
 
     assert style["xmaximum"] == 200
     assert "ymaximum" not in style
+
+
+def test_session_info_reports_where_the_game_saves_and_its_home(running_bridge, monkeypatch, tmp_path):
+    home_var = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(home_var, str(tmp_path / "home"))
+    running_bridge.renpy.config.savedir = str(tmp_path / "saves")
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(
+            locations=[
+                types.SimpleNamespace(directory=str(tmp_path / "saves")),
+                types.SimpleNamespace(directory=str(tmp_path / "game" / "saves")),
+            ]
+        )
+    )
+
+    assert running_bridge.client.session_info() == {
+        "savedir": str(tmp_path / "saves"),
+        "home": str(tmp_path / "home"),
+        "save_locations": [str(tmp_path / "saves"), str(tmp_path / "game" / "saves")],
+    }
+
+    # Without a readable location list the bridge says so instead of guessing.
+    running_bridge.renpy.config.savedir = None
+    running_bridge.renpy.loadsave = types.SimpleNamespace()
+    info = running_bridge.client.session_info()
+    assert info["savedir"] is None
+    assert info["save_locations"] is None
+
+
+def test_a_successful_load_still_reports_a_failed_rescan(running_bridge):
+    def scan():
+        raise OSError("savedir unreadable")
+
+    running_bridge.renpy.loadsave = types.SimpleNamespace(
+        location=types.SimpleNamespace(scan=scan)
+    )
+    running_bridge.renpy.can_load = lambda slot: True
+    running_bridge.renpy.load = lambda slot: None
+
+    reply = running_bridge.client.load_slot("branch-a")
+
+    assert reply["ok"] is True
+    assert reply["rescan_error"] == "OSError: savedir unreadable"

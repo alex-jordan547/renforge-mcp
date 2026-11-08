@@ -13,6 +13,36 @@ versioning.
 
 ### Changed
 
+- `renforge_launch`, `renforge_jump`, `renforge_new_game`, and dashboard
+  launches can isolate the running game from the user's Ren'Py state. It is
+  opt-in: pass `savedir=temporary`, or set `RENFORGE_ISOLATION=temporary` for
+  every launch of a server; launches otherwise use the game's normal saves, as
+  before. An isolated session gets a disposable save directory (native
+  `--savedir` plus `RENFORGE_SAVEDIR` / `RENPY_PATH_TO_SAVES` /
+  `RENPY_MULTIPERSISTENT`), a private HOME/XDG/temp tree, empty persistent
+  data, and reset preferences. Ready payloads include `session_id` and an
+  `isolation` object so an agent can see the mode. A launch that asked for
+  isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a
+  running game that uses the user's saves, including one started elsewhere
+  (another RenForge process or the dashboard). Such a game counts as isolated
+  only when it reports HOME and every active save location and all of them
+  are inside a RenForge session root; anything else, including a bridge that
+  cannot report them, counts as using the user's. A reused external game's
+  ready and status payloads carry what it reported as `isolation`. A launch
+  whose state modes a fresh launch would reject (`empty` without
+  `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.
+  `renforge_saves` gains `list_user` (observational host listing) and `import`
+  (copy selected host slots into an isolated session; never bind-mounts the
+  user tree). `list_user` filters by `pattern`, a glob matched against the
+  whole slot name; `import` selects by name, by `pattern`, or both; `list`
+  keeps its `regexp`, which Ren'Py applies. `list_user` and `import` read only
+  the folder that the game's `config.save_directory` names directly under the
+  Ren'Py save root, plus a `game/saves` inside the project. A failed save
+  rescan is reported as `rescan_error` instead of leaving a stale slot list
+  unexplained. A stop waits for an import in progress, and an import never
+  starts on a stopped session or one whose game has exited. Copied slots are
+  removed with a temporary savedir on stop, unless `cleanup_on_stop=false` or
+  the cleanup fails. This is application-layer isolation, not an OS sandbox.
 - `renforge_scene_tree(include=["overflow"])`: dropped the `clipped` alias
   (it duplicated `overflow`), added per-axis `overflow_axes` and `wrapped`
   values, and now reports `overflow` only for actual vertical clipping.

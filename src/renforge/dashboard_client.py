@@ -112,9 +112,11 @@ def launch_game(
     display: str = "auto",
     audio: str = "auto",
     savedir: str | None = None,
-    persistent: str = "existing",
+    persistent: str | None = None,
     cleanup_on_stop: bool = True,
     timeout: float | None = None,
+    home: str | None = None,
+    preferences: str | None = None,
 ) -> dict[str, Any] | None:
     """Launch through the matching dashboard, or return ``None`` when none is registered."""
     body: dict[str, Any] = {
@@ -126,6 +128,8 @@ def launch_game(
         "savedir": savedir,
         "persistent": persistent,
         "cleanup_on_stop": cleanup_on_stop,
+        "home": home,
+        "preferences": preferences,
     }
     if timeout is not None:
         body["timeout"] = timeout

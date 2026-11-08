@@ -194,6 +194,76 @@ def test_launch_with_bridge_builds_run_command(monkeypatch, tmp_path: Path, warp
     session.close(timeout=0.1)
 
 
+def test_launch_with_bridge_isolates_saves_via_native_savedir(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    home = tmp_path / "home"
+    normal_saves = home / ".renpy" / "renforge-demo"
+    normal_saves.mkdir(parents=True)
+    canary = normal_saves / "slot1.save"
+    canary.write_text("USER-SAVE\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["command"] = command
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, savedir="temporary")
+    command = list(captured["command"])  # type: ignore[arg-type]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    isolated = Path(env["RENFORGE_SAVEDIR"])
+    assert command[-2:] == ["--savedir", str(isolated)]
+    assert command[2] == "run"
+    assert env["RENPY_PATH_TO_SAVES"] == str(isolated)
+    assert env["RENPY_MULTIPERSISTENT"] == str(isolated / "multipersistent")
+    assert env["HOME"] != str(home)
+    assert not Path(env["HOME"]).is_relative_to(home)
+    assert isolated != normal_saves
+    assert not isolated.is_relative_to(home)
+    assert list((project_root / "game").glob("00renforge_session_*.rpy"))
+    assert canary.read_text(encoding="utf-8") == "USER-SAVE\n"
+    session.close(timeout=0.1)
+    assert not isolated.exists()
+    assert not Path(env["HOME"]).exists()
+
+
+def test_launch_with_bridge_existing_savedir_does_not_redirect(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["command"] = command
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, savedir="existing")
+    command = list(captured["command"])  # type: ignore[arg-type]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert command[2:] == ["run"]
+    assert "RENFORGE_SAVEDIR" not in env
+    assert "RENPY_PATH_TO_SAVES" not in env
+    assert "RENFORGE_PERSISTENT_MODE" not in env
+    assert not list((project_root / "game").glob("00renforge_session_*.rpy"))
+    session.close(timeout=0.1)
+
+
 def test_launch_without_display_nor_xvfb_fails_fast(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("renforge.bridge.launcher.sys.platform", "linux")
     monkeypatch.delenv("DISPLAY", raising=False)
@@ -419,6 +489,66 @@ def test_partial_savedir_cleanup_still_reports_the_paths_it_removed(
     assert "temporary_savedir" in result["failed"]
     assert result["files_deleted"] == [removed_file.resolve().as_posix()]
     assert surviving_file.exists()
+
+
+def test_close_waits_for_a_writer_holding_the_session_open(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    session_root = tmp_path / "renforge-session-x"
+    savedir = session_root / "saves"
+    savedir.mkdir(parents=True)
+    session = BridgeSession(
+        _FakeProcess(),
+        _FakeClient(),
+        project_root,
+        temporary_savedir=savedir,
+        session_root=session_root,
+        cleanup_savedir=True,
+    )
+    writing = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    def writer() -> None:
+        with session.holding_open() as session_open:
+            assert session_open is True
+            (savedir / "1-1-LT1.save").write_bytes(b"SLOT")
+            writing.set()
+            release.wait(timeout=5)
+
+    def closer() -> None:
+        session.close()
+        closed.set()
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert writing.wait(timeout=5)
+    closer_thread = threading.Thread(target=closer)
+    closer_thread.start()
+
+    # The stop must not remove the session root under an unfinished copy.
+    assert not closed.wait(timeout=0.2)
+    assert (savedir / "1-1-LT1.save").exists()
+
+    release.set()
+    writer_thread.join(timeout=5)
+    closer_thread.join(timeout=5)
+    assert closed.is_set()
+    assert session.closed is True
+    assert not session_root.exists()
+    with session.holding_open() as session_open:
+        assert session_open is False
+
+
+def test_a_session_whose_game_exited_is_not_held_open_for_writes(tmp_path: Path) -> None:
+    # Nothing would read slots copied into it, and the next stop deletes them.
+    process = _FakeProcess()
+    session = BridgeSession(process, _FakeClient(), tmp_path)
+    with session.holding_open() as session_open:
+        assert session_open is True
+    process.returncode = 0
+    with session.holding_open() as session_open:
+        assert session_open is False
 
 
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -2073,3 +2203,40 @@ def test_pipe_reader_handles_split_chunk_stream() -> None:
     finally:
         os.close(w_fd)
         r_file.close()
+
+
+def test_a_launch_that_fails_before_spawning_removes_its_session_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(save_isolation.tempfile, "tempdir", str(temp_root))
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, _root = _make_project(tmp_path)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("Popen must not be reached with an invalid token")
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fail_popen)
+
+    # Only an isolated launch makes a session root, so ask for one; otherwise
+    # the glob below would pass without the pre-spawn cleanup.
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    created = []
+    real_resolve = save_isolation.resolve_launch_isolation
+
+    def tracking_resolve(*args, **kwargs):
+        isolation = real_resolve(*args, **kwargs)
+        created.append(isolation.session_root)
+        return isolation
+
+    monkeypatch.setattr("renforge.bridge.launcher.resolve_launch_isolation", tracking_resolve)
+
+    with pytest.raises(LaunchError) as excinfo:
+        launch_with_bridge(sdk, project, token="not-a-token", savedir="temporary")
+
+    assert excinfo.value.code == "BRIDGE_TOKEN_INVALID"
+    assert created and created[0] is not None
+    assert not list(temp_root.glob(save_isolation.SESSION_PREFIX + "*"))

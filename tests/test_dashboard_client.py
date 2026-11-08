@@ -55,7 +55,9 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     assert calls["payload"]["editor"] is True
     assert calls["payload"]["display"] == "auto"
     assert calls["payload"]["audio"] == "auto"
-    assert calls["payload"]["persistent"] == "existing"
+    assert calls["payload"]["persistent"] is None
+    assert calls["payload"]["home"] is None
+    assert calls["payload"]["preferences"] is None
     assert calls["payload"]["cleanup_on_stop"] is True
 
 

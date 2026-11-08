@@ -48,6 +48,8 @@ CONTROL_ACTIONS: dict[str, str] = {
 
 SAVES_ACTIONS: dict[str, str] = {
     "list": RISK_OBSERVATIONAL,
+    "list_user": RISK_OBSERVATIONAL,
+    "import": RISK_MUTATING,
     "save": RISK_MUTATING,
     "load": RISK_DESTRUCTIVE,
 }
