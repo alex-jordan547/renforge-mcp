@@ -593,12 +593,14 @@ class BridgeSession:
     def holding_open(self) -> Iterator[bool]:
         """Keep :meth:`close` waiting while the caller writes into this session.
 
-        Yields ``False`` when the session is already closed. Copying into the
-        session root while a stop removes it would leave files nothing cleans
-        up, or make the removal fail and leave the session half-closed.
+        Yields ``False`` when the session is closed or its game has exited:
+        no game would read what the caller writes, and the next stop removes
+        it. Copying into the session root while a stop removes it would leave
+        files nothing cleans up, or make the removal fail and leave the
+        session half-closed.
         """
         with self._close_lock:
-            yield not self._closed
+            yield not self._closed and self.process.poll() is None
 
     def close(self, timeout: float = 10.0) -> dict[str, Any]:
         """Stop the game, Xvfb group if any, and temporary session files."""
