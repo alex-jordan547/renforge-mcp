@@ -1198,6 +1198,12 @@ python early:
         info = client.session_info()
         assert info["save_locations"] == locations
         assert info["home"] == str(session.temporary_home)
+        from renforge.save_isolation import path_in_session_root
+
+        # A real isolated game must pass the reuse allowlist, or no external
+        # isolated game could ever be reused.
+        assert path_in_session_root(info["home"])
+        assert all(path_in_session_root(item) for item in info["save_locations"])
         # Every reinitialization must retain the invariant, including reload's
         # storage reinitialization, even if the game sets extra_savedirs again.
         client.eval_expr('__import__("renpy").savelocation.init()')

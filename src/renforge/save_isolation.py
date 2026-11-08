@@ -388,6 +388,22 @@ def launch_exposes_user_saves(
     return False
 
 
+def path_in_session_root(value: str | Path) -> bool:
+    """True only for a path inside a session root this module creates.
+
+    Session roots are ``tempfile.mkdtemp(prefix=SESSION_PREFIX)`` folders, so
+    nothing outside one is session-private. A path that cannot be resolved
+    is not either: callers deciding whether storage is isolated must treat an
+    unknown location as the player's.
+    """
+    try:
+        resolved = Path(value).expanduser().resolve()
+        relative = resolved.relative_to(Path(tempfile.gettempdir()).resolve())
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+    return bool(relative.parts) and relative.parts[0].startswith(SESSION_PREFIX)
+
+
 def path_is_host_home(value: str | Path, *, home: Path | None = None) -> bool:
     """True when *value* is the host HOME directory."""
     try:
