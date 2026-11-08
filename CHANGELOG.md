@@ -23,7 +23,9 @@ versioning.
   data, and reset preferences. Ready payloads include `session_id` and an
   `isolation` object so an agent can see the mode. A launch that asked for
   isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a
-  running game that uses the user's saves.
+  running game that uses the user's saves, including one started elsewhere
+  (another RenForge process or the dashboard); a bridge that cannot report its
+  save folder and HOME counts as using the user's.
   `renforge_saves` gains `list_user` (observational host listing) and `import`
   (copy selected host slots into an isolated session; never bind-mounts the
   user tree). `list_user` filters by `pattern`, a glob matched against the

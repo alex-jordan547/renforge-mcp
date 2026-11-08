@@ -426,6 +426,16 @@ init python:
                     pass
         return selected
 
+    def _renforge_h_session_info(payload):
+        """Where this game keeps its saves and HOME, for a server deciding whether to reuse it."""
+        savedir = getattr(renpy.config, "savedir", None)
+        home = os.environ.get("USERPROFILE" if os.name == "nt" else "HOME")
+        return {
+            "ok": True,
+            "savedir": savedir if isinstance(savedir, str) and savedir else None,
+            "home": home or None,
+        }
+
     def _renforge_h_get_state(payload):
         include, include_error = _renforge_state_includes(payload)
         if include_error is not None:
@@ -3324,6 +3334,7 @@ init python:
     _RENFORGE_HANDLERS = {
         "ping": _renforge_h_ping,
         "get_state": _renforge_h_get_state,
+        "session_info": _renforge_h_session_info,
         "get_metrics": _renforge_h_get_metrics_handler,
         "get_audio_state": _renforge_h_get_audio_state_handler,
         "inspect_screen": _renforge_h_inspect_screen,

@@ -201,6 +201,11 @@ class BridgeClient:
     def ping(self) -> dict:
         return self.request("ping")
 
+    def session_info(self) -> dict:
+        """``savedir`` and ``home`` of the running game, as its bridge reports them."""
+        reply = self._checked("session_info")
+        return {"savedir": reply.get("savedir"), "home": reply.get("home")}
+
     def get_state(
         self,
         include: list[str] | tuple[str, ...] | None = None,

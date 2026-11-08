@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import os
 import threading
 import time
 import types
@@ -4818,3 +4819,17 @@ def test_scene_style_reports_integer_maximums_only(running_bridge):
 
     assert style["xmaximum"] == 200
     assert "ymaximum" not in style
+
+
+def test_session_info_reports_where_the_game_saves_and_its_home(running_bridge, monkeypatch, tmp_path):
+    home_var = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(home_var, str(tmp_path / "home"))
+    running_bridge.renpy.config.savedir = str(tmp_path / "saves")
+
+    assert running_bridge.client.session_info() == {
+        "savedir": str(tmp_path / "saves"),
+        "home": str(tmp_path / "home"),
+    }
+
+    running_bridge.renpy.config.savedir = None
+    assert running_bridge.client.session_info()["savedir"] is None

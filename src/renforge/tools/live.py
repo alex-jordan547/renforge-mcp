@@ -41,6 +41,7 @@ from ..save_isolation import (
     launch_exposes_user_saves,
     list_host_slots,
     path_exposes_user_saves,
+    path_is_host_home,
 )
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
@@ -488,6 +489,39 @@ def _session_mode_mismatch(
     }
 
 
+def _external_session_exposes_user_saves(client: Any, project_root: Path) -> bool:
+    """Whether a game this process did not start reaches the player's saves or HOME.
+
+    A bridge that cannot say where it saves (an older one) counts as exposing:
+    an isolated launch must never be handed a game it cannot vouch for.
+    """
+    try:
+        info = client.session_info()
+    except Exception:
+        return True
+    savedir, home = info.get("savedir"), info.get("home")
+    if not isinstance(savedir, str) or not savedir or not isinstance(home, str) or not home:
+        return True
+    return path_exposes_user_saves(savedir, project_path=project_root) or path_is_host_home(home)
+
+
+def _isolation_mismatch(*, requested_exposes: bool, existing_exposes: bool) -> dict[str, Any]:
+    message = (
+        "The running game uses the player's saves or HOME, but this launch "
+        "asked for an isolated session. Stop it before launching again."
+    )
+    return {
+        "ok": False,
+        "ready": False,
+        "code": "SESSION_ISOLATION_MISMATCH",
+        "phase": "validating_session_mode",
+        "message": message,
+        "error": message,
+        "requested_exposes_user_saves": requested_exposes,
+        "existing_exposes_user_saves": existing_exposes,
+    }
+
+
 def _session_exposes_user_saves(session: Any) -> bool:
     """Whether an owned session reads or writes the player's saves or HOME."""
     report = _isolation_result(session).get("isolation")
@@ -577,20 +611,9 @@ def launch_game(
             )
             existing_exposes = _session_exposes_user_saves(existing)
             if existing_exposes and not requested_exposes:
-                message = (
-                    "The running game uses the player's saves or HOME, but this launch "
-                    "asked for an isolated session. Stop it before launching again."
+                return _isolation_mismatch(
+                    requested_exposes=requested_exposes, existing_exposes=existing_exposes
                 )
-                return {
-                    "ok": False,
-                    "ready": False,
-                    "code": "SESSION_ISOLATION_MISMATCH",
-                    "phase": "validating_session_mode",
-                    "message": message,
-                    "error": message,
-                    "requested_exposes_user_saves": requested_exposes,
-                    "existing_exposes_user_saves": existing_exposes,
-                }
             try:
                 state = existing.client.get_state()
                 return {
@@ -644,6 +667,21 @@ def launch_game(
                         "Editor mode cannot be proven for an external session. "
                         "Launch from this RenForge process with editor=true instead."
                     ),
+                )
+            # Same rule as an owned session: an isolated request must not be
+            # handed a game (started elsewhere) that uses the player's saves.
+            requested_exposes = launch_exposes_user_saves(
+                savedir=savedir,
+                home=home,
+                persistent=persistent,
+                preferences=preferences,
+                project_path=project.root,
+            )
+            if not requested_exposes and _external_session_exposes_user_saves(
+                external, project.root
+            ):
+                return _isolation_mismatch(
+                    requested_exposes=False, existing_exposes=True
                 )
             return {
                 "ok": True,
