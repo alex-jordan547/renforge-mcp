@@ -1331,13 +1331,21 @@ def saves(
             "code": "SAVE_IMPORT_NOT_ISOLATED",
             "error": "import refuses to copy into the user's save tree; use an isolated session",
         }
-    return import_host_slots(
-        project.root,
-        destination,
-        slot=slot,
-        slots=slots,
-        pattern=pattern,
-    )
+    # A stop waits for the copy, and a copy never starts after a stop.
+    with session.holding_open() as session_open:
+        if not session_open:
+            return {
+                "ok": False,
+                "code": "NO_ISOLATED_SESSION",
+                "error": "the session's save folder is gone; the session has stopped",
+            }
+        return import_host_slots(
+            project.root,
+            destination,
+            slot=slot,
+            slots=slots,
+            pattern=pattern,
+        )
 
 
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:

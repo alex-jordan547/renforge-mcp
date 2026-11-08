@@ -491,6 +491,55 @@ def test_partial_savedir_cleanup_still_reports_the_paths_it_removed(
     assert surviving_file.exists()
 
 
+def test_close_waits_for_a_writer_holding_the_session_open(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    session_root = tmp_path / "renforge-session-x"
+    savedir = session_root / "saves"
+    savedir.mkdir(parents=True)
+    session = BridgeSession(
+        _FakeProcess(),
+        _FakeClient(),
+        project_root,
+        temporary_savedir=savedir,
+        session_root=session_root,
+        cleanup_savedir=True,
+    )
+    writing = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    def writer() -> None:
+        with session.holding_open() as session_open:
+            assert session_open is True
+            (savedir / "1-1-LT1.save").write_bytes(b"SLOT")
+            writing.set()
+            release.wait(timeout=5)
+
+    def closer() -> None:
+        session.close()
+        closed.set()
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert writing.wait(timeout=5)
+    closer_thread = threading.Thread(target=closer)
+    closer_thread.start()
+
+    # The stop must not remove the session root under an unfinished copy.
+    assert not closed.wait(timeout=0.2)
+    assert (savedir / "1-1-LT1.save").exists()
+
+    release.set()
+    writer_thread.join(timeout=5)
+    closer_thread.join(timeout=5)
+    assert closed.is_set()
+    assert session.closed is True
+    assert not session_root.exists()
+    with session.holding_open() as session_open:
+        assert session_open is False
+
+
 def test_failed_launch_removes_every_generated_bridge_artifact(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DISPLAY", ":0")
     project, sdk, root = _make_project(tmp_path)
