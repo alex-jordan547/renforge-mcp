@@ -24,9 +24,10 @@ versioning.
   `isolation` object so an agent can see the mode. A launch that asked for
   isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a
   running game that uses the user's saves, including one started elsewhere
-  (another RenForge process or the dashboard). Such a game must report every
-  active save location and HOME, and none may be the user's; a bridge that
-  cannot report them counts as using the user's. A reused external game's
+  (another RenForge process or the dashboard). Such a game counts as isolated
+  only when it reports HOME and every active save location and all of them
+  are inside a RenForge session root; anything else, including a bridge that
+  cannot report them, counts as using the user's. A reused external game's
   ready and status payloads carry what it reported as `isolation`. A launch
   whose state modes a fresh launch would reject (`empty` without
   `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.

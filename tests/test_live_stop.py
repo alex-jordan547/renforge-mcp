@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -353,6 +354,9 @@ class _InfoClient(_StateClient):
 
 
 def _host_home(tmp_path: Path, monkeypatch) -> Path:
+    # tmp_path stands in for the temp dir, so tmp_path/renforge-session-* is a
+    # session root and anything else under it is not.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     host_home = tmp_path / "host-home"
     host_home.mkdir()
     monkeypatch.setenv("HOME", str(host_home))
@@ -382,8 +386,16 @@ def _external_reuse(tmp_path: Path, monkeypatch, client, **launch_kwargs) -> dic
     [
         None,  # an older bridge that cannot say where it saves
         {"savedir": None, "home": None},
-        {"savedir": "SESSION_SAVES", "home": "HOST_HOME"},
-        {"savedir": "HOST_SAVES", "home": "SESSION_HOME"},
+        {"savedir": "SESSION_SAVES", "home": "HOST_HOME", "save_locations": ["SESSION_SAVES"]},
+        {"savedir": "HOST_SAVES", "home": "SESSION_HOME", "save_locations": ["HOST_SAVES"]},
+        # config.extra_savedirs pointing anywhere outside the session root may
+        # hold the player's saves, even somewhere RenForge does not recognize.
+        {"savedir": "SESSION_SAVES", "home": "SESSION_HOME", "save_locations": ["SESSION_SAVES", "ELSEWHERE"]},
+        # The shared temp dir itself is not a session root.
+        {"savedir": "SESSION_SAVES", "home": "SESSION_HOME", "save_locations": ["TEMP_ROOT"]},
+        # A path that cannot be resolved is unknown, so it is not safe.
+        {"savedir": "SESSION_SAVES", "home": "SESSION_HOME", "save_locations": ["SESSION_SAVES", "bad\0path"]},
+        {"savedir": "SESSION_SAVES", "home": "bad\0path", "save_locations": ["SESSION_SAVES"]},
     ],
 )
 def test_an_isolated_launch_is_not_handed_an_external_game_it_cannot_vouch_for(
@@ -400,8 +412,16 @@ def test_an_isolated_launch_is_not_handed_an_external_game_it_cannot_vouch_for(
             "SESSION_HOME": str(session / "home"),
             "HOST_HOME": str(host_home),
             "HOST_SAVES": str(host_saves),
+            "ELSEWHERE": str(tmp_path / "Documents" / "OtherSaves"),
+            "TEMP_ROOT": str(tmp_path),
         }
-        info = {key: mapping.get(value, value) for key, value in info.items()}
+
+        def resolve(value):
+            if isinstance(value, list):
+                return [mapping.get(item, item) for item in value]
+            return mapping.get(value, value)
+
+        info = {key: resolve(value) for key, value in info.items()}
 
     result = _external_reuse(tmp_path, monkeypatch, _InfoClient(info), savedir="temporary")
 

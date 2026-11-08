@@ -147,8 +147,12 @@ not read or write the user's normal Ren'Py saves, preferences, or
 before. The ready payload from
 `renforge_launch` / `renforge_launch_status` includes `session_id` and an
 `isolation` object (`savedir_mode`, `home_mode`, `persistent_mode`,
-`preferences_mode`, resolved paths, and `exposes_user_saves`). Copy selected
-host slots into the isolated session; never bind-mount the user tree.
+`preferences_mode`, resolved paths, and `exposes_user_saves`). A reused game
+that another process started has no `session_id`; its `isolation` holds what
+its bridge reports (`savedir`, `home`, `save_locations`, `exposes_user_saves`),
+and it counts as isolated only when HOME and every save location are inside a
+RenForge session root. Copy selected host slots into the isolated session;
+never bind-mount the user tree.
 
 There is no MCP-protocol isolation flag and no Roots-based save exposure.
 Isolation is tool arguments and the `RENFORGE_ISOLATION` server default.
@@ -479,8 +483,8 @@ guards: each capture hashes a new frame.
 
 | Tool | Purpose |
 | --- | --- |
-| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`. Pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) to **isolate saves, preferences, and HOME** in a disposable folder so the session does not read or write the user's normal Ren'Py state (`~/.renpy` / `game/saves` / host preferences); without it, launches use them as before. Ready payloads include `session_id` and an `isolation` object. A launch that asked for isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses the user's saves. Use `renforge_saves(action="import")` to copy selected host slots into an isolated session. `timeout` controls the background startup deadline. |
-| `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. Ready payloads repeat `session_id` and `isolation`. |
+| `renforge_launch` | Start or reuse a game with the **Live Editor enabled by default** and inject the temporary bridge. After launch, poll `renforge_launch_status`, observe with `renforge_screenshot` / `renforge_scene_tree`, then use guarded clicks — see [LIVE_EDITOR.md](LIVE_EDITOR.md). The call waits at most 20 seconds, then returns `status=starting` while startup continues in the background. A competing launch returns `code=LAUNCH_IN_PROGRESS` instead of discarding its parameters. `warp` accepts `file:line`; `display`/`audio` default to `auto`. Pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) to **isolate saves, preferences, and HOME** in a disposable folder so the session does not read or write the user's normal Ren'Py state (`~/.renpy` / `game/saves` / host preferences); without it, launches use them as before. Ready payloads include `session_id` and an `isolation` object; a reused game started by another process (another RenForge server or the dashboard) has no `session_id`, and its `isolation` is what its bridge reports. A launch that asked for isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses the user's saves. Use `renforge_saves(action="import")` to copy selected host slots into an isolated session. `timeout` controls the background startup deadline. |
+| `renforge_launch_status` | Report `starting`, `ready`, `failed`, or `idle` for the latest launch. While cancellation is pending it keeps `status=starting` and sets `cancel_requested=true`. Ready payloads repeat `session_id` and `isolation` (only `isolation` for a game started by another process). |
 | `renforge_jump` | Restart at a label or `file:line`; it uses the same non-blocking launch lifecycle and the same isolation knobs as `renforge_launch`. |
 | `renforge_new_game` | Start a fresh process at the `start` label through the same non-blocking lifecycle and isolation knobs as `renforge_launch`. |
 | `renforge_stop` | Stop a running game or cancel an in-progress launch. Uses authenticated bridge quit when a session is owned; may return `SHUTDOWN_INCOMPLETE` with deferred cleanup while the process/artifacts finish tearing down. When another launch holds the project lock, reports `replacement_running`. An uninterruptible startup phase may return `launch_cancel_requested=true`; poll launch status until it becomes `failed` or `closed`. |

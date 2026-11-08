@@ -234,7 +234,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "poll `renforge_launch_status` and capture with `renforge_screenshot` before interaction. "
             "Saves and HOME default to the user's own; pass `savedir=temporary` (or set `RENFORGE_ISOLATION=temporary`) "
             "to isolate saves, persistent data, preferences, and HOME so the session does not read or write the user's "
-            "normal Ren'Py state. The ready payload includes `session_id` and an `isolation` object. "
+            "normal Ren'Py state. The ready payload includes `session_id` and an `isolation` object (a reused game started "
+            "by another process has no `session_id`; its `isolation` is what its bridge reports). "
             "It may download/cache the selected SDK, inject session-owned `.rpy` files and editor assets under `game/`, and "
             "publish authenticated ownership/bridge metadata under `.renforge/control/`. `renforge_stop` removes only owned "
             "session artifacts. Copy selected host slots into an isolated session with "
@@ -278,7 +279,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         description=(
             "Poll launch progress and return `idle`, `starting`, `ready`, `failed`, `closing`, or `closed`. Use after any "
             "launch start when the first call has not returned an immediate ready state. A ready payload repeats "
-            "`session_id` and the `isolation` object from launch."
+            "`session_id` and the `isolation` object from launch (only `isolation` for a game started by another process)."
         ),
         annotations=_ann(
             readOnlyHint=True,

@@ -42,7 +42,7 @@ from ..save_isolation import (
     launch_state_mode_error,
     list_host_slots,
     path_exposes_user_saves,
-    path_is_host_home,
+    path_in_session_root,
 )
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
@@ -393,7 +393,7 @@ def launch_status(project_path: str) -> dict[str, Any]:
         "external": True,
         "current_label": state.get("current_label"),
         "editor": False,
-        "isolation": _external_session_isolation(external, Path(project_path)),
+        "isolation": _external_session_isolation(external),
     }
 
 
@@ -492,14 +492,16 @@ def _session_mode_mismatch(
     }
 
 
-def _external_session_isolation(client: Any, project_root: Path) -> dict[str, Any]:
+def _external_session_isolation(client: Any) -> dict[str, Any]:
     """Where a game this process did not start keeps its saves and HOME.
 
-    ``exposes_user_saves`` is true when any active save location (Ren'Py
-    also reads ``game/saves`` and ``config.extra_savedirs`` unless an
-    isolated launch removed them) or HOME belongs to the player. A bridge that
-    cannot list its locations (an older one) counts as exposing: an isolated
-    launch must never be handed a game it cannot vouch for.
+    ``exposes_user_saves`` is false only when HOME and every active save
+    location sit inside a RenForge session root. Ren'Py also reads
+    ``game/saves`` and ``config.extra_savedirs`` unless an isolated launch
+    removed them, and either may hold the player's saves wherever it points,
+    so anything else, including a path that cannot be resolved or a bridge
+    that cannot list its locations (an older one), counts as exposing: an
+    isolated launch must never be handed a game it cannot vouch for.
     """
     try:
         info = client.session_info()
@@ -517,13 +519,10 @@ def _external_session_isolation(client: Any, project_root: Path) -> dict[str, An
         and report["save_locations"]
         and all(isinstance(item, str) and item for item in report["save_locations"])
     )
-    report["exposes_user_saves"] = (
-        not verifiable
-        or path_is_host_home(report["home"])
-        or any(
-            path_exposes_user_saves(item, project_path=project_root)
-            for item in report["save_locations"]
-        )
+    report["exposes_user_saves"] = not (
+        verifiable
+        and path_in_session_root(report["home"])
+        and all(path_in_session_root(item) for item in report["save_locations"])
     )
     return report
 
@@ -714,7 +713,7 @@ def launch_game(
                 preferences=preferences,
                 project_path=project.root,
             )
-            external_isolation = _external_session_isolation(external, project.root)
+            external_isolation = _external_session_isolation(external)
             if not requested_exposes and external_isolation["exposes_user_saves"]:
                 return _isolation_mismatch(
                     requested_exposes=False, existing_exposes=True
