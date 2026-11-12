@@ -7,13 +7,27 @@ versioning.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.7.4] - 2026-11-12
+
+### Added
+
 - `renforge_launch(language=...)` sets `RENPY_LANGUAGE` for a fresh game
   process. Results report `language_applied` (`true`/`false`, or `null` when the
   bridge does not report a language) and a `warning` when the default savedir
-  lets the preference persist. (#112)
+  lets the preference persist. (#112, #121)
 - Activity log write receipts: mutating tools report `files_touched` /
   `files_deleted`, `stop` lists the paths it removed, and path lists too large
-  for the journal spill to 0600 sidecars capped at the newest 200. (#104)
+  for the journal spill to 0600 sidecars capped at the newest 200. (#104, #116)
+- Live Editor: `renforge_editor(action="save", dry_run=true)` previews a
+  unified source diff without writing files, reloading, or creating a
+  transaction. Older bridges fail closed with `DRY_RUN_UNSUPPORTED`. (#119)
+- Live Editor: optional `RENFORGE_ALLOW_PATHS` narrows saves and undo to
+  game-relative POSIX glob patterns. Out-of-scope targets and invalid patterns
+  are refused before a transaction is written. (#120)
 
 ### Changed
 
@@ -22,15 +36,25 @@ versioning.
   values, and now reports `overflow` only for actual vertical clipping.
   Horizontal wrapping is reported in `overflow_axes.x` / `wrapped.x`, not as
   overflow. Verdicts also cover text inside `button` and `input` nodes, and
-  `include=["style"]` now includes integer `xmaximum`/`ymaximum`. (#105, #108)
+  `include=["style"]` now includes integer `xmaximum`/`ymaximum`.
+  (#105, #108, #117)
+- MCP documentation covers scripted and non-interactive tool calls through
+  the FastMCP CLI, JSON arguments and results, explicit project selection,
+  policy authorization, and session ownership. (#122)
 
 ### Fixed
 
 - A failed launch no longer reports `language_applied: true` just because the
-  requested language was already active in another session. (#112)
+  requested language was already active in another session. (#112, #121)
 - Live Editor Save keeps polling after `reload_script` resets the bridge
   connection, instead of failing the status read with "Connection reset by
-  peer".
+  peer". (#123)
+- Bridge reload poll deadline test uses a virtual clock instead of the OS
+  timer, avoiding flaky failures on Windows. (#124)
+
+### Thanks
+
+- Thanks to @AxelBeary for #116, #117, #119, #120, #121 and #122.
 
 ## [0.7.3] - 2026-10-07
 
