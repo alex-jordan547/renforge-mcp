@@ -57,6 +57,33 @@ def test_launch_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch
     assert calls["payload"]["audio"] == "auto"
     assert calls["payload"]["persistent"] == "existing"
     assert calls["payload"]["cleanup_on_stop"] is True
+    assert "language" not in calls["payload"]
+
+
+def test_launch_game_includes_language_when_provided(tmp_path: Path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "game-project"
+    calls = {}
+    monkeypatch.setattr(
+        dashboard_client,
+        "dashboard_connection",
+        lambda *_a, **_k: {
+            "project": str(project),
+            "url": "http://127.0.0.1:8765/",
+            "token": "secret token",
+        },
+    )
+
+    def fake_urlopen(request, timeout: int):
+        calls.update(payload=json.loads(request.data.decode("utf-8")))
+        return _Response({"ok": True})
+
+    monkeypatch.setattr(dashboard_client, "urlopen", fake_urlopen)
+
+    dashboard_client.launch_game(str(project), language="japanese")
+
+    assert calls["payload"]["language"] == "japanese"
 
 
 def test_dashboard_matching_applies_normcase(tmp_path: Path, monkeypatch) -> None:

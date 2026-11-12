@@ -1402,6 +1402,19 @@
           "description": "Enable/disable live editor injection; default True for interactive work.",
           "type": "boolean"
         },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional Ren'Py language code set as `RENPY_LANGUAGE` for a fresh game process. Ren'Py persists it as `preferences.language`, so this changes the stored preference, not just one session; for verification use `savedir='temporary'` (and `persistent='empty'`, which requires an isolated savedir) or restore the language afterward. It cannot change an already-running session, and only `renforge_launch` accepts it: a later jump/new-game/Warp relaunch uses the stored preference. `language_applied` is `true`, `false`, or `null` when the bridge did not report a language; a successful launch with the default savedir adds a `warning` because it changed the stored preference.",
+          "maxLength": 64
+        },
         "persistent": {
           "default": "existing",
           "description": "Persistent mode: `existing` preserves current persistent data and `empty` removes it in the isolated session; `copy` and `fixture` currently set an environment marker only and do not copy or load fixture data.",

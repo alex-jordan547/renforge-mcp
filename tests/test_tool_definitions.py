@@ -85,6 +85,7 @@ def test_emitted_tool_schemas_encode_options_limits_and_required_relationships()
     assert launch["audio"]["enum"] == ["auto", "native", "dummy", "none"]
     assert launch["persistent"]["enum"] == ["existing", "empty", "copy", "fixture"]
     assert launch["timeout"]["minimum"] == 0
+    assert launch["language"]["maxLength"] == 64
 
     compact = schemas["renforge_game_state_compact"]["properties"]
     assert compact["state_profile"]["enum"] == ["minimal", "interaction", "debug", "full"]
@@ -400,6 +401,13 @@ def test_catalog_states_exact_runtime_and_filesystem_contracts() -> None:
     assert "arbitrary save directory" in launch.parameters["savedir"].lower()
     assert "only" in launch.parameters["cleanup_on_stop"].lower()
     assert "temporary" in launch.parameters["cleanup_on_stop"].lower()
+    language = launch.parameters["language"].lower()
+    assert "renpy_language" in language
+    assert "preferences.language" in language
+    assert "stored preference" in language
+    assert "savedir='temporary'" in language
+    assert "session only" not in language
+    assert "already-running" in language
 
     launch_status = definitions["renforge_launch_status"].description.lower()
     for status in ("idle", "starting", "ready", "failed", "closing", "closed"):
