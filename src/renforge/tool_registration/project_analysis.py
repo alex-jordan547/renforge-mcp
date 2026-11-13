@@ -16,6 +16,7 @@ TOOL_NAMES = (
     "renforge_scan_project",
     "renforge_find_references",
     "renforge_parse_lint",
+    "renforge_validate",
 )
 
 
@@ -210,6 +211,42 @@ def build_wrappers(context):
             fn=parse_lint_text,
             args=(text,),
             kwargs={},
+        )
+
+
+    def renforge_validate(
+        project_path: str,
+        version: str = "stable",
+        checks: list[str] | None = None,
+        staged: dict[str, str] | None = None,
+        keep_shadow: bool = False,
+        timeout: float = 0,
+    ) -> dict:
+        """Lint a clean shadow tree with staged bytes; project sources stay untouched."""
+        from ..tools.validate import validate_project
+
+        return _log_tool_call(
+            name="renforge_validate",
+            params={
+                "project_path": project_path,
+                "version": version,
+                "checks": [] if checks is None else checks,
+                # Journal paths only; staged source text must not enter the
+                # activity log.
+                "staged": [] if staged is None else sorted(staged),
+                "keep_shadow": keep_shadow,
+                "timeout": timeout,
+            },
+            project_root=project_path,
+            fn=validate_project,
+            args=(project_path,),
+            kwargs={
+                "version": version,
+                "checks": checks,
+                "staged": staged,
+                "keep_shadow": keep_shadow,
+                "timeout": timeout,
+            },
         )
 
 
