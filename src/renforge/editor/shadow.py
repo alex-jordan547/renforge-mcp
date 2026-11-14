@@ -582,7 +582,9 @@ def plan_shadow_project(
             current_path = Path(current)
             at_game_root = current_path == game_root
             kept_dirs: list[str] = []
-            for dirname in dirs:
+            # Record in traversal order so the first quota offender among
+            # siblings is deterministic across filesystems.
+            for dirname in sorted(dirs):
                 if dirname in _EXCLUDED_DIRS or (
                     at_game_root and _is_excluded_name(dirname, names, prefixes)
                 ):
@@ -631,7 +633,7 @@ def plan_shadow_project(
                 relative_dir = _relative_posix(root, directory)
                 if relative_dir != ".":
                     _record_directory(relative_dir)
-            dirs[:] = sorted(kept_dirs)
+            dirs[:] = kept_dirs
 
             for filename in sorted(files):
                 if at_game_root and _is_excluded_name(filename, names, prefixes):

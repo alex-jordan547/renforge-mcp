@@ -1418,6 +1418,36 @@ def test_shadow_staged_parent_past_dir_cap_is_not_counted_twice(
     assert details["offending_path"] == "game/a"
 
 
+def test_shadow_quota_offender_order_is_filesystem_independent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    source.write_bytes(b"x" * 10)
+    (project.root / "game" / "a").mkdir()
+    (project.root / "game" / "b").mkdir()
+
+    real_walk = os.walk
+
+    def reversed_walk(*args, **kwargs):
+        for current, dirs, files in real_walk(*args, **kwargs):
+            yield current, dirs[::-1], files[::-1]
+
+    monkeypatch.setattr(shadow.os, "walk", reversed_walk)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={"game/b/new.rpy": b"y" * 10},
+            limits=shadow.ShadowLimits(max_files=100, max_bytes=10**9, max_dirs=1),
+        )
+
+    details = excinfo.value.details
+    assert details["directories"] == 3
+    assert details["offending_path"] == "game/a"
+
+
 def test_shadow_largest_group_names_game_dir_case_insensitively() -> None:
     import renforge.editor.shadow as shadow
 
