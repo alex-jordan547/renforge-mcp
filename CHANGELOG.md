@@ -7,9 +7,26 @@ versioning.
 
 ### Added
 
+- Public `renforge_validate` tool: lint a clean shadow copy with optional staged
+  text, measured quotas, skipped linked directories, an explicit Ren'Py
+  `version`, and the resolved `sdk_version` in the result. (#107)
+
 ### Changed
 
+- Shadow lint (validation and editor commit/undo) plans the tree before copying,
+  reports quota breaches with measured totals and the largest contributor,
+  skips linked directories with a recorded reason, and mirrors media files as
+  zero-byte placeholders so asset-heavy projects fit the default byte quota.
+  (#106)
+
 ### Fixed
+
+- `renforge_validate` refuses to report success on reported lint errors,
+  timeouts, or truncated transcripts. The lenient editor commit/undo gate still
+  fails on timeouts and treats a long transcript as diagnostic; set
+  `RENFORGE_SHADOW_STRICT_LINT=1` to make reported lint errors and truncation
+  block that gate too. A validation exception marks the editor transaction
+  failed.
 
 ## [0.7.4] - 2026-11-12
 
