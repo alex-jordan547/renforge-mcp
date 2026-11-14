@@ -1318,6 +1318,106 @@ def test_shadow_staged_parent_directories_count_toward_dir_quota(
     assert details["max_dirs"] == 1
 
 
+def test_shadow_directory_quota_reports_staged_totals(tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    source.write_bytes(b"x" * 10)
+    (project.root / "extra.txt").write_bytes(b"y" * 20)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={"game/new/extra.rpy": b"z" * 40},
+            limits=shadow.ShadowLimits(max_files=100, max_bytes=10**9, max_dirs=1),
+        )
+
+    details = excinfo.value.details
+    assert details["files"] == 3
+    assert details["bytes"] == 70
+    assert details["directories"] == 2
+    assert details["offending_path"] == "game/new"
+    assert details["largest_path"] == "game/new"
+    assert details["largest_size"] == 40
+
+
+def test_shadow_file_quota_reports_staged_totals(tmp_path: Path) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    source.write_bytes(b"x" * 10)
+    (project.root / "game" / "a.rpy").write_bytes(b"y" * 20)
+    (project.root / "game" / "b.rpy").write_bytes(b"z" * 30)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={
+                "game/b.rpy": b"w" * 5,
+                "game/new.rpy": b"v" * 40,
+            },
+            limits=shadow.ShadowLimits(max_files=2, max_bytes=10**9),
+        )
+
+    details = excinfo.value.details
+    assert details["files"] == 4
+    assert details["bytes"] == 75
+    assert details["offending_path"] == "game/script.rpy"
+    assert details["offending_size"] == 10
+    assert details["largest_path"] == "game"
+    assert details["largest_size"] == 75
+
+
+def test_shadow_staged_replacement_past_entry_cap_keeps_totals_exact(
+    tmp_path: Path,
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    source.write_bytes(b"x" * 10)
+    for index in range(4):
+        (project.root / "game" / f"f{index}.rpy").write_bytes(b"y" * 10)
+    (project.root / "game" / "f4.rpy").write_bytes(b"z" * 30)
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={"game/f4.rpy": b"w" * 5},
+            limits=shadow.ShadowLimits(max_files=2, max_bytes=10**9),
+        )
+
+    details = excinfo.value.details
+    assert details["files"] == 6
+    assert details["bytes"] == 55
+    assert details["offending_path"] == "game/f2.rpy"
+    assert details["largest_path"] == "game"
+    assert details["largest_size"] == 55
+
+
+def test_shadow_staged_parent_past_dir_cap_is_not_counted_twice(
+    tmp_path: Path,
+) -> None:
+    import renforge.editor.shadow as shadow
+
+    project, source = _make_project(tmp_path)
+    source.write_bytes(b"x" * 10)
+    (project.root / "game" / "a").mkdir()
+    (project.root / "game" / "b").mkdir()
+
+    with pytest.raises(EditorError) as excinfo:
+        shadow.plan_shadow_project(
+            project,
+            staged_replacements={"game/b/new.rpy": b"y" * 10},
+            limits=shadow.ShadowLimits(max_files=100, max_bytes=10**9, max_dirs=1),
+        )
+
+    details = excinfo.value.details
+    assert details["directories"] == 3
+    assert details["files"] == 2
+    assert details["bytes"] == 20
+    assert details["offending_path"] == "game/a"
+
+
 def test_shadow_largest_group_names_game_dir_case_insensitively() -> None:
     import renforge.editor.shadow as shadow
 

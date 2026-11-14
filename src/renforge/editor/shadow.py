@@ -382,6 +382,31 @@ def _normalize_staged_replacements(
     return staged
 
 
+def _staged_retention_keys(
+    staged_replacements: dict[str, bytes] | None,
+) -> tuple[set[str], set[str]]:
+    """File and directory keys the walk must keep past the quota caps so the
+    staged overlay can still be measured exactly. Both readings of each path
+    (project- and game-relative) are kept; invalid paths are reported later by
+    ``_normalize_staged_replacements``.
+    """
+    file_keys: set[str] = set()
+    dir_keys: set[str] = set()
+    for raw_path in staged_replacements or {}:
+        try:
+            pure = _staged_path_candidate(raw_path)
+        except EditorError:
+            continue
+        relative = pure.as_posix()
+        for candidate in (relative, "game/" + relative):
+            file_keys.add(_path_key(candidate))
+            parent = PurePosixPath(candidate).parent
+            while parent.parts:
+                dir_keys.add(_path_key(parent.as_posix()))
+                parent = parent.parent
+    return file_keys, dir_keys
+
+
 def _relative_posix(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -423,13 +448,6 @@ def _largest_from_totals(totals: dict[str, int]) -> dict[str, Any] | None:
         return None
     path = sorted(totals, key=lambda item: (-totals[item], item))[0]
     return {"path": path, "size": totals[path]}
-
-
-def _largest_contributor(entries: list[_ShadowEntry]) -> dict[str, Any] | None:
-    totals: dict[str, int] = {}
-    for entry in entries:
-        _add_largest_group(totals, entry.relative_path, entry.size)
-    return _largest_from_totals(totals)
 
 
 def _first_quota_offender(
@@ -498,15 +516,14 @@ def plan_shadow_project(
     game_root = root / "game"
     directories: list[str] = []
     base_entries: list[_ShadowEntry] = []
-    base_file_count = 0
-    base_bytes = 0
-    base_largest_totals: dict[str, int] = {}
-    first_offender_path: str | None = None
-    first_offender_size = 0
+    file_count = 0
+    byte_count = 0
+    largest_totals: dict[str, int] = {}
     directory_count = 0
     first_directory_offender: str | None = None
     skipped_links: list[dict[str, str]] = []
     complete = True
+    staged_file_keys, staged_dir_keys = _staged_retention_keys(staged_replacements)
 
     def _record_base_entry(
         relative_path: str,
@@ -515,18 +532,18 @@ def plan_shadow_project(
         size: int,
         placeholder: bool = False,
     ) -> None:
-        nonlocal base_file_count, base_bytes, first_offender_path, first_offender_size
-        base_file_count += 1
-        base_bytes += size
-        _add_largest_group(base_largest_totals, relative_path, size)
-        if first_offender_path is None and base_file_count > resolved_limits.max_files:
-            first_offender_path = relative_path
-            first_offender_size = size
+        nonlocal file_count, byte_count
+        file_count += 1
+        byte_count += size
+        _add_largest_group(largest_totals, relative_path, size)
         # The walk continues after the file quota is crossed so the breach can
-        # report full totals, but entries beyond the first offender are not
-        # retained: a staged replacement never removes a file, so the final
-        # count cannot fall back under the limit.
-        if len(base_entries) <= resolved_limits.max_files:
+        # report full totals. Entries beyond the cap are dropped unless the
+        # staged overlay replaces them: a replacement never removes a file,
+        # so the final count cannot fall back under the limit.
+        if (
+            len(base_entries) <= resolved_limits.max_files
+            or _path_key(relative_path) in staged_file_keys
+        ):
             base_entries.append(
                 _ShadowEntry(
                     relative_path=relative_path,
@@ -541,9 +558,12 @@ def plan_shadow_project(
         directory_count += 1
         if first_directory_offender is None and directory_count > resolved_limits.max_dirs:
             first_directory_offender = relative_path
-        # Keep only enough directories to report the first offender; the walk
-        # still counts the rest so a breach reports full totals.
-        if len(directories) <= resolved_limits.max_dirs:
+        # Keep only enough directories to report the first offender, plus any
+        # staged parent so expansion cannot count an existing directory twice.
+        if (
+            len(directories) <= resolved_limits.max_dirs
+            or _path_key(relative_path) in staged_dir_keys
+        ):
             directories.append(relative_path)
 
     def _on_walk_error(exc: OSError) -> None:
@@ -649,27 +669,6 @@ def plan_shadow_project(
             {"path": str(exc.filename or root)},
         ) from exc
 
-    if first_offender_path is not None:
-        _raise_quota_error(
-            files=base_file_count,
-            byte_count=base_bytes,
-            limits=resolved_limits,
-            offending_path=first_offender_path,
-            offending_size=first_offender_size,
-            largest=_largest_from_totals(base_largest_totals),
-            directories=directory_count,
-        )
-    if first_directory_offender is not None:
-        _raise_quota_error(
-            files=base_file_count,
-            byte_count=base_bytes,
-            limits=resolved_limits,
-            offending_path=first_directory_offender,
-            offending_size=0,
-            largest=_largest_from_totals(base_largest_totals),
-            directories=directory_count,
-        )
-
     entries = list(base_entries)
     base_paths = {_path_key(path): path for path in directories}
     base_paths.update({_path_key(entry.relative_path): entry.relative_path for entry in entries})
@@ -691,16 +690,6 @@ def plan_shadow_project(
         for missing_dir in reversed(missing):
             _record_directory(missing_dir)
             directory_set.add(_path_key(missing_dir))
-    if first_directory_offender is not None:
-        _raise_quota_error(
-            files=base_file_count,
-            byte_count=base_bytes,
-            limits=resolved_limits,
-            offending_path=first_directory_offender,
-            offending_size=0,
-            largest=_largest_from_totals(base_largest_totals),
-            directories=directory_count,
-        )
     for relative_path, payload in staged.items():
         key = _path_key(relative_path)
         if key in directory_set:
@@ -721,14 +710,20 @@ def plan_shadow_project(
             parent = parent.parent
         entry = _ShadowEntry(relative_path, None, len(payload))
         if key in index_by_relative:
+            replaced = entries[index_by_relative[key]]
+            byte_count -= replaced.size
+            _add_largest_group(largest_totals, replaced.relative_path, -replaced.size)
             entries[index_by_relative[key]] = entry
         else:
             index_by_relative[key] = len(entries)
             entries.append(entry)
+            file_count += 1
+        byte_count += entry.size
+        _add_largest_group(largest_totals, relative_path, entry.size)
 
-    file_count = len(entries)
-    byte_count = sum(entry.size for entry in entries)
-    largest = _largest_contributor(entries)
+    # Quota decisions come after the overlay so every breach reports the full
+    # staged totals, even when the walk crossed a limit early.
+    largest = _largest_from_totals(largest_totals)
     offending = _first_quota_offender(entries, resolved_limits)
     if offending is not None:
         _raise_quota_error(
@@ -738,7 +733,17 @@ def plan_shadow_project(
             offending_path=offending.relative_path,
             offending_size=offending.size,
             largest=largest,
-            directories=len(directories),
+            directories=directory_count,
+        )
+    if first_directory_offender is not None:
+        _raise_quota_error(
+            files=file_count,
+            byte_count=byte_count,
+            limits=resolved_limits,
+            offending_path=first_directory_offender,
+            offending_size=0,
+            largest=largest,
+            directories=directory_count,
         )
 
     return ShadowPlan(
