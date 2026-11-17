@@ -16,6 +16,7 @@ as the user and can reach any path it names explicitly.
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import json
 import os
@@ -765,11 +766,12 @@ def import_selected_slots(
 
     missing = list(selection.get("missing") or [])
     imported: list[dict[str, Any]] = []
+    refused: list[dict[str, str]] = []
     for record in selection.get("slots") or []:
         name = record["name"]
         directory = Path(record["directory"])
         try:
-            copied = _copy_slot_files(directory, dest, name)
+            copied, slot_refused = _copy_slot_files(directory, dest, name)
         except FileNotFoundError as exc:
             if dest.is_dir():
                 # The savedir is still there (a temp file removed before its
@@ -797,19 +799,27 @@ def import_selected_slots(
                 "imported": imported,
                 "savedir": str(dest),
             }
-        if not copied:
-            missing.append(name)
-            continue
-        imported.append({"name": name, "files": copied, "directory": str(directory)})
+        refused.extend(slot_refused)
+        if copied:
+            imported.append({"name": name, "files": copied, "directory": str(directory)})
+        elif not slot_refused:
+            missing.append(name)  # its files vanished since the listing
 
     if not imported:
-        return {
+        failure: dict[str, Any] = {
             "ok": False,
             "code": "NO_MATCHING_SAVE_SLOTS",
-            "error": "no matching host save slots",
+            "error": (
+                "no host save slot was imported; see refused"
+                if refused
+                else "no matching host save slots"
+            ),
             "missing": missing,
             "savedir": str(dest),
         }
+        if refused:
+            failure["refused"] = refused
+        return failure
     result: dict[str, Any] = {
         "ok": True,
         "imported": imported,
@@ -817,6 +827,8 @@ def import_selected_slots(
     }
     if missing:
         result["missing"] = missing
+    if refused:
+        result["refused"] = refused
     return result
 
 
@@ -887,43 +899,95 @@ def extra_info_from_sidecar(path: Path) -> str:
     return ""
 
 
-def _copy_slot_files(source_dir: Path, dest_dir: Path, slot: str) -> list[str]:
+def _copy_slot_files(
+    source_dir: Path, dest_dir: Path, slot: str
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Copy one slot's files; return the names copied and the files refused.
+
+    A sidecar (``.save.json``) is copied only with its own save file, so a
+    slot is never left as a sidecar alone. A file that vanished since the
+    listing is skipped; one that is a link, not a regular file, too large or
+    unreadable is refused and named, never silently dropped.
+    """
     pattern = re.compile(
         r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?$" % (re.escape(slot),)
     )
     copied: list[str] = []
-    # Both directories arrive resolved (import_host_slots resolves dest,
-    # host_save_directories the source) and are never resolved again: every
-    # open walks them without following links, so a directory or file swapped
-    # for a link after the check is refused, not followed. The listing may
-    # follow a swapped folder, but it only yields names.
-    dest_root = dest_dir
-    source_root = source_dir
+    refused: list[dict[str, str]] = []
+    # Both directories are used as given and never resolved: every open walks
+    # them without following links, so a directory or file swapped for a
+    # link after the check is refused, not followed. The listing may follow
+    # a swapped folder, but it only yields names.
     try:
-        names = sorted(os.listdir(source_root))
+        names = sorted(os.listdir(source_dir))
     except OSError:
-        return copied
-    for name in names:
-        if pattern.match(name) is None:
+        return copied, refused
+    saves = [name for name in names if pattern.match(name) and not name.endswith(".json")]
+    sidecars = {name for name in names if pattern.match(name) and name.endswith(".json")}
+    for save_name in saves:
+        if not _copy_one_slot_file(source_dir, dest_dir, slot, save_name, copied, refused):
             continue
-        try:
-            fd, st = open_regular_at_nofollow(source_root, name)
-        except (OSError, ValueError):
-            # Includes FileNotFoundError: the slot vanished or became a link.
-            continue
+        sidecar = save_name + ".json"
+        if sidecar in sidecars:
+            _copy_one_slot_file(source_dir, dest_dir, slot, sidecar, copied, refused)
+    return copied, refused
+
+
+def _copy_one_slot_file(
+    source_dir: Path,
+    dest_dir: Path,
+    slot: str,
+    name: str,
+    copied: list[str],
+    refused: list[dict[str, str]],
+) -> bool:
+    """Copy *name*; record it in *copied* or *refused*. True when copied.
+
+    Source-side problems are refusals. A destination failure (a linked
+    savedir, a full disk) raises: the import cannot go on.
+    """
+    try:
+        fd, st = open_regular_at_nofollow(source_dir, name)
+    except FileNotFoundError:
+        return False  # vanished since the listing
+    except (OSError, ValueError) as exc:
+        refused.append({"name": slot, "file": name, "reason": _refusal_reason(exc)})
+        return False
+    try:
+        if st.st_size > SLOT_FILE_MAX_BYTES:
+            refused.append({"name": slot, "file": name, "reason": "too_large"})
+            return False
         try:
             replace_file_at_nofollow(
-                dest_root,
+                dest_dir,
                 name,
                 fd,
                 mode=stat.S_IMODE(st.st_mode),
                 mtime_ns=st.st_mtime_ns,
                 max_bytes=SLOT_FILE_MAX_BYTES,
             )
-        finally:
-            os.close(fd)
-        copied.append(name)
-    return copied
+        except OSError as exc:
+            if exc.errno != errno.EFBIG:
+                raise
+            # It grew past the cap during the copy; nothing was published.
+            refused.append({"name": slot, "file": name, "reason": "too_large"})
+            return False
+    finally:
+        os.close(fd)
+    copied.append(name)
+    return True
+
+
+def _refusal_reason(exc: BaseException) -> str:
+    """Short token for why a source file was not opened."""
+    if isinstance(exc, ValueError):
+        return "link"  # a folder on the way was swapped for a link
+    code = getattr(exc, "errno", None)
+    if code in {errno.ELOOP, getattr(errno, "EMLINK", errno.ELOOP)}:
+        return "link"
+    if code in {errno.EINVAL, errno.ENXIO, errno.ENODEV, errno.ENOTDIR, errno.EISDIR}:
+        return "not_regular"
+    return "unreadable"
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

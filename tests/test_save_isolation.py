@@ -570,7 +570,7 @@ def test_import_reports_a_slot_whose_files_vanished_as_missing(
     saves = project / "game" / "saves"
     saves.mkdir(parents=True)
     (saves / "1-1-LT1.save").write_bytes(b"SLOT")
-    monkeypatch.setattr(save_isolation, "_copy_slot_files", lambda *_args: [])
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", lambda *_args: ([], []))
 
     (tmp_path / "session").mkdir()
     result = import_host_slots(project, tmp_path / "session" / "saves", slot="1-1")
@@ -733,6 +733,8 @@ def test_import_skips_a_source_swapped_for_a_symlink_before_open(
 
     project, host_saves = _host_project(tmp_path, host_save_root)
     (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    # With a sidecar the slot used to be reported imported holding only it.
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "x"}', encoding="utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.save").write_bytes(b"SECRET")
@@ -753,8 +755,10 @@ def test_import_skips_a_source_swapped_for_a_symlink_before_open(
     result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
 
     assert swapped == ["1-1-LT1.save"]
-    assert result["ok"] is False and result["missing"] == ["1-1"]
-    assert all(b"SECRET" not in p.read_bytes() for p in dest.iterdir())
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
+    assert list(dest.iterdir()) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
@@ -938,9 +942,10 @@ def test_import_refuses_a_host_save_dir_swapped_for_a_link_after_listing(
     result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
 
     assert swapped
-    assert all(b"SECRET" not in p.read_bytes() for p in dest.iterdir())
+    assert list(dest.iterdir()) == []
     assert result["ok"] is False
-    assert result.get("missing") == ["1-1"] or result.get("code") == "SAVE_IMPORT_FAILED"
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
 
 
 def test_import_reports_a_destination_file_vanishing_mid_copy_as_failed(
@@ -1230,3 +1235,139 @@ def test_live_import_lists_before_taking_the_close_lock(
     assert result["ok"] is True
     assert seen["parse"] and not any(seen["parse"])
     assert seen["copy"] and all(seen["copy"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_names_the_refused_slots_of_a_host_folder_swapped_for_a_link(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p2: the host folder's slots used to read as "missing",
+    # as if they had never existed, beside an ok:true import.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"HOSTSLOT")
+    game_saves = project / "game" / "saves"
+    game_saves.mkdir()
+    (game_saves / "2-1-LT1.save").write_bytes(b"GAMESLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[bool] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        if not swapped:
+            swapped.append(True)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
+    assert "missing" not in result
+    assert sorted(p.name for p in dest.iterdir()) == ["2-1-LT1.save"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_import_refuses_a_fifo_swapped_in_for_a_save(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+
+    def fifo_then_copy(source: Path, destination: Path, slot: str):
+        leaf = host_saves / "1-1-LT1.save"
+        leaf.unlink()
+        os.mkfifo(leaf)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", fifo_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "not_regular"}]
+
+
+def test_import_refuses_a_save_over_the_size_cap(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"0123456789")
+    (host_saves / "1-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    (host_saves / "2-1-LT1.save").write_bytes(b"0123")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setattr(save_isolation, "SLOT_FILE_MAX_BYTES", 5)
+
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "too_large"}]
+    assert sorted(p.name for p in dest.iterdir()) == ["2-1-LT1.save"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX permissions; root ignores them",
+)
+def test_import_refuses_an_unreadable_save(tmp_path: Path, host_save_root: Path) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    leaf = host_saves / "1-1-LT1.save"
+    leaf.write_bytes(b"SLOT")
+    leaf.chmod(0)
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    try:
+        result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+    finally:
+        leaf.chmod(0o600)
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "unreadable"}]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_keeps_a_slot_whose_sidecar_alone_was_refused(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    sidecar = host_saves / "1-1-LT1.save.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "SECRET"}', encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+
+    def link_sidecar_then_copy(source: Path, destination: Path, slot: str):
+        sidecar.unlink()
+        sidecar.symlink_to(secret)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", link_sidecar_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert result["imported"][0]["files"] == ["1-1-LT1.save"]
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save.json", "reason": "link"}]
+    assert sorted(p.name for p in dest.iterdir()) == ["1-1-LT1.save"]

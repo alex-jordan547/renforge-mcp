@@ -32,7 +32,11 @@ versioning.
   `savedir=temporary`, never into a `savedir=<path>` folder; never
   bind-mounts the user tree). Import resolves none of the session's own
   folders, so a session root or savedir swapped for a link is refused with
-  `SAVE_IMPORT_FAILED` instead of followed. `list_user` filters by `pattern`, a glob matched against the
+  `SAVE_IMPORT_FAILED` instead of followed. A slot file import will not copy
+  (a link, a FIFO or other non-regular file, one over the size cap, or an
+  unreadable one) is listed in `refused` with a reason, never dropped; a
+  slot counts as imported only when its save file was copied, and an import
+  that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`. `list_user` filters by `pattern`, a glob matched against the
   whole slot name; `import` selects by name, by `pattern`, or both; `list`
   keeps its `regexp`, which Ren'Py applies. `list_user` and `import` read only
   the folder that the game's `config.save_directory` names directly under the
