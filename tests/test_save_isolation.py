@@ -1595,3 +1595,24 @@ def test_import_refuses_a_host_folder_linked_to_one_without_the_slot(
     assert [item["name"] for item in result["imported"]] == ["2-1"]
     assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
     assert "missing" not in result
+
+
+def test_every_import_failure_carries_an_empty_write_receipt(tmp_path: Path) -> None:
+    # Re-review N3: argument errors returned before the receipt default, so
+    # the journal recorded them as "cannot enumerate its writes".
+    from renforge.tools import live
+
+    (tmp_path / "game").mkdir()
+    for kwargs in (
+        {"slot": "1-1", "extra_info": "x"},
+        {"slot": " "},
+        {"pattern": "[" * 300},
+        {"slots": "1-1"},
+        {"slot": "1-1", "regexp": "x"},
+        {},
+    ):
+        result = live.saves(str(tmp_path), "import", **kwargs)
+        assert result["ok"] is False, kwargs
+        assert result["files_touched"] == [], kwargs
+    assert live.saves(str(tmp_path / "nowhere"), "import", slot="1-1")["files_touched"] == []
+    assert "files_touched" not in live.saves(str(tmp_path), "list_user", slot="1-1")

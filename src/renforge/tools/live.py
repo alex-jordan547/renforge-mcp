@@ -1553,6 +1553,9 @@ def saves(
         pattern=pattern,
     )
     if error is not None:
+        if action == "import":
+            # An import that wrote nothing still reports its (empty) receipt.
+            error.setdefault("files_touched", [])
         return error
 
     if action == "save":
@@ -1581,11 +1584,14 @@ def saves(
     try:
         project = RenpyProject(Path(project_path))
     except Exception as exc:
-        return {
+        failure = {
             "ok": False,
             "code": "PROJECT_PATH_UNAVAILABLE",
             "error": f"{type(exc).__name__}: {exc}",
         }
+        if action == "import":
+            failure["files_touched"] = []
+        return failure
 
     if action == "list_user":
         return list_host_slots(project.root, pattern=pattern)

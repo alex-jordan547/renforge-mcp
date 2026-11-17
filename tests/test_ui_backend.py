@@ -420,6 +420,7 @@ def test_api_live_saves_import_rejects_a_malformed_selection(tmp_path: Path, mon
         "ok": False,
         "code": "SAVE_IMPORT_INVALID",
         "error": "slots must be a list of slot names",
+        "files_touched": [],
     }
     assert listed == []
 
