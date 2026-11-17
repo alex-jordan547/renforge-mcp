@@ -28,7 +28,8 @@ versioning.
   `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.
   A `renforge_jump`, `renforge_new_game` or dashboard Warp relaunch whose
   isolation knobs are all omitted or `auto` keeps the isolation of an
-  isolated game it replaces (resolved by the process that owns the game); it
+  isolated game it replaces (resolved by the process that owns the game,
+  unless this server's `RENFORGE_ISOLATION=temporary` already isolates it); it
   gets a fresh session, so imported slots are not carried over. Mode tokens
   (`auto`, `existing`, `default`, `temporary`, `empty`) are matched
   case-insensitively, so `savedir=Temporary` isolates instead of creating a

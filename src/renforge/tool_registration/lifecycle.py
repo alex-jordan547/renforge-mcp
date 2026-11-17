@@ -79,7 +79,11 @@ def build_wrappers(context):
             launch_game as launch_via_dashboard,
             stop_game as stop_via_dashboard,
         )
-        from ..save_isolation import apply_launch_isolation_defaults, isolation_knobs_unset
+        from ..save_isolation import (
+            apply_launch_isolation_defaults,
+            configured_isolation_mode,
+            isolation_knobs_unset,
+        )
 
         canonical_editor = bool(editor)
         session_cfg = dict(session or {})
@@ -97,7 +101,13 @@ def build_wrappers(context):
         # A relaunch (warp) with every knob auto is resolved by the process
         # that owns the running game, so an isolated game's jump stays
         # isolated there instead of being sent the player's saves from here.
-        owner_resolves = warp is not None and isolation_knobs_unset(*knobs.values())
+        # When this server's RENFORGE_ISOLATION already isolates, resolve here
+        # instead: the owner may strengthen isolation, never drop it.
+        owner_resolves = (
+            warp is not None
+            and isolation_knobs_unset(*knobs.values())
+            and configured_isolation_mode() != "temporary"
+        )
         if owner_resolves:
             effective_savedir = effective_home = None
             effective_persistent = effective_preferences = None

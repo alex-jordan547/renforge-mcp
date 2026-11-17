@@ -2065,3 +2065,34 @@ def test_relaunch_tools_leave_unset_isolation_to_the_owning_process(
     assert seen["dashboard"] == {
         "savedir": "temporary", "home": "temporary", "persistent": "empty", "preferences": "empty"
     }
+
+
+@pytest.mark.parametrize("tool", ["renforge_jump", "renforge_new_game"])
+def test_relaunch_tools_keep_this_servers_isolation_for_a_dashboard(tmp_path, monkeypatch, tool) -> None:
+    # With RENFORGE_ISOLATION=temporary on this server, an all-auto relaunch
+    # must stay isolated even when a dashboard started without it owns the
+    # game: the owner may only strengthen isolation, never drop it.
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text("label start:\n    return\nlabel other:\n    return\n", encoding="utf-8")
+    knobs = ("savedir", "home", "persistent", "preferences")
+    arguments = {"target": "other"} if tool == "renforge_jump" else {}
+    monkeypatch.setenv("RENFORGE_ISOLATION", "temporary")
+    seen: dict = {}
+
+    def fake_dashboard(project_path: str, **kwargs):
+        seen["dashboard"] = {k: kwargs.get(k) for k in knobs}
+        return {"ok": True, "ready": True, "via": "dashboard", "editor": True}
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard)
+    monkeypatch.setattr(live, "launch_game", lambda *_a, **_k: pytest.fail("ran locally"))
+    app = _ToolRegistry()
+    _register_tools(app)
+
+    assert app.tools[tool](str(tmp_path), **arguments)["ok"] is True
+    assert seen["dashboard"] == {
+        "savedir": "temporary", "home": "temporary", "persistent": "empty", "preferences": "empty"
+    }
