@@ -161,6 +161,63 @@ def open_regular_at_nofollow(directory: Path, name: str) -> tuple[int, os.stat_r
         raise
 
 
+def make_directory_at_nofollow(path: Path, *, mode: int = _PRIVATE_DIR_MODE) -> None:
+    """Create the folder *path* unless it exists, never through a link.
+
+    Only the leaf is created, at a descriptor for its parent, and the parent's
+    components are all opened without following links; nothing is resolved,
+    so pass a path that is already canonical. A missing parent raises
+    ``FileNotFoundError``, a linked component or leaf ``ValueError``, and a
+    leaf that is not a folder ``OSError``.
+    """
+    target = _absolute_path(path)
+    leaf = _leaf_name(target)
+    if os.name == "nt" or not _posix_dir_fd_supported():
+        _make_directory_fallback(target)
+        return
+    parent_fd = _open_directory_chain_nofollow_posix(target.parent, action="savedir")
+    try:
+        try:
+            os.mkdir(leaf, mode, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        flags = _open_flags(os.O_RDONLY, getattr(os, "O_DIRECTORY", 0), getattr(os, "O_NOFOLLOW", 0))
+        try:
+            leaf_fd = os.open(leaf, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            try:
+                st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                st = None
+            if _is_loop_error(exc) or (st is not None and stat.S_ISLNK(st.st_mode)):
+                raise _symlink_error(target, action="savedir") from exc
+            raise
+        os.close(leaf_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _make_directory_fallback(target: Path) -> None:
+    # Windows (and POSIX without dir_fd): refuse a link or reparse point at
+    # any existing component, then create the leaf by path.
+    for component in _path_components(target):
+        try:
+            component.lstat()
+        except FileNotFoundError:
+            continue
+        if _component_is_link(component):
+            raise _symlink_error(component, action="savedir")
+    if not target.parent.is_dir():
+        raise FileNotFoundError(errno.ENOENT, "directory does not exist", str(target.parent))
+    try:
+        target.mkdir()
+    except FileExistsError:
+        if _component_is_link(target):
+            raise _symlink_error(target, action="savedir") from None
+        if not target.is_dir():
+            raise
+
+
 def _read_fd_bounded(source_fd: int, *, max_bytes: int, label: str) -> Iterable[bytes]:
     copied = 0
     while True:

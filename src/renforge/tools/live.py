@@ -42,8 +42,8 @@ from ..save_isolation import (
     launch_exposes_user_saves,
     launch_state_mode_error,
     list_host_slots,
-    path_exposes_user_saves,
     path_in_session_root,
+    SAVES_DIRNAME,
 )
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
@@ -1569,14 +1569,23 @@ def saves(
             "code": "NO_ISOLATED_SESSION",
             "error": "import requires an isolated launch; call renforge_launch first",
         }
-    if savedir_mode == "existing" or path_exposes_user_saves(
-        destination, project_path=project.root
-    ):
+    # Only a temporary session's own savedir takes imports: a savedir=<path>
+    # folder is the agent's choice and may hold anyone's saves.
+    session_root = getattr(isolation, "session_root", None)
+    if savedir_mode != "temporary" or session_root is None:
         return {
             "ok": False,
             "code": "SAVE_IMPORT_NOT_ISOLATED",
-            "error": "import refuses to copy into the user's save tree; use an isolated session",
+            "error": (
+                "import copies only into the savedir of a session launched with "
+                "savedir='temporary'"
+            ),
         }
+    # Resolve only the shared temp folder (macOS /var -> /private/var). The
+    # session's own root and savedir are walked without following links, so
+    # one swapped for a link since launch is refused, not followed.
+    root = Path(session_root)
+    destination = root.parent.resolve() / root.name / SAVES_DIRNAME
     # A stop waits for the copy, and a copy never starts after a stop.
     with session.holding_open() as session_open:
         if not session_open:

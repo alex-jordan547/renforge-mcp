@@ -27,7 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
-from .util.files import open_regular_at_nofollow, replace_file_at_nofollow
+from .util.files import (
+    make_directory_at_nofollow,
+    open_regular_at_nofollow,
+    replace_file_at_nofollow,
+)
 
 EXISTING_TOKENS: frozenset[str] = frozenset({"existing", "default"})
 TEMPORARY_TOKENS: frozenset[str] = frozenset({"", "temporary"})
@@ -596,8 +600,15 @@ def import_host_slots(
     pattern: str | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
-    """Copy selected host slot files into an isolated session savedir."""
-    dest = Path(destination).expanduser().resolve()
+    """Copy selected host slot files into an isolated session savedir.
+
+    *destination* is used as given, never resolved: the session's own folders
+    are walked without following links, so a session root or savedir swapped
+    for a link (at any time since launch) is refused, not followed. Callers
+    pass a canonical path (:func:`renforge.tools.live.saves` resolves only the
+    shared temp folder).
+    """
+    dest = Path(destination).expanduser()
     if path_exposes_user_saves(dest, project_path=project_root, home=home):
         return {
             "ok": False,
@@ -608,14 +619,21 @@ def import_host_slots(
     # concurrent stop, would leave copies of the player's saves in a folder
     # nothing cleans up, so only the savedir itself is ever created.
     try:
-        if not dest.parent.is_dir():
-            raise FileNotFoundError(dest.parent)
-        dest.mkdir(exist_ok=True)
+        make_directory_at_nofollow(dest)
     except FileNotFoundError:
         return {
             "ok": False,
             "code": "NO_ISOLATED_SESSION",
             "error": "the session's save folder is gone; the session has stopped",
+        }
+    except (OSError, ValueError) as exc:
+        # A linked root or savedir, a savedir that is a file, no permission.
+        return {
+            "ok": False,
+            "code": "SAVE_IMPORT_FAILED",
+            "error": str(exc),
+            "imported": [],
+            "savedir": str(dest),
         }
 
     resolved = select_host_slot_names(

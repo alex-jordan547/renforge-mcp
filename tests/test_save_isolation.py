@@ -478,7 +478,9 @@ def test_live_saves_list_user_and_import(
     assert refused["ok"] is False
     assert refused["code"] == "NO_ISOLATED_SESSION"
 
-    isolation = SimpleNamespace(savedir_mode="temporary", home_mode="temporary")
+    isolation = SimpleNamespace(
+        savedir_mode="temporary", home_mode="temporary", session_root=dest.parent
+    )
     session = _ImportSession(temporary_savedir=dest, isolation=isolation)
     live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
     try:
@@ -642,7 +644,9 @@ def test_live_import_into_a_session_that_closed_copies_nothing(
     dest.mkdir(parents=True)
     session = _ImportSession(
         temporary_savedir=dest,
-        isolation=SimpleNamespace(savedir_mode="temporary", home_mode="temporary"),
+        isolation=SimpleNamespace(
+            savedir_mode="temporary", home_mode="temporary", session_root=dest.parent
+        ),
         closed=True,
     )
     live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
@@ -984,3 +988,121 @@ def test_temp_name_never_looks_like_a_slot() -> None:
     from renforge.save_isolation import SLOT_FILE_RE
 
     assert SLOT_FILE_RE.match(".1-1-LT1.save.0123456789abcdef.tmp") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_session_root_swapped_for_a_link_before_the_call(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # Security probe p12: the root is replaced any time after launch, so the
+    # import must never resolve the session's own folders.
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"GAME1-SLOT")
+    other = tmp_path / "OtherGame" / "game" / "saves"
+    other.mkdir(parents=True)
+    (other / "1-1-LT1.save").write_bytes(b"OTHERGAME-REAL-PROGRESS")
+    isolation = resolve_launch_isolation("temporary")
+    assert isolation.session_root is not None and isolation.savedir is not None
+    session = _ImportSession(temporary_savedir=isolation.savedir, isolation=isolation)
+    shutil.rmtree(isolation.session_root)
+    os.symlink(other.parent, isolation.session_root)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+        os.unlink(isolation.session_root)
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert (other / "1-1-LT1.save").read_bytes() == b"OTHERGAME-REAL-PROGRESS"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_never_creates_the_savedir_through_a_linked_session_root(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # Security probe p11: a linked root with no saves folder must not get one.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    session_root = tmp_path / "renforge-session-x"
+    session_root.symlink_to(outside, target_is_directory=True)
+
+    result = import_host_slots(project, session_root / "saves", slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert list(outside.iterdir()) == []
+
+
+def test_import_maps_a_savedir_that_is_not_a_folder_to_failed(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    home = tmp_path / "home"
+
+    file_savedir = tmp_path / "session-a" / "saves"
+    file_savedir.parent.mkdir()
+    file_savedir.write_bytes(b"not a folder")
+    result = import_host_slots(project, file_savedir, slot="1-1", home=home)
+    assert result["ok"] is False and result["code"] == "SAVE_IMPORT_FAILED"
+    assert file_savedir.read_bytes() == b"not a folder"
+
+    file_root = tmp_path / "session-b"
+    file_root.write_bytes(b"not a folder")
+    result = import_host_slots(project, file_root / "saves", slot="1-1", home=home)
+    assert result["ok"] is False and result["code"] == "SAVE_IMPORT_FAILED"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX permissions; root ignores them",
+)
+def test_import_maps_an_unwritable_session_root_to_failed(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+    session_root.mkdir()
+    session_root.chmod(0o500)
+    try:
+        result = import_host_slots(project, session_root / "saves", slot="1-1", home=tmp_path / "home")
+    finally:
+        session_root.chmod(0o700)
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+
+
+def test_live_import_requires_a_temporary_session(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # A savedir=<path> session's folder is the agent's choice, not a private
+    # one, so import refuses it like the player's own saves.
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    chosen = tmp_path / "chosen" / "saves"
+    chosen.mkdir(parents=True)
+    isolation = LaunchIsolation(
+        savedir_mode="path", home_mode="temporary", persistent_mode="existing",
+        preferences_mode="existing", savedir=chosen, home=None,
+        session_root=tmp_path / "chosen-root", cleanup=False,
+    )
+    live._SESSIONS[live._key(project)] = _ImportSession(  # type: ignore[assignment]
+        temporary_savedir=chosen, isolation=isolation
+    )
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_NOT_ISOLATED"
+    assert list(chosen.iterdir()) == []

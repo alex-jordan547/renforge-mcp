@@ -258,6 +258,7 @@ def test_delegated_import_keeps_the_dashboards_no_match_code(tmp_path: Path, mon
 
     class _Isolation:
         savedir_mode = "temporary"
+        session_root = dest.parent
 
     class _Session:
         temporary_savedir = dest

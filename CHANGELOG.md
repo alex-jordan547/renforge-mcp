@@ -28,8 +28,11 @@ versioning.
   whose state modes a fresh launch would reject (`empty` without
   `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.
   `renforge_saves` gains `list_user` (observational host listing) and `import`
-  (copy selected host slots into an isolated session; never bind-mounts the
-  user tree). `list_user` filters by `pattern`, a glob matched against the
+  (copy selected host slots into the savedir of a session launched with
+  `savedir=temporary`, never into a `savedir=<path>` folder; never
+  bind-mounts the user tree). Import resolves none of the session's own
+  folders, so a session root or savedir swapped for a link is refused with
+  `SAVE_IMPORT_FAILED` instead of followed. `list_user` filters by `pattern`, a glob matched against the
   whole slot name; `import` selects by name, by `pattern`, or both; `list`
   keeps its `regexp`, which Ren'Py applies. `list_user` and `import` read only
   the folder that the game's `config.save_directory` names directly under the
