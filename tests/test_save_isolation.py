@@ -616,13 +616,15 @@ def test_import_reports_a_session_that_stops_mid_copy(
     assert result["code"] == "NO_ISOLATED_SESSION"
     assert not session_root.exists()
 
-    # A missing source file while the session is still there is a real error.
+    # A file lost mid-copy while the session is still there is a failed
+    # import, reported as such rather than as a stopped session.
     (session_root / "saves").mkdir(parents=True)
     monkeypatch.setattr(
         save_isolation, "_copy_slot_files", lambda *_a: (_ for _ in ()).throw(FileNotFoundError("source"))
     )
-    with pytest.raises(FileNotFoundError):
-        import_host_slots(project, session_root / "saves", slot="1-1")
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
 
 
 def test_live_import_into_a_session_that_closed_copies_nothing(
@@ -866,6 +868,96 @@ def test_import_follows_a_symlinked_save_root_resolved_up_front(
     assert result["ok"] is True
     assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT"
     assert (dest / "1-1-LT1.save.json").is_file()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_session_savedir_swapped_for_a_link_after_the_check(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"VICTIM")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[Path] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        # Import has checked the savedir; it becomes a link before the copy.
+        if not swapped:
+            swapped.append(destination)
+            shutil.rmtree(dest)
+            dest.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert (outside / "1-1-LT1.save").read_bytes() == b"VICTIM"
+    assert sorted(p.name for p in outside.iterdir()) == ["1-1-LT1.save"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_host_save_dir_swapped_for_a_link_after_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[Path] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        # The slot was listed; the host folder becomes a link before the copy.
+        if not swapped:
+            swapped.append(source)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped
+    assert all(b"SECRET" not in p.read_bytes() for p in dest.iterdir())
+    assert result["ok"] is False
+    assert result.get("missing") == ["1-1"] or result.get("code") == "SAVE_IMPORT_FAILED"
+
+
+def test_import_reports_a_destination_file_vanishing_mid_copy_as_failed(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    def temp_unlinked_before_rename(*_args, **_kwargs):
+        raise FileNotFoundError("temp file removed before rename")
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", temp_unlinked_before_rename)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert dest.is_dir()
 
 
 def test_temp_name_never_looks_like_a_slot() -> None:

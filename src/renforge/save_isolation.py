@@ -509,7 +509,13 @@ def host_save_directories(
     *,
     home: Path | None = None,
 ) -> list[Path]:
-    """Existing host directories that may contain this project's user saves."""
+    """Existing host directories that may contain this project's user saves.
+
+    Each directory is returned resolved, once. Later opens walk these paths
+    component by component without following links, so a folder swapped for
+    a link after this point is refused instead of followed; a link that was
+    already there (a ``~/.renpy`` moved to another disk) was followed here.
+    """
     directories: list[Path] = []
     save_name = parse_save_directory(project_root)
     # The name comes from the game, so it must stay one folder of the Ren'Py
@@ -522,15 +528,17 @@ def host_save_directories(
     ):
         root = host_renpy_root(home=home)
         host_dir = root / save_name
-        if host_dir.is_dir() and host_dir.resolve().parent == root.resolve():
-            directories.append(host_dir)
+        if host_dir.is_dir():
+            resolved_host = host_dir.resolve()
+            if resolved_host.parent == root.resolve():
+                directories.append(resolved_host)
     project_saves = Path(project_root) / "game" / "saves"
-    if (
-        project_saves.is_dir()
-        and project_saves not in directories
-        and _is_relative_to(project_saves.resolve(), Path(project_root).resolve())
-    ):
-        directories.append(project_saves)
+    if project_saves.is_dir():
+        resolved_saves = project_saves.resolve()
+        if resolved_saves not in directories and _is_relative_to(
+            resolved_saves, Path(project_root).resolve()
+        ):
+            directories.append(resolved_saves)
     return directories
 
 
@@ -630,9 +638,17 @@ def import_host_slots(
         directory = Path(record["directory"])
         try:
             copied = _copy_slot_files(directory, dest, name)
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             if dest.is_dir():
-                raise
+                # The savedir is still there (a temp file removed before its
+                # rename, say): the import failed, the session did not stop.
+                return {
+                    "ok": False,
+                    "code": "SAVE_IMPORT_FAILED",
+                    "error": str(exc),
+                    "imported": imported,
+                    "savedir": str(dest),
+                }
             # The session stopped mid-copy and its savedir went with it.
             return {
                 "ok": False,
@@ -777,8 +793,10 @@ def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
 def extra_info_from_sidecar(path: Path) -> str:
     # A linked sidecar could point at any JSON file this process can read, so
     # the leaf is opened without following links at an anchored directory.
+    # The parent was resolved once by host_save_directories; resolving it
+    # again here would follow a folder swapped for a link since then.
     try:
-        fd, _st = open_regular_at_nofollow(path.parent.resolve(), path.name)
+        fd, _st = open_regular_at_nofollow(path.parent, path.name)
         try:
             data = b""
             while len(data) <= SIDECAR_MAX_BYTES:
@@ -809,11 +827,13 @@ def _copy_slot_files(source_dir: Path, dest_dir: Path, slot: str) -> list[str]:
         r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?$" % (re.escape(slot),)
     )
     copied: list[str] = []
-    # Resolved once, then every open is anchored on these directories and
-    # never follows a link, so a file swapped after listing cannot redirect
-    # the read or the write.
-    dest_root = dest_dir.resolve()
-    source_root = source_dir.resolve()
+    # Both directories arrive resolved (import_host_slots resolves dest,
+    # host_save_directories the source) and are never resolved again: every
+    # open walks them without following links, so a directory or file swapped
+    # for a link after the check is refused, not followed. The listing may
+    # follow a swapped folder, but it only yields names.
+    dest_root = dest_dir
+    source_root = source_dir
     try:
         names = sorted(os.listdir(source_root))
     except OSError:
