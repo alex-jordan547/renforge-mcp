@@ -25,7 +25,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .util.files import (
     make_directory_at_nofollow,
@@ -56,6 +56,8 @@ SLOT_FILE_RE: re.Pattern[str] = re.compile(
 # Per-file caps on what an import copies and what list_user parses.
 SLOT_FILE_MAX_BYTES: int = 256 * 1024 * 1024
 SIDECAR_MAX_BYTES: int = 1024 * 1024
+# config.save_directory is read from game/*.rpy; a larger script is skipped.
+RPY_SCAN_MAX_BYTES: int = 4 * 1024 * 1024
 
 
 def classify_token(value: str | None, *, omitted: str) -> str:
@@ -482,7 +484,13 @@ def sys_platform() -> str:
 
 
 def parse_save_directory(project_root: str | Path) -> str | None:
-    """Return ``config.save_directory`` from ``game/*.rpy``, if defined."""
+    """Return ``config.save_directory`` from ``game/*.rpy``, if defined.
+
+    Each script is opened without following links and without blocking, must
+    be a regular file, and is read only up to :data:`RPY_SCAN_MAX_BYTES`: the
+    game folder is the game's own, so a FIFO swapped in or a huge sparse file
+    must not hang or exhaust an observational listing.
+    """
     game_dir = Path(project_root) / "game"
     if not game_dir.is_dir():
         return None
@@ -493,12 +501,11 @@ def parse_save_directory(project_root: str | Path) -> str | None:
             resolved = path.resolve()
         except (OSError, RuntimeError, ValueError):
             continue
-        if resolved in seen or not path.is_file():
+        if resolved in seen:
             continue
         seen.add(resolved)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        text = _read_script_bounded(resolved)
+        if text is None:
             continue
         match = SAVE_DIRECTORY_RE.search(text)
         if match:
@@ -506,6 +513,38 @@ def parse_save_directory(project_root: str | Path) -> str | None:
             if name:
                 return name
     return None
+
+
+def _read_script_bounded(path: Path) -> str | None:
+    try:
+        fd, st = open_regular_at_nofollow(path.parent, path.name)
+    except (OSError, ValueError):
+        return None
+    try:
+        if st.st_size > RPY_SCAN_MAX_BYTES:
+            return None
+        data = _read_at_most(fd, RPY_SCAN_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if data is None:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _read_at_most(fd: int, limit: int) -> bytes | None:
+    """Read *fd* to the end, or return None once it holds more than *limit* bytes."""
+    data = b""
+    while len(data) <= limit:
+        chunk = os.read(fd, limit + 1 - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return None if len(data) > limit else data
 
 
 def host_save_directories(
@@ -573,22 +612,29 @@ def list_host_slots(
         return {"ok": False, "error": error}
 
     directories = host_save_directories(project_root, home=home)
+    keep = None if pattern is None else (lambda name: _matches(name, pattern))
+    return {
+        "ok": True,
+        "slots": _list_slots(directories, keep=keep, with_extra_info=True),
+        "directories": [str(path) for path in directories],
+    }
+
+
+def _list_slots(
+    directories: Iterable[Path],
+    *,
+    keep: Callable[[str], bool] | None,
+    with_extra_info: bool,
+) -> list[dict[str, Any]]:
+    """Slots across *directories*; the first folder that has a name wins."""
     slots: list[dict[str, Any]] = []
     seen: set[str] = set()
     for directory in directories:
-        for slot in _slots_in_directory(directory):
-            name = slot["name"]
-            if name in seen:
-                continue
-            if pattern is not None and not _matches(name, pattern):
-                continue
-            seen.add(name)
-            slots.append(slot)
-    return {
-        "ok": True,
-        "slots": slots,
-        "directories": [str(path) for path in directories],
-    }
+        for slot in _slots_in_directory(directory, keep=keep, with_extra_info=with_extra_info):
+            if slot["name"] not in seen:
+                seen.add(slot["name"])
+                slots.append(slot)
+    return slots
 
 
 def import_host_slots(
@@ -601,6 +647,87 @@ def import_host_slots(
     home: Path | None = None,
 ) -> dict[str, Any]:
     """Copy selected host slot files into an isolated session savedir.
+
+    The same as :func:`select_host_slots` followed by
+    :func:`import_selected_slots`.
+    """
+    selection = select_host_slots(
+        project_root, slot=slot, slots=slots, pattern=pattern, home=home
+    )
+    if not selection.get("ok"):
+        return selection
+    return import_selected_slots(selection, destination, project_root=project_root, home=home)
+
+
+def select_host_slots(
+    project_root: str | Path,
+    *,
+    slot: str | None = None,
+    slots: Iterable[str] | None = None,
+    pattern: str | None = None,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Resolve import selectors to host slot records with one listing.
+
+    Reads only (a game's scripts and save folders), so callers run it before
+    holding a session open: a slow listing must never delay a stop.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _invalid(error: str) -> dict[str, Any]:
+        # A dashboard relays this answer; the code keeps it from reading as
+        # a transport failure.
+        return {"ok": False, "code": "SAVE_IMPORT_INVALID", "error": error}
+
+    def _add(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return "slot names must be non-empty strings"
+        token = value.strip()
+        if token not in seen:
+            seen.add(token)
+            names.append(token)
+        return None
+
+    if slot is not None:
+        error = _add(slot)
+        if error is not None:
+            return _invalid(error)
+    if slots is not None:
+        if isinstance(slots, (str, bytes)) or not isinstance(slots, Iterable):
+            return _invalid("slots must be a list of slot names")
+        for item in slots:
+            error = _add(item)
+            if error is not None:
+                return _invalid(error)
+
+    error = _slot_pattern_error(pattern)
+    if error is not None:
+        return _invalid(error)
+
+    if not names and pattern is None:
+        return _invalid("import requires slot, slots, or pattern")
+
+    def keep(name: str) -> bool:
+        return name in seen or (pattern is not None and _matches(name, pattern))
+
+    directories = host_save_directories(project_root, home=home)
+    available = _list_slots(directories, keep=keep, with_extra_info=False)
+    by_name = {record["name"]: record for record in available}
+    selected = [by_name[name] for name in names if name in by_name]
+    missing = [name for name in names if name not in by_name]
+    selected.extend(record for record in available if record["name"] not in seen)
+    return {"ok": True, "slots": selected, "missing": missing}
+
+
+def import_selected_slots(
+    selection: Mapping[str, Any],
+    destination: str | Path,
+    *,
+    project_root: str | Path,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Copy the slots :func:`select_host_slots` picked into *destination*.
 
     *destination* is used as given, never resolved: the session's own folders
     are walked without following links, so a session root or savedir swapped
@@ -636,25 +763,10 @@ def import_host_slots(
             "savedir": str(dest),
         }
 
-    resolved = select_host_slot_names(
-        project_root, slot=slot, slots=slots, pattern=pattern, home=home
-    )
-    if not resolved.get("ok"):
-        # A dashboard relays this answer; the code keeps it from reading as
-        # a transport failure.
-        return {**resolved, "code": resolved.get("code", "SAVE_IMPORT_INVALID")}
-    selected = list(resolved.get("names") or [])
-    missing = list(resolved.get("missing") or [])
-    listed = list_host_slots(project_root, home=home)
-    if not listed.get("ok"):
-        return listed
-    available = {item["name"]: item for item in listed.get("slots", [])}
-
+    missing = list(selection.get("missing") or [])
     imported: list[dict[str, Any]] = []
-    for name in selected:
-        record = available.get(name)
-        if record is None:
-            continue
+    for record in selection.get("slots") or []:
+        name = record["name"]
         directory = Path(record["directory"])
         try:
             copied = _copy_slot_files(directory, dest, name)
@@ -708,79 +820,17 @@ def import_host_slots(
     return result
 
 
-def select_host_slot_names(
-    project_root: str | Path,
+def _slots_in_directory(
+    directory: Path,
     *,
-    slot: str | None = None,
-    slots: Iterable[str] | None = None,
-    pattern: str | None = None,
-    home: Path | None = None,
-) -> dict[str, Any]:
-    """Resolve import selectors to host slot names."""
-    names: list[str] = []
-    seen: set[str] = set()
-
-    def _add(value: Any) -> str | None:
-        if not isinstance(value, str) or not value.strip():
-            return "slot names must be non-empty strings"
-        token = value.strip()
-        if token not in seen:
-            seen.add(token)
-            names.append(token)
-        return None
-
-    if slot is not None:
-        error = _add(slot)
-        if error is not None:
-            return {"ok": False, "error": error}
-    if slots is not None:
-        if isinstance(slots, (str, bytes)) or not isinstance(slots, Iterable):
-            return {"ok": False, "error": "slots must be a list of slot names"}
-        for item in slots:
-            error = _add(item)
-            if error is not None:
-                return {"ok": False, "error": error}
-
-    error = _slot_pattern_error(pattern)
-    if error is not None:
-        return {"ok": False, "error": error}
-
-    if not names and pattern is None:
-        return {"ok": False, "error": "import requires slot, slots, or pattern"}
-
-    listed = list_host_slots(project_root, home=home)
-    if not listed.get("ok"):
-        return listed
-    available = [item["name"] for item in listed.get("slots", [])]
-    selected: list[str] = []
-    missing: list[str] = []
-    if names:
-        available_set = set(available)
-        for name in names:
-            if name in available_set:
-                selected.append(name)
-            else:
-                missing.append(name)
-    if pattern is not None:
-        for name in available:
-            if name in selected:
-                continue
-            if _matches(name, pattern):
-                selected.append(name)
-    return {
-        "ok": True,
-        "names": selected,
-        "missing": missing,
-        "directories": listed.get("directories", []),
-    }
-
-
-def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
-    slots: list[dict[str, Any]] = []
+    keep: Callable[[str], bool] | None = None,
+    with_extra_info: bool = True,
+) -> list[dict[str, Any]]:
+    """Slots in one folder; *keep* filters names before any sidecar is read."""
     try:
         entries = list(directory.iterdir())
     except OSError:
-        return slots
+        return []
     by_name: dict[str, dict[str, Any]] = {}
     for entry in entries:
         try:
@@ -792,8 +842,8 @@ def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
         if match is None or match.group("json"):
             continue
         name = match.group("slot")
-        sidecar = entry.with_name(entry.name + ".json")
-        extra_info = extra_info_from_sidecar(sidecar)
+        if keep is not None and not keep(name):
+            continue
         try:
             mtime = entry.stat().st_mtime
         except OSError:
@@ -801,14 +851,13 @@ def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
         previous = by_name.get(name)
         if previous is not None and (previous.get("mtime") or 0) >= (mtime or 0):
             continue
-        by_name[name] = {
-            "name": name,
-            "extra_info": extra_info,
-            "mtime": mtime,
-            "directory": str(directory),
-        }
-    slots.extend(by_name[name] for name in sorted(by_name))
-    return slots
+        record: dict[str, Any] = {"name": name}
+        if with_extra_info:
+            record["extra_info"] = extra_info_from_sidecar(entry.with_name(entry.name + ".json"))
+        record["mtime"] = mtime
+        record["directory"] = str(directory)
+        by_name[name] = record
+    return [by_name[name] for name in sorted(by_name)]
 
 
 def extra_info_from_sidecar(path: Path) -> str:
@@ -819,15 +868,10 @@ def extra_info_from_sidecar(path: Path) -> str:
     try:
         fd, _st = open_regular_at_nofollow(path.parent, path.name)
         try:
-            data = b""
-            while len(data) <= SIDECAR_MAX_BYTES:
-                chunk = os.read(fd, SIDECAR_MAX_BYTES + 1 - len(data))
-                if not chunk:
-                    break
-                data += chunk
+            data = _read_at_most(fd, SIDECAR_MAX_BYTES)
         finally:
             os.close(fd)
-        if len(data) > SIDECAR_MAX_BYTES:
+        if data is None:
             return ""
         payload = json.loads(data.decode("utf-8"))
     except (OSError, ValueError, RuntimeError):  # RuntimeError: link loops, deep JSON

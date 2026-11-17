@@ -37,13 +37,14 @@ from ..project import RenpyProject
 from ..save_isolation import (
     apply_launch_isolation_defaults,
     agent_session_id,
-    import_host_slots,
+    import_selected_slots,
     isolation_report,
     launch_exposes_user_saves,
     launch_state_mode_error,
     list_host_slots,
     path_in_session_root,
     SAVES_DIRNAME,
+    select_host_slots,
 )
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
@@ -1586,6 +1587,11 @@ def saves(
     # one swapped for a link since launch is refused, not followed.
     root = Path(session_root)
     destination = root.parent.resolve() / root.name / SAVES_DIRNAME
+    # Listing reads the game's own folders, which may be slow or hostile, so
+    # it runs before the session is held open: only the copy delays a stop.
+    selection = select_host_slots(project.root, slot=slot, slots=slots, pattern=pattern)
+    if not selection.get("ok"):
+        return selection
     # A stop waits for the copy, and a copy never starts after a stop.
     with session.holding_open() as session_open:
         if not session_open:
@@ -1594,13 +1600,7 @@ def saves(
                 "code": "NO_ISOLATED_SESSION",
                 "error": "the session's save folder is gone; the session has stopped",
             }
-        return import_host_slots(
-            project.root,
-            destination,
-            slot=slot,
-            slots=slots,
-            pattern=pattern,
-        )
+        return import_selected_slots(selection, destination, project_root=project.root)
 
 
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:

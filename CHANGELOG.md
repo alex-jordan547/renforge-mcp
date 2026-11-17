@@ -36,7 +36,10 @@ versioning.
   whole slot name; `import` selects by name, by `pattern`, or both; `list`
   keeps its `regexp`, which Ren'Py applies. `list_user` and `import` read only
   the folder that the game's `config.save_directory` names directly under the
-  Ren'Py save root, plus a `game/saves` inside the project. A failed save
+  Ren'Py save root, plus a `game/saves` inside the project; they open the
+  game's scripts without following links or blocking, skip one over 4 MiB,
+  and list before an import holds the session, so a stop never waits on a
+  listing. A failed save
   rescan is reported as `rescan_error` instead of leaving a stale slot list
   unexplained. A stop waits for an import in progress, and an import never
   starts on a stopped session or one whose game has exited. Copied slots are

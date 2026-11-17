@@ -1106,3 +1106,127 @@ def test_live_import_requires_a_temporary_session(
     assert result["ok"] is False
     assert result["code"] == "SAVE_IMPORT_NOT_ISOLATED"
     assert list(chosen.iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_a_fifo_swapped_in_for_options_rpy_cannot_hang_the_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p6: options.rpy becomes a FIFO between the check and
+    # the read. The read must refuse it at once, not wait for a writer.
+    import threading
+
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    game = project / "game"
+    (game / "zz.rpy").write_text('define config.save_directory = "renforge-demo"\n', encoding="utf-8")
+    options = game / "options.rpy"
+    swapped: list[bool] = []
+
+    def swap() -> None:
+        if not swapped:
+            swapped.append(True)
+            options.unlink()
+            os.mkfifo(options)
+
+    real_is_file = Path.is_file
+    real_open = save_isolation.open_regular_at_nofollow
+
+    def is_file_then_swap(self: Path, *args, **kwargs):  # the old check-then-read seam
+        result = real_is_file(self, *args, **kwargs)
+        if self.name == "options.rpy":
+            swap()
+        return result
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "options.rpy":
+            swap()
+        return real_open(directory, name)
+
+    monkeypatch.setattr(Path, "is_file", is_file_then_swap)
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    results: list[dict] = []
+    worker = threading.Thread(
+        target=lambda: results.append(list_host_slots(project, home=tmp_path / "home")),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():  # free the reader so the suite can go on
+        fd = os.open(options, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(timeout=5)
+        pytest.fail("list_host_slots blocked opening a FIFO")
+    assert swapped
+    assert [slot["name"] for slot in results[0]["slots"]] == ["1-1"]
+
+
+def test_parse_save_directory_skips_a_script_over_the_read_cap(tmp_path: Path) -> None:
+    import renforge.save_isolation as save_isolation
+
+    game = tmp_path / "game"
+    game.mkdir()
+    huge = game / "aaa.rpy"
+    with huge.open("wb") as handle:
+        handle.write(b'define config.save_directory = "Huge"\n')
+        handle.truncate(save_isolation.RPY_SCAN_MAX_BYTES + 1)  # sparse
+    (game / "zz.rpy").write_text('define config.save_directory = "Small"\n', encoding="utf-8")
+
+    assert parse_save_directory(tmp_path) == "Small"
+
+
+def test_live_import_lists_before_taking_the_close_lock(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p7: a slow or stuck listing must not block a stop, so
+    # only the copy runs while the session is held open.
+    import renforge.save_isolation as save_isolation
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+
+    class _LockSession(_ImportSession):
+        held = False
+
+        @contextlib.contextmanager
+        def holding_open(self):
+            self.held = True
+            try:
+                yield True
+            finally:
+                self.held = False
+
+    from types import SimpleNamespace
+
+    session = _LockSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(savedir_mode="temporary", session_root=dest.parent),
+    )
+    seen: dict[str, list[bool]] = {"parse": [], "copy": []}
+    real_parse = save_isolation.parse_save_directory
+    real_copy = save_isolation._copy_slot_files
+
+    def parse(*args, **kwargs):
+        seen["parse"].append(session.held)
+        return real_parse(*args, **kwargs)
+
+    def copy(*args, **kwargs):
+        seen["copy"].append(session.held)
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "parse_save_directory", parse)
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", copy)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", pattern="*")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is True
+    assert seen["parse"] and not any(seen["parse"])
+    assert seen["copy"] and all(seen["copy"])
