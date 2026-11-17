@@ -458,6 +458,36 @@ def test_launch_tool_defaults_editor_true(tmp_path, monkeypatch) -> None:
     assert calls["kwargs"]["preferences"] == "existing"
 
 
+def test_delegated_isolated_launch_forwards_language(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge import dashboard_client
+
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    calls = {}
+
+    def fake_dashboard_launch(_project_path, **kwargs):
+        calls.update(kwargs)
+        return {
+            "ok": True,
+            "ready": True,
+            "already_running": False,
+            "requested_language": kwargs.get("language"),
+            "active_language": kwargs.get("language"),
+            "language_applied": True,
+        }
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard_launch)
+
+    app = _ToolRegistry()
+    _register_tools(app)
+    result = app.tools["renforge_launch"](str(tmp_path), savedir="temporary", language="japanese")
+
+    assert result["ok"] is True
+    assert calls["language"] == "japanese"
+    assert calls["savedir"] == "temporary" and calls["home"] == "temporary"
+    assert "warning" not in result
+
+
 def test_launch_tool_forwards_editor_mode_to_direct_launch(tmp_path, monkeypatch) -> None:
     (tmp_path / "game").mkdir()
     from renforge import dashboard_client

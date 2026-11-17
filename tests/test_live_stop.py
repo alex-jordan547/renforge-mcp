@@ -470,10 +470,14 @@ def test_an_isolated_launch_refuses_an_external_game_that_also_uses_game_saves(
         "save_locations": [str(session / "saves"), str(project_saves)],
     })
 
-    result = _external_reuse(tmp_path, monkeypatch, client, savedir="temporary")
+    result = _external_reuse(
+        tmp_path, monkeypatch, client, savedir="temporary", language="japanese"
+    )
 
     assert result["ok"] is False
     assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+    assert result["requested_language"] == "japanese"
+    assert result["language_applied"] is False
 
 
 def test_launch_status_reports_an_external_games_storage(tmp_path: Path, monkeypatch) -> None:

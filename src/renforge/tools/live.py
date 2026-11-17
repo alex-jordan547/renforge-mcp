@@ -630,7 +630,12 @@ def _external_session_isolation(client: Any) -> dict[str, Any]:
     return report
 
 
-def _isolation_mismatch(*, requested_exposes: bool, existing_exposes: bool) -> dict[str, Any]:
+def _isolation_mismatch(
+    *,
+    requested_exposes: bool,
+    existing_exposes: bool,
+    requested_language: str | None = None,
+) -> dict[str, Any]:
     message = (
         "The running game uses the player's saves or HOME, but this launch "
         "asked for an isolated session. Stop it before launching again."
@@ -644,6 +649,8 @@ def _isolation_mismatch(*, requested_exposes: bool, existing_exposes: bool) -> d
         "error": message,
         "requested_exposes_user_saves": requested_exposes,
         "existing_exposes_user_saves": existing_exposes,
+        "requested_language": requested_language,
+        **_failed_language_verdict(requested_language),
     }
 
 
@@ -768,7 +775,9 @@ def launch_game(
             existing_exposes = _session_exposes_user_saves(existing)
             if existing_exposes and not requested_exposes:
                 return _isolation_mismatch(
-                    requested_exposes=requested_exposes, existing_exposes=existing_exposes
+                    requested_exposes=requested_exposes,
+                    existing_exposes=existing_exposes,
+                    requested_language=language,
                 )
             try:
                 state = existing.client.get_state()
@@ -850,7 +859,9 @@ def launch_game(
             external_isolation = _external_session_isolation(external)
             if not requested_exposes and external_isolation["exposes_user_saves"]:
                 return _isolation_mismatch(
-                    requested_exposes=False, existing_exposes=True
+                    requested_exposes=False,
+                    existing_exposes=True,
+                    requested_language=language,
                 )
             result = {
                 "ok": True,
