@@ -1492,7 +1492,7 @@
         },
         "warp": {
           "default": "",
-          "description": "Optional Ren'Py `file.rpy:line` startup target; this launch tool does not resolve label names.",
+          "description": "Optional Ren'Py `file.rpy:line` startup target; this launch tool does not resolve label names. A warp launch replaces a running game like `renforge_jump`: with every isolation knob omitted or `auto`, it keeps the isolation of an isolated game it replaces (a fresh session; imported slots are not carried over).",
           "type": "string"
         }
       },
