@@ -66,8 +66,8 @@ _ISOLATION_PARAMETERS = {
         "to copy selected host slots into an isolated session."
     ),
     "persistent": (
-        "Persistent state follows the selected save directory. Omitted, empty, "
-        "or `auto` selects `empty` for a fresh temporary directory and `existing` "
+        "Persistent state follows the selected save directory. Omitted or `auto` "
+        "selects `empty` for a fresh temporary directory and `existing` "
         "for a reused directory. `empty` requires `savedir=temporary`; it never "
         "deletes existing persistent files. Use save import to copy selected slots."
     ),
@@ -79,7 +79,7 @@ _ISOLATION_PARAMETERS = {
         "value is an explicit HOME path."
     ),
     "preferences": (
-        "Preferences share Ren'Py's persistent storage. Omitted, empty, or `auto` "
+        "Preferences share Ren'Py's persistent storage. Omitted or `auto` "
         "selects `empty` for a fresh temporary save directory and `existing` for "
         "a reused directory. `empty` requires `savedir=temporary`; preferences "
         "are isolated by storage selection, without resetting host state."
@@ -538,7 +538,7 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_saves": ToolDefinition(
         description=(
             "List, load, save, or import named slots in a single command family. `list` reads the running (usually isolated) "
-            "session; `list_user` observes host slots under `~/.renpy` / `game/saves` without a running game and never writes. "
+            "session; `list_user` observes host slots in the host Ren'Py save folder and `game/saves` without a running game and never writes. "
             "`import` copies selected host slots into the isolated session savedir (never bind-mounts the user tree) and is "
             "refused unless the session was launched with `savedir=temporary`. `load` replaces live state and `save` can overwrite the chosen slot. "
             "Verify slot names before mutating gameplay progress. `load` requires `authorize=true` when `RENFORGE_POLICY=enforce`."
