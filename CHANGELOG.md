@@ -56,7 +56,10 @@ versioning.
   relaunch whose isolation knobs are all omitted or `auto` keeps the
   isolation of an isolated game it replaces (resolved by the process that
   owns the game); it gets a fresh session, so imported slots are not carried
-  over. This is application-layer isolation, not an OS sandbox.
+  over. Mode tokens (`auto`, `existing`, `default`, `temporary`, `empty`)
+  are matched case-insensitively, so `savedir=Temporary` isolates instead
+  of creating a folder of that name. This is application-layer isolation,
+  not an OS sandbox.
 - `renforge_saves(action="import")` now reaches an isolated session that the
   dashboard launched: the request goes to the dashboard that owns the session
   (new token-checked `POST /api/live/saves/import`), and that dashboard's

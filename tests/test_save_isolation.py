@@ -1532,3 +1532,30 @@ def test_every_exposure_check_counts_the_projects_game_saves(tmp_path: Path) -> 
         assert launch_exposes_user_saves(savedir=str(saves), home="temporary", project_path=project) is True
     finally:
         _cleanup(isolation)
+
+
+def test_isolation_tokens_ignore_case(tmp_path: Path, monkeypatch) -> None:
+    # An agent writing savedir="Temporary" used to get an unisolated launch
+    # and a folder named "Temporary" in the server's working directory.
+    from renforge.save_isolation import isolation_knobs_unset, launch_state_mode_error
+
+    monkeypatch.chdir(tmp_path)
+    assert apply_launch_isolation_defaults(savedir="Temporary") == {
+        "savedir": "temporary",
+        "home": "temporary",
+        "persistent": "empty",
+        "preferences": "empty",
+    }
+    assert apply_launch_isolation_defaults(savedir="EXISTING", home="Auto")["home"] == "existing"
+    assert launch_state_mode_error(savedir="TEMPORARY", persistent="Empty", preferences="AUTO") is None
+    assert isolation_knobs_unset("AUTO", None, " Auto ", "") is True
+    monkeypatch.setenv("RENFORGE_ISOLATION", "Temporary")
+    assert configured_isolation_mode() == "temporary"
+    monkeypatch.delenv("RENFORGE_ISOLATION")
+    isolation = resolve_launch_isolation("TEMPORARY")
+    try:
+        assert isolation.savedir_mode == "temporary"
+        assert isolation.session_root is not None
+    finally:
+        _cleanup(isolation)
+    assert list(tmp_path.iterdir()) == []

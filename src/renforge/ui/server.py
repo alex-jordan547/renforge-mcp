@@ -674,7 +674,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 details={"savedir": savedir},
             )
         if persistent is not None and (
-            not isinstance(persistent, str) or persistent.strip() not in STATE_MODE_TOKENS
+            not isinstance(persistent, str) or persistent.strip().lower() not in STATE_MODE_TOKENS
         ):
             return error_response(
                 code="launch_persistent_invalid",
@@ -690,7 +690,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
                 details={"home": home},
             )
         if preferences is not None and (
-            not isinstance(preferences, str) or preferences.strip() not in STATE_MODE_TOKENS
+            not isinstance(preferences, str) or preferences.strip().lower() not in STATE_MODE_TOKENS
         ):
             return error_response(
                 code="launch_preferences_invalid",

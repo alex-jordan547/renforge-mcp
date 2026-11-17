@@ -66,11 +66,24 @@ SELECTOR_MAX_SLOTS: int = 1000
 RPY_SCAN_MAX_BYTES: int = 4 * 1024 * 1024
 
 
+_KNOWN_TOKENS: frozenset[str] = AUTO_TOKENS | EXISTING_TOKENS | TEMPORARY_TOKENS | {"empty"}
+
+
+def _token(value: Any) -> str:
+    """*value* stripped, and lower-cased when it is a mode token in any case.
+
+    ``Temporary`` must select the temporary mode, not become a save folder of
+    that name in the server's working directory; a path keeps its case.
+    """
+    token = str(value).strip()
+    return token.lower() if token.lower() in _KNOWN_TOKENS else token
+
+
 def classify_token(value: str | None, *, omitted: str) -> str:
     """Return ``existing``, ``temporary``, ``empty``, or ``path``."""
     if value is None:
         return omitted
-    token = str(value).strip()
+    token = _token(value)
     if token in AUTO_TOKENS:
         return omitted
     if token in EXISTING_TOKENS:
@@ -96,7 +109,7 @@ def configured_isolation_mode(environ: Mapping[str, str] | None = None) -> str:
     A single launch opts in with ``savedir=temporary``.
     """
     source = os.environ if environ is None else environ
-    token = str(source.get(ISOLATION_ENV, "") or "").strip()
+    token = _token(source.get(ISOLATION_ENV, "") or "")
     if token == "temporary":
         return "temporary"
     return "existing"
@@ -108,7 +121,7 @@ def default_launch_value(
     environ: Mapping[str, str] | None = None,
 ) -> str:
     """Fill an omitted MCP/dashboard isolation field from configuration."""
-    token = None if value is None else str(value).strip()
+    token = None if value is None else _token(value)
     if token and token not in AUTO_TOKENS:
         return token
     if configured_isolation_mode(environ) == "existing":
@@ -131,7 +144,7 @@ def apply_launch_isolation_defaults(
     explicitly, so user saves under ``~/.renpy`` remain reachable. Explicit
     ``savedir=temporary`` isolates HOME the same way unless *home* is set.
     """
-    home_explicit = home is not None and bool(str(home).strip()) and str(home).strip() not in AUTO_TOKENS
+    home_explicit = home is not None and _token(home) not in {"", "auto"}
     resolved_savedir = default_launch_value(savedir, environ=environ)
     resolved_home = default_launch_value(home, environ=environ)
     if not home_explicit:
@@ -143,7 +156,7 @@ def apply_launch_isolation_defaults(
     state_default = "empty" if classify_savedir(resolved_savedir) == "temporary" else "existing"
 
     def state_mode(value: str | None) -> str:
-        token = "auto" if value is None else str(value).strip()
+        token = "auto" if value is None else _token(value)
         return state_default if token in {"", "auto"} else token
 
     return {
@@ -156,7 +169,7 @@ def apply_launch_isolation_defaults(
 
 def isolation_knobs_unset(*values: str | None) -> bool:
     """True when every launch isolation knob was omitted or left ``auto``."""
-    return all(value is None or str(value).strip() in {"", "auto"} for value in values)
+    return all(value is None or _token(value) in {"", "auto"} for value in values)
 
 
 def _state_mode(value: str | None) -> str:
