@@ -122,6 +122,157 @@ def copy_regular_file_nofollow(
             os.close(destination_fd)
 
 
+def _basename(name: str) -> str:
+    if _leaf_name(Path(name)) != name:
+        raise ValueError("name must be a basename: %s" % name)
+    return name
+
+
+def open_regular_at_nofollow(directory: Path, name: str) -> tuple[int, os.stat_result]:
+    """Open regular file *name* directly in *directory* without following links.
+
+    Every component of *directory* is opened without following links, so pass
+    a resolved path. Returns a read-only descriptor the caller closes. A leaf
+    link or non-regular file raises ``OSError``, a linked directory component
+    ``ValueError``, and a missing file or directory ``FileNotFoundError``.
+    """
+    leaf = _basename(name)
+    if os.name == "nt" or not _posix_dir_fd_supported():
+        return _open_regular_nofollow(Path(directory) / leaf)
+    dir_fd = _open_directory_chain_nofollow_posix(Path(directory), action="read")
+    try:
+        # O_NONBLOCK: a FIFO swapped in must fail the S_ISREG check, not hang the open.
+        flags = _open_flags(
+            os.O_RDONLY,
+            getattr(os, "O_NOFOLLOW", 0),
+            getattr(os, "O_NONBLOCK", 0),
+            getattr(os, "O_BINARY", 0),
+        )
+        fd = os.open(leaf, flags, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise OSError(errno.EINVAL, "path is not a regular file", str(Path(directory) / leaf))
+        return fd, opened
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _read_fd_bounded(source_fd: int, *, max_bytes: int, label: str) -> Iterable[bytes]:
+    copied = 0
+    while True:
+        chunk = os.read(source_fd, min(1024 * 1024, max_bytes - copied + 1))
+        if not chunk:
+            return
+        copied += len(chunk)
+        if copied > max_bytes:
+            raise OSError(errno.EFBIG, "file exceeds copy quota", label)
+        yield chunk
+
+
+def replace_file_at_nofollow(
+    directory: Path,
+    name: str,
+    source_fd: int,
+    *,
+    mode: int,
+    mtime_ns: int,
+    max_bytes: int,
+) -> int:
+    """Copy *source_fd* into *directory*/*name*, replacing it atomically.
+
+    The copy goes to an ``O_EXCL`` temp name created at an anchored directory
+    descriptor and is renamed over *name*, so a link already at *name* is
+    replaced, never followed. On failure the temp is removed and *name* is
+    untouched. Returns the number of bytes copied.
+    """
+    leaf = _basename(name)
+    mode &= _MODE_MASK
+    target_dir = Path(directory)
+    if os.name == "nt" or not _posix_dir_fd_supported():
+        return _replace_file_fallback(
+            target_dir, leaf, source_fd, mode=mode, mtime_ns=mtime_ns, max_bytes=max_bytes
+        )
+    dir_fd = _open_directory_chain_nofollow_posix(target_dir, action="copy")
+    temp_name: str | None = None
+    fd = -1
+    try:
+        flags = _open_flags(
+            os.O_WRONLY,
+            os.O_CREAT,
+            os.O_EXCL,
+            getattr(os, "O_NOFOLLOW", 0),
+            getattr(os, "O_BINARY", 0),
+        )
+        for _ in range(_TEMP_ATTEMPTS):
+            candidate = ".%s.%s.tmp" % (leaf, secrets.token_hex(8))
+            try:
+                fd = os.open(candidate, flags, _PRIVATE_FILE_MODE, dir_fd=dir_fd)
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        else:
+            raise OSError(errno.EEXIST, "failed to allocate a nofollow temporary file", str(target_dir))
+        copied = 0
+        for chunk in _read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target_dir / leaf)):
+            view = memoryview(chunk)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "could not write copied file", str(target_dir / leaf))
+                view = view[written:]
+            copied += len(chunk)
+        os.fchmod(fd, mode)
+        os.utime(fd, ns=(mtime_ns, mtime_ns))
+        os.fsync(fd)
+        owned, fd = fd, -1
+        os.close(owned)
+        os.rename(temp_name, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temp_name = None
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        return copied
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+        os.close(dir_fd)
+
+
+def _replace_file_fallback(
+    directory: Path,
+    name: str,
+    source_fd: int,
+    *,
+    mode: int,
+    mtime_ns: int,
+    max_bytes: int,
+) -> int:
+    # Windows (and POSIX without dir_fd): write_atomic anchors the directory
+    # and refuses a leaf link instead of replacing it. It would also create
+    # a missing directory, which must stay gone after a session stops.
+    if not directory.is_dir():
+        raise FileNotFoundError(errno.ENOENT, "directory does not exist", str(directory))
+    target = directory / name
+    data = b"".join(_read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)))
+    write_atomic(target, data, mode=mode, follow_symlinks=False)
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(target, ns=(mtime_ns, mtime_ns), follow_symlinks=False)
+    else:
+        os.utime(target, ns=(mtime_ns, mtime_ns))
+    return len(data)
+
+
 def write_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

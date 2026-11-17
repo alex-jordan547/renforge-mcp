@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import errno
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
 
 from renforge.captures import write_project_capture
-from renforge.util.files import write_atomic, write_json_atomic
+from renforge.util.files import (
+    open_regular_at_nofollow,
+    replace_file_at_nofollow,
+    write_atomic,
+    write_json_atomic,
+)
 
 
 def test_write_atomic_nofollow_rejects_symlink_parent(tmp_path: Path) -> None:
@@ -93,3 +102,139 @@ def test_write_json_atomic_nofollow_still_writes_inside_real_directory(tmp_path:
     path = tmp_path / "data.json"
     write_json_atomic(path, {"ok": True}, follow_symlinks=False, max_bytes=1024)
     assert path.read_text(encoding="utf-8") == '{"ok":true}'
+
+
+def _source_fd(path: Path) -> tuple[int, os.stat_result]:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    return fd, os.fstat(fd)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_open_regular_at_nofollow_rejects_a_leaf_symlink(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.save"
+    secret.write_bytes(b"SECRET")
+    saves = tmp_path / "saves"
+    saves.mkdir()
+    (saves / "a.save").symlink_to(secret)
+
+    with pytest.raises(OSError):
+        open_regular_at_nofollow(saves, "a.save")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_open_regular_at_nofollow_rejects_a_linked_directory(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.save").write_bytes(b"SECRET")
+    linked = tmp_path / "saves"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises((OSError, ValueError)):
+        open_regular_at_nofollow(linked, "a.save")
+
+
+def test_open_regular_at_nofollow_reads_a_regular_file(tmp_path: Path) -> None:
+    (tmp_path / "a.save").write_bytes(b"SLOT")
+    fd, st = open_regular_at_nofollow(tmp_path, "a.save")
+    try:
+        assert stat.S_ISREG(st.st_mode)
+        assert os.read(fd, 16) == b"SLOT"
+    finally:
+        os.close(fd)
+    with pytest.raises(FileNotFoundError):
+        open_regular_at_nofollow(tmp_path, "missing.save")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_replace_file_at_nofollow_replaces_a_link_without_following(tmp_path: Path) -> None:
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"VICTIM")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "a.save").symlink_to(victim)
+
+    fd, st = _source_fd(source)
+    try:
+        copied = replace_file_at_nofollow(
+            dest, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024
+        )
+    finally:
+        os.close(fd)
+
+    assert copied == 4
+    assert victim.read_bytes() == b"VICTIM"
+    assert not (dest / "a.save").is_symlink() and (dest / "a.save").read_bytes() == b"SLOT"
+    assert sorted(os.listdir(dest)) == ["a.save"]
+
+
+def test_replace_file_at_nofollow_keeps_mode_and_mtime(tmp_path: Path) -> None:
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    os.chmod(source, 0o640)
+    os.utime(source, ns=(1_600_000_000_123_456_789, 1_600_000_000_123_456_789))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    fd, st = _source_fd(source)
+    try:
+        replace_file_at_nofollow(
+            dest,
+            "a.save",
+            fd,
+            mode=stat.S_IMODE(st.st_mode),
+            mtime_ns=st.st_mtime_ns,
+            max_bytes=1024,
+        )
+    finally:
+        os.close(fd)
+
+    copied = (dest / "a.save").stat()
+    assert copied.st_mtime_ns == source.stat().st_mtime_ns
+    if sys.platform != "win32":
+        assert copied.st_mode & 0o777 == source.stat().st_mode & 0o777
+
+
+def test_replace_file_at_nofollow_over_quota_leaves_nothing(tmp_path: Path) -> None:
+    source = tmp_path / "source.save"
+    source.write_bytes(b"X" * 64)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(OSError) as excinfo:
+            replace_file_at_nofollow(
+                dest, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=16
+            )
+    finally:
+        os.close(fd)
+    assert excinfo.value.errno == errno.EFBIG
+    assert os.listdir(dest) == []
+
+    (dest / "a.save").write_bytes(b"EARLIER")
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(OSError):
+            replace_file_at_nofollow(
+                dest, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=16
+            )
+    finally:
+        os.close(fd)
+    assert os.listdir(dest) == ["a.save"]
+    assert (dest / "a.save").read_bytes() == b"EARLIER"
+
+
+def test_replace_file_at_nofollow_needs_the_directory(tmp_path: Path) -> None:
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(FileNotFoundError):
+            replace_file_at_nofollow(
+                tmp_path / "gone", "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024
+            )
+    finally:
+        os.close(fd)
+    assert not (tmp_path / "gone").exists()

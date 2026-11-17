@@ -703,3 +703,172 @@ def test_parse_save_directory_does_not_join_lines(tmp_path):
     game.mkdir()
     (game / "options.rpy").write_text('define\nconfig.save_directory = "X"\n')
     assert parse_save_directory(tmp_path) is None
+
+
+def _host_project(tmp_path: Path, host_save_root: Path) -> tuple[Path, Path]:
+    """A project whose ``config.save_directory`` names a folder under the host root."""
+    project = tmp_path / "game-root"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "options.rpy").write_text(
+        'define config.save_directory = "renforge-demo"\n', encoding="utf-8"
+    )
+    host_saves = host_save_root / "renforge-demo"
+    host_saves.mkdir(parents=True)
+    return project, host_saves
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_skips_a_source_swapped_for_a_symlink_before_open(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_open = save_isolation.open_regular_at_nofollow
+    swapped: list[str] = []
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "1-1-LT1.save" and not swapped:
+            swapped.append(name)
+            (Path(directory) / name).unlink()
+            (Path(directory) / name).symlink_to(outside / "secret.save")
+        return real_open(directory, name)
+
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped == ["1-1-LT1.save"]
+    assert result["ok"] is False and result["missing"] == ["1-1"]
+    assert all(b"SECRET" not in p.read_bytes() for p in dest.iterdir())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_replaces_a_destination_symlink_planted_before_publish(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"VICTIM")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_replace = save_isolation.replace_file_at_nofollow
+    planted: list[str] = []
+
+    def plant_then_replace(directory: Path, name: str, source_fd: int, **kwargs):
+        if name == "1-1-LT1.save":
+            planted.append(name)
+            (Path(directory) / name).symlink_to(victim)
+        return real_replace(directory, name, source_fd, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", plant_then_replace)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert planted == ["1-1-LT1.save"]
+    assert result["ok"] is True
+    assert victim.read_bytes() == b"VICTIM"
+    assert not (dest / "1-1-LT1.save").is_symlink()
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_user_ignores_a_sidecar_swapped_for_a_symlink(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "mine"}', encoding="utf-8")
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "SECRET"}', encoding="utf-8")
+
+    real_open = save_isolation.open_regular_at_nofollow
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "1-1-LT1.save.json":
+            target = Path(directory) / name
+            if not target.is_symlink():
+                target.unlink()
+                target.symlink_to(secret)
+        return real_open(directory, name)
+
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert listed["slots"][0]["extra_info"] == ""
+
+
+def test_import_preserves_slot_mtime(tmp_path: Path, host_save_root: Path) -> None:
+    # Ren'Py shows a slot's file mtime as its save time.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    source = host_saves / "1-1-LT1.save"
+    source.write_bytes(b"SLOT")
+    os.utime(source, ns=(1_600_000_000_123_456_789, 1_600_000_000_123_456_789))
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / "1-1-LT1.save").stat().st_mtime_ns == source.stat().st_mtime_ns
+
+
+def test_import_twice_replaces_the_earlier_copy(tmp_path: Path, host_save_root: Path) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    source = host_saves / "1-1-LT1.save"
+    source.write_bytes(b"FIRST")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    assert import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")["ok"] is True
+    source.write_bytes(b"SECOND")
+    again = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert again["ok"] is True
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SECOND"
+    assert sorted(p.name for p in dest.iterdir()) == ["1-1-LT1.save"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_follows_a_symlinked_save_root_resolved_up_front(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # A player who moved ~/.renpy to another disk keeps a link in its place.
+    real_root = tmp_path / "other-disk" / "renpy"
+    real_root.mkdir(parents=True)
+    host_save_root.parent.mkdir(parents=True, exist_ok=True)
+    host_save_root.symlink_to(real_root, target_is_directory=True)
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "moved"}', encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+    assert [item["extra_info"] for item in listed["slots"]] == ["moved"]
+
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT"
+    assert (dest / "1-1-LT1.save.json").is_file()
+
+
+def test_temp_name_never_looks_like_a_slot() -> None:
+    from renforge.save_isolation import SLOT_FILE_RE
+
+    assert SLOT_FILE_RE.match(".1-1-LT1.save.0123456789abcdef.tmp") is None

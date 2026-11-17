@@ -21,10 +21,13 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Iterable, Mapping
+
+from .util.files import open_regular_at_nofollow, replace_file_at_nofollow
 
 EXISTING_TOKENS: frozenset[str] = frozenset({"existing", "default"})
 TEMPORARY_TOKENS: frozenset[str] = frozenset({"", "temporary"})
@@ -46,6 +49,9 @@ SAVE_DIRECTORY_RE: re.Pattern[str] = re.compile(
 SLOT_FILE_RE: re.Pattern[str] = re.compile(
     r"^(?P<slot>.+)-[A-Za-z]{2}\d+\.save(?P<json>\.json)?$"
 )
+# Per-file caps on what an import copies and what list_user parses.
+SLOT_FILE_MAX_BYTES: int = 256 * 1024 * 1024
+SIDECAR_MAX_BYTES: int = 1024 * 1024
 
 
 def classify_token(value: str | None, *, omitted: str) -> str:
@@ -633,6 +639,16 @@ def import_host_slots(
                 "code": "NO_ISOLATED_SESSION",
                 "error": "the session's save folder is gone; the session has stopped",
             }
+        except (OSError, ValueError) as exc:
+            # A linked savedir, an over-quota slot, a full disk: nothing
+            # was written outside the session, but the import is incomplete.
+            return {
+                "ok": False,
+                "code": "SAVE_IMPORT_FAILED",
+                "error": str(exc),
+                "imported": imported,
+                "savedir": str(dest),
+            }
         if not copied:
             missing.append(name)
             continue
@@ -759,14 +775,23 @@ def _slots_in_directory(directory: Path) -> list[dict[str, Any]]:
 
 
 def extra_info_from_sidecar(path: Path) -> str:
-    # A linked sidecar could point at any JSON file this process can read.
+    # A linked sidecar could point at any JSON file this process can read, so
+    # the leaf is opened without following links at an anchored directory.
     try:
-        if path.is_symlink() or not path.is_file():
+        fd, _st = open_regular_at_nofollow(path.parent.resolve(), path.name)
+        try:
+            data = b""
+            while len(data) <= SIDECAR_MAX_BYTES:
+                chunk = os.read(fd, SIDECAR_MAX_BYTES + 1 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
+        if len(data) > SIDECAR_MAX_BYTES:
             return ""
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(fd, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = json.loads(data.decode("utf-8"))
+    except (OSError, ValueError, RuntimeError):  # RuntimeError: link loops, deep JSON
         return ""
     if isinstance(payload, dict):
         value = payload.get("_save_name", payload.get("extra_info", ""))
@@ -784,29 +809,35 @@ def _copy_slot_files(source_dir: Path, dest_dir: Path, slot: str) -> list[str]:
         r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?$" % (re.escape(slot),)
     )
     copied: list[str] = []
+    # Resolved once, then every open is anchored on these directories and
+    # never follows a link, so a file swapped after listing cannot redirect
+    # the read or the write.
     dest_root = dest_dir.resolve()
     source_root = source_dir.resolve()
     try:
-        entries = list(source_dir.iterdir())
+        names = sorted(os.listdir(source_root))
     except OSError:
         return copied
-    for entry in entries:
-        if pattern.match(entry.name) is None:
+    for name in names:
+        if pattern.match(name) is None:
             continue
         try:
-            if entry.is_symlink() or not entry.is_file():
-                continue
-            source = entry.resolve()
-        except OSError:
+            fd, st = open_regular_at_nofollow(source_root, name)
+        except (OSError, ValueError):
+            # Includes FileNotFoundError: the slot vanished or became a link.
             continue
-        if not _is_relative_to(source, source_root):
-            continue
-        destination = (dest_root / source.name).resolve()
-        if destination.parent != dest_root:
-            continue
-        shutil.copy2(source, destination)
-        copied.append(source.name)
-    copied.sort()
+        try:
+            replace_file_at_nofollow(
+                dest_root,
+                name,
+                fd,
+                mode=stat.S_IMODE(st.st_mode),
+                mtime_ns=st.st_mtime_ns,
+                max_bytes=SLOT_FILE_MAX_BYTES,
+            )
+        finally:
+            os.close(fd)
+        copied.append(name)
     return copied
 
 
