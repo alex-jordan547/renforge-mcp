@@ -39,6 +39,17 @@ versioning.
   starts on a stopped session or one whose game has exited. Copied slots are
   removed with a temporary savedir on stop, unless `cleanup_on_stop=false` or
   the cleanup fails. This is application-layer isolation, not an OS sandbox.
+- `renforge_saves(action="import")` now reaches an isolated session that the
+  dashboard launched: the request goes to the dashboard that owns the session
+  (new token-checked `POST /api/live/saves/import`), and that dashboard's
+  answer is final. Before, it returned `NO_ISOLATED_SESSION` from another
+  process.
+- `language` composes with isolation. The "changed the stored preference"
+  warning follows the resolved save directory, so an isolated launch (or
+  `RENFORGE_ISOLATION=temporary`) does not raise it, and
+  `SESSION_ISOLATION_MISMATCH` reports `requested_language` and
+  `language_applied: false` like `SESSION_MODE_MISMATCH`. Dashboard launches
+  forward `language` together with the isolation options.
 
 ### Fixed
 
