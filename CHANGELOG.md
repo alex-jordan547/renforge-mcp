@@ -38,7 +38,9 @@ versioning.
   slot counts as imported only when its save file was copied, and an import
   that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`. `list_user` filters by `pattern`, a glob matched against the
   whole slot name; `import` selects by name, by `pattern`, or both; `list`
-  keeps its `regexp`, which Ren'Py applies. `list_user` and `import` read only
+  keeps its `regexp`, which Ren'Py applies. `pattern` and each slot name
+  are capped at 256 characters and `slots` at 1000 names
+  (`SAVE_IMPORT_INVALID`, checked before anything is listed). `list_user` and `import` read only
   the folder that the game's `config.save_directory` names directly under the
   Ren'Py save root, plus a `game/saves` inside the project; they open the
   game's scripts without following links or blocking, skip one over 4 MiB,

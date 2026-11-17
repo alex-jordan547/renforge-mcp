@@ -3122,7 +3122,8 @@
             }
           ],
           "default": null,
-          "description": "Optional glob for `list_user` or `import`, matched against the whole slot name: `*` any run of characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`)."
+          "description": "Optional glob for `list_user` or `import`, matched against the whole slot name: `*` any run of characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`). At most 256 characters.",
+          "maxLength": 256
         },
         "project_path": {
           "description": "Project root of the live game (or of the project whose host saves should be listed or imported).",
@@ -3165,11 +3166,13 @@
             }
           ],
           "default": null,
-          "description": "Optional list of host slot names to copy for `import`.",
+          "description": "Optional list of host slot names to copy for `import` (at most 1000 names of at most 256 characters).",
           "items": {
+            "maxLength": 256,
             "minLength": 1,
             "type": "string"
-          }
+          },
+          "maxItems": 1000
         }
       },
       "required": [

@@ -1371,3 +1371,39 @@ def test_import_keeps_a_slot_whose_sidecar_alone_was_refused(
     assert result["imported"][0]["files"] == ["1-1-LT1.save"]
     assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save.json", "reason": "link"}]
     assert sorted(p.name for p in dest.iterdir()) == ["1-1-LT1.save"]
+
+
+def test_saves_caps_selector_lengths_before_any_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p9: fnmatch compiles a pattern in quadratic time, so a
+    # 20 KB pattern of "[" took about 9 s per call. Long selectors are refused
+    # in saves_argument_error, before any listing and before a dashboard.
+    import renforge.save_isolation as save_isolation
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    longest = "*" * save_isolation.SELECTOR_MAX_CHARS
+    assert live.saves(str(project), "list_user", pattern=longest)["ok"] is True
+
+    monkeypatch.setattr(
+        save_isolation, "host_save_directories", lambda *_a, **_k: pytest.fail("listed")
+    )
+    too_long = "[" * (save_isolation.SELECTOR_MAX_CHARS + 1)
+    cases = [
+        ("list_user", {"pattern": "[" * 20_000}),
+        ("import", {"pattern": too_long}),
+        ("import", {"slot": too_long}),
+        ("import", {"slots": [too_long]}),
+        ("import", {"slots": ["s%d" % i for i in range(save_isolation.SELECTOR_MAX_SLOTS + 1)]}),
+    ]
+    for action, selection in cases:
+        started = time.monotonic()
+        result = live.saves(str(project), action, **selection)
+        assert time.monotonic() - started < 1.0, (action, selection.keys())
+        assert result["ok"] is False, (action, selection.keys())
+        assert result["code"] == "SAVE_IMPORT_INVALID", (action, selection.keys())
+        arguments = {"slot": None, "extra_info": None, "regexp": None, "slots": None, "pattern": None}
+        arguments.update(selection)
+        assert live.saves_argument_error(action, **arguments) is not None

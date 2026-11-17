@@ -45,6 +45,7 @@ from ..save_isolation import (
     path_in_session_root,
     SAVES_DIRNAME,
     select_host_slots,
+    selector_error,
 )
 from ..sdk import get_or_install_sdk
 from ..state_compact import (
@@ -1496,6 +1497,12 @@ def saves_argument_error(
             "ok": False,
             "error": "list_user and import take pattern, a glob such as `1-*`, not regexp",
         }
+    if action in {"list_user", "import"}:
+        # Capped here so an oversized selector never reaches a listing, a
+        # glob compile, or a dashboard.
+        error = selector_error(slot=slot, slots=slots, pattern=pattern)
+        if error is not None:
+            return {"ok": False, "code": "SAVE_IMPORT_INVALID", "error": error}
     return None
 
 

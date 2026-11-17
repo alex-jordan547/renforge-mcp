@@ -552,12 +552,12 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "project_path": "Project root of the live game (or of the project whose host saves should be listed or imported).",
             "action": "One of `list`, `list_user`, `import`, `load`, or `save`.",
             "slot": "Slot label used by save/load/import. Import also accepts `slots` or `pattern`.",
-            "slots": "Optional list of host slot names to copy for `import`.",
+            "slots": "Optional list of host slot names to copy for `import` (at most 1000 names of at most 256 characters).",
             "extra_info": "Optional save metadata for save actions.",
             "regexp": "Optional regex filter for `list`, applied by Ren'Py's `renpy.list_slots` in the game.",
             "pattern": (
                 "Optional glob for `list_user` or `import`, matched against the whole slot name: `*` any run of "
-                "characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`)."
+                "characters, `?` one character, `[ab]` one of a set (for example `1-*` or `auto-?`). At most 256 characters."
             ),
             "authorize": (
                 "Explicitly authorize `load` when `RENFORGE_POLICY=enforce`; ignored for list, list_user, import, and save."
@@ -565,7 +565,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         },
         parameter_schemas={
             "action": _enum("save", "load", "list", "list_user", "import"),
-            "slots": {"items": {"type": "string", "minLength": 1}},
+            "slots": {"items": {"type": "string", "minLength": 1, "maxLength": 256}, "maxItems": 1000},
+            "pattern": {"maxLength": 256},
         },
         input_schema={
             "oneOf": [

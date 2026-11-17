@@ -57,6 +57,10 @@ SLOT_FILE_RE: re.Pattern[str] = re.compile(
 # Per-file caps on what an import copies and what list_user parses.
 SLOT_FILE_MAX_BYTES: int = 256 * 1024 * 1024
 SIDECAR_MAX_BYTES: int = 1024 * 1024
+# Caps on caller selectors: fnmatch compiles a glob in time quadratic in its
+# length, and every slot name is checked against the pattern.
+SELECTOR_MAX_CHARS: int = 256
+SELECTOR_MAX_SLOTS: int = 1000
 # config.save_directory is read from game/*.rpy; a larger script is skipped.
 RPY_SCAN_MAX_BYTES: int = 4 * 1024 * 1024
 
@@ -586,15 +590,39 @@ def host_save_directories(
     return directories
 
 
+def selector_error(*, slot: Any = None, slots: Any = None, pattern: Any = None) -> str | None:
+    """Why ``list_user``/``import`` selectors are malformed, or None.
+
+    Lengths are capped before anything is listed or compiled: see
+    :data:`SELECTOR_MAX_CHARS` and :data:`SELECTOR_MAX_SLOTS`.
+    """
+    entries: list[Any] = [] if slot is None else [slot]
+    if slots is not None:
+        if isinstance(slots, (str, bytes)) or not isinstance(slots, (list, tuple)):
+            return "slots must be a list of slot names"
+        if len(slots) > SELECTOR_MAX_SLOTS:
+            return "slots must list at most %d names" % SELECTOR_MAX_SLOTS
+        entries.extend(slots)
+    for value in entries:
+        if not isinstance(value, str) or not value.strip():
+            return "slot names must be non-empty strings"
+        if len(value) > SELECTOR_MAX_CHARS:
+            return "slot names must be at most %d characters" % SELECTOR_MAX_CHARS
+    return _slot_pattern_error(pattern)
+
+
 def _slot_pattern_error(pattern: Any) -> str | None:
     if pattern is not None and not isinstance(pattern, str):
         return "pattern must be a string"
+    if pattern is not None and len(pattern) > SELECTOR_MAX_CHARS:
+        return "pattern must be at most %d characters" % SELECTOR_MAX_CHARS
     return None
 
 
 def _matches(name: str, pattern: str) -> bool:
-    # A glob, not a regex: fnmatch matching cannot backtrack catastrophically,
-    # so a caller's pattern cannot stall the server on a long slot name.
+    # A glob, not a regex: matching cannot backtrack catastrophically on a long
+    # slot name. Compiling the glob is quadratic in the pattern's length, which
+    # is why selector_error caps it at SELECTOR_MAX_CHARS.
     return fnmatch.fnmatchcase(name, pattern)
 
 
@@ -673,41 +701,23 @@ def select_host_slots(
     Reads only (a game's scripts and save folders), so callers run it before
     holding a session open: a slow listing must never delay a stop.
     """
-    names: list[str] = []
-    seen: set[str] = set()
-
-    def _invalid(error: str) -> dict[str, Any]:
+    if slots is not None and not isinstance(slots, (str, bytes)) and isinstance(slots, Iterable):
+        slots = list(slots)
+    error = selector_error(slot=slot, slots=slots, pattern=pattern)
+    if error is None and slot is None and not slots and pattern is None:
+        error = "import requires slot, slots, or pattern"
+    if error is not None:
         # A dashboard relays this answer; the code keeps it from reading as
         # a transport failure.
         return {"ok": False, "code": "SAVE_IMPORT_INVALID", "error": error}
 
-    def _add(value: Any) -> str | None:
-        if not isinstance(value, str) or not value.strip():
-            return "slot names must be non-empty strings"
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in ([] if slot is None else [slot]) + list(slots or []):
         token = value.strip()
         if token not in seen:
             seen.add(token)
             names.append(token)
-        return None
-
-    if slot is not None:
-        error = _add(slot)
-        if error is not None:
-            return _invalid(error)
-    if slots is not None:
-        if isinstance(slots, (str, bytes)) or not isinstance(slots, Iterable):
-            return _invalid("slots must be a list of slot names")
-        for item in slots:
-            error = _add(item)
-            if error is not None:
-                return _invalid(error)
-
-    error = _slot_pattern_error(pattern)
-    if error is not None:
-        return _invalid(error)
-
-    if not names and pattern is None:
-        return _invalid("import requires slot, slots, or pattern")
 
     def keep(name: str) -> bool:
         return name in seen or (pattern is not None and _matches(name, pattern))
