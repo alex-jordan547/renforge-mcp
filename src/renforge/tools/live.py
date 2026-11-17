@@ -1485,6 +1485,8 @@ def saves_argument_error(
 
     if action != "import" and slots is not None:
         return {"ok": False, "error": "slots is only valid for action 'import'"}
+    if action != "save" and extra_info is not None:
+        return {"ok": False, "error": "extra_info is only valid for action 'save'"}
 
     if action in {"save", "load", "list"} and pattern is not None:
         return {"ok": False, "error": "pattern is only valid for list_user or import"}
@@ -1536,14 +1538,10 @@ def saves(
         )
 
     if action == "load":
-        if extra_info is not None:
-            return {"ok": False, "error": "extra_info is only valid for action 'save'"}
         if regexp is not None:
             return {"ok": False, "error": "regexp is only valid for list"}
         return _with_client(project_path, lambda client: client.load_slot(slot))
 
-    if extra_info is not None:
-        return {"ok": False, "error": "extra_info is only valid for action 'save'"}
     if regexp is not None and not isinstance(regexp, str):
         return {"ok": False, "error": "regexp must be a string"}
 

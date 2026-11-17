@@ -238,3 +238,49 @@ def test_import_saves_posts_selection_to_matching_dashboard(tmp_path: Path, monk
     assert calls["url"] == "http://127.0.0.1:8765/api/live/saves/import?token=secret+token"
     assert calls["payload"] == {"slot": None, "slots": ["1-1"], "pattern": None}
     assert result["via"] == "dashboard"
+
+
+def test_delegated_import_keeps_the_dashboards_no_match_code(tmp_path: Path, monkeypatch) -> None:
+    import contextlib
+
+    import pytest
+
+    starlette_testclient = pytest.importorskip("starlette.testclient")
+    from renforge import dashboard_client
+    from renforge.tools import live
+    from renforge.ui.server import create_ui_app
+
+    project = tmp_path / "game-project"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    dest = tmp_path / "renforge-session-q" / "saves"
+    dest.mkdir(parents=True)
+
+    class _Isolation:
+        savedir_mode = "temporary"
+
+    class _Session:
+        temporary_savedir = dest
+        isolation = _Isolation()
+
+        @contextlib.contextmanager
+        def holding_open(self):
+            yield True
+
+    # The dashboard process owns an isolated session; the slot does not exist.
+    monkeypatch.setattr(live, "_SESSIONS", {live._key(project): _Session()})
+    client = starlette_testclient.TestClient(create_ui_app(project, ui_token="tok"))
+    body = client.post("/api/live/saves/import?token=tok", json={"slot": "9-9"}).json()
+
+    monkeypatch.setattr(
+        dashboard_client,
+        "dashboard_connection",
+        lambda *_a, **_k: {"project": str(project), "url": "http://127.0.0.1:8765/", "token": "tok"},
+    )
+    monkeypatch.setattr(dashboard_client, "urlopen", lambda _request, timeout: _Response(body))
+
+    result = dashboard_client.import_saves(str(project), slot="9-9")
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["via"] == "dashboard"

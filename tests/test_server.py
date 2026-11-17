@@ -1984,6 +1984,27 @@ def test_saves_import_dashboard_answer_is_final(tmp_path, monkeypatch) -> None:
     assert calls["saves"] == []
 
 
+def test_saves_import_extra_info_never_reaches_the_dashboard(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge.tools import live as real_live
+
+    original_saves = real_live.saves
+    tool, calls, live = _saves_tool(monkeypatch, {"ok": True, "via": "dashboard"})
+    monkeypatch.setattr(live, "saves", original_saves)
+
+    result = tool(str(tmp_path), "import", slots=["1-1"], extra_info="x")
+
+    assert result["ok"] is False
+    assert result["error"] == "extra_info is only valid for action 'save'"
+    assert calls["import_saves"] == []
+    for action in ("load", "list", "list_user", "import"):
+        slot = "1-1" if action in ("load", "import") else None
+        error = real_live.saves_argument_error(
+            action, slot=slot, extra_info="x", regexp=None, slots=None, pattern=None
+        )
+        assert error == {"ok": False, "error": "extra_info is only valid for action 'save'"}, action
+
+
 def test_saves_import_argument_errors_never_reach_the_dashboard(tmp_path, monkeypatch) -> None:
     (tmp_path / "game").mkdir()
     from renforge.tools import live as real_live

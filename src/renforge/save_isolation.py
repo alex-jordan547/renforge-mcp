@@ -622,7 +622,9 @@ def import_host_slots(
         project_root, slot=slot, slots=slots, pattern=pattern, home=home
     )
     if not resolved.get("ok"):
-        return resolved
+        # A dashboard relays this answer; the code keeps it from reading as
+        # a transport failure.
+        return {**resolved, "code": resolved.get("code", "SAVE_IMPORT_INVALID")}
     selected = list(resolved.get("names") or [])
     missing = list(resolved.get("missing") or [])
     listed = list_host_slots(project_root, home=home)
@@ -673,6 +675,7 @@ def import_host_slots(
     if not imported:
         return {
             "ok": False,
+            "code": "NO_MATCHING_SAVE_SLOTS",
             "error": "no matching host save slots",
             "missing": missing,
             "savedir": str(dest),

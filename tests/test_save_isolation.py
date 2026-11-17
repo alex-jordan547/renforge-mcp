@@ -960,6 +960,26 @@ def test_import_reports_a_destination_file_vanishing_mid_copy_as_failed(
     assert dest.is_dir()
 
 
+def test_import_failures_carry_their_own_codes(tmp_path: Path, host_save_root: Path) -> None:
+    # A dashboard relays these; without a code they read as transport failures.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    home = tmp_path / "home"
+
+    no_match = import_host_slots(project, dest, slot="9-9", home=home)
+    assert no_match["ok"] is False
+    assert no_match["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert no_match["missing"] == ["9-9"]
+
+    for selection in ({}, {"slots": "1-1"}, {"slot": " "}, {"pattern": 5}):
+        invalid = import_host_slots(project, dest, home=home, **selection)
+        assert invalid["ok"] is False, selection
+        assert invalid["code"] == "SAVE_IMPORT_INVALID", selection
+    assert list(dest.iterdir()) == []
+
+
 def test_temp_name_never_looks_like_a_slot() -> None:
     from renforge.save_isolation import SLOT_FILE_RE
 
