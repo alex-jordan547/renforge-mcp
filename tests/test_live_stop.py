@@ -971,3 +971,59 @@ def test_stop_game_attempts_external_stop_when_cancellation_is_still_pending(
     release.set()
     assert _wait_for_launch_status(project, "failed")["code"] == "LAUNCH_CANCELLED"
     live.stop_game(str(project))
+
+
+def _relaunch_knobs(tmp_path: Path, monkeypatch, existing_isolation, **launch_kwargs) -> dict:
+    """Replace an owned session with a warp launch; return the knobs it launched with."""
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    project = _make_project(tmp_path)
+    key = live._key(project)
+    live._SESSIONS[key] = _OwnedRunningSession(editor=True, isolation=existing_isolation)
+    captured: dict = {}
+
+    def fake_launch(_sdk, _project, **kwargs):
+        captured.update({k: kwargs.get(k) for k in ("savedir", "home", "persistent", "preferences")})
+        return _LaunchedSession(editor=True)
+
+    monkeypatch.setattr(live, "get_or_install_sdk", lambda *_a, **_k: "sdk")
+    monkeypatch.setattr(live, "launch_with_bridge", fake_launch)
+    try:
+        result = live.launch_game(str(project), warp="game/script.rpy:1", **launch_kwargs)
+    finally:
+        live._SESSIONS.pop(key, None)
+    assert result["ok"] is True
+    return captured
+
+
+def test_a_warp_relaunch_of_an_isolated_session_stays_isolated(tmp_path: Path, monkeypatch) -> None:
+    # Maintainer panel I2: jump/new_game/Warp replaced an isolated game with
+    # one on the player's saves, persistent data and HOME, silently.
+    knobs = _relaunch_knobs(tmp_path, monkeypatch, _isolation(savedir_mode="temporary"))
+    assert knobs == {
+        "savedir": "temporary",
+        "home": "temporary",
+        "persistent": "empty",
+        "preferences": "empty",
+    }
+
+
+def test_a_warp_relaunch_of_a_non_isolated_session_stays_on_the_players_saves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    knobs = _relaunch_knobs(
+        tmp_path, monkeypatch, _isolation(savedir_mode="existing", home_mode="existing")
+    )
+    assert knobs == {
+        "savedir": "existing",
+        "home": "existing",
+        "persistent": "existing",
+        "preferences": "existing",
+    }
+
+
+def test_an_explicit_savedir_on_a_warp_relaunch_is_honoured(tmp_path: Path, monkeypatch) -> None:
+    knobs = _relaunch_knobs(
+        tmp_path, monkeypatch, _isolation(savedir_mode="temporary"), savedir="existing"
+    )
+    assert knobs["savedir"] == "existing"
+    assert knobs["home"] == "existing"

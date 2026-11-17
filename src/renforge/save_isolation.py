@@ -164,6 +164,11 @@ def apply_launch_isolation_defaults(
     }
 
 
+def isolation_knobs_unset(*values: str | None) -> bool:
+    """True when every launch isolation knob was omitted or left ``auto``."""
+    return all(value is None or str(value).strip() in {"", "auto"} for value in values)
+
+
 def _state_mode(value: str | None) -> str:
     mode = classify_token(value, omitted="existing")
     return "empty" if mode == "temporary" else mode

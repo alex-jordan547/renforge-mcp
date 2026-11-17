@@ -79,20 +79,28 @@ def build_wrappers(context):
             launch_game as launch_via_dashboard,
             stop_game as stop_via_dashboard,
         )
-        from ..save_isolation import apply_launch_isolation_defaults
+        from ..save_isolation import apply_launch_isolation_defaults, isolation_knobs_unset
 
         canonical_editor = bool(editor)
         session_cfg = dict(session or {})
-        isolation_defaults = apply_launch_isolation_defaults(
-            savedir=session_cfg.get("savedir", savedir),
-            home=session_cfg.get("home", home),
-            persistent=session_cfg.get("persistent", persistent),
-            preferences=session_cfg.get("preferences", preferences),
-        )
+        knobs = {
+            "savedir": session_cfg.get("savedir", savedir),
+            "home": session_cfg.get("home", home),
+            "persistent": session_cfg.get("persistent", persistent),
+            "preferences": session_cfg.get("preferences", preferences),
+        }
+        isolation_defaults = apply_launch_isolation_defaults(**knobs)
         effective_savedir = isolation_defaults["savedir"]
         effective_home = isolation_defaults["home"]
         effective_persistent = isolation_defaults["persistent"]
         effective_preferences = isolation_defaults["preferences"]
+        # A relaunch (warp) with every knob auto is resolved by the process
+        # that owns the running game, so an isolated game's jump stays
+        # isolated there instead of being sent the player's saves from here.
+        owner_resolves = warp is not None and isolation_knobs_unset(*knobs.values())
+        if owner_resolves:
+            effective_savedir = effective_home = None
+            effective_persistent = effective_preferences = None
         effective_cleanup = (
             session_cfg["cleanup_on_stop"]
             if isinstance(session_cfg.get("cleanup_on_stop"), bool)
@@ -142,9 +150,18 @@ def build_wrappers(context):
                         "launch_cancel_requested": True,
                     }
                 return live.cancelled_launch_result(phase="starting_renpy")
+            warning_savedir = effective_savedir
+            if owner_resolves:
+                # The dashboard chose; its isolation report says what it chose.
+                reported = delegated.get("isolation")
+                warning_savedir = (
+                    reported.get("savedir_mode")
+                    if isinstance(reported, dict) and reported.get("savedir_mode")
+                    else isolation_defaults["savedir"]
+                )
             warning = live.language_persistence_warning(
                 language,
-                effective_savedir if isinstance(effective_savedir, str) else None,
+                warning_savedir if isinstance(warning_savedir, str) else None,
             )
             return _annotate_language_result(delegated, language, warning)
         if cancel_event is not None and cancel_event.is_set():

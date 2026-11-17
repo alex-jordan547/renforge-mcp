@@ -52,7 +52,11 @@ versioning.
   unexplained. A stop waits for an import in progress, and an import never
   starts on a stopped session or one whose game has exited. Copied slots are
   removed with a temporary savedir on stop, unless `cleanup_on_stop=false` or
-  the cleanup fails. This is application-layer isolation, not an OS sandbox.
+  the cleanup fails. A `renforge_jump`, `renforge_new_game` or dashboard Warp
+  relaunch whose isolation knobs are all omitted or `auto` keeps the
+  isolation of an isolated game it replaces (resolved by the process that
+  owns the game); it gets a fresh session, so imported slots are not carried
+  over. This is application-layer isolation, not an OS sandbox.
 - `renforge_saves(action="import")` now reaches an isolated session that the
   dashboard launched: the request goes to the dashboard that owns the session
   (new token-checked `POST /api/live/saves/import`), and that dashboard's

@@ -2018,3 +2018,47 @@ def test_saves_import_argument_errors_never_reach_the_dashboard(tmp_path, monkey
     assert result["ok"] is False
     assert "pattern" in result["error"] and "regexp" in result["error"]
     assert calls["import_saves"] == []
+
+
+@pytest.mark.parametrize("tool", ["renforge_jump", "renforge_new_game"])
+def test_relaunch_tools_leave_unset_isolation_to_the_owning_process(
+    tmp_path, monkeypatch, tool
+) -> None:
+    # The process that owns the running game decides whether an all-auto
+    # jump inherits its isolation, so the wrapper must not resolve "auto"
+    # to the player's saves first, locally or for a dashboard.
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text("label start:\n    return\nlabel other:\n    return\n", encoding="utf-8")
+    knobs = ("savedir", "home", "persistent", "preferences")
+    arguments = {"target": "other"} if tool == "renforge_jump" else {}
+
+    seen: dict = {}
+    monkeypatch.setattr(dashboard_client, "launch_game", lambda *_a, **_k: None)
+
+    def fake_launch(project_path: str, version: str = "stable", warp: str | None = None, **kwargs):
+        seen["local"] = {k: kwargs.get(k) for k in knobs}
+        return {"ok": True, "ready": True, "already_running": False, "editor": True}
+
+    monkeypatch.setattr(live, "launch_game", fake_launch)
+    app = _ToolRegistry()
+    _register_tools(app)
+    assert app.tools[tool](str(tmp_path), **arguments)["ok"] is True
+    assert seen["local"] == dict.fromkeys(knobs)
+
+    def fake_dashboard(project_path: str, **kwargs):
+        seen["dashboard"] = {k: kwargs.get(k) for k in knobs}
+        return {"ok": True, "ready": True, "via": "dashboard", "editor": True}
+
+    monkeypatch.setattr(dashboard_client, "launch_game", fake_dashboard)
+    assert app.tools[tool](str(tmp_path), **arguments)["ok"] is True
+    assert seen["dashboard"] == dict.fromkeys(knobs)
+
+    explicit = app.tools[tool](str(tmp_path), savedir="temporary", **arguments)
+    assert explicit["ok"] is True
+    assert seen["dashboard"] == {
+        "savedir": "temporary", "home": "temporary", "persistent": "empty", "preferences": "empty"
+    }

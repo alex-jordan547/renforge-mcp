@@ -38,6 +38,7 @@ from ..save_isolation import (
     apply_launch_isolation_defaults,
     agent_session_id,
     import_selected_slots,
+    isolation_knobs_unset,
     isolation_report,
     launch_exposes_user_saves,
     launch_state_mode_error,
@@ -717,12 +718,24 @@ def launch_game(
         }
 
     session_cfg = dict(session or {})
-    isolation_defaults = apply_launch_isolation_defaults(
-        savedir=session_cfg.get("savedir", savedir),
-        home=session_cfg.get("home", home),
-        persistent=session_cfg.get("persistent", persistent),
-        preferences=session_cfg.get("preferences", preferences),
-    )
+    knobs = {
+        "savedir": session_cfg.get("savedir", savedir),
+        "home": session_cfg.get("home", home),
+        "persistent": session_cfg.get("persistent", persistent),
+        "preferences": session_cfg.get("preferences", preferences),
+    }
+    replaced = _SESSIONS.get(_key(project.root)) if warp is not None else None
+    if (
+        replaced is not None
+        and isolation_knobs_unset(*knobs.values())
+        and not _session_exposes_user_saves(replaced)
+    ):
+        # A jump/new_game/Warp relaunch with every knob auto keeps the
+        # isolation of the game it replaces instead of falling back to the
+        # player's saves. It still gets a fresh session: imported slots go
+        # with the old one.
+        knobs["savedir"] = knobs["home"] = "temporary"
+    isolation_defaults = apply_launch_isolation_defaults(**knobs)
     savedir = isolation_defaults["savedir"]
     home = isolation_defaults["home"]
     persistent = isolation_defaults["persistent"]

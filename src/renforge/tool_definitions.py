@@ -358,7 +358,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
         description=(
             "Restart into a specific label/file position and keep interacting in a fresh game session. If needed, this may "
             "download and cache the required SDK before restart. Isolation matches `renforge_launch` (opt in with "
-            "`savedir=temporary`). Use for deterministic positioning before scripted checks."
+            "`savedir=temporary`). With every isolation knob omitted or `auto`, a relaunch that replaces an isolated game this server (or its dashboard) owns stays isolated; it still gets a fresh session, so slots imported into the old one are not carried over. "
+            "Use for deterministic positioning before scripted checks."
         ),
         annotations=_ann(
             readOnlyHint=False,
@@ -377,8 +378,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
     "renforge_new_game": ToolDefinition(
         description=(
             "Restart at `start` and begin a new story progression. This may download and cache the required SDK before the "
-            "fresh launch. Isolation matches `renforge_launch` (opt in with `savedir=temporary`). Prefer this for clean "
-            "scenario entry rather than reusing unstable runtime state."
+            "fresh launch. Isolation matches `renforge_launch` (opt in with `savedir=temporary`). With every isolation knob omitted or `auto`, a relaunch that replaces an isolated game this server (or its dashboard) owns stays isolated; it still gets a fresh session, so slots imported into the old one are not carried over. "
+            "Prefer this for clean scenario entry rather than reusing unstable runtime state."
         ),
         annotations=_ann(
             readOnlyHint=False,
