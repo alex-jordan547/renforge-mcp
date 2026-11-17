@@ -959,6 +959,7 @@ def _launch_after_project_lock(
     cleanup_savedir = isolation.cleanup
     try:
         env.update(isolation.environ(host_env=env))
+        env["RENFORGE_PERSISTENT_MODE"] = isolation.persistent_mode
         savedir_path = str(isolation.savedir) if isolation.savedir is not None else None
 
         # Token may be caller-supplied; session id is allocated with the artifact

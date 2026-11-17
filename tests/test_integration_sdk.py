@@ -1212,7 +1212,6 @@ python early:
 
         imported = import_host_slots(project.root, session.temporary_savedir, slot='host-canary')
         assert imported['ok'], imported
-        client.eval_expr("__import__('renpy').loadsave.location.scan()")
         assert [slot['name'] for slot in client.list_slots()['slots']] == ['host-canary']
         client.eval_expr("setattr(persistent, 'renforge_host_canary', 'SESSION-STATE')")
         client.eval_expr("setattr(isolation_mp, 'marker', 'SESSION-MULTIPERSISTENT')")
@@ -1250,3 +1249,68 @@ python early:
         assert [_state_snapshot(path) for path in protected] == before
     assert not root.exists()
     assert [_state_snapshot(path) for path in protected] == before
+
+
+def test_isolated_language_launch_leaves_host_preferences_untouched(
+    sdk, demo_copy: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """``language`` persists as a preference; isolation must contain that write."""
+    from renforge.bridge.launcher import launch_with_bridge
+    from renforge.project import RenpyProject
+    from renforge.save_isolation import host_renpy_root
+
+    project = RenpyProject(demo_copy)
+    home = tmp_path / 'host-home'
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('APPDATA', str(home / 'AppData' / 'Roaming'))
+    monkeypatch.delenv('RENFORGE_ISOLATION', raising=False)
+    (demo_copy / 'game' / 'script.rpy').write_text('''
+label main_menu:
+    return
+label start:
+    "Language test ready."
+    while True:
+        pause
+''', encoding='utf-8')
+    (demo_copy / 'game' / 'zz_language_fixture.rpy').write_text('''
+define config.save_directory = "renforge-language-canary"
+translate french strings:
+    old "Language test ready."
+    new "Test de langue prete."
+''', encoding='utf-8')
+
+    # Seed the host save tree with files the engine itself wrote.
+    seed = tmp_path / 'seed'
+    with launch_with_bridge(
+        sdk, project, savedir=str(seed), home='temporary', startup_timeout=90,
+    ) as session:
+        session.client.eval_expr("setattr(persistent, 'renforge_host_canary', 'HOST-STATE')")
+        session.client.eval_expr('renpy.save_persistent()')
+    assert (seed / 'persistent').is_file()
+    host_saves = host_renpy_root() / 'renforge-language-canary'
+    shutil.copytree(seed, host_saves)
+    local_saves = demo_copy / 'game' / 'saves'
+    shutil.copytree(seed, local_saves, dirs_exist_ok=True)
+
+    def snapshot() -> dict[str, tuple[bytes, int]]:
+        return {
+            f'{root.name}/{path.relative_to(root)}': (path.read_bytes(), path.stat().st_mtime_ns)
+            for root in (host_saves, local_saves)
+            for path in root.rglob('*') if path.is_file()
+        }
+
+    before = snapshot()
+    assert before
+
+    with launch_with_bridge(
+        sdk, project, savedir='temporary', language='french', startup_timeout=90,
+    ) as session:
+        client = session.client
+        root = session.session_root
+        assert root is not None
+        assert client.get_state()['language'] == 'french'
+        client.eval_expr('renpy.save_persistent()')
+        assert (session.temporary_savedir / 'persistent').is_file()
+    assert not root.exists()
+    assert snapshot() == before

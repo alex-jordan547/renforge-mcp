@@ -259,8 +259,30 @@ def test_launch_with_bridge_existing_savedir_does_not_redirect(
     assert command[2:] == ["run"]
     assert "RENFORGE_SAVEDIR" not in env
     assert "RENPY_PATH_TO_SAVES" not in env
-    assert "RENFORGE_PERSISTENT_MODE" not in env
+    assert env["RENFORGE_PERSISTENT_MODE"] == "existing"
     assert not list((project_root / "game").glob("00renforge_session_*.rpy"))
+    session.close(timeout=0.1)
+
+
+def test_isolated_launch_marks_persistent_mode_empty(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":0")
+    project, sdk, project_root = _make_project(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, env=None, stdout=None, stderr=None, start_new_session=False):
+        captured["env"] = env
+        _write_bridge_info(project_root, env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("renforge.bridge.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("renforge.bridge.launcher.BridgeClient", lambda _config: _FakeClient())
+
+    session = launch_with_bridge(sdk, project, savedir="temporary")
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["RENFORGE_PERSISTENT_MODE"] == "empty"
     session.close(timeout=0.1)
 
 
