@@ -6,6 +6,7 @@ import contextlib
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -677,3 +678,28 @@ def test_a_slot_pattern_cannot_stall_on_a_long_name(tmp_path: Path, host_save_ro
     listed = list_host_slots(project, pattern="*a*a*a*a*a*a*a*a*a*a*b", home=tmp_path / "home")
     assert listed["slots"] == []
     assert time.monotonic() - started < 2.0
+
+
+def test_parse_save_directory_is_linear_on_blank_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_text("\n" * 200_000 + "   \n" * 50_000)
+    started = time.monotonic()
+    assert parse_save_directory(tmp_path) is None
+    assert time.monotonic() - started < 1.0
+
+
+def test_parse_save_directory_accepts_tabs_and_crlf(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_bytes(
+        b'init:\r\n\tdefine config.save_directory = "Game-123"\r\n'
+    )
+    assert parse_save_directory(tmp_path) == "Game-123"
+
+
+def test_parse_save_directory_does_not_join_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_text('define\nconfig.save_directory = "X"\n')
+    assert parse_save_directory(tmp_path) is None

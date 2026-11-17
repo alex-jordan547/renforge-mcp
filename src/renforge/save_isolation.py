@@ -40,7 +40,7 @@ MULTIPERSISTENT_DIRNAME: str = "multipersistent"
 SAVES_DIRNAME: str = "saves"
 HOME_DIRNAME: str = "home"
 SAVE_DIRECTORY_RE: re.Pattern[str] = re.compile(
-    r"^\s*define\s+config\.save_directory\s*=\s*[\"']([^\"']+)[\"']",
+    r"^[ \t]*define[ \t]+config\.save_directory[ \t]*=[ \t]*[\"']([^\"'\r\n]+)[\"']",
     re.MULTILINE,
 )
 SLOT_FILE_RE: re.Pattern[str] = re.compile(
