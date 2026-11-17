@@ -1908,3 +1908,92 @@ def test_measure_tool_dispatches_action_and_targets(tmp_path, monkeypatch) -> No
     assert calls["action"] == "align"
     assert calls["targets"] == ["a", "b"]
     assert calls["tolerance"] == 2
+
+
+def _saves_tool(monkeypatch, import_result):
+    from renforge import dashboard_client
+    from renforge.tools import live
+
+    calls = {"import_saves": [], "saves": []}
+
+    def fake_import(project_path, **kwargs):
+        calls["import_saves"].append((project_path, kwargs))
+        return import_result
+
+    def fake_saves(project_path, action, **kwargs):
+        calls["saves"].append((project_path, action, kwargs))
+        return {"ok": False, "code": "NO_ISOLATED_SESSION", "local": True}
+
+    monkeypatch.setattr(dashboard_client, "import_saves", fake_import)
+    monkeypatch.setattr(live, "saves", fake_saves)
+    app = _ToolRegistry()
+    _register_tools(app)
+    return app.tools["renforge_saves"], calls, live
+
+
+def test_saves_import_delegates_when_this_process_owns_no_session(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    answer = {"ok": True, "via": "dashboard"}
+    tool, calls, _live = _saves_tool(monkeypatch, answer)
+
+    result = tool(str(tmp_path), "import", slots=["1-1"])
+
+    assert result == answer
+    assert calls["import_saves"] == [
+        (str(tmp_path), {"slot": None, "slots": ["1-1"], "pattern": None})
+    ]
+    assert calls["saves"] == []
+
+
+def test_saves_import_uses_the_owned_session_before_the_dashboard(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    tool, calls, live = _saves_tool(monkeypatch, {"ok": True, "via": "dashboard"})
+    monkeypatch.setattr(live, "_SESSIONS", {live._key(tmp_path): object()})
+
+    result = tool(str(tmp_path), "import", slots=["1-1"])
+
+    assert result["local"] is True
+    assert calls["import_saves"] == []
+    assert [c[1] for c in calls["saves"]] == ["import"]
+
+
+def test_saves_import_without_dashboard_reports_no_isolated_session(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge.tools import live as real_live
+
+    original_saves = real_live.saves
+    tool, calls, live = _saves_tool(monkeypatch, None)
+    monkeypatch.setattr(live, "saves", original_saves)
+    monkeypatch.setattr(live, "_SESSIONS", {})
+
+    result = tool(str(tmp_path), "import", slots=["1-1"])
+
+    assert len(calls["import_saves"]) == 1
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+
+
+def test_saves_import_dashboard_answer_is_final(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    answer = {"ok": False, "code": "NO_ISOLATED_SESSION", "via": "dashboard"}
+    tool, calls, _live = _saves_tool(monkeypatch, answer)
+
+    result = tool(str(tmp_path), "import", slots=["1-1"])
+
+    assert result == answer
+    assert calls["saves"] == []
+
+
+def test_saves_import_argument_errors_never_reach_the_dashboard(tmp_path, monkeypatch) -> None:
+    (tmp_path / "game").mkdir()
+    from renforge.tools import live as real_live
+
+    original_saves = real_live.saves
+    tool, calls, live = _saves_tool(monkeypatch, {"ok": True, "via": "dashboard"})
+    monkeypatch.setattr(live, "saves", original_saves)
+
+    result = tool(str(tmp_path), "import", regexp="x")
+
+    assert result["ok"] is False
+    assert "pattern" in result["error"] and "regexp" in result["error"]
+    assert calls["import_saves"] == []

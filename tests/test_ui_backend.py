@@ -382,6 +382,44 @@ def test_api_live_stop_dispatches_runtime_stop(tmp_path: Path, monkeypatch) -> N
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_saves_import_runs_in_the_dashboard_process(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_saves(*args, **kwargs):
+        calls.update(args=args, kwargs=kwargs)
+        return {"ok": True, "imported": ["1-1"]}
+
+    monkeypatch.setattr(server.live, "saves", fake_saves)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    response = client.post("/api/live/saves/import?token=token", json={"slots": ["1-1"]})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "imported": ["1-1"]}
+    assert calls == {
+        "args": (str(project), "import"),
+        "kwargs": {"slot": None, "slots": ["1-1"], "pattern": None},
+    }
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_saves_import_rejects_a_malformed_selection(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    called = []
+    monkeypatch.setattr(server.live, "saves", lambda *a, **k: called.append(1))
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    response = client.post("/api/live/saves/import?token=token", json={"slots": "1-1"})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "saves_import_invalid"
+    assert called == []
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
 def test_project_browser_opens_current_project_and_lists_project_parent(tmp_path: Path) -> None:
     project = _project_root(tmp_path)
     _project_at(tmp_path / "other-project")

@@ -503,6 +503,11 @@ def _owned_session(project_path: str | Path) -> BridgeSession | None:
     return _SESSIONS.get(_key(project_path))
 
 
+def owns_session(project_path: str) -> bool:
+    """True when this process holds the bridge session for the project."""
+    return _owned_session(project_path) is not None
+
+
 def _isolation_result(session: Any) -> dict[str, Any]:
     isolation = getattr(session, "isolation", None)
     artifact_id = getattr(session, "session_id", None)
@@ -1451,22 +1456,16 @@ def _save_slot_with_receipt(
     return reply
 
 
-def saves(
-    project_path: str,
+def saves_argument_error(
     action: str,
     *,
-    slot: str | None = None,
-    extra_info: str | None = None,
-    regexp: str | None = None,
-    slots: list[str] | None = None,
-    pattern: str | None = None,
-) -> dict:
-    """Save, load, or list named save slots, or copy selected host slots in.
-
-    ``list`` filters with ``regexp``, which Ren'Py's own ``list_slots``
-    applies in the game. ``list_user`` and ``import`` read host folders in
-    this process, so they filter with a glob ``pattern`` instead.
-    """
+    slot: str | None,
+    extra_info: str | None,
+    regexp: str | None,
+    slots: list[str] | None,
+    pattern: str | None,
+) -> dict | None:
+    """Return the error ``saves`` gives for bad arguments, or ``None``."""
     if action not in {"save", "load", "list", "list_user", "import"}:
         return {
             "ok": False,
@@ -1494,6 +1493,35 @@ def saves(
             "ok": False,
             "error": "list_user and import take pattern, a glob such as `1-*`, not regexp",
         }
+    return None
+
+
+def saves(
+    project_path: str,
+    action: str,
+    *,
+    slot: str | None = None,
+    extra_info: str | None = None,
+    regexp: str | None = None,
+    slots: list[str] | None = None,
+    pattern: str | None = None,
+) -> dict:
+    """Save, load, or list named save slots, or copy selected host slots in.
+
+    ``list`` filters with ``regexp``, which Ren'Py's own ``list_slots``
+    applies in the game. ``list_user`` and ``import`` read host folders in
+    this process, so they filter with a glob ``pattern`` instead.
+    """
+    error = saves_argument_error(
+        action,
+        slot=slot,
+        extra_info=extra_info,
+        regexp=regexp,
+        slots=slots,
+        pattern=pattern,
+    )
+    if error is not None:
+        return error
 
     if action == "save":
         if regexp is not None:

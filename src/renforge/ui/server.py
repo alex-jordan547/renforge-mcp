@@ -882,6 +882,37 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         result = await asyncio.to_thread(live.stop_game, str(runtime.root))
         return JSONResponse(result)
 
+    async def saves_import(request: Request):
+        if not await _check_token(request):
+            return _unauthorized(request)
+        payload = _as_dict(await _read_json(request))
+        slot = payload.get("slot")
+        slots = payload.get("slots")
+        pattern = payload.get("pattern")
+        if (
+            not (slot is None or isinstance(slot, str))
+            or not (pattern is None or isinstance(pattern, str))
+            or not (
+                slots is None
+                or (isinstance(slots, list) and all(isinstance(s, str) for s in slots))
+            )
+        ):
+            return error_response(
+                code="saves_import_invalid",
+                error="slot and pattern must be strings and slots a list of strings",
+                status_code=400,
+                details={},
+            )
+        result = await asyncio.to_thread(
+            live.saves,
+            str(runtime.root),
+            "import",
+            slot=slot,
+            slots=slots,
+            pattern=pattern,
+        )
+        return JSONResponse(result)
+
     async def select_choice(request: Request):
         if not await _check_token(request):
             return _unauthorized(request)
@@ -980,6 +1011,7 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         Route("/api/live/launch", launch, methods=["POST"]),
         Route("/api/live/status", launch_status, methods=["GET"]),
         Route("/api/live/stop", stop, methods=["POST"]),
+        Route("/api/live/saves/import", saves_import, methods=["POST"]),
         Route("/api/select-choice", select_choice, methods=["POST"]),
         Route("/api/eval", eval_route, methods=["POST"]),
         Route("/api/set-var", set_var, methods=["POST"]),

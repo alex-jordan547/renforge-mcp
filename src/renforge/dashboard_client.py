@@ -166,4 +166,21 @@ def stop_game(project_path: str) -> dict[str, Any] | None:
     )
 
 
-__all__ = ["launch_game", "launch_status", "stop_game"]
+def import_saves(
+    project_path: str,
+    *,
+    slot: str | None = None,
+    slots: list[str] | None = None,
+    pattern: str | None = None,
+) -> dict[str, Any] | None:
+    """Import host saves through the dashboard that owns the session, or ``None``."""
+    return _request(
+        project_path,
+        "api/live/saves/import",
+        operation="saves_import",
+        method="POST",
+        body={"slot": slot, "slots": slots, "pattern": pattern},
+    )
+
+
+__all__ = ["import_saves", "launch_game", "launch_status", "stop_game"]

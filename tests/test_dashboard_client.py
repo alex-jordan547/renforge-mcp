@@ -210,3 +210,31 @@ def test_stop_game_delegates_to_matching_dashboard(tmp_path: Path, monkeypatch) 
         "payload": {},
         "timeout": 45,
     }
+
+
+def test_import_saves_posts_selection_to_matching_dashboard(tmp_path: Path, monkeypatch) -> None:
+    from renforge import dashboard_client
+
+    project = tmp_path / "game-project"
+    calls = {}
+    monkeypatch.setattr(
+        dashboard_client,
+        "dashboard_connection",
+        lambda *_a, **_k: {
+            "project": str(project),
+            "url": "http://127.0.0.1:8765/",
+            "token": "secret token",
+        },
+    )
+
+    def fake_urlopen(request, timeout: int):
+        calls.update(url=request.full_url, payload=json.loads(request.data.decode("utf-8")))
+        return _Response({"ok": True})
+
+    monkeypatch.setattr(dashboard_client, "urlopen", fake_urlopen)
+
+    result = dashboard_client.import_saves(str(project), slots=["1-1"])
+
+    assert calls["url"] == "http://127.0.0.1:8765/api/live/saves/import?token=secret+token"
+    assert calls["payload"] == {"slot": None, "slots": ["1-1"], "pattern": None}
+    assert result["via"] == "dashboard"
