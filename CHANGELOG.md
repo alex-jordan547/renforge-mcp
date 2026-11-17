@@ -51,8 +51,8 @@ versioning.
   session's own folders, so a session root or savedir swapped for a link is
   refused with `SAVE_IMPORT_FAILED` instead of followed. A slot file import
   will not copy (a link, a FIFO or other non-regular file, one over the size
-  cap, or an unreadable one) is listed in `refused` with a reason, never
-  dropped; a slot counts as imported only when its save file was copied,
+  cap, or an unreadable one), or a slot whose host folder was swapped for a
+  link, is listed in `refused` with a reason, never dropped; a slot counts as imported only when its save file was copied,
   and an import that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`.
   Import returns a `files_touched` write receipt (absolute paths of the
   copied files, also on `SAVE_IMPORT_FAILED`). Its other codes are

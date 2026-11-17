@@ -197,6 +197,30 @@ def make_directory_at_nofollow(path: Path, *, mode: int = _PRIVATE_DIR_MODE) -> 
         os.close(parent_fd)
 
 
+def list_directory_nofollow(path: Path) -> list[str]:
+    """Names in the folder *path*, reached without following any link.
+
+    Every component is opened without following links, so a folder swapped
+    for a link raises ``ValueError`` instead of listing the link's target.
+    A missing folder raises ``FileNotFoundError``.
+    """
+    if os.name == "nt" or not _posix_dir_fd_supported() or os.listdir not in getattr(os, "supports_fd", set()):
+        target = _absolute_path(path)
+        for component in _path_components(target):
+            try:
+                component.lstat()
+            except FileNotFoundError:
+                continue
+            if _component_is_link(component):
+                raise _symlink_error(component, action="list")
+        return os.listdir(target)
+    dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
+    try:
+        return os.listdir(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def _make_directory_fallback(target: Path) -> None:
     # Windows (and POSIX without dir_fd): refuse a link or reparse point at
     # any existing component, then create the leaf by path.

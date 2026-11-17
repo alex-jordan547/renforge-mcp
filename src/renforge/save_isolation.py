@@ -30,6 +30,7 @@ from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping
 
 from .util.files import (
+    list_directory_nofollow,
     make_directory_at_nofollow,
     open_regular_at_nofollow,
     replace_file_at_nofollow,
@@ -780,7 +781,7 @@ def import_selected_slots(
 
     missing = list(selection.get("missing") or [])
     imported: list[dict[str, Any]] = []
-    refused: list[dict[str, str]] = []
+    refused: list[dict[str, Any]] = []
     # The write receipt (#116): absolute paths, since the savedir is outside
     # the project, of every file published so far.
     touched: list[str] = []
@@ -912,7 +913,7 @@ def extra_info_from_sidecar(path: Path) -> str:
 
 def _copy_slot_files(
     source_dir: Path, dest_dir: Path, slot: str
-) -> tuple[list[str], list[dict[str, str]]]:
+) -> tuple[list[str], list[dict[str, Any]]]:
     """Copy one slot's files; return the names copied and the files refused.
 
     A sidecar (``.save.json``) is copied only with its own save file, so a
@@ -924,13 +925,16 @@ def _copy_slot_files(
         r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?\Z" % (re.escape(slot),)
     )
     copied: list[str] = []
-    refused: list[dict[str, str]] = []
-    # Both directories are used as given and never resolved: every open walks
-    # them without following links, so a directory or file swapped for a
-    # link after the check is refused, not followed. The listing may follow
-    # a swapped folder, but it only yields names.
+    refused: list[dict[str, Any]] = []
+    # Both directories are used as given and never resolved: the listing and
+    # every open walk them without following links, so a directory or file
+    # swapped for a link after the check is refused, not followed.
     try:
-        names = sorted(os.listdir(source_dir))
+        names = sorted(list_directory_nofollow(source_dir))
+    except ValueError:
+        # The slot's folder was swapped for a link since the listing.
+        refused.append({"name": slot, "file": None, "reason": "link"})
+        return copied, refused
     except OSError:
         return copied, refused
     saves = [name for name in names if pattern.match(name) and not name.endswith(".json")]
@@ -955,7 +959,7 @@ def _copy_one_slot_file(
     slot: str,
     name: str,
     copied: list[str],
-    refused: list[dict[str, str]],
+    refused: list[dict[str, Any]],
 ) -> bool:
     """Copy *name*; record it in *copied* or *refused*. True when copied.
 

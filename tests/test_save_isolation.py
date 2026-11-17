@@ -943,7 +943,7 @@ def test_import_refuses_a_host_save_dir_swapped_for_a_link_after_listing(
     assert list(dest.iterdir()) == []
     assert result["ok"] is False
     assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
-    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
 
 
 def test_import_reports_a_destination_file_vanishing_mid_copy_as_failed(
@@ -1292,7 +1292,7 @@ def test_import_names_the_refused_slots_of_a_host_folder_swapped_for_a_link(
 
     assert result["ok"] is True
     assert [item["name"] for item in result["imported"]] == ["2-1"]
-    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
     assert "missing" not in result
     assert sorted(p.name for p in dest.iterdir()) == ["2-1-LT1.save"]
 
@@ -1559,3 +1559,39 @@ def test_isolation_tokens_ignore_case(tmp_path: Path, monkeypatch) -> None:
     finally:
         _cleanup(isolation)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_host_folder_linked_to_one_without_the_slot(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Re-review N2: listing followed the link, found no files, and reported
+    # the slot "missing" instead of naming the linked folder.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"HOSTSLOT")
+    game_saves = project / "game" / "saves"
+    game_saves.mkdir()
+    (game_saves / "2-1-LT1.save").write_bytes(b"GAMESLOT")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[bool] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        if not swapped:
+            swapped.append(True)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(empty, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
+    assert "missing" not in result
