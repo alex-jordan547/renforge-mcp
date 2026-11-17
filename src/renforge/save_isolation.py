@@ -221,17 +221,15 @@ class LaunchIsolation:
         """Backward-compatible alias for :attr:`savedir_mode`."""
         return self.savedir_mode
 
-    @property
-    def exposes_user_saves(self) -> bool:
-        """Whether this launch can read or write the host Ren'Py save tree."""
-        if self.savedir_mode == "existing" or self.home_mode == "existing":
-            return True
-        if self.savedir_mode == "path" and self.savedir is not None:
-            if path_exposes_user_saves(self.savedir):
-                return True
-        if self.home_mode == "path" and self.home is not None:
-            return path_is_host_home(self.home)
-        return False
+    def exposes_user_saves(self, project_path: str | Path | None = None) -> bool:
+        """Whether this launch can read or write the player's saves or HOME."""
+        return _exposes_user_saves(
+            savedir_mode=self.savedir_mode,
+            home_mode=self.home_mode,
+            savedir=self.savedir,
+            home=self.home,
+            project_path=project_path,
+        )
 
     def command_args(self) -> list[str]:
         if self.savedir is None:
@@ -285,10 +283,7 @@ def resolve_launch_isolation(
     )
     savedir, home = resolved["savedir"], resolved["home"]
     persistent, preferences = resolved["persistent"], resolved["preferences"]
-    savedir_mode = classify_savedir(savedir)
-    home_mode = classify_token(home, omitted="temporary")
-    if home_mode == "empty":
-        home_mode = "temporary"
+    savedir_mode, home_mode = _location_modes(resolved)
 
     persistent_mode = _state_mode(persistent)
     preferences_mode = _state_mode(preferences)
@@ -359,11 +354,7 @@ def isolation_report(
     project_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """JSON object attached to launch/status so agents can see isolation."""
-    exposes = isolation.exposes_user_saves
-    if isolation.savedir_mode == "path" and isolation.savedir is not None:
-        exposes = exposes or path_exposes_user_saves(
-            isolation.savedir, project_path=project_path
-        )
+    exposes = isolation.exposes_user_saves(project_path)
     return {
         "session_id": session_id,
         "isolation": {
@@ -395,18 +386,42 @@ def launch_exposes_user_saves(
         preferences=preferences,
         environ=environ,
     )
-    savedir_mode = classify_savedir(resolved["savedir"])
+    savedir_mode, home_mode = _location_modes(resolved)
+    return _exposes_user_saves(
+        savedir_mode=savedir_mode,
+        home_mode=home_mode,
+        savedir=resolved["savedir"],
+        home=resolved["home"],
+        project_path=project_path,
+    )
+
+
+def _location_modes(resolved: Mapping[str, str]) -> tuple[str, str]:
+    """``(savedir_mode, home_mode)`` of knobs from apply_launch_isolation_defaults."""
     home_mode = classify_token(resolved["home"], omitted="temporary")
-    if home_mode == "empty":
-        home_mode = "temporary"
+    return classify_savedir(resolved["savedir"]), "temporary" if home_mode == "empty" else home_mode
+
+
+def _exposes_user_saves(
+    *,
+    savedir_mode: str,
+    home_mode: str,
+    savedir: str | Path | None,
+    home: str | Path | None,
+    project_path: str | Path | None,
+) -> bool:
+    """The one rule for whether a launch reaches the player's saves or HOME.
+
+    The host Ren'Py save tree, the project's ``game/saves`` and the host HOME
+    all count.
+    """
     if savedir_mode == "existing" or home_mode == "existing":
         return True
-    if savedir_mode == "path" and path_exposes_user_saves(
-        resolved["savedir"], project_path=project_path
-    ):
-        return True
-    if home_mode == "path" and path_is_host_home(resolved["home"]):
-        return True
+    if savedir_mode == "path" and savedir is not None:
+        if path_exposes_user_saves(savedir, project_path=project_path):
+            return True
+    if home_mode == "path" and home is not None:
+        return path_is_host_home(home)
     return False
 
 

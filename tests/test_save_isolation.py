@@ -320,7 +320,7 @@ def test_isolation_report_and_session_id(tmp_path: Path) -> None:
         _cleanup(isolation)
 
     existing = resolve_launch_isolation("existing")
-    assert existing.exposes_user_saves is True
+    assert existing.exposes_user_saves() is True
     assert isolation_report(existing, session_id="sess_x")["isolation"]["exposes_user_saves"] is True
 
 
@@ -543,7 +543,7 @@ def test_an_explicit_host_home_exposes_user_saves_beside_an_unrelated_savedir(tm
         session_root=None,
         cleanup=False,
     )
-    assert isolation.exposes_user_saves is True
+    assert isolation.exposes_user_saves() is True
     assert isolation_report(isolation)["isolation"]["exposes_user_saves"] is True
 
 
@@ -1496,3 +1496,18 @@ def test_import_receipt_reaches_the_activity_journal(
     assert entry["name"] == "renforge_saves"
     assert entry["files_touched_recorded"] is True
     assert entry["files_touched"] == [str(dest / "1-1-LT1.save")]
+
+
+def test_every_exposure_check_counts_the_projects_game_saves(tmp_path: Path) -> None:
+    # Simplify panel I1: the dataclass property ignored the project's
+    # game/saves while isolation_report and launch_exposes_user_saves did not.
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    isolation = resolve_launch_isolation(str(saves), home="temporary")
+    try:
+        assert isolation.exposes_user_saves(project_path=project) is True
+        assert isolation_report(isolation, project_path=project)["isolation"]["exposes_user_saves"] is True
+        assert launch_exposes_user_saves(savedir=str(saves), home="temporary", project_path=project) is True
+    finally:
+        _cleanup(isolation)

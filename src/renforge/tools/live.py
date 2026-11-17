@@ -664,11 +664,11 @@ def _isolation_mismatch(
 
 def _session_exposes_user_saves(session: Any) -> bool:
     """Whether an owned session reads or writes the player's saves or HOME."""
-    report = _isolation_result(session).get("isolation")
-    if not isinstance(report, dict):
+    isolation = getattr(session, "isolation", None)
+    if isolation is None:
         # Without an isolation record the session's storage is unknown.
         return True
-    return bool(report.get("exposes_user_saves"))
+    return bool(isolation.exposes_user_saves(getattr(session, "project_root", None)))
 
 
 def launch_game(
