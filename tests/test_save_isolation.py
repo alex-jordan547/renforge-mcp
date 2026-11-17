@@ -1407,3 +1407,92 @@ def test_saves_caps_selector_lengths_before_any_listing(
         arguments = {"slot": None, "extra_info": None, "regexp": None, "slots": None, "pattern": None}
         arguments.update(selection)
         assert live.saves_argument_error(action, **arguments) is not None
+
+
+def test_import_reports_a_write_receipt(tmp_path: Path, host_save_root: Path, monkeypatch) -> None:
+    import errno
+
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    (host_saves / "2-1-LT1.save").write_bytes(b"SLOT2")
+    (host_saves / "2-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    home = tmp_path / "home"
+
+    done = import_host_slots(project, dest, slot="1-1", home=home)
+    assert done["files_touched"] == [str(dest / "1-1-LT1.save"), str(dest / "1-1-LT1.save.json")]
+
+    none = import_host_slots(project, dest, slot="9-9", home=home)
+    assert none["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert none["files_touched"] == []
+
+    # A full disk on the second slot's sidecar: the receipt still names every
+    # file that was published, including the save of the slot that failed.
+    real_replace = save_isolation.replace_file_at_nofollow
+
+    def disk_full_on(directory, name, source_fd, **kwargs):
+        if name == "2-1-LT1.save.json":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(directory, name, source_fd, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", disk_full_on)
+    failed = import_host_slots(project, dest, pattern="*", home=home)
+    assert failed["code"] == "SAVE_IMPORT_FAILED"
+    assert failed["files_touched"] == [
+        str(dest / "1-1-LT1.save"),
+        str(dest / "1-1-LT1.save.json"),
+        str(dest / "2-1-LT1.save"),
+    ]
+
+
+def test_import_receipt_reaches_the_activity_journal(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from renforge import dashboard_client
+    from renforge.server import _register_tools
+    from renforge.tools import live
+
+    class _ToolRegistry:
+        _renforge_testing_registry = True
+
+        def __init__(self) -> None:
+            self.tools: dict = {}
+
+        def tool(self):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return register
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setattr(dashboard_client, "dashboard_connection", lambda *_a, **_k: None)
+    session = _ImportSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(savedir_mode="temporary", session_root=dest.parent),
+    )
+    app = _ToolRegistry()
+    _register_tools(app)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = app.tools["renforge_saves"](str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is True
+    assert result["files_touched"] == [str(dest / "1-1-LT1.save")]
+    lines = (project / ".renforge" / "activity.jsonl").read_text(encoding="utf-8").splitlines()
+    entry = json.loads(lines[-1])
+    assert entry["name"] == "renforge_saves"
+    assert entry["files_touched_recorded"] is True
+    assert entry["files_touched"] == [str(dest / "1-1-LT1.save")]

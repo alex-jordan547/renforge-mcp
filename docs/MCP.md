@@ -721,6 +721,10 @@ returning an empty list, so an empty list always means "wrote nothing". The
 journal's `files_touched_recorded` flag tells those two cases apart without
 having to remember which tools are which.
 `renforge_saves` additionally labels the external savedir with `savedir`.
+`renforge_saves(action="import")` lists each slot file it copied into the
+session savedir (absolute paths), including on `SAVE_IMPORT_FAILED`, where it
+names what was already written; a refused or failed import that wrote nothing
+returns an empty list.
 Because that directory is outside the project, its receipt path is absolute and
 can contain the user's home directory; the journal is 0600 and project-local.
 

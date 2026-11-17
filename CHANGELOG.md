@@ -36,7 +36,9 @@ versioning.
   (a link, a FIFO or other non-regular file, one over the size cap, or an
   unreadable one) is listed in `refused` with a reason, never dropped; a
   slot counts as imported only when its save file was copied, and an import
-  that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`. `list_user` filters by `pattern`, a glob matched against the
+  that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`. Import returns a
+  `files_touched` write receipt (absolute paths of the copied files, also
+  on `SAVE_IMPORT_FAILED`). `list_user` filters by `pattern`, a glob matched against the
   whole slot name; `import` selects by name, by `pattern`, or both; `list`
   keeps its `regexp`, which Ren'Py applies. `pattern` and each slot name
   are capped at 256 characters and `slots` at 1000 names

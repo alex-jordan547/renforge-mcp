@@ -772,43 +772,47 @@ def import_selected_slots(
             "error": str(exc),
             "imported": [],
             "savedir": str(dest),
+            "files_touched": [],
         }
 
     missing = list(selection.get("missing") or [])
     imported: list[dict[str, Any]] = []
     refused: list[dict[str, str]] = []
+    # The write receipt (#116): absolute paths, since the savedir is outside
+    # the project, of every file published so far.
+    touched: list[str] = []
+
+    def _failed(code: str, error: str) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "ok": False,
+            "code": code,
+            "error": error,
+            "imported": imported,
+            "savedir": str(dest),
+            "files_touched": touched,
+        }
+        if refused:
+            result["refused"] = refused
+        return result
+
     for record in selection.get("slots") or []:
         name = record["name"]
         directory = Path(record["directory"])
         try:
             copied, slot_refused = _copy_slot_files(directory, dest, name)
-        except FileNotFoundError as exc:
-            if dest.is_dir():
-                # The savedir is still there (a temp file removed before its
-                # rename, say): the import failed, the session did not stop.
-                return {
-                    "ok": False,
-                    "code": "SAVE_IMPORT_FAILED",
-                    "error": str(exc),
-                    "imported": imported,
-                    "savedir": str(dest),
-                }
-            # The session stopped mid-copy and its savedir went with it.
-            return {
-                "ok": False,
-                "code": "NO_ISOLATED_SESSION",
-                "error": "the session's save folder is gone; the session has stopped",
-            }
         except (OSError, ValueError) as exc:
-            # A linked savedir, an over-quota slot, a full disk: nothing
-            # was written outside the session, but the import is incomplete.
-            return {
-                "ok": False,
-                "code": "SAVE_IMPORT_FAILED",
-                "error": str(exc),
-                "imported": imported,
-                "savedir": str(dest),
-            }
+            touched.extend(str(dest / item) for item in getattr(exc, "slot_files_copied", []))
+            if isinstance(exc, FileNotFoundError) and not dest.is_dir():
+                # The session stopped mid-copy and its savedir went with it.
+                return _failed(
+                    "NO_ISOLATED_SESSION",
+                    "the session's save folder is gone; the session has stopped",
+                )
+            # A linked savedir, a full disk, a temp file removed before its
+            # rename: nothing was written outside the session, but the
+            # import is incomplete.
+            return _failed("SAVE_IMPORT_FAILED", str(exc))
+        touched.extend(str(dest / item) for item in copied)
         refused.extend(slot_refused)
         if copied:
             imported.append({"name": name, "files": copied, "directory": str(directory)})
@@ -816,24 +820,18 @@ def import_selected_slots(
             missing.append(name)  # its files vanished since the listing
 
     if not imported:
-        failure: dict[str, Any] = {
-            "ok": False,
-            "code": "NO_MATCHING_SAVE_SLOTS",
-            "error": (
-                "no host save slot was imported; see refused"
-                if refused
-                else "no matching host save slots"
-            ),
-            "missing": missing,
-            "savedir": str(dest),
-        }
-        if refused:
-            failure["refused"] = refused
+        failure = _failed(
+            "NO_MATCHING_SAVE_SLOTS",
+            "no host save slot was imported; see refused" if refused else "no matching host save slots",
+        )
+        del failure["imported"]
+        failure["missing"] = missing
         return failure
     result: dict[str, Any] = {
         "ok": True,
         "imported": imported,
         "savedir": str(dest),
+        "files_touched": touched,
     }
     if missing:
         result["missing"] = missing
@@ -934,12 +932,17 @@ def _copy_slot_files(
         return copied, refused
     saves = [name for name in names if pattern.match(name) and not name.endswith(".json")]
     sidecars = {name for name in names if pattern.match(name) and name.endswith(".json")}
-    for save_name in saves:
-        if not _copy_one_slot_file(source_dir, dest_dir, slot, save_name, copied, refused):
-            continue
-        sidecar = save_name + ".json"
-        if sidecar in sidecars:
-            _copy_one_slot_file(source_dir, dest_dir, slot, sidecar, copied, refused)
+    try:
+        for save_name in saves:
+            if not _copy_one_slot_file(source_dir, dest_dir, slot, save_name, copied, refused):
+                continue
+            sidecar = save_name + ".json"
+            if sidecar in sidecars:
+                _copy_one_slot_file(source_dir, dest_dir, slot, sidecar, copied, refused)
+    except (OSError, ValueError) as exc:
+        # The caller's write receipt names what this slot already published.
+        exc.slot_files_copied = list(copied)  # type: ignore[union-attr]
+        raise
     return copied, refused
 
 

@@ -1567,7 +1567,20 @@ def saves(
     if action == "list_user":
         return list_host_slots(project.root, pattern=pattern)
 
-    session = _owned_session(project.root)
+    result = _import_into_owned_session(project.root, slot=slot, slots=slots, pattern=pattern)
+    # Every import outcome is a write receipt (#116); [] means nothing was written.
+    result.setdefault("files_touched", [])
+    return result
+
+
+def _import_into_owned_session(
+    project_root: Path,
+    *,
+    slot: str | None,
+    slots: list[str] | None,
+    pattern: str | None,
+) -> dict:
+    session = _owned_session(project_root)
     destination = getattr(session, "temporary_savedir", None) if session is not None else None
     isolation = getattr(session, "isolation", None) if session is not None else None
     savedir_mode = getattr(isolation, "savedir_mode", None)
@@ -1596,7 +1609,7 @@ def saves(
     destination = root.parent.resolve() / root.name / SAVES_DIRNAME
     # Listing reads the game's own folders, which may be slow or hostile, so
     # it runs before the session is held open: only the copy delays a stop.
-    selection = select_host_slots(project.root, slot=slot, slots=slots, pattern=pattern)
+    selection = select_host_slots(project_root, slot=slot, slots=slots, pattern=pattern)
     if not selection.get("ok"):
         return selection
     # A stop waits for the copy, and a copy never starts after a stop.
@@ -1607,7 +1620,7 @@ def saves(
                 "code": "NO_ISOLATED_SESSION",
                 "error": "the session's save folder is gone; the session has stopped",
             }
-        return import_selected_slots(selection, destination, project_root=project.root)
+        return import_selected_slots(selection, destination, project_root=project_root)
 
 
 def _filter_narrative_choices(raw_choices: list[dict[str, Any]]) -> list[dict[str, Any]]:
