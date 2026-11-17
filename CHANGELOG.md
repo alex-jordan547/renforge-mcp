@@ -43,13 +43,22 @@ versioning.
   dashboard launched: the request goes to the dashboard that owns the session
   (new token-checked `POST /api/live/saves/import`), and that dashboard's
   answer is final. Before, it returned `NO_ISOLATED_SESSION` from another
-  process.
+  process. Import failures carry their own codes (`NO_MATCHING_SAVE_SLOTS`,
+  `SAVE_IMPORT_INVALID`, `SAVE_IMPORT_FAILED`), so a relayed failure does not
+  read as `DASHBOARD_REQUEST_FAILED`.
 - `language` composes with isolation. The "changed the stored preference"
   warning follows the resolved save directory, so an isolated launch (or
   `RENFORGE_ISOLATION=temporary`) does not raise it, and
   `SESSION_ISOLATION_MISMATCH` reports `requested_language` and
   `language_applied: false` like `SESSION_MODE_MISMATCH`. Dashboard launches
   forward `language` together with the isolation options.
+- Breaking: `persistent` no longer accepts `copy` or `fixture` (they only set
+  an environment marker and copied or loaded nothing); the tool schema
+  rejects them and `launch_game` returns `LAUNCH_STATE_MODE_CONFLICT`. Use
+  `renforge_saves(action="import")` to bring in real slots. `persistent=empty`
+  (like `preferences=empty`) now requires `savedir=temporary`: it selects a
+  fresh temporary location and never deletes files, where before it unlinked
+  `persistent` in whatever save location the game used.
 
 ### Fixed
 
