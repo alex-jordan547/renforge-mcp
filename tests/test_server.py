@@ -2002,7 +2002,10 @@ def test_saves_import_extra_info_never_reaches_the_dashboard(tmp_path, monkeypat
         error = real_live.saves_argument_error(
             action, slot=slot, extra_info="x", regexp=None, slots=None, pattern=None
         )
-        assert error == {"ok": False, "error": "extra_info is only valid for action 'save'"}, action
+        expected = {"ok": False, "error": "extra_info is only valid for action 'save'"}
+        if action == "import":
+            expected["code"] = "SAVE_IMPORT_INVALID"
+        assert error == expected, action
 
 
 def test_saves_import_argument_errors_never_reach_the_dashboard(tmp_path, monkeypatch) -> None:

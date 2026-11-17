@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 from .session_registry import dashboard_connection
 
 _HTTP_TIMEOUT_SECONDS = 45.0
+# An import copies whole save files while holding the session open.
+_IMPORT_TIMEOUT_SECONDS = 300.0
 
 
 def _dashboard_failure(
@@ -39,6 +41,7 @@ def _request(
     operation: str,
     method: str = "POST",
     body: dict[str, Any] | None = None,
+    timeout: float = _HTTP_TIMEOUT_SECONDS,
 ) -> dict[str, Any] | None:
     """Talk to the matching dashboard.
 
@@ -68,7 +71,7 @@ def _request(
         headers["Content-Type"] = "application/json"
     request = Request(endpoint, data=data, headers=headers, method=method.upper())
     try:
-        with urlopen(request, timeout=_HTTP_TIMEOUT_SECONDS) as response:
+        with urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
             payload = json.loads(raw) if raw.strip() else {}
     except HTTPError as exc:
@@ -97,7 +100,10 @@ def _request(
         )
     payload.setdefault("via", "dashboard")
     if payload.get("ok") is False:
-        payload.setdefault("ready", False)
+        if operation != "saves_import":
+            # Launch-shaped answers report readiness; an import answer has
+            # its own shape and codes, relayed as the dashboard gave them.
+            payload.setdefault("ready", False)
         payload.setdefault("code", "DASHBOARD_REQUEST_FAILED")
         payload.setdefault("operation", operation)
     return payload
@@ -180,6 +186,7 @@ def import_saves(
         operation="saves_import",
         method="POST",
         body={"slot": slot, "slots": slots, "pattern": pattern},
+        timeout=_IMPORT_TIMEOUT_SECONDS,
     )
 
 

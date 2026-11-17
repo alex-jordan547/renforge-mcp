@@ -643,7 +643,7 @@ def list_host_slots(
     """
     error = _slot_pattern_error(pattern)
     if error is not None:
-        return {"ok": False, "error": error}
+        return {"ok": False, "code": "SAVE_IMPORT_INVALID", "error": error}
 
     directories = host_save_directories(project_root, home=home)
     keep = None if pattern is None else (lambda name: _matches(name, pattern))

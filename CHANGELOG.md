@@ -62,8 +62,11 @@ versioning.
   (new token-checked `POST /api/live/saves/import`), and that dashboard's
   answer is final. Before, it returned `NO_ISOLATED_SESSION` from another
   process. Import failures carry their own codes (`NO_MATCHING_SAVE_SLOTS`,
-  `SAVE_IMPORT_INVALID`, `SAVE_IMPORT_FAILED`), so a relayed failure does not
-  read as `DASHBOARD_REQUEST_FAILED`.
+  `SAVE_IMPORT_INVALID`, `SAVE_IMPORT_FAILED`, `PROJECT_PATH_UNAVAILABLE`),
+  and the route answers a malformed selection with `SAVE_IMPORT_INVALID`, so
+  a relayed failure keeps its code and shape and does not read as
+  `DASHBOARD_REQUEST_FAILED`. The MCP side waits up to 300 s for a delegated
+  import (launch and stop keep 45 s).
 - `language` composes with isolation. The "changed the stored preference"
   warning follows the resolved save directory, so an isolated launch (or
   `RENFORGE_ISOLATION=temporary`) does not raise it, and

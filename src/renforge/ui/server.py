@@ -886,30 +886,15 @@ def create_ui_app(project_root: Path, ui_token: str, dashboard_url: str | None =
         if not await _check_token(request):
             return _unauthorized(request)
         payload = _as_dict(await _read_json(request))
-        slot = payload.get("slot")
-        slots = payload.get("slots")
-        pattern = payload.get("pattern")
-        if (
-            not (slot is None or isinstance(slot, str))
-            or not (pattern is None or isinstance(pattern, str))
-            or not (
-                slots is None
-                or (isinstance(slots, list) and all(isinstance(s, str) for s in slots))
-            )
-        ):
-            return error_response(
-                code="saves_import_invalid",
-                error="slot and pattern must be strings and slots a list of strings",
-                status_code=400,
-                details={},
-            )
+        # live.saves validates the selectors (types and lengths) and answers a
+        # malformed one with SAVE_IMPORT_INVALID, the code the caller relays.
         result = await asyncio.to_thread(
             live.saves,
             str(runtime.root),
             "import",
-            slot=slot,
-            slots=slots,
-            pattern=pattern,
+            slot=payload.get("slot"),
+            slots=payload.get("slots"),
+            pattern=payload.get("pattern"),
         )
         return JSONResponse(result)
 

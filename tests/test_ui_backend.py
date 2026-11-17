@@ -409,14 +409,19 @@ def test_api_live_saves_import_rejects_a_malformed_selection(tmp_path: Path, mon
     import renforge.ui.server as server
 
     project = _project_root(tmp_path)
-    called = []
-    monkeypatch.setattr(server.live, "saves", lambda *a, **k: called.append(1))
+    listed = []
+    monkeypatch.setattr(server.live, "select_host_slots", lambda *a, **k: listed.append(1), raising=False)
     client = TestClient(create_ui_app(project, ui_token="token"))
     response = client.post("/api/live/saves/import?token=token", json={"slots": "1-1"})
 
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "saves_import_invalid"
-    assert called == []
+    # The saves shape, with the code the MCP side relays (not a bare 400).
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "code": "SAVE_IMPORT_INVALID",
+        "error": "slots must be a list of slot names",
+    }
+    assert listed == []
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")

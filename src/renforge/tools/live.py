@@ -1480,7 +1480,28 @@ def saves_argument_error(
     slots: list[str] | None,
     pattern: str | None,
 ) -> dict | None:
-    """Return the error ``saves`` gives for bad arguments, or ``None``."""
+    """Return the error ``saves`` gives for bad arguments, or ``None``.
+
+    Every error for ``import`` carries ``SAVE_IMPORT_INVALID``: a dashboard
+    relays it, and without a code it would read as a transport failure.
+    """
+    error = _saves_argument_error(
+        action, slot=slot, extra_info=extra_info, regexp=regexp, slots=slots, pattern=pattern
+    )
+    if error is not None and action == "import":
+        error.setdefault("code", "SAVE_IMPORT_INVALID")
+    return error
+
+
+def _saves_argument_error(
+    action: str,
+    *,
+    slot: str | None,
+    extra_info: str | None,
+    regexp: str | None,
+    slots: list[str] | None,
+    pattern: str | None,
+) -> dict | None:
     if action not in {"save", "load", "list", "list_user", "import"}:
         return {
             "ok": False,
@@ -1574,6 +1595,7 @@ def saves(
     except Exception as exc:
         return {
             "ok": False,
+            "code": "PROJECT_PATH_UNAVAILABLE",
             "error": f"{type(exc).__name__}: {exc}",
         }
 

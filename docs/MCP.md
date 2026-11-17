@@ -200,11 +200,21 @@ renforge_saves(project_path=project, action="load", slot="1-1", authorize=true)
 
 `list_user` is observational and does not need a running game. `import` is
 mutating, copies files (`.save` and `.save.json`), and is refused unless the
-session was launched isolated. `list_user` filters only by `pattern`, a glob
-matched against the whole slot name (`1-*`, `auto-?`); `import` selects slots by
-name (`slot`, `slots`), by `pattern`, or both.
+session was launched with `savedir=temporary`. `list_user` filters only by
+`pattern`, a glob matched against the whole slot name (`1-*`, `auto-?`);
+`import` selects slots by name (`slot`, `slots`), by `pattern`, or both.
 `authorize=true` is needed only for `load`, and only when
 `RENFORGE_POLICY=enforce`.
+
+Import failures carry a code: `NO_ISOLATED_SESSION` (no running session, or it
+stopped), `SAVE_IMPORT_NOT_ISOLATED` (the session was not launched with
+`savedir=temporary`), `SAVE_IMPORT_INVALID` (malformed or oversized `slot`,
+`slots` or `pattern`), `NO_MATCHING_SAVE_SLOTS` (nothing was imported; see
+`missing` and `refused`), `SAVE_IMPORT_FAILED` (the savedir was unusable, for
+example swapped for a link, or a copy failed part-way), and
+`PROJECT_PATH_UNAVAILABLE`. When a dashboard owns the session the import runs
+there, and its answer, code included, is relayed unchanged; only a dashboard
+that cannot be reached gives `DASHBOARD_REQUEST_FAILED`.
 
 ### Recipe 3 — run against the user's save tree (the default)
 
