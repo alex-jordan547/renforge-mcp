@@ -265,7 +265,8 @@ def replace_file_at_nofollow(
             getattr(os, "O_BINARY", 0),
         )
         for _ in range(_TEMP_ATTEMPTS):
-            candidate = ".%s.%s.tmp" % (leaf, secrets.token_hex(8))
+            # Fixed length, so a long but valid leaf still fits NAME_MAX.
+            candidate = ".rf-%s.tmp" % secrets.token_hex(8)
             try:
                 fd = os.open(candidate, flags, _PRIVATE_FILE_MODE, dir_fd=dir_fd)
             except FileExistsError:

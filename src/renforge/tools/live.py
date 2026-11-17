@@ -638,12 +638,8 @@ def _external_session_isolation(client: Any) -> dict[str, Any]:
     return report
 
 
-def _isolation_mismatch(
-    *,
-    requested_exposes: bool,
-    existing_exposes: bool,
-    requested_language: str | None = None,
-) -> dict[str, Any]:
+def _isolation_mismatch(*, requested_language: str | None = None) -> dict[str, Any]:
+    """An isolated launch asked to reuse a game that exposes the player's saves."""
     message = (
         "The running game uses the player's saves or HOME, but this launch "
         "asked for an isolated session. Stop it before launching again."
@@ -655,8 +651,8 @@ def _isolation_mismatch(
         "phase": "validating_session_mode",
         "message": message,
         "error": message,
-        "requested_exposes_user_saves": requested_exposes,
-        "existing_exposes_user_saves": existing_exposes,
+        "requested_exposes_user_saves": False,
+        "existing_exposes_user_saves": True,
         "requested_language": requested_language,
         **_failed_language_verdict(requested_language),
     }
@@ -794,11 +790,7 @@ def launch_game(
             )
             existing_exposes = _session_exposes_user_saves(existing)
             if existing_exposes and not requested_exposes:
-                return _isolation_mismatch(
-                    requested_exposes=requested_exposes,
-                    existing_exposes=existing_exposes,
-                    requested_language=language,
-                )
+                return _isolation_mismatch(requested_language=language)
             try:
                 state = existing.client.get_state()
                 active_language = state.get("language")
@@ -878,11 +870,7 @@ def launch_game(
             )
             external_isolation = _external_session_isolation(external)
             if not requested_exposes and external_isolation["exposes_user_saves"]:
-                return _isolation_mismatch(
-                    requested_exposes=False,
-                    existing_exposes=True,
-                    requested_language=language,
-                )
+                return _isolation_mismatch(requested_language=language)
             result = {
                 "ok": True,
                 "already_running": True,
@@ -1569,7 +1557,7 @@ def saves(
 
     if action == "save":
         if regexp is not None:
-            return {"ok": False, "error": "regexp is only valid for list"}
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
         if extra_info is not None and not isinstance(extra_info, str):
             return {"ok": False, "error": "extra_info must be a string"}
         return _with_client(
@@ -1581,7 +1569,7 @@ def saves(
 
     if action == "load":
         if regexp is not None:
-            return {"ok": False, "error": "regexp is only valid for list"}
+            return {"ok": False, "error": "regexp is only valid for action 'list'"}
         return _with_client(project_path, lambda client: client.load_slot(slot))
 
     if regexp is not None and not isinstance(regexp, str):

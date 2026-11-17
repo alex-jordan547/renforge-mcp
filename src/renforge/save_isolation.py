@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
@@ -52,7 +53,7 @@ SAVE_DIRECTORY_RE: re.Pattern[str] = re.compile(
     re.MULTILINE,
 )
 SLOT_FILE_RE: re.Pattern[str] = re.compile(
-    r"^(?P<slot>.+)-[A-Za-z]{2}\d+\.save(?P<json>\.json)?$"
+    r"^(?P<slot>.+)-[A-Za-z]{2}\d+\.save(?P<json>\.json)?\Z"
 )
 # Per-file caps on what an import copies and what list_user parses.
 SLOT_FILE_MAX_BYTES: int = 256 * 1024 * 1024
@@ -104,7 +105,6 @@ def configured_isolation_mode(environ: Mapping[str, str] | None = None) -> str:
 def default_launch_value(
     value: str | None,
     *,
-    field: str,
     environ: Mapping[str, str] | None = None,
 ) -> str:
     """Fill an omitted MCP/dashboard isolation field from configuration."""
@@ -113,17 +113,7 @@ def default_launch_value(
         return token
     if configured_isolation_mode(environ) == "existing":
         return "existing"
-    if field in {"persistent", "preferences"}:
-        return "empty"
     return "temporary"
-
-
-def default_launch_savedir(
-    savedir: str | None,
-    environ: Mapping[str, str] | None = None,
-) -> str:
-    """Coerce omitted MCP/dashboard savedir values to the configured default."""
-    return default_launch_value(savedir, field="savedir", environ=environ)
 
 
 def apply_launch_isolation_defaults(
@@ -142,8 +132,8 @@ def apply_launch_isolation_defaults(
     ``savedir=temporary`` isolates HOME the same way unless *home* is set.
     """
     home_explicit = home is not None and bool(str(home).strip()) and str(home).strip() not in AUTO_TOKENS
-    resolved_savedir = default_launch_value(savedir, field="savedir", environ=environ)
-    resolved_home = default_launch_value(home, field="home", environ=environ)
+    resolved_savedir = default_launch_value(savedir, environ=environ)
+    resolved_home = default_launch_value(home, environ=environ)
     if not home_explicit:
         savedir_mode = classify_savedir(resolved_savedir)
         if savedir_mode == "existing":
@@ -216,11 +206,6 @@ class LaunchIsolation:
     session_root: Path | None
     cleanup: bool
 
-    @property
-    def mode(self) -> str:
-        """Backward-compatible alias for :attr:`savedir_mode`."""
-        return self.savedir_mode
-
     def exposes_user_saves(self, project_path: str | Path | None = None) -> bool:
         """Whether this launch can read or write the player's saves or HOME."""
         return _exposes_user_saves(
@@ -246,15 +231,6 @@ class LaunchIsolation:
         if self.home is not None:
             env.update(_home_environ(self.home, host_env=host_env))
         return env
-
-
-def resolve_save_isolation(
-    savedir: str | None,
-    *,
-    cleanup_on_stop: bool = True,
-) -> LaunchIsolation:
-    """Savedir-focused resolver used by the low-level launcher tests."""
-    return resolve_launch_isolation(savedir, cleanup_on_stop=cleanup_on_stop)
 
 
 def resolve_launch_isolation(
@@ -467,7 +443,7 @@ def path_exposes_user_saves(
             resolved = root.expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
             continue
-        if _is_relative_to(path, resolved) or path == resolved:
+        if path.is_relative_to(resolved):
             return True
     return False
 
@@ -496,16 +472,9 @@ def host_renpy_root(*, home: Path | None = None) -> Path:
         if appdata:
             return Path(appdata) / "RenPy"
         return host_home / "AppData" / "Roaming" / "RenPy"
-    if sys_platform() == "darwin":
+    if sys.platform == "darwin":
         return host_home / "Library" / "RenPy"
     return host_home / ".renpy"
-
-
-def sys_platform() -> str:
-    """Indirection so tests can monkeypatch the platform check."""
-    import sys
-
-    return sys.platform
 
 
 def parse_save_directory(project_root: str | Path) -> str | None:
@@ -594,18 +563,19 @@ def host_save_directories(
         and PurePath(save_name).name == save_name
         and PureWindowsPath(save_name).name == save_name
     ):
-        root = host_renpy_root(home=home)
+        # The root is resolved once and the folder found through that result,
+        # so the containment check and the returned path agree.
+        root = host_renpy_root(home=home).resolve()
         host_dir = root / save_name
         if host_dir.is_dir():
             resolved_host = host_dir.resolve()
-            if resolved_host.parent == root.resolve():
+            if resolved_host.parent == root:
                 directories.append(resolved_host)
-    project_saves = Path(project_root) / "game" / "saves"
+    project = Path(project_root).resolve()
+    project_saves = project / "game" / "saves"
     if project_saves.is_dir():
         resolved_saves = project_saves.resolve()
-        if resolved_saves not in directories and _is_relative_to(
-            resolved_saves, Path(project_root).resolve()
-        ):
+        if resolved_saves not in directories and resolved_saves.is_relative_to(project):
             directories.append(resolved_saves)
     return directories
 
@@ -938,7 +908,7 @@ def _copy_slot_files(
     unreadable is refused and named, never silently dropped.
     """
     pattern = re.compile(
-        r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?$" % (re.escape(slot),)
+        r"^%s-[A-Za-z]{2}\d+\.save(?:\.json)?\Z" % (re.escape(slot),)
     )
     copied: list[str] = []
     refused: list[dict[str, str]] = []
@@ -1021,14 +991,6 @@ def _refusal_reason(exc: BaseException) -> str:
     if code in {errno.EINVAL, errno.ENXIO, errno.ENODEV, errno.ENOTDIR, errno.EISDIR}:
         return "not_regular"
     return "unreadable"
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
 
 
 def _prepare_isolated_home(home: Path) -> None:

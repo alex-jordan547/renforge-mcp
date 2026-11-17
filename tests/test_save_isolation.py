@@ -16,7 +16,7 @@ from renforge.save_isolation import (
     apply_launch_isolation_defaults,
     classify_savedir,
     configured_isolation_mode,
-    default_launch_savedir,
+    default_launch_value,
     LaunchIsolation,
     host_renpy_root,
     host_save_directories,
@@ -27,7 +27,6 @@ from renforge.save_isolation import (
     parse_save_directory,
     path_exposes_user_saves,
     resolve_launch_isolation,
-    resolve_save_isolation,
 )
 
 
@@ -81,15 +80,15 @@ def test_classify_treats_other_values_as_explicit_paths() -> None:
 
 def test_isolation_is_opt_in(monkeypatch) -> None:
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
-    assert default_launch_savedir(None) == "existing"
-    assert default_launch_savedir("") == "existing"
-    assert default_launch_savedir("auto") == "existing"
-    assert default_launch_savedir("   ") == "existing"
-    assert default_launch_savedir("temporary") == "temporary"
-    assert default_launch_savedir("/opt/saves") == "/opt/saves"
+    assert default_launch_value(None) == "existing"
+    assert default_launch_value("") == "existing"
+    assert default_launch_value("auto") == "existing"
+    assert default_launch_value("   ") == "existing"
+    assert default_launch_value("temporary") == "temporary"
+    assert default_launch_value("/opt/saves") == "/opt/saves"
     opted_in = {"RENFORGE_ISOLATION": "temporary"}
-    assert default_launch_savedir(None, environ=opted_in) == "temporary"
-    assert default_launch_savedir("existing", environ=opted_in) == "existing"
+    assert default_launch_value(None, environ=opted_in) == "temporary"
+    assert default_launch_value("existing", environ=opted_in) == "existing"
     assert configured_isolation_mode({}) == "existing"
     assert configured_isolation_mode({"RENFORGE_ISOLATION": "bogus"}) == "existing"
 
@@ -157,9 +156,8 @@ def test_temporary_isolation_is_outside_user_save_canaries(tmp_path: Path) -> No
     project_saves.mkdir(parents=True)
     (project_saves / "slot1.save").write_text("PROJECT-SAVE\n", encoding="utf-8")
 
-    isolation = resolve_save_isolation("temporary")
+    isolation = resolve_launch_isolation("temporary")
     try:
-        assert isolation.mode == "temporary"
         assert isolation.savedir_mode == "temporary"
         assert isolation.home_mode == "temporary"
         assert isolation.cleanup is True
@@ -190,8 +188,8 @@ def test_temporary_isolation_is_outside_user_save_canaries(tmp_path: Path) -> No
 
 
 def test_existing_mode_does_not_redirect_saves_or_home() -> None:
-    isolation = resolve_save_isolation("existing")
-    assert isolation.mode == "existing"
+    isolation = resolve_launch_isolation("existing")
+    assert isolation.savedir_mode == "existing"
     assert isolation.home_mode == "existing"
     assert isolation.savedir is None
     assert isolation.home is None
@@ -203,9 +201,9 @@ def test_existing_mode_does_not_redirect_saves_or_home() -> None:
 
 def test_explicit_path_is_created_and_not_removed_on_stop(tmp_path: Path) -> None:
     target = tmp_path / "profile" / "primary-saves"
-    isolation = resolve_save_isolation(str(target), cleanup_on_stop=True)
+    isolation = resolve_launch_isolation(str(target), cleanup_on_stop=True)
     try:
-        assert isolation.mode == "path"
+        assert isolation.savedir_mode == "path"
         assert isolation.savedir == target.resolve()
         # An explicit savedir does not isolate HOME on its own (opt-in).
         assert isolation.home_mode == "existing"
@@ -992,7 +990,30 @@ def test_import_failures_carry_their_own_codes(tmp_path: Path, host_save_root: P
 def test_temp_name_never_looks_like_a_slot() -> None:
     from renforge.save_isolation import SLOT_FILE_RE
 
-    assert SLOT_FILE_RE.match(".1-1-LT1.save.0123456789abcdef.tmp") is None
+    assert SLOT_FILE_RE.match(".rf-0123456789abcdef.tmp") is None
+
+
+def test_a_slot_name_ending_in_a_newline_is_not_a_slot() -> None:
+    from renforge.save_isolation import SLOT_FILE_RE
+
+    assert SLOT_FILE_RE.match("evil-LT1.save\n") is None
+    assert SLOT_FILE_RE.match("1-1-LT1.save.json\n") is None
+    assert SLOT_FILE_RE.match("1-1-LT1.save") is not None
+
+
+def test_import_copies_a_long_but_valid_slot_name(tmp_path: Path, host_save_root: Path) -> None:
+    # The temp name used to add 22 bytes to the leaf, so a 240-byte save
+    # name failed with ENAMETOOLONG and aborted the import.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    name = "s" * 240 + "-LT1.save"
+    (host_saves / name).write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / name).read_bytes() == b"SLOT"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
