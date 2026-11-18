@@ -218,11 +218,28 @@ def make_directory_at_nofollow(path: Path, *, mode: int = _PRIVATE_DIR_MODE) -> 
 def list_directory_nofollow(path: Path) -> list[str]:
     """Names in the folder *path*, reached without following any link.
 
+    The names of :func:`scan_directory_nofollow`, with its errors.
+    """
+    return [name for name, _st in scan_directory_nofollow(path)]
+
+
+def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
+    """Each entry of the folder *path* with its own metadata, never through a link.
+
     Every component is opened without following links, so a folder swapped
     for a link raises ``ValueError`` instead of listing the link's target.
-    A missing folder raises ``FileNotFoundError``.
+    Each entry is stat'ed at that same directory descriptor without following
+    the entry, so a linked entry reports itself. An entry that vanishes
+    between the listing and its stat is left out. A missing folder raises
+    ``FileNotFoundError``. Windows (and POSIX without ``dir_fd``) refuses a
+    linked component, then lists and stats by path.
     """
-    if os.name == "nt" or not _posix_dir_fd_supported() or os.listdir not in getattr(os, "supports_fd", set()):
+    if (
+        os.name == "nt"
+        or not _posix_dir_fd_supported()
+        or os.listdir not in getattr(os, "supports_fd", set())
+        or os.stat not in getattr(os, "supports_dir_fd", set())
+    ):
         target = _absolute_path(path)
         for component in _path_components(target):
             try:
@@ -231,10 +248,21 @@ def list_directory_nofollow(path: Path) -> list[str]:
                 continue
             if _component_is_link(component):
                 raise _symlink_error(component, action="list")
-        return os.listdir(target)
+        entries: list[tuple[str, os.stat_result]] = []
+        for name in os.listdir(target):
+            try:
+                entries.append((name, (target / name).lstat()))
+            except FileNotFoundError:
+                continue
+        return entries
     dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
     try:
-        return os.listdir(dir_fd)
+        entries = []
+        for name in os.listdir(dir_fd):
+            st = _lstat_at_posix(dir_fd, name)
+            if st is not None:
+                entries.append((name, st))
+        return entries
     finally:
         os.close(dir_fd)
 

@@ -34,6 +34,7 @@ from .util.files import (
     make_directory_at_nofollow,
     open_regular_at_nofollow,
     replace_file_at_nofollow,
+    scan_directory_nofollow,
 )
 
 EXISTING_TOKENS: frozenset[str] = frozenset({"existing", "default"})
@@ -894,34 +895,34 @@ def _slots_in_directory(
     keep: Callable[[str], bool] | None = None,
     with_extra_info: bool = True,
 ) -> list[dict[str, Any]]:
-    """Slots in one folder; *keep* filters names before any sidecar is read."""
+    """Slots in one folder; *keep* filters names before any sidecar is read.
+
+    Names and metadata come from one no-follow scan of the folder, resolved
+    once by :func:`host_save_directories`, so a folder swapped for a link
+    since then lists nothing rather than the link target's slots and mtimes.
+    """
     try:
-        entries = list(directory.iterdir())
-    except OSError:
+        entries = scan_directory_nofollow(directory)
+    except (OSError, ValueError):
         return []
     by_name: dict[str, dict[str, Any]] = {}
-    for entry in entries:
-        try:
-            if not entry.is_file() or entry.is_symlink():
-                continue
-        except OSError:
+    for file_name, st in entries:
+        # lstat metadata: a linked entry is not a regular file.
+        if not stat.S_ISREG(st.st_mode):
             continue
-        match = SLOT_FILE_RE.match(entry.name)
+        match = SLOT_FILE_RE.match(file_name)
         if match is None or match.group("json"):
             continue
         name = match.group("slot")
         if keep is not None and not keep(name):
             continue
-        try:
-            mtime = entry.stat().st_mtime
-        except OSError:
-            mtime = None
+        mtime = st.st_mtime
         previous = by_name.get(name)
-        if previous is not None and (previous.get("mtime") or 0) >= (mtime or 0):
+        if previous is not None and previous["mtime"] >= mtime:
             continue
         record: dict[str, Any] = {"name": name}
         if with_extra_info:
-            record["extra_info"] = extra_info_from_sidecar(entry.with_name(entry.name + ".json"))
+            record["extra_info"] = extra_info_from_sidecar(directory / (file_name + ".json"))
         record["mtime"] = mtime
         record["directory"] = str(directory)
         by_name[name] = record

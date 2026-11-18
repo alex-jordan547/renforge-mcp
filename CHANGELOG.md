@@ -51,7 +51,10 @@ versioning.
   directly under the Ren'Py save root, plus a `game/saves` inside the
   project; they open the game's scripts without following links or
   blocking, skip one over 4 MiB, and list before an import holds the
-  session, so a stop never waits on a listing. Import resolves none of the
+  session, so a stop never waits on a listing. A save folder is listed, and
+  each slot's mtime read, through one handle opened without following links,
+  so a folder swapped for a link lists nothing; `list_user` writes nothing,
+  not even the project's `.renforge` folder. Import resolves none of the
   session's own folders, so a session root or savedir swapped for a link is
   refused with `SAVE_IMPORT_FAILED` instead of followed. A slot file import
   will not copy (a link, a FIFO or other non-regular file, one over the size

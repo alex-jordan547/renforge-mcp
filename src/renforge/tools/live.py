@@ -1610,7 +1610,8 @@ def saves(
         return _with_client(project_path, lambda client: client.list_slots(regexp=regexp))
 
     try:
-        project = RenpyProject(Path(project_path))
+        # list_user only reads, so it must not create the project's .renforge.
+        project = RenpyProject(Path(project_path), create_cache=action != "list_user")
     except Exception as exc:
         failure = {
             "ok": False,

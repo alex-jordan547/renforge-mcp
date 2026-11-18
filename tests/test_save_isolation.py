@@ -852,6 +852,66 @@ def test_list_user_ignores_a_sidecar_swapped_for_a_symlink(
     assert listed["slots"][0]["extra_info"] == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_user_lists_nothing_from_a_host_folder_swapped_for_a_link(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # The folder was found and resolved, then swapped for a link before it
+    # was listed: neither the target's slot names nor its mtimes may leak.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"MINE")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "9-9-LT1.save").write_bytes(b"OTHER")
+    real_directories = save_isolation.host_save_directories
+
+    def discover_then_swap(*args, **kwargs):
+        found = real_directories(*args, **kwargs)
+        shutil.rmtree(host_saves)
+        host_saves.symlink_to(elsewhere, target_is_directory=True)
+        return found
+
+    monkeypatch.setattr(save_isolation, "host_save_directories", discover_then_swap)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert listed["slots"] == []
+
+
+def test_list_user_scans_entries_without_following_them(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"OLD")
+    (host_saves / "1-1-LT2.save").write_bytes(b"NEW")
+    os.utime(host_saves / "1-1-LT1.save", ns=(1_500_000_000_000_000_000,) * 2)
+    os.utime(host_saves / "1-1-LT2.save", ns=(1_600_000_000_000_000_000,) * 2)
+    (host_saves / "2-1-LT1.save").mkdir()  # a folder named like a slot is not one
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+    assert listed["slots"][0]["mtime"] == 1_600_000_000.0
+    assert listed["slots"][0]["directory"] == str(host_saves.resolve())
+
+
+def test_live_list_user_does_not_create_the_project_cache(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+
+    listed = live.saves(str(project), "list_user")
+
+    assert listed["ok"] is True
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+    assert not (project / ".renforge").exists()
+
+
 def test_import_preserves_slot_mtime(tmp_path: Path, host_save_root: Path) -> None:
     # Ren'Py shows a slot's file mtime as its save time.
     project, host_saves = _host_project(tmp_path, host_save_root)

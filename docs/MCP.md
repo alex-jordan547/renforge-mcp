@@ -198,7 +198,9 @@ renforge_saves(project_path=project, action="import", slots=["1-1", "branch-a"])
 renforge_saves(project_path=project, action="load", slot="1-1", authorize=true)
 ```
 
-`list_user` is observational and does not need a running game. `import` is
+`list_user` is observational: it writes nothing, not even the project's
+`.renforge` folder, does not need a running game, and lists nothing from a
+save folder swapped for a link. `import` is
 mutating, copies files (`.save` and `.save.json`), and is refused unless the
 session was launched with `savedir=temporary`. `list_user` filters only by
 `pattern`, a glob matched against the whole slot name (`1-*`, `auto-?`);

@@ -14,6 +14,7 @@ from renforge.util.files import (
     make_directory_at_nofollow,
     open_regular_at_nofollow,
     replace_file_at_nofollow,
+    scan_directory_nofollow,
     write_atomic,
     write_json_atomic,
 )
@@ -283,3 +284,50 @@ def test_require_directory_tells_a_file_from_a_missing_folder(tmp_path: Path) ->
     with pytest.raises(FileNotFoundError):
         files_module._require_directory(tmp_path / "gone")
     files_module._require_directory(tmp_path)
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "fallback"])
+def test_scan_directory_nofollow_reports_entries_without_following(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_fd: bool
+) -> None:
+    if dir_fd and (os.name == "nt" or not files_module._posix_dir_fd_supported()):
+        pytest.skip("needs POSIX dir_fd support")
+    monkeypatch.setattr(files_module, "_posix_dir_fd_supported", lambda: dir_fd)
+    folder = tmp_path / "saves"
+    folder.mkdir()
+    (folder / "a.save").write_bytes(b"SLOT")
+    os.utime(folder / "a.save", ns=(1_600_000_000_000_000_000,) * 2)
+    (folder / "sub").mkdir()
+
+    entries = dict(scan_directory_nofollow(folder))
+
+    assert sorted(entries) == ["a.save", "sub"]
+    assert stat.S_ISREG(entries["a.save"].st_mode)
+    assert entries["a.save"].st_mtime_ns == 1_600_000_000_000_000_000
+    assert stat.S_ISDIR(entries["sub"].st_mode)
+    with pytest.raises(FileNotFoundError):
+        scan_directory_nofollow(tmp_path / "gone")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "fallback"])
+def test_scan_directory_nofollow_refuses_a_linked_folder_and_names_a_linked_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_fd: bool
+) -> None:
+    if dir_fd and not files_module._posix_dir_fd_supported():
+        pytest.skip("needs POSIX dir_fd support")
+    monkeypatch.setattr(files_module, "_posix_dir_fd_supported", lambda: dir_fd)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.save").write_bytes(b"SECRET")
+    linked = tmp_path / "saves"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError):
+        scan_directory_nofollow(linked)
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.save").symlink_to(outside / "secret.save")
+    entries = dict(scan_directory_nofollow(real))
+    assert stat.S_ISLNK(entries["a.save"].st_mode)
