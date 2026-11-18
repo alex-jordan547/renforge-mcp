@@ -16,13 +16,17 @@ versioning.
   `RENPY_PATH_TO_SAVES` / `RENPY_MULTIPERSISTENT`), a private HOME/XDG/temp
   tree (new `home` knob), empty persistent data, and reset preferences (new
   `preferences` knob). Ready payloads include `session_id` and an
-  `isolation` object so an agent can see the mode. A launch that asked for
-  isolation is refused with `SESSION_ISOLATION_MISMATCH` rather than handed a
-  running game that uses the user's saves, including one started elsewhere
-  (another RenForge process or the dashboard). Such a game counts as isolated
-  only when it reports HOME and every active save location and all of them
-  are inside a RenForge session root; anything else, including a bridge that
-  cannot report them, counts as using the user's. A reused external game's
+  `isolation` object so an agent can see the mode. A launch is refused with
+  `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses
+  the user's saves or HOME where the launch isolates them, including one
+  started elsewhere (another RenForge process or the dashboard). Saves and
+  HOME are checked separately, so `savedir=temporary, home=existing` is not
+  handed a game that writes to the user's saves; a game that isolates more
+  than asked is reused. An external game's HOME counts as isolated only when
+  it reports one inside a RenForge session root, and its saves only when it
+  reports every active save location and all of them are inside one;
+  anything else, including a bridge that cannot report them, counts as the
+  user's. A reused external game's
   ready and status payloads carry what it reported as `isolation`. A launch
   whose state modes a fresh launch would reject (`empty` without
   `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.

@@ -37,13 +37,16 @@ from ..project import RenpyProject
 from ..save_isolation import (
     apply_launch_isolation_defaults,
     agent_session_id,
+    HOME_COMPONENT,
     import_selected_slots,
     isolation_knobs_unset,
     isolation_report,
-    launch_exposes_user_saves,
+    launch_exposed_components,
     launch_state_mode_error,
     list_host_slots,
     path_in_session_root,
+    reuse_keeps_isolation,
+    SAVEDIR_COMPONENT,
     SAVES_DIRNAME,
     select_host_slots,
     selector_error,
@@ -625,24 +628,38 @@ def _external_session_isolation(client: Any) -> dict[str, Any]:
         "home": home if isinstance(home, str) and home else None,
         "save_locations": locations if isinstance(locations, list) else None,
     }
-    verifiable = (
-        report["home"] is not None
-        and report["save_locations"]
-        and all(isinstance(item, str) and item for item in report["save_locations"])
-    )
-    report["exposes_user_saves"] = not (
-        verifiable
-        and path_in_session_root(report["home"])
-        and all(path_in_session_root(item) for item in report["save_locations"])
-    )
+    report["exposes_user_saves"] = bool(_external_exposed_components(report))
     return report
 
 
-def _isolation_mismatch(*, requested_language: str | None = None) -> dict[str, Any]:
-    """An isolated launch asked to reuse a game that exposes the player's saves."""
+def _external_exposed_components(report: dict[str, Any]) -> frozenset[str]:
+    """Components of an external game's storage it cannot vouch for.
+
+    HOME is isolated only when the bridge reports one inside a session root;
+    saves only when it lists save locations and every one is inside a session
+    root. Anything unreported or unresolvable counts as the player's.
+    """
+    exposed: set[str] = set()
+    home = report.get("home")
+    if not (isinstance(home, str) and home and path_in_session_root(home)):
+        exposed.add(HOME_COMPONENT)
+    locations = report.get("save_locations")
+    if not (
+        isinstance(locations, list)
+        and locations
+        and all(isinstance(item, str) and item and path_in_session_root(item) for item in locations)
+    ):
+        exposed.add(SAVEDIR_COMPONENT)
+    return frozenset(exposed)
+
+
+def _isolation_mismatch(
+    *, requested_exposes: bool = False, requested_language: str | None = None
+) -> dict[str, Any]:
+    """A launch asked to reuse a game that exposes storage the launch isolates."""
     message = (
-        "The running game uses the player's saves or HOME, but this launch "
-        "asked for an isolated session. Stop it before launching again."
+        "The running game uses the player's saves or HOME where this launch "
+        "asked for isolated ones. Stop it before launching again."
     )
     return {
         "ok": False,
@@ -651,7 +668,7 @@ def _isolation_mismatch(*, requested_language: str | None = None) -> dict[str, A
         "phase": "validating_session_mode",
         "message": message,
         "error": message,
-        "requested_exposes_user_saves": False,
+        "requested_exposes_user_saves": requested_exposes,
         "existing_exposes_user_saves": True,
         "requested_language": requested_language,
         **_failed_language_verdict(requested_language),
@@ -660,11 +677,16 @@ def _isolation_mismatch(*, requested_language: str | None = None) -> dict[str, A
 
 def _session_exposes_user_saves(session: Any) -> bool:
     """Whether an owned session reads or writes the player's saves or HOME."""
+    return bool(_session_exposed_components(session))
+
+
+def _session_exposed_components(session: Any) -> frozenset[str]:
+    """Which of an owned session's savedir / HOME are the player's own."""
     isolation = getattr(session, "isolation", None)
     if isolation is None:
         # Without an isolation record the session's storage is unknown.
-        return True
-    return bool(isolation.exposes_user_saves(getattr(session, "project_root", None)))
+        return frozenset({SAVEDIR_COMPONENT, HOME_COMPONENT})
+    return isolation.exposed_components(getattr(session, "project_root", None))
 
 
 def launch_game(
@@ -778,19 +800,21 @@ def launch_game(
         # answers; otherwise tear it down (a warp needs a fresh --warp launch,
         # and a dead process must be reaped so it does not linger as a zombie).
         if warp is None and existing.process.poll() is None:
-            # A launch that asked for isolation must not be handed a game that
-            # uses the player's saves. Reusing an isolated game for any request
-            # is harmless, so only that direction is refused.
-            requested_exposes = launch_exposes_user_saves(
+            # A launch must not be handed a game that uses the player's saves
+            # or HOME where the launch isolates them, checked per component:
+            # isolated saves with the host HOME still need isolated saves.
+            # Reusing a game that isolates more than asked is harmless.
+            requested_exposed = launch_exposed_components(
                 savedir=savedir,
                 home=home,
                 persistent=persistent,
                 preferences=preferences,
                 project_path=project.root,
             )
-            existing_exposes = _session_exposes_user_saves(existing)
-            if existing_exposes and not requested_exposes:
-                return _isolation_mismatch(requested_language=language)
+            if not reuse_keeps_isolation(requested_exposed, _session_exposed_components(existing)):
+                return _isolation_mismatch(
+                    requested_exposes=bool(requested_exposed), requested_language=language
+                )
             try:
                 state = existing.client.get_state()
                 active_language = state.get("language")
@@ -859,9 +883,9 @@ def launch_game(
                     requested_language=language,
                     active_language=active_language,
                 )
-            # Same rule as an owned session: an isolated request must not be
-            # handed a game (started elsewhere) that uses the player's saves.
-            requested_exposes = launch_exposes_user_saves(
+            # Same rule as an owned session, against what the game (started
+            # elsewhere) reports about its own storage.
+            requested_exposed = launch_exposed_components(
                 savedir=savedir,
                 home=home,
                 persistent=persistent,
@@ -869,8 +893,12 @@ def launch_game(
                 project_path=project.root,
             )
             external_isolation = _external_session_isolation(external)
-            if not requested_exposes and external_isolation["exposes_user_saves"]:
-                return _isolation_mismatch(requested_language=language)
+            if not reuse_keeps_isolation(
+                requested_exposed, _external_exposed_components(external_isolation)
+            ):
+                return _isolation_mismatch(
+                    requested_exposes=bool(requested_exposed), requested_language=language
+                )
             result = {
                 "ok": True,
                 "already_running": True,

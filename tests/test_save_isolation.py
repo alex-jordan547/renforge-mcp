@@ -22,11 +22,13 @@ from renforge.save_isolation import (
     host_save_directories,
     import_host_slots,
     isolation_report,
+    launch_exposed_components,
     launch_exposes_user_saves,
     list_host_slots,
     parse_save_directory,
     path_exposes_user_saves,
     resolve_launch_isolation,
+    reuse_keeps_isolation,
 )
 
 
@@ -339,6 +341,36 @@ def test_launch_exposes_user_saves_classifies_existing_and_host_paths(
     other = tmp_path / "scratch-saves"
     other.mkdir()
     assert launch_exposes_user_saves(savedir=str(other), home="temporary") is False
+
+
+def test_launch_exposed_components_tell_saves_and_home_apart(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    assert launch_exposed_components() == {"savedir", "home"}
+    assert launch_exposed_components(savedir="temporary") == frozenset()
+    assert launch_exposed_components(savedir="temporary", home="existing") == {"home"}
+    assert launch_exposed_components(savedir="existing", home="temporary") == {"savedir"}
+    user_saves = host_save_root / "renforge-demo"
+    user_saves.mkdir(parents=True)
+    assert launch_exposed_components(savedir=str(user_saves), home="temporary") == {"savedir"}
+    assert launch_exposed_components(
+        savedir=str(tmp_path / "scratch"), home=str(tmp_path / "home")
+    ) == {"home"}
+
+
+def test_reuse_keeps_every_component_the_launch_isolates() -> None:
+    both, saves, home, none = (
+        frozenset({"savedir", "home"}), frozenset({"savedir"}), frozenset({"home"}), frozenset()
+    )
+    assert reuse_keeps_isolation(both, both) is True
+    assert reuse_keeps_isolation(both, none) is True
+    assert reuse_keeps_isolation(home, home) is True
+    assert reuse_keeps_isolation(home, none) is True
+    assert reuse_keeps_isolation(home, saves) is False
+    assert reuse_keeps_isolation(home, both) is False
+    assert reuse_keeps_isolation(saves, home) is False
+    assert reuse_keeps_isolation(none, home) is False
 
 
 def test_parse_save_directory_and_list_host_slots(

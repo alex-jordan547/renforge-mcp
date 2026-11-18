@@ -578,6 +578,106 @@ def test_an_isolated_launch_is_not_handed_a_game_using_the_players_saves(
     assert session.close_calls == 0
 
 
+@pytest.mark.parametrize(
+    ("request_knobs", "running", "reused"),
+    [
+        # Isolated saves with the host HOME must not get a game that writes
+        # its saves into the player's save folder, and the reverse.
+        ({"savedir": "temporary", "home": "existing"}, ("existing", "existing"), False),
+        ({"savedir": "temporary", "home": "existing"}, ("existing", "temporary"), False),
+        ({"savedir": "existing", "home": "temporary"}, ("existing", "existing"), False),
+        ({"savedir": "existing", "home": "temporary"}, ("temporary", "existing"), False),
+        # A game isolating every component the launch asked for is reusable,
+        # and one that isolates more is harmless.
+        ({"savedir": "temporary", "home": "existing"}, ("temporary", "existing"), True),
+        ({"savedir": "temporary", "home": "existing"}, ("temporary", "temporary"), True),
+        ({"savedir": "existing", "home": "temporary"}, ("existing", "temporary"), True),
+        ({"savedir": "temporary"}, ("temporary", "temporary"), True),
+        # A launch that isolates nothing reuses anything.
+        ({}, ("existing", "existing"), True),
+        ({}, ("temporary", "existing"), True),
+        ({}, ("temporary", "temporary"), True),
+    ],
+)
+def test_reusing_an_owned_game_checks_saves_and_home_separately(
+    tmp_path: Path, monkeypatch, request_knobs, running, reused
+) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    project = _make_project(tmp_path)
+    key = live._key(project)
+    savedir_mode, home_mode = running
+    session = _OwnedRunningSession(
+        editor=True, isolation=_isolation(savedir_mode=savedir_mode, home_mode=home_mode)
+    )
+    live._SESSIONS[key] = session
+    try:
+        result = live.launch_game(str(project), editor=True, **request_knobs)
+    finally:
+        live._SESSIONS.pop(key, None)
+
+    if reused:
+        assert result["ok"] is True
+        assert result["already_running"] is True
+    else:
+        assert result["ok"] is False
+        assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+        assert result["existing_exposes_user_saves"] is True
+        # Each refused request leaves one component on the player's storage.
+        assert result["requested_exposes_user_saves"] is True
+    assert session.close_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("request_knobs", "info", "reused"),
+    [
+        ({"savedir": "temporary", "home": "existing"},
+         {"savedir": "HOST_SAVES", "home": "SESSION_HOME", "save_locations": ["HOST_SAVES"]}, False),
+        ({"savedir": "temporary", "home": "existing"},
+         {"savedir": "HOST_SAVES", "home": "HOST_HOME", "save_locations": ["HOST_SAVES"]}, False),
+        ({"savedir": "existing", "home": "temporary"},
+         {"savedir": "SESSION_SAVES", "home": "HOST_HOME", "save_locations": ["SESSION_SAVES"]}, False),
+        # An older bridge cannot tell where it keeps either component.
+        ({"savedir": "temporary", "home": "existing"}, None, False),
+        ({"savedir": "existing", "home": "temporary"}, None, False),
+        ({"savedir": "temporary", "home": "existing"},
+         {"savedir": "SESSION_SAVES", "home": "HOST_HOME", "save_locations": ["SESSION_SAVES"]}, True),
+        ({"savedir": "temporary", "home": "existing"},
+         {"savedir": "SESSION_SAVES", "home": "SESSION_HOME", "save_locations": ["SESSION_SAVES"]}, True),
+        ({"savedir": "existing", "home": "temporary"},
+         {"savedir": "HOST_SAVES", "home": "SESSION_HOME", "save_locations": ["HOST_SAVES"]}, True),
+    ],
+)
+def test_reusing_an_external_game_checks_saves_and_home_separately(
+    tmp_path: Path, monkeypatch, request_knobs, info, reused
+) -> None:
+    host_home = _host_home(tmp_path, monkeypatch)
+    host_saves = host_renpy_root() / "demo"
+    session = tmp_path / "renforge-session-x"
+    for path in (host_saves, session / "saves", session / "home"):
+        path.mkdir(parents=True)
+    if info is not None:
+        mapping = {
+            "SESSION_SAVES": str(session / "saves"),
+            "SESSION_HOME": str(session / "home"),
+            "HOST_HOME": str(host_home),
+            "HOST_SAVES": str(host_saves),
+        }
+        info = {
+            key: [mapping[item] for item in value] if isinstance(value, list) else mapping[value]
+            for key, value in info.items()
+        }
+
+    result = _external_reuse(tmp_path, monkeypatch, _InfoClient(info), **request_knobs)
+
+    if reused:
+        assert result["ok"] is True
+        assert result["external"] is True
+    else:
+        assert result["ok"] is False
+        assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+        assert result["existing_exposes_user_saves"] is True
+
+
 def test_launch_rejects_editor_mode_for_unproven_external_bridge(tmp_path: Path, monkeypatch) -> None:
     project = _make_project(tmp_path)
     monkeypatch.setattr(

@@ -49,6 +49,9 @@ SESSION_ID_PREFIX: str = "sess_"
 MULTIPERSISTENT_DIRNAME: str = "multipersistent"
 SAVES_DIRNAME: str = "saves"
 HOME_DIRNAME: str = "home"
+# Storage components a launch either isolates or leaves on the player's own.
+SAVEDIR_COMPONENT: str = "savedir"
+HOME_COMPONENT: str = "home"
 SAVE_DIRECTORY_RE: re.Pattern[str] = re.compile(
     r"^[ \t]*define[ \t]+config\.save_directory[ \t]*=[ \t]*[\"']([^\"'\r\n]+)[\"']",
     re.MULTILINE,
@@ -222,7 +225,11 @@ class LaunchIsolation:
 
     def exposes_user_saves(self, project_path: str | Path | None = None) -> bool:
         """Whether this launch can read or write the player's saves or HOME."""
-        return _exposes_user_saves(
+        return bool(self.exposed_components(project_path))
+
+    def exposed_components(self, project_path: str | Path | None = None) -> frozenset[str]:
+        """Which of ``savedir`` / ``home`` reach the player's own storage."""
+        return _exposed_components(
             savedir_mode=self.savedir_mode,
             home_mode=self.home_mode,
             savedir=self.savedir,
@@ -369,6 +376,26 @@ def launch_exposes_user_saves(
     environ: Mapping[str, str] | None = None,
 ) -> bool:
     """True when the resolved launch can read or write the host save tree."""
+    return bool(launch_exposed_components(
+        savedir=savedir,
+        home=home,
+        persistent=persistent,
+        preferences=preferences,
+        project_path=project_path,
+        environ=environ,
+    ))
+
+
+def launch_exposed_components(
+    *,
+    savedir: str | None = None,
+    home: str | None = None,
+    persistent: str | None = None,
+    preferences: str | None = None,
+    project_path: str | Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> frozenset[str]:
+    """Which of ``savedir`` / ``home`` the resolved launch leaves on the player's storage."""
     resolved = apply_launch_isolation_defaults(
         savedir=savedir,
         home=home,
@@ -377,7 +404,7 @@ def launch_exposes_user_saves(
         environ=environ,
     )
     savedir_mode, home_mode = _location_modes(resolved)
-    return _exposes_user_saves(
+    return _exposed_components(
         savedir_mode=savedir_mode,
         home_mode=home_mode,
         savedir=resolved["savedir"],
@@ -392,27 +419,44 @@ def _location_modes(resolved: Mapping[str, str]) -> tuple[str, str]:
     return classify_savedir(resolved["savedir"]), "temporary" if home_mode == "empty" else home_mode
 
 
-def _exposes_user_saves(
+def _exposed_components(
     *,
     savedir_mode: str,
     home_mode: str,
     savedir: str | Path | None,
     home: str | Path | None,
     project_path: str | Path | None,
-) -> bool:
-    """The one rule for whether a launch reaches the player's saves or HOME.
+) -> frozenset[str]:
+    """The one rule for which storage components reach the player's own.
 
-    The host Ren'Py save tree, the project's ``game/saves`` and the host HOME
-    all count.
+    ``savedir`` counts when it is the host Ren'Py save tree or the project's
+    ``game/saves``; ``home`` counts when it is the host HOME. A launch exposes
+    the player's saves when either does.
     """
-    if savedir_mode == "existing" or home_mode == "existing":
-        return True
-    if savedir_mode == "path" and savedir is not None:
-        if path_exposes_user_saves(savedir, project_path=project_path):
-            return True
-    if home_mode == "path" and home is not None:
-        return path_is_host_home(home)
-    return False
+    exposed: set[str] = set()
+    if savedir_mode == "existing" or (
+        savedir_mode == "path"
+        and savedir is not None
+        and path_exposes_user_saves(savedir, project_path=project_path)
+    ):
+        exposed.add(SAVEDIR_COMPONENT)
+    if home_mode == "existing" or (
+        home_mode == "path" and home is not None and path_is_host_home(home)
+    ):
+        exposed.add(HOME_COMPONENT)
+    return frozenset(exposed)
+
+
+def reuse_keeps_isolation(
+    requested_exposed: frozenset[str], running_exposed: frozenset[str]
+) -> bool:
+    """Whether a running game may serve a launch with these exposed components.
+
+    Every component the launch isolates must be isolated in the running game
+    too; a game that isolates more than asked is harmless to reuse. Owned and
+    external sessions both go through this rule.
+    """
+    return running_exposed <= requested_exposed
 
 
 def path_in_session_root(value: str | Path) -> bool:
