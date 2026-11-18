@@ -18,27 +18,24 @@ versioning.
   `preferences` knob). Ready payloads include `session_id` and an
   `isolation` object so an agent can see the mode. A launch is refused with
   `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses
-  the user's saves or HOME where the launch isolates them, including one
-  started elsewhere (another RenForge process or the dashboard). Saves and
-  HOME are checked separately, so `savedir=temporary, home=existing` is not
-  handed a game that writes to the user's saves; a game that isolates more
-  than asked is reused. An external game's HOME counts as isolated only when
-  it reports one inside a RenForge session root, and its saves only when it
-  reports every active save location and all of them are inside one;
-  anything else, including a bridge that cannot report them, counts as the
-  user's. A reused external game's
-  ready and status payloads carry what it reported as `isolation`. A launch
-  whose state modes a fresh launch would reject (`empty` without
+  the user's saves or HOME where the launch isolates them (each checked
+  separately), including one started elsewhere (another RenForge process or
+  the dashboard). An external game's HOME counts as isolated only when it
+  reports one inside a RenForge session root, and its saves only when every
+  active save location it reports is inside one; anything else, including a
+  bridge that cannot report them, counts as the user's. A reused external
+  game's ready and status payloads carry what it reported as `isolation`. A
+  launch whose state modes a fresh launch would reject (`empty` without
   `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.
   A `renforge_jump`, `renforge_new_game` or dashboard Warp relaunch whose
-  isolation knobs are all omitted or `auto` keeps the isolation of an
-  isolated game it replaces (resolved by the process that owns the game,
-  unless this server's `RENFORGE_ISOLATION=temporary` already isolates it); it
-  gets a fresh session, so imported slots are not carried over. Mode tokens
-  (`auto`, `existing`, `default`, `temporary`, `empty`) are matched
-  case-insensitively, so `savedir=Temporary` isolates instead of creating a
-  folder of that name. This is application-layer isolation, not an OS
-  sandbox.
+  isolation knobs are all omitted or `auto` keeps the saves and HOME
+  isolation of the game it replaces (resolved by the process that owns the
+  game, unless this server's `RENFORGE_ISOLATION=temporary` already isolates
+  it); it gets a fresh session, so imported slots are not carried over.
+  Mode tokens (`auto`, `existing`, `default`, `temporary`, `empty`) are
+  matched case-insensitively, so `savedir=Temporary` isolates instead of
+  creating a folder of that name. This is application-layer isolation, not
+  an OS sandbox.
 - `renforge_saves` gains `list_user` (observational host listing) and
   `import` (copy selected host slots into the savedir of a session launched
   with `savedir=temporary`, never into a `savedir=<path>` folder; never
@@ -51,19 +48,18 @@ versioning.
   directly under the Ren'Py save root, plus a `game/saves` inside the
   project; they open the game's scripts without following links or
   blocking, skip one over 4 MiB, and list before an import holds the
-  session, so a stop never waits on a listing. A save folder is listed, and
-  each slot's mtime read, through one handle opened without following links,
-  so a folder swapped for a link lists nothing; `list_user` writes nothing,
-  not even the project's `.renforge` folder. Import resolves none of the
-  session's own folders, so a session root or savedir swapped for a link is
-  refused with `SAVE_IMPORT_FAILED` instead of followed. On Windows too, host
-  slot files are read, and copies written, at folder handles opened without
-  following junctions or links; a stopped session's folders are never
-  recreated, and a copy gets the slot's save time before it is published. A slot file import
-  will not copy (a link, a FIFO or other non-regular file, one over the size
-  cap, or an unreadable one), or a slot whose host folder was swapped for a
-  link, is listed in `refused` with a reason, never dropped; a slot counts as imported only when its save file was copied,
-  and an import that copied nothing fails with `NO_MATCHING_SAVE_SLOTS`.
+  session, so a stop never waits on a listing. A save folder swapped for a
+  link lists nothing, and `list_user` writes nothing, not even `.renforge`.
+  Import resolves none of the session's own folders, so a session root or
+  savedir swapped for a link is refused with `SAVE_IMPORT_FAILED` instead of
+  followed, and never recreates a stopped session's folders. On every
+  platform, folders are listed and slot files read and copied at handles
+  that do not follow links or junctions. A slot file import will not copy
+  (a link, a FIFO or other non-regular file, one over the size cap, or an
+  unreadable one), or a slot whose host folder was swapped for a link, is
+  listed in `refused` with a reason, never dropped; a slot counts as
+  imported only when its save file was copied, and an import that copied
+  nothing fails with `NO_MATCHING_SAVE_SLOTS`.
   Import returns a `files_touched` write receipt (absolute paths of the
   copied files, also on `SAVE_IMPORT_FAILED`). Its other codes are
   `NO_ISOLATED_SESSION`, `SAVE_IMPORT_NOT_ISOLATED` and
