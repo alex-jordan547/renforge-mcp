@@ -233,10 +233,10 @@ def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
     Every component is opened without following links, so a folder swapped
     for a link raises ``ValueError`` instead of listing the link's target.
     Each entry is stat'ed at that same directory descriptor without following
-    the entry, so a linked entry reports itself. An entry that vanishes
-    between the listing and its stat is left out. A missing folder raises
-    ``FileNotFoundError``. Windows (and POSIX without ``dir_fd``) refuses a
-    linked component, then lists and stats by path.
+    the entry, so a linked entry reports itself. An entry that cannot be
+    stat'ed (it vanished, or access is denied) is left out. A missing folder
+    raises ``FileNotFoundError``. Windows (and POSIX without ``dir_fd``)
+    refuses a linked component, then lists and stats by path.
     """
     if (
         os.name == "nt"
@@ -252,23 +252,27 @@ def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
                 continue
             if _component_is_link(component):
                 raise _symlink_error(component, action="list")
-        entries: list[tuple[str, os.stat_result]] = []
-        for name in os.listdir(target):
-            try:
-                entries.append((name, (target / name).lstat()))
-            except FileNotFoundError:
-                continue
-        return entries
+        return _stat_entries(os.listdir(target), lambda name: os.lstat(target / name))
     dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
     try:
-        entries = []
-        for name in os.listdir(dir_fd):
-            st = _lstat_at_posix(dir_fd, name)
-            if st is not None:
-                entries.append((name, st))
-        return entries
+        return _stat_entries(os.listdir(dir_fd), lambda name: _lstat_at_posix(dir_fd, name))
     finally:
         os.close(dir_fd)
+
+
+def _stat_entries(
+    names: Iterable[str], lstat_entry: Any
+) -> list[tuple[str, os.stat_result]]:
+    """``(name, metadata)`` for each name; one that cannot be stat'ed is skipped."""
+    entries: list[tuple[str, os.stat_result]] = []
+    for name in names:
+        try:
+            st = lstat_entry(name)
+        except OSError:
+            continue
+        if st is not None:
+            entries.append((name, st))
+    return entries
 
 
 def _make_directory_fallback(target: Path) -> None:

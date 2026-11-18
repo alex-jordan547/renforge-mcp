@@ -453,3 +453,37 @@ def test_replace_file_at_nofollow_refuses_without_dir_fd(
     assert os.listdir(dest) == []
     read_fd, _st = open_regular_at_nofollow(tmp_path, "source.save")
     os.close(read_fd)
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "fallback"])
+def test_scan_directory_nofollow_skips_only_an_entry_it_cannot_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_fd: bool
+) -> None:
+    # One unreadable entry emptied the whole listing.
+    if dir_fd and (os.name == "nt" or not files_module._posix_dir_fd_supported()):
+        pytest.skip("needs POSIX dir_fd support")
+    if not dir_fd and os.name == "nt":
+        pytest.skip("Windows enumerates at a handle, not by path")
+    monkeypatch.setattr(files_module, "_posix_dir_fd_supported", lambda: dir_fd)
+    folder = tmp_path / "saves"
+    folder.mkdir()
+    (folder / "a.save").write_bytes(b"A")
+    (folder / "b.save").write_bytes(b"B")
+    real_lstat_at, real_lstat = files_module._lstat_at_posix, os.lstat
+
+    def denied(name: str) -> None:
+        if os.path.basename(str(name)) == "b.save":
+            raise PermissionError(errno.EACCES, "denied", str(name))
+
+    def lstat_at(dir_fd_value: int, name: str):
+        denied(name)
+        return real_lstat_at(dir_fd_value, name)
+
+    def lstat(path, *args, **kwargs):
+        denied(path)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(files_module, "_lstat_at_posix", lstat_at)
+    monkeypatch.setattr(os, "lstat", lstat)
+
+    assert [name for name, _st in scan_directory_nofollow(folder)] == ["a.save"]

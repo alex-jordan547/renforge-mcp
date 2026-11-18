@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import shutil
 import sys
@@ -894,6 +895,28 @@ def test_list_user_scans_entries_without_following_them(
     assert [item["name"] for item in listed["slots"]] == ["1-1"]
     assert listed["slots"][0]["mtime"] == 1_600_000_000.0
     assert listed["slots"][0]["directory"] == str(host_saves.resolve())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor scan")
+def test_list_user_skips_only_a_slot_file_it_cannot_stat(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    from renforge.util import files as files_module
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"ONE")
+    (host_saves / "2-1-LT1.save").write_bytes(b"TWO")
+    real_lstat_at = files_module._lstat_at_posix
+
+    def lstat_at(dir_fd: int, name: str):
+        if name == "2-1-LT1.save":
+            raise PermissionError(errno.EACCES, "denied", name)
+        return real_lstat_at(dir_fd, name)
+
+    monkeypatch.setattr(files_module, "_lstat_at_posix", lstat_at)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
 
 
 def test_live_list_user_does_not_create_the_project_cache(
