@@ -37,6 +37,7 @@ from ..project import RenpyProject
 from ..save_isolation import (
     apply_launch_isolation_defaults,
     agent_session_id,
+    default_launch_value,
     HOME_COMPONENT,
     import_selected_slots,
     isolation_knobs_unset,
@@ -741,12 +742,14 @@ def launch_game(
     if replaced is not None and isolation_knobs_unset(*knobs.values()):
         # A jump/new_game/Warp relaunch with every knob auto keeps the
         # isolation of the game it replaces, component by component, instead
-        # of falling back to the player's saves. It still gets a fresh
-        # session: imported slots go with the old one.
+        # of falling back to the player's saves. An exposed component takes
+        # the server default, so RENFORGE_ISOLATION=temporary still isolates
+        # it. It still gets a fresh session: imported slots go with the old one.
         exposed = _session_exposed_components(replaced)
         if exposed != {SAVEDIR_COMPONENT, HOME_COMPONENT}:
-            knobs["savedir"] = "existing" if SAVEDIR_COMPONENT in exposed else "temporary"
-            knobs["home"] = "existing" if HOME_COMPONENT in exposed else "temporary"
+            configured = default_launch_value(None)
+            knobs["savedir"] = configured if SAVEDIR_COMPONENT in exposed else "temporary"
+            knobs["home"] = configured if HOME_COMPONENT in exposed else "temporary"
     isolation_defaults = apply_launch_isolation_defaults(**knobs)
     savedir = isolation_defaults["savedir"]
     home = isolation_defaults["home"]

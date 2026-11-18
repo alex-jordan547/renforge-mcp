@@ -307,8 +307,8 @@ TOOL_DEFINITIONS: dict[str, ToolDefinition] = {
             "warp": (
                 "Optional Ren'Py `file.rpy:line` startup target; this launch tool does not resolve label names. "
                 "A warp launch replaces a running game like `renforge_jump`: with every isolation knob omitted or "
-                "`auto`, it keeps the isolation of an isolated game it replaces (a fresh session; imported slots "
-                "are not carried over)."
+                "`auto`, it keeps the saves and HOME isolation of the game it replaces (a fresh session; "
+                "imported slots are not carried over)."
             ),
             "language": (
                 "Optional Ren'Py language code set as `RENPY_LANGUAGE` for a fresh game process. Ren'Py persists "

@@ -1073,9 +1073,13 @@ def test_stop_game_attempts_external_stop_when_cancellation_is_still_pending(
     live.stop_game(str(project))
 
 
-def _relaunch_knobs(tmp_path: Path, monkeypatch, existing_isolation, **launch_kwargs) -> dict:
+def _relaunch_knobs(
+    tmp_path: Path, monkeypatch, existing_isolation, *, isolation_env: str | None = None, **launch_kwargs
+) -> dict:
     """Replace an owned session with a warp launch; return the knobs it launched with."""
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    if isolation_env is not None:
+        monkeypatch.setenv("RENFORGE_ISOLATION", isolation_env)
     project = _make_project(tmp_path)
     key = live._key(project)
     live._SESSIONS[key] = _OwnedRunningSession(editor=True, isolation=existing_isolation)
@@ -1140,6 +1144,29 @@ def test_a_warp_relaunch_of_a_partly_isolated_session_keeps_each_component(
         tmp_path, monkeypatch, _isolation(savedir_mode=savedir_mode, home_mode=home_mode)
     )
     assert knobs == expected
+
+
+@pytest.mark.parametrize(
+    "running", [("temporary", "existing"), ("existing", "temporary"), ("existing", "existing")]
+)
+def test_a_warp_relaunch_never_drops_isolation_the_server_configures(
+    tmp_path: Path, monkeypatch, running
+) -> None:
+    # With RENFORGE_ISOLATION=temporary an all-auto relaunch may keep or add
+    # isolation, never fall back to the player's saves or HOME.
+    savedir_mode, home_mode = running
+    knobs = _relaunch_knobs(
+        tmp_path,
+        monkeypatch,
+        _isolation(savedir_mode=savedir_mode, home_mode=home_mode),
+        isolation_env="temporary",
+    )
+    assert knobs == {
+        "savedir": "temporary",
+        "home": "temporary",
+        "persistent": "empty",
+        "preferences": "empty",
+    }
 
 
 def test_an_explicit_savedir_on_a_warp_relaunch_is_honoured(tmp_path: Path, monkeypatch) -> None:
