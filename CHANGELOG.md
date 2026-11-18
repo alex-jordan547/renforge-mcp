@@ -7,6 +7,14 @@ versioning.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.7.6] - 2026-11-18
+
+### Added
+
 - Opt-in launch isolation for `renforge_launch`, `renforge_jump`,
   `renforge_new_game`, and dashboard launches. Pass `savedir=temporary`, or
   set `RENFORGE_ISOLATION=temporary` for every launch of a server; launches
@@ -35,7 +43,7 @@ versioning.
   Mode tokens (`auto`, `existing`, `default`, `temporary`, `empty`) are
   matched case-insensitively, so `savedir=Temporary` isolates instead of
   creating a folder of that name. This is application-layer isolation, not
-  an OS sandbox.
+  an OS sandbox. (#125)
 - `renforge_saves` gains `list_user` (observational host listing) and
   `import` (copy selected host slots into the savedir of a session launched
   with `savedir=temporary`, never into a `savedir=<path>` folder; never
@@ -68,19 +76,19 @@ versioning.
   Copied slots are removed with a temporary savedir on stop, unless
   `cleanup_on_stop=false` or the cleanup fails. A failed save rescan is
   reported as `rescan_error` instead of leaving a stale slot list
-  unexplained.
+  unexplained. (#125)
 - `renforge_saves(action="import")` reaches an isolated session that the
   dashboard launched: the request goes to the dashboard that owns the
   session (new token-checked `POST /api/live/saves/import`), and that
   dashboard's answer, code and shape included, is final; only an unreachable
   dashboard gives `DASHBOARD_REQUEST_FAILED`. The MCP side waits up to 300 s
-  for a delegated import (launch and stop keep 45 s).
+  for a delegated import (launch and stop keep 45 s). (#125)
 - `language` composes with isolation. The "changed the stored preference"
   warning follows the resolved save directory, so an isolated launch (or
   `RENFORGE_ISOLATION=temporary`) does not raise it, and
   `SESSION_ISOLATION_MISMATCH` reports `requested_language` and
   `language_applied: false` like `SESSION_MODE_MISMATCH`. Dashboard launches
-  keep forwarding `language`, now together with the isolation options.
+  keep forwarding `language`, now together with the isolation options. (#125)
 
 ### Changed
 
@@ -91,15 +99,15 @@ versioning.
   not the player's. `savedir=<path>` also sets `RENPY_PATH_TO_SAVES` and
   `RENPY_MULTIPERSISTENT=<path>/multipersistent`, which it creates. In 0.7.5
   `savedir=temporary` only set `RENFORGE_SAVEDIR`, and `persistent` defaulted
-  to `existing`.
+  to `existing`. (#125)
 - The `savedir` and `persistent` schema defaults are now `auto` (they were
-  `""` and `existing`); with isolation off they resolve exactly as before.
+  `""` and `existing`); with isolation off they resolve exactly as before. (#125)
 - Dashboard launch and Warp validate the isolation options: `persistent`
   and `preferences` must be `auto`, `existing` or `empty` (HTTP 400
   `launch_persistent_invalid` / `launch_preferences_invalid`, which now also
   rejects `copy` and `fixture`), `home` must be a string
   (`launch_home_invalid`), and a combination a launch would refuse is a 400
-  `launch_state_mode_conflict`.
+  `launch_state_mode_conflict`. (#125)
 - Breaking: `persistent` no longer accepts `copy` or `fixture` (they only set
   an environment marker and copied or loaded nothing); the tool schema
   rejects them, launches return `LAUNCH_STATE_MODE_CONFLICT`, and the
@@ -107,9 +115,13 @@ versioning.
   `renforge_saves(action="import")` to bring in real slots. `persistent=empty`
   (like `preferences=empty`) now requires `savedir=temporary`: it selects a
   fresh temporary location and never deletes files, where before it unlinked
-  `persistent` in whatever save location the game used.
+  `persistent` in whatever save location the game used. (#125)
 
 ### Fixed
+
+### Thanks
+
+- Thanks to @Aaron-Fine for #125.
 
 ## [0.7.5] - 2026-11-14
 
