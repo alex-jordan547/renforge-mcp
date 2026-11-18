@@ -622,3 +622,25 @@ def test_scan_directory_nofollow_lists_at_a_handle_on_windows(tmp_path: Path) ->
     assert not stat.S_ISREG(entries["linked"].st_mode)
     with pytest.raises(ValueError):
         scan_directory_nofollow(folder / "linked")
+
+
+def test_list_directory_nofollow_reads_no_entry_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Import lists the host folder once per selected slot, so a names-only
+    # listing must not stat every entry each time.
+    if os.name == "nt" or not files_module._posix_dir_fd_supported():
+        pytest.skip("POSIX descriptor listing")
+    for index in range(3):
+        (tmp_path / f"{index}-1-LT1.save").write_bytes(b"SLOT")
+
+    def no_stat(*_args: object) -> None:
+        raise AssertionError("listing names stat'ed an entry")
+
+    monkeypatch.setattr(files_module, "_lstat_at_posix", no_stat)
+
+    assert sorted(files_module.list_directory_nofollow(tmp_path)) == [
+        "0-1-LT1.save",
+        "1-1-LT1.save",
+        "2-1-LT1.save",
+    ]

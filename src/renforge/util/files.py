@@ -223,9 +223,18 @@ def make_directory_at_nofollow(path: Path, *, mode: int = _PRIVATE_DIR_MODE) -> 
 def list_directory_nofollow(path: Path) -> list[str]:
     """Names in the folder *path*, reached without following any link.
 
-    The names of :func:`scan_directory_nofollow`, with its errors.
+    The names of :func:`scan_directory_nofollow`, with its errors, without
+    reading each entry's metadata on POSIX.
     """
-    return [name for name, _st in scan_directory_nofollow(path)]
+    if os.name == "nt":
+        return [name for name, _st in _scan_directory_windows(Path(path))]
+    if not _posix_dir_fd_supported() or os.listdir not in getattr(os, "supports_fd", set()):
+        return os.listdir(_listing_target_by_path(path))
+    dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
+    try:
+        return os.listdir(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
@@ -247,20 +256,26 @@ def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
         or os.listdir not in getattr(os, "supports_fd", set())
         or os.stat not in getattr(os, "supports_dir_fd", set())
     ):
-        target = _absolute_path(path)
-        for component in _path_components(target):
-            try:
-                component.lstat()
-            except FileNotFoundError:
-                continue
-            if _component_is_link(component):
-                raise _symlink_error(component, action="list")
+        target = _listing_target_by_path(path)
         return _stat_entries(os.listdir(target), lambda name: os.lstat(target / name))
     dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
     try:
         return _stat_entries(os.listdir(dir_fd), lambda name: _lstat_at_posix(dir_fd, name))
     finally:
         os.close(dir_fd)
+
+
+def _listing_target_by_path(path: Path) -> Path:
+    # POSIX without dir_fd: refuse a linked component, then list by path.
+    target = _absolute_path(path)
+    for component in _path_components(target):
+        try:
+            component.lstat()
+        except FileNotFoundError:
+            continue
+        if _component_is_link(component):
+            raise _symlink_error(component, action="list")
+    return target
 
 
 def _stat_entries(
@@ -2023,7 +2038,7 @@ def _open_directory_chain_nofollow_windows(
             _win_close(handle)
 
 
-def _win_write_handle(handle: int, data: bytes) -> None:
+def _win_write_handle(handle: int, data: bytes, *, flush: bool = True) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -2037,9 +2052,6 @@ def _win_write_handle(handle: int, data: bytes) -> None:
         ctypes.c_void_p,
     ]
     write_file.restype = wintypes.BOOL
-    flush = kernel32.FlushFileBuffers
-    flush.argtypes = [wintypes.HANDLE]
-    flush.restype = wintypes.BOOL
     view = memoryview(data)
     while view:
         written = wintypes.DWORD(0)
@@ -2050,6 +2062,18 @@ def _win_write_handle(handle: int, data: bytes) -> None:
         if written.value <= 0:
             raise OSError(errno.EIO, "could not write file")
         view = view[written.value :]
+    if flush:
+        _win_flush_handle(handle)
+
+
+def _win_flush_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, _advapi32 = _win_advapi_kernel()
+    flush = kernel32.FlushFileBuffers
+    flush.argtypes = [wintypes.HANDLE]
+    flush.restype = wintypes.BOOL
     if not flush(handle):
         raise OSError(ctypes.get_last_error(), "FlushFileBuffers failed")
 
@@ -2342,13 +2366,16 @@ def _replace_file_windows(
     try:
         _reject_leaf_reparse_windows(dir_handle, name, target)
         temp_handle, temp_name = _win_create_temp_at(dir_handle, directory)
-        data = b"".join(_read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)))
-        _win_write_handle(temp_handle, data)
+        copied = 0
+        for chunk in _read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)):
+            _win_write_handle(temp_handle, chunk, flush=False)
+            copied += len(chunk)
+        _win_flush_handle(temp_handle)
         _win_set_file_times(temp_handle, mtime_ns)
         _reject_leaf_reparse_windows(dir_handle, name, target)
         _win_rename_at(temp_handle, dir_handle, name)
         temp_name = None
-        return len(data)
+        return copied
     finally:
         if temp_handle:
             _win_close(temp_handle)
