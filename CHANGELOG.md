@@ -56,7 +56,10 @@ versioning.
   so a folder swapped for a link lists nothing; `list_user` writes nothing,
   not even the project's `.renforge` folder. Import resolves none of the
   session's own folders, so a session root or savedir swapped for a link is
-  refused with `SAVE_IMPORT_FAILED` instead of followed. A slot file import
+  refused with `SAVE_IMPORT_FAILED` instead of followed. On Windows too, host
+  slot files are read, and copies written, at folder handles opened without
+  following junctions or links; a stopped session's folders are never
+  recreated, and a copy gets the slot's save time before it is published. A slot file import
   will not copy (a link, a FIFO or other non-regular file, one over the size
   cap, or an unreadable one), or a slot whose host folder was swapped for a
   link, is listed in `refused` with a reason, never dropped; a slot counts as imported only when its save file was copied,

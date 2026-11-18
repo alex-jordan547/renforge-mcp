@@ -152,9 +152,13 @@ def open_regular_at_nofollow(directory: Path, name: str) -> tuple[int, os.stat_r
     a resolved path. Returns a read-only descriptor the caller closes. A leaf
     link or non-regular file raises ``OSError``, a linked directory component
     ``ValueError``, and a missing file or directory ``FileNotFoundError``.
+    On Windows the leaf is opened at a pinned directory handle too; only a
+    POSIX build without ``dir_fd`` checks the leaf alone.
     """
     leaf = _basename(name)
-    if os.name == "nt" or not _posix_dir_fd_supported():
+    if os.name == "nt":
+        return _open_regular_at_nofollow_windows(Path(directory), leaf)
+    if not _posix_dir_fd_supported():
         return _open_regular_nofollow(Path(directory) / leaf)
     dir_fd = _open_directory_chain_nofollow_posix(Path(directory), action="read")
     try:
@@ -313,15 +317,21 @@ def replace_file_at_nofollow(
     The copy goes to an ``O_EXCL`` temp name created at an anchored directory
     descriptor and is renamed over *name*, so a link already at *name* is
     replaced, never followed. On failure the temp is removed and *name* is
-    untouched. Returns the number of bytes copied.
+    untouched. The timestamps are set on the temp before the rename, so a
+    published file always carries them. A missing *directory* is never
+    created (``FileNotFoundError``; a file in its place raises
+    ``NotADirectoryError``). Returns the number of bytes copied.
     """
     leaf = _basename(name)
     mode &= _MODE_MASK
     target_dir = Path(directory)
-    if os.name == "nt" or not _posix_dir_fd_supported():
-        return _replace_file_fallback(
-            target_dir, leaf, source_fd, mode=mode, mtime_ns=mtime_ns, max_bytes=max_bytes
+    if os.name == "nt":
+        # Windows has no file mode to keep; the copy is anchored the same way.
+        return _replace_file_windows(
+            target_dir, leaf, source_fd, mtime_ns=mtime_ns, max_bytes=max_bytes
         )
+    if not _posix_dir_fd_supported():
+        raise OSError("anchored nofollow writes require dir_fd support")
     dir_fd = _open_directory_chain_nofollow_posix(target_dir, action="copy")
     temp_name: str | None = None
     fd = -1
@@ -373,29 +383,6 @@ def replace_file_at_nofollow(
             except OSError:
                 pass
         os.close(dir_fd)
-
-
-def _replace_file_fallback(
-    directory: Path,
-    name: str,
-    source_fd: int,
-    *,
-    mode: int,
-    mtime_ns: int,
-    max_bytes: int,
-) -> int:
-    # Windows (and POSIX without dir_fd): write_atomic anchors the directory
-    # and refuses a leaf link instead of replacing it. It would also create
-    # a missing directory, which must stay gone after a session stops.
-    _require_directory(directory)
-    target = directory / name
-    data = b"".join(_read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)))
-    write_atomic(target, data, mode=mode, follow_symlinks=False)
-    if os.utime in os.supports_follow_symlinks:
-        os.utime(target, ns=(mtime_ns, mtime_ns), follow_symlinks=False)
-    else:
-        os.utime(target, ns=(mtime_ns, mtime_ns))
-    return len(data)
 
 
 def write_exclusive_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
@@ -1638,6 +1625,17 @@ _WIN_FILE_OPEN_REPARSE_POINT = 0x00200000
 _WIN_OBJ_CASE_INSENSITIVE = 0x00000040
 _WIN_FILE_RENAME_INFORMATION = 10
 _WIN_INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
+# NtCreateFile failures callers tell apart, as the errno Python maps to the
+# matching OSError subclass (FileNotFoundError, NotADirectoryError, ...).
+_WIN_NTSTATUS_ERRNO: dict[int, int] = {
+    0xC0000034: errno.ENOENT,  # STATUS_OBJECT_NAME_NOT_FOUND
+    0xC000003A: errno.ENOENT,  # STATUS_OBJECT_PATH_NOT_FOUND
+    0xC0000035: errno.EEXIST,  # STATUS_OBJECT_NAME_COLLISION
+    0xC0000103: errno.ENOTDIR,  # STATUS_NOT_A_DIRECTORY
+    0xC00000BA: errno.EISDIR,  # STATUS_FILE_IS_A_DIRECTORY
+}
+# FILETIME counts 100 ns ticks from 1601-01-01; the Unix epoch is this many later.
+_WIN_EPOCH_AS_FILETIME = 116444736000000000
 
 
 def _win_ntdll() -> Any:
@@ -1729,7 +1727,12 @@ def _win_nt_create(
     )
     _ = buf
     if status < 0:
-        raise OSError(status, "NtCreateFile failed for %s" % name)
+        code = status & 0xFFFFFFFF
+        message = "NtCreateFile failed for %s (NTSTATUS 0x%08X)" % (name, code)
+        mapped = _WIN_NTSTATUS_ERRNO.get(code)
+        if mapped is not None:
+            raise OSError(mapped, message, name)
+        raise OSError(status, message)
     return int(handle.value or 0)
 
 
@@ -1833,8 +1836,12 @@ def _open_directory_chain_nofollow_windows(
     *,
     action: str = "atomic-write",
     create: bool = False,
+    writable: bool = True,
 ) -> int:
-    """Open every Windows directory component relative to a pinned handle."""
+    """Open every Windows directory component relative to a pinned handle.
+
+    The returned handle may add files unless *writable* is false.
+    """
     target = _absolute_path(path)
     anchor = Path(target.anchor)
     access = (
@@ -1912,7 +1919,8 @@ def _open_directory_chain_nofollow_windows(
                 _win_close(child)
                 raise
             handles.append((child, current_path))
-        reopen_last_writable()
+        if writable:
+            reopen_last_writable()
         final_handle = handles.pop()[0]
         return final_handle
     finally:
@@ -2036,26 +2044,7 @@ def _write_atomic_anchored_windows(
     try:
         _reject_leaf_reparse_windows(dir_handle, name, destination)
         payload = _encode_chunks(chunks, encoding=encoding, max_bytes=max_bytes)
-        last_error: BaseException | None = None
-        for _ in range(_TEMP_ATTEMPTS):
-            candidate = _temp_candidate()
-            try:
-                temp_handle = _win_nt_create(
-                    root=dir_handle,
-                    name=candidate,
-                    access=_WIN_GENERIC_WRITE | _WIN_DELETE | _WIN_SYNCHRONIZE,
-                    disposition=_WIN_FILE_CREATE,
-                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
-                    | _WIN_FILE_NON_DIRECTORY_FILE
-                    | _WIN_FILE_OPEN_REPARSE_POINT,
-                )
-                temp_name = candidate
-                break
-            except OSError as exc:
-                last_error = exc
-                continue
-        else:
-            raise OSError("failed to allocate a nofollow temporary file in %s" % parent) from last_error
+        temp_handle, temp_name = _win_create_temp_at(dir_handle, parent)
         _win_write_handle(temp_handle, payload)
         _reject_leaf_reparse_windows(dir_handle, name, destination)
         _win_rename_at(temp_handle, dir_handle, name)
@@ -2064,39 +2053,168 @@ def _write_atomic_anchored_windows(
         if temp_handle:
             _win_close(temp_handle)
         if temp_name is not None:
-            try:
-                leftover = _win_nt_create(
-                    root=dir_handle,
-                    name=temp_name,
-                    access=_WIN_DELETE | _WIN_SYNCHRONIZE,
-                    disposition=_WIN_FILE_OPEN,
-                    options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
-                    | _WIN_FILE_NON_DIRECTORY_FILE
-                    | _WIN_FILE_OPEN_REPARSE_POINT,
-                )
-            except OSError:
-                leftover = 0
-            if leftover:
-                try:
-                    import ctypes
-                    from ctypes import wintypes
+            _win_delete_at(dir_handle, temp_name)
+        _win_close(dir_handle)
 
-                    class FILE_DISPOSITION_INFO(ctypes.Structure):
-                        _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
 
-                    kernel32, _advapi32 = _win_advapi_kernel()
-                    info = FILE_DISPOSITION_INFO(True)
-                    set_info = kernel32.SetFileInformationByHandle
-                    set_info.argtypes = [
-                        wintypes.HANDLE,
-                        ctypes.c_int,
-                        ctypes.c_void_p,
-                        wintypes.DWORD,
-                    ]
-                    set_info.restype = wintypes.BOOL
-                    set_info(leftover, 4, ctypes.byref(info), ctypes.sizeof(info))
-                finally:
-                    _win_close(leftover)
+def _win_create_temp_at(dir_handle: int, parent: Path) -> tuple[int, str]:
+    """Create a new temp file at *dir_handle*; return its write handle and name."""
+    last_error: BaseException | None = None
+    for _ in range(_TEMP_ATTEMPTS):
+        candidate = _temp_candidate()
+        try:
+            handle = _win_nt_create(
+                root=dir_handle,
+                name=candidate,
+                access=_WIN_GENERIC_WRITE | _WIN_DELETE | _WIN_SYNCHRONIZE,
+                disposition=_WIN_FILE_CREATE,
+                options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+                | _WIN_FILE_NON_DIRECTORY_FILE
+                | _WIN_FILE_OPEN_REPARSE_POINT,
+            )
+        except OSError as exc:
+            last_error = exc
+            continue
+        return handle, candidate
+    raise OSError("failed to allocate a nofollow temporary file in %s" % parent) from last_error
+
+
+def _win_delete_at(dir_handle: int, name: str) -> None:
+    """Best-effort delete of the file *name* at *dir_handle* (a leftover temp)."""
+    try:
+        leftover = _win_nt_create(
+            root=dir_handle,
+            name=name,
+            access=_WIN_DELETE | _WIN_SYNCHRONIZE,
+            disposition=_WIN_FILE_OPEN,
+            options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+            | _WIN_FILE_NON_DIRECTORY_FILE
+            | _WIN_FILE_OPEN_REPARSE_POINT,
+        )
+    except OSError:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FILE_DISPOSITION_INFO(ctypes.Structure):
+            _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+        kernel32, _advapi32 = _win_advapi_kernel()
+        info = FILE_DISPOSITION_INFO(True)
+        set_info = kernel32.SetFileInformationByHandle
+        set_info.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        set_info.restype = wintypes.BOOL
+        set_info(leftover, 4, ctypes.byref(info), ctypes.sizeof(info))
+    finally:
+        _win_close(leftover)
+
+
+def _win_set_file_times(handle: int, mtime_ns: int) -> None:
+    """Set last-write and last-access time on *handle*; creation time is kept."""
+    import ctypes
+    from ctypes import wintypes
+
+    ticks = mtime_ns // 100 + _WIN_EPOCH_AS_FILETIME
+    filetime = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+    kernel32, _advapi32 = _win_advapi_kernel()
+    set_time = kernel32.SetFileTime
+    set_time.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    set_time.restype = wintypes.BOOL
+    if not set_time(handle, None, ctypes.byref(filetime), ctypes.byref(filetime)):
+        raise OSError(ctypes.get_last_error(), "SetFileTime failed")
+
+
+def _open_existing_directory_windows(directory: Path, *, action: str, writable: bool) -> int:
+    """Pinned handle for the existing folder *directory*; nothing is created.
+
+    A linked or reparse component raises ``ValueError``. A missing folder
+    raises ``FileNotFoundError`` and a file in its place
+    ``NotADirectoryError``; any other failure is classified the way
+    :func:`_require_directory` would, then re-raised.
+    """
+    try:
+        return _open_directory_chain_nofollow_windows(
+            directory, action=action, create=False, writable=writable
+        )
+    except (FileNotFoundError, NotADirectoryError):
+        raise
+    except OSError:
+        _require_directory(directory)
+        raise
+
+
+def _open_regular_at_nofollow_windows(directory: Path, leaf: str) -> tuple[int, os.stat_result]:
+    import msvcrt
+
+    path = directory / leaf
+    dir_handle = _open_existing_directory_windows(directory, action="read", writable=False)
+    try:
+        handle = _win_nt_create(
+            root=dir_handle,
+            name=leaf,
+            access=_WIN_GENERIC_READ | _WIN_SYNCHRONIZE,
+            disposition=_WIN_FILE_OPEN,
+            options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
+            | _WIN_FILE_NON_DIRECTORY_FILE
+            | _WIN_FILE_OPEN_REPARSE_POINT,
+        )
+    finally:
+        _win_close(dir_handle)
+    try:
+        if _win_handle_info(handle).dwFileAttributes & _REPARSE_POINT:
+            raise OSError(errno.ELOOP, "path is a link or reparse point", str(path))
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_NOINHERIT", 0))
+    except BaseException:
+        _win_close(handle)
+        raise
+    # The descriptor owns the handle from here on.
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise OSError(errno.EINVAL, "path is not a regular file", str(path))
+        return fd, opened
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _replace_file_windows(
+    directory: Path,
+    name: str,
+    source_fd: int,
+    *,
+    mtime_ns: int,
+    max_bytes: int,
+) -> int:
+    # Mirrors the POSIX body of replace_file_at_nofollow: an existing folder
+    # opened at a pinned handle (a stopped session's folder stays gone), a
+    # fresh temp there, timestamps set on the temp, then a rename at the
+    # same handle.
+    target = directory / name
+    dir_handle = _open_existing_directory_windows(directory, action="copy", writable=True)
+    temp_handle = 0
+    temp_name: str | None = None
+    try:
+        _reject_leaf_reparse_windows(dir_handle, name, target)
+        temp_handle, temp_name = _win_create_temp_at(dir_handle, directory)
+        data = b"".join(_read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)))
+        _win_write_handle(temp_handle, data)
+        _win_set_file_times(temp_handle, mtime_ns)
+        _reject_leaf_reparse_windows(dir_handle, name, target)
+        _win_rename_at(temp_handle, dir_handle, name)
+        temp_name = None
+        return len(data)
+    finally:
+        if temp_handle:
+            _win_close(temp_handle)
+        if temp_name is not None:
+            _win_delete_at(dir_handle, temp_name)
         _win_close(dir_handle)
 
 

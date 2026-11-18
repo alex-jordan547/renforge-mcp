@@ -331,3 +331,125 @@ def test_scan_directory_nofollow_refuses_a_linked_folder_and_names_a_linked_entr
     (real / "a.save").symlink_to(outside / "secret.save")
     entries = dict(scan_directory_nofollow(real))
     assert stat.S_ISLNK(entries["a.save"].st_mode)
+
+
+def _junction(target: Path, link: Path) -> None:
+    winapi = pytest.importorskip("_winapi")
+    if not hasattr(winapi, "CreateJunction"):
+        pytest.skip("needs _winapi.CreateJunction")
+    winapi.CreateJunction(str(target), str(link))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory junctions")
+def test_open_regular_at_nofollow_refuses_a_junctioned_directory_on_windows(tmp_path: Path) -> None:
+    # The Windows path checked only the leaf, so a junction on the way was followed.
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    (outside / "inner" / "a.save").write_bytes(b"SECRET")
+    linked = tmp_path / "saves"
+    _junction(outside, linked)
+
+    with pytest.raises(ValueError):
+        open_regular_at_nofollow(linked, "a.save")
+    with pytest.raises(ValueError):
+        open_regular_at_nofollow(linked / "inner", "a.save")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory junctions")
+def test_replace_file_at_nofollow_refuses_a_junctioned_directory_on_windows(tmp_path: Path) -> None:
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "dest"
+    _junction(outside, linked)
+
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(ValueError):
+            replace_file_at_nofollow(
+                linked, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024
+            )
+    finally:
+        os.close(fd)
+    assert os.listdir(outside) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows copy sets timestamps by handle")
+def test_replace_file_at_nofollow_sets_the_mtime_before_publishing_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Windows copy used to publish, then set the mtime by pathname: a
+    # failure there left a published file out of the import's receipt, and a
+    # folder swapped for a junction redirected it.
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    os.utime(source, ns=(1_600_000_000_123_456_700, 1_600_000_000_123_456_700))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    def no_pathname_utime(*_args, **_kwargs):
+        raise AssertionError("timestamps must be set on the temp handle")
+
+    monkeypatch.setattr(os, "utime", no_pathname_utime)
+    fd, st = _source_fd(source)
+    try:
+        replace_file_at_nofollow(
+            dest, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024
+        )
+    finally:
+        os.close(fd)
+
+    assert os.listdir(dest) == ["a.save"]
+    assert (dest / "a.save").stat().st_mtime_ns == source.stat().st_mtime_ns
+
+
+def test_replace_file_at_nofollow_never_recreates_a_folder_removed_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A session stopped between the caller's directory check and the write:
+    # the Windows copy recreated its root and savedir, leaving a copy of the
+    # player's save in a folder nothing cleans up.
+    monkeypatch.setattr(files_module, "_require_directory", lambda _path: None)
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(OSError):
+            replace_file_at_nofollow(
+                tmp_path / "session" / "saves",
+                "a.save",
+                fd,
+                mode=0o644,
+                mtime_ns=st.st_mtime_ns,
+                max_bytes=1024,
+            )
+    finally:
+        os.close(fd)
+    assert not (tmp_path / "session").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX without dir_fd")
+def test_replace_file_at_nofollow_refuses_without_dir_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without dir_fd nothing can anchor the copy, so it is refused outright
+    # (reads keep their leaf-only fallback).
+    monkeypatch.setattr(files_module, "_posix_dir_fd_supported", lambda: False)
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    fd, st = _source_fd(source)
+    try:
+        with pytest.raises(OSError, match="dir_fd"):
+            replace_file_at_nofollow(
+                dest, "a.save", fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024
+            )
+    finally:
+        os.close(fd)
+    assert os.listdir(dest) == []
+    read_fd, _st = open_regular_at_nofollow(tmp_path, "source.save")
+    os.close(read_fd)
