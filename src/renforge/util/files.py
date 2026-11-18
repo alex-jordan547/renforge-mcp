@@ -228,6 +228,7 @@ def list_directory_nofollow(path: Path) -> list[str]:
     """
     if os.name == "nt":
         return [name for name, _st in _scan_directory_windows(Path(path))]
+    # Unlike scan_directory_nofollow, names alone need no stat(dir_fd=...).
     if not _posix_dir_fd_supported() or os.listdir not in getattr(os, "supports_fd", set()):
         return os.listdir(_listing_target_by_path(path))
     dir_fd = _open_directory_chain_nofollow_posix(Path(path), action="list")
