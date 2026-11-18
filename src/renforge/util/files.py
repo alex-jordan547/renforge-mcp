@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import stat
+import struct
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -232,15 +233,17 @@ def scan_directory_nofollow(path: Path) -> list[tuple[str, os.stat_result]]:
 
     Every component is opened without following links, so a folder swapped
     for a link raises ``ValueError`` instead of listing the link's target.
-    Each entry is stat'ed at that same directory descriptor without following
-    the entry, so a linked entry reports itself. An entry that cannot be
-    stat'ed (it vanished, or access is denied) is left out. A missing folder
-    raises ``FileNotFoundError``. Windows (and POSIX without ``dir_fd``)
-    refuses a linked component, then lists and stats by path.
+    Entries are listed, and each one's metadata read without following it,
+    at that same pinned descriptor (Windows: handle), so a linked entry
+    reports itself. An entry that cannot be stat'ed (it vanished, or access
+    is denied) is left out. A missing folder raises ``FileNotFoundError``.
+    POSIX without ``dir_fd`` refuses a linked component, then lists and
+    stats by path.
     """
+    if os.name == "nt":
+        return _scan_directory_windows(Path(path))
     if (
-        os.name == "nt"
-        or not _posix_dir_fd_supported()
+        not _posix_dir_fd_supported()
         or os.listdir not in getattr(os, "supports_fd", set())
         or os.stat not in getattr(os, "supports_dir_fd", set())
     ):
@@ -318,11 +321,12 @@ def replace_file_at_nofollow(
 ) -> int:
     """Copy *source_fd* into *directory*/*name*, replacing it atomically.
 
-    The copy goes to an ``O_EXCL`` temp name created at an anchored directory
-    descriptor and is renamed over *name*, so a link already at *name* is
-    replaced, never followed. On failure the temp is removed and *name* is
-    untouched. The timestamps are set on the temp before the rename, so a
-    published file always carries them. A missing *directory* is never
+    The copy goes to an exclusively created temp name at an anchored
+    directory descriptor (Windows: handle), gets the timestamps, and is
+    renamed over *name*, so a published file always carries them. On POSIX
+    a link already at *name* is replaced, never followed; on Windows a link
+    or reparse point there is refused (``ValueError``). On failure the temp
+    is removed and *name* is untouched. A missing *directory* is never
     created (``FileNotFoundError``; a file in its place raises
     ``NotADirectoryError``). Returns the number of bytes copied.
     """
@@ -1640,6 +1644,85 @@ _WIN_NTSTATUS_ERRNO: dict[int, int] = {
 }
 # FILETIME counts 100 ns ticks from 1601-01-01; the Unix epoch is this many later.
 _WIN_EPOCH_AS_FILETIME = 116444736000000000
+_WIN_FILE_ATTRIBUTE_READONLY = 0x1
+_WIN_FILE_FULL_DIRECTORY_INFO = 14  # FILE_INFO_BY_HANDLE_CLASS
+_WIN_FILE_FULL_DIRECTORY_RESTART_INFO = 15
+_WIN_ERROR_NO_MORE_FILES = 18
+# FILE_FULL_DIR_INFO up to its FileName: NextEntryOffset, FileIndex, the
+# creation/access/write/change times, EndOfFile, AllocationSize,
+# FileAttributes, FileNameLength (bytes) and EaSize.
+_WIN_FULL_DIR_INFO = struct.Struct("<IIqqqqqqIII")
+
+
+def _utf16_units(name: str) -> int:
+    """Length of *name* in UTF-16 code units, as Windows counts it.
+
+    A character outside the BMP (an emoji) is two units, so ``len(name)``
+    under-counts it.
+    """
+    return len(name.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _win_dir_entry_stat(attributes: int, size: int, times: tuple[int, int, int]) -> os.stat_result:
+    """An ``os.stat_result`` for one directory record, as ``os.lstat`` would see it.
+
+    *times* are the access, write and change FILETIMEs. A reparse point (a
+    link or junction) is ``S_IFLNK`` so callers never take it for a regular
+    file or a folder.
+    """
+    if attributes & _REPARSE_POINT:
+        mode = stat.S_IFLNK | 0o777
+    elif attributes & _WIN_FILE_ATTRIBUTE_DIRECTORY:
+        mode = stat.S_IFDIR | 0o777
+    else:
+        mode = stat.S_IFREG | 0o666
+    if attributes & _WIN_FILE_ATTRIBUTE_READONLY:
+        mode &= ~0o222
+    atime_ns, mtime_ns, ctime_ns = ((value - _WIN_EPOCH_AS_FILETIME) * 100 for value in times)
+    return os.stat_result((
+        mode, 0, 0, 1, 0, 0, size,
+        atime_ns // 10**9, mtime_ns // 10**9, ctime_ns // 10**9,
+        atime_ns / 1e9, mtime_ns / 1e9, ctime_ns / 1e9,
+        atime_ns, mtime_ns, ctime_ns,
+    ))
+
+
+def _win_parse_full_dir_info(raw: bytes) -> list[tuple[str, os.stat_result]]:
+    """Entries of one ``FileFullDirectoryInfo`` buffer, without ``.`` and ``..``."""
+    entries: list[tuple[str, os.stat_result]] = []
+    offset = 0
+    while True:
+        (
+            next_offset, _index, _created, accessed, written, changed,
+            size, _allocated, attributes, name_bytes, _ea_size,
+        ) = _WIN_FULL_DIR_INFO.unpack_from(raw, offset)
+        start = offset + _WIN_FULL_DIR_INFO.size
+        name = raw[start:start + name_bytes].decode("utf-16-le", "surrogatepass")
+        if name not in (".", ".."):
+            entries.append((name, _win_dir_entry_stat(attributes, size, (accessed, written, changed))))
+        if not next_offset:
+            return entries
+        offset += next_offset
+
+
+def _win_nt_status_error(status: int, message: str, name: str | None = None) -> OSError:
+    """The ``OSError`` for a failed NT call, with the matching subclass.
+
+    The few statuses callers tell apart map to an errno directly; any other
+    goes through ``RtlNtStatusToDosError`` so, for example, access denied is
+    a ``PermissionError``.
+    """
+    import ctypes
+
+    code = status & 0xFFFFFFFF
+    text = "%s (NTSTATUS 0x%08X)" % (message, code)
+    mapped = _WIN_NTSTATUS_ERRNO.get(code)
+    if mapped is not None:
+        return OSError(mapped, text, name)
+    to_dos = _win_ntdll().RtlNtStatusToDosError
+    to_dos.argtypes = [ctypes.c_ulong]
+    to_dos.restype = ctypes.c_ulong
+    return OSError(None, text, name, int(to_dos(code)))
 
 
 def _win_ntdll() -> Any:
@@ -1661,8 +1744,9 @@ def _win_unicode_string(name: str) -> tuple[Any, Any]:
 
     buf = ctypes.create_unicode_buffer(name)
     us = UNICODE_STRING()
-    us.Length = len(name) * 2
-    us.MaximumLength = (len(name) + 1) * 2
+    units = _utf16_units(name)
+    us.Length = units * 2
+    us.MaximumLength = (units + 1) * 2
     us.Buffer = ctypes.cast(buf, wintypes.LPWSTR)
     return us, buf
 
@@ -1731,12 +1815,7 @@ def _win_nt_create(
     )
     _ = buf
     if status < 0:
-        code = status & 0xFFFFFFFF
-        message = "NtCreateFile failed for %s (NTSTATUS 0x%08X)" % (name, code)
-        mapped = _WIN_NTSTATUS_ERRNO.get(code)
-        if mapped is not None:
-            raise OSError(mapped, message, name)
-        raise OSError(status, message)
+        raise _win_nt_status_error(status, "NtCreateFile failed for %s" % name, name)
     return int(handle.value or 0)
 
 
@@ -1841,10 +1920,14 @@ def _open_directory_chain_nofollow_windows(
     action: str = "atomic-write",
     create: bool = False,
     writable: bool = True,
+    listable: bool = False,
 ) -> int:
     """Open every Windows directory component relative to a pinned handle.
 
-    The returned handle may add files unless *writable* is false.
+    The returned handle may add files unless *writable* is false. A
+    read-only chain (*writable* false) opens each component with traverse
+    and read-attributes access only, so a traverse-only ancestor still
+    works; *listable* adds list access on the last component.
     """
     target = _absolute_path(path)
     anchor = Path(target.anchor)
@@ -1854,6 +1937,8 @@ def _open_directory_chain_nofollow_windows(
         | _WIN_FILE_READ_ATTRIBUTES
         | _WIN_SYNCHRONIZE
     )
+    read_access = _WIN_FILE_TRAVERSE | _WIN_FILE_READ_ATTRIBUTES | _WIN_SYNCHRONIZE
+    parts = target.parts[1:]
     handles: list[tuple[int, Path]] = [
         (_open_directory_nofollow_windows(anchor, action=action), anchor)
     ]
@@ -1887,14 +1972,20 @@ def _open_directory_chain_nofollow_windows(
         handles[-1] = (new_handle, current_path)
 
     try:
-        for part in target.parts[1:]:
+        for index, part in enumerate(parts):
             parent_handle, parent_path = handles[-1]
             current_path = parent_path / part
+            if writable:
+                part_access = access
+            elif listable and index == len(parts) - 1:
+                part_access = read_access | _WIN_FILE_LIST_DIRECTORY
+            else:
+                part_access = read_access
             try:
                 child = _win_nt_create(
                     root=parent_handle,
                     name=part,
-                    access=access,
+                    access=part_access,
                     disposition=_WIN_FILE_OPEN,
                     options=_WIN_FILE_SYNCHRONOUS_IO_NONALERT
                     | _WIN_FILE_DIRECTORY_FILE
@@ -1972,7 +2063,7 @@ def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
             ("ReplaceIfExists", wintypes.DWORD),
             ("RootDirectory", wintypes.HANDLE),
             ("FileNameLength", wintypes.DWORD),
-            ("FileName", wintypes.WCHAR * (len(name) + 1)),
+            ("FileName", wintypes.WCHAR * (_utf16_units(name) + 1)),
         ]
 
     class IO_STATUS_BLOCK(ctypes.Structure):
@@ -1991,7 +2082,7 @@ def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
     info = FILE_RENAME_INFO()
     info.ReplaceIfExists = 1
     info.RootDirectory = dir_handle
-    info.FileNameLength = len(name) * ctypes.sizeof(wintypes.WCHAR)
+    info.FileNameLength = _utf16_units(name) * ctypes.sizeof(wintypes.WCHAR)
     info.FileName = name
     iosb = IO_STATUS_BLOCK()
     status = set_info(
@@ -2002,7 +2093,7 @@ def _win_rename_at(file_handle: int, dir_handle: int, name: str) -> None:
         _WIN_FILE_RENAME_INFORMATION,
     )
     if status < 0:
-        raise OSError(status, "NtSetInformationFile rename failed")
+        raise _win_nt_status_error(status, "NtSetInformationFile rename failed", name)
 
 
 def _reject_leaf_reparse_windows(dir_handle: int, name: str, destination: Path) -> None:
@@ -2131,10 +2222,12 @@ def _win_set_file_times(handle: int, mtime_ns: int) -> None:
     set_time.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     set_time.restype = wintypes.BOOL
     if not set_time(handle, None, ctypes.byref(filetime), ctypes.byref(filetime)):
-        raise OSError(ctypes.get_last_error(), "SetFileTime failed")
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _open_existing_directory_windows(directory: Path, *, action: str, writable: bool) -> int:
+def _open_existing_directory_windows(
+    directory: Path, *, action: str, writable: bool, listable: bool = False
+) -> int:
     """Pinned handle for the existing folder *directory*; nothing is created.
 
     A linked or reparse component raises ``ValueError``. A missing folder
@@ -2144,7 +2237,7 @@ def _open_existing_directory_windows(directory: Path, *, action: str, writable: 
     """
     try:
         return _open_directory_chain_nofollow_windows(
-            directory, action=action, create=False, writable=writable
+            directory, action=action, create=False, writable=writable, listable=listable
         )
     except (FileNotFoundError, NotADirectoryError):
         raise
@@ -2154,6 +2247,13 @@ def _open_existing_directory_windows(directory: Path, *, action: str, writable: 
 
 
 def _open_regular_at_nofollow_windows(directory: Path, leaf: str) -> tuple[int, os.stat_result]:
+    """Windows body of :func:`open_regular_at_nofollow`.
+
+    The folder chain is opened read-only without following reparse points,
+    the leaf is opened at that handle with ``FILE_OPEN_REPARSE_POINT``, and
+    the handle is returned as a CRT descriptor. A leaf reparse point or a
+    non-regular file raises ``OSError``.
+    """
     import msvcrt
 
     path = directory / leaf
@@ -2188,6 +2288,37 @@ def _open_regular_at_nofollow_windows(directory: Path, leaf: str) -> tuple[int, 
         raise
 
 
+def _scan_directory_windows(path: Path) -> list[tuple[str, os.stat_result]]:
+    """Windows body of :func:`scan_directory_nofollow`.
+
+    The folder chain is opened read-only without following reparse points,
+    with list access on the folder itself only, and its entries are read
+    from that pinned handle with ``GetFileInformationByHandleEx``.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    handle = _open_existing_directory_windows(path, action="list", writable=False, listable=True)
+    try:
+        kernel32, _advapi32 = _win_advapi_kernel()
+        query = kernel32.GetFileInformationByHandleEx
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        buf = ctypes.create_string_buffer(64 * 1024)
+        info_class = _WIN_FILE_FULL_DIRECTORY_RESTART_INFO
+        entries: list[tuple[str, os.stat_result]] = []
+        while True:
+            if not query(handle, info_class, buf, len(buf)):
+                error = ctypes.get_last_error()
+                if error == _WIN_ERROR_NO_MORE_FILES:
+                    return entries
+                raise ctypes.WinError(error)
+            info_class = _WIN_FILE_FULL_DIRECTORY_INFO
+            entries.extend(_win_parse_full_dir_info(buf.raw))
+    finally:
+        _win_close(handle)
+
+
 def _replace_file_windows(
     directory: Path,
     name: str,
@@ -2196,10 +2327,14 @@ def _replace_file_windows(
     mtime_ns: int,
     max_bytes: int,
 ) -> int:
-    # Mirrors the POSIX body of replace_file_at_nofollow: an existing folder
-    # opened at a pinned handle (a stopped session's folder stays gone), a
-    # fresh temp there, timestamps set on the temp, then a rename at the
-    # same handle.
+    """Windows body of :func:`replace_file_at_nofollow`.
+
+    Mirrors the POSIX body: the existing folder opened at a pinned handle (a
+    stopped session's folder stays gone), a fresh temp there, the timestamps
+    set on the temp handle, then a rename at the same handle. A reparse
+    point already at *name* is refused (``ValueError``). Returns the number
+    of bytes copied.
+    """
     target = directory / name
     dir_handle = _open_existing_directory_windows(directory, action="copy", writable=True)
     temp_handle = 0

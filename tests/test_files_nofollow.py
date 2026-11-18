@@ -487,3 +487,138 @@ def test_scan_directory_nofollow_skips_only_an_entry_it_cannot_stat(
     monkeypatch.setattr(os, "lstat", lstat)
 
     assert [name for name, _st in scan_directory_nofollow(folder)] == ["a.save"]
+
+
+def _full_dir_record(name: str, attributes: int, *, size: int = 0, mtime_ns: int = 0, last: bool = False) -> bytes:
+    encoded = name.encode("utf-16-le", "surrogatepass")
+    filetime = mtime_ns // 100 + files_module._WIN_EPOCH_AS_FILETIME
+    length = files_module._WIN_FULL_DIR_INFO.size + len(encoded)
+    padded = (length + 7) // 8 * 8
+    header = files_module._WIN_FULL_DIR_INFO.pack(
+        0 if last else padded, 0, filetime, filetime, filetime, filetime,
+        size, size, attributes, len(encoded), 0,
+    )
+    return (header + encoded).ljust(padded, b"\0")
+
+
+def test_windows_directory_records_parse_like_lstat() -> None:
+    # The Windows listing reads entries from a pinned handle, so their
+    # metadata comes from these records rather than a stat by path.
+    raw = b"".join([
+        _full_dir_record(".", 0x10),
+        _full_dir_record("..", 0x10),
+        _full_dir_record("1-1-LT1.save", 0x20, size=4, mtime_ns=1_600_000_000_123_456_700),
+        _full_dir_record("sub", 0x10),
+        _full_dir_record("linked", 0x10 | 0x400),
+        _full_dir_record("\U0001F600-LT1.save", 0x20 | 0x1, size=2, last=True),
+    ])
+
+    entries = dict(files_module._win_parse_full_dir_info(raw + b"\0" * 64))
+
+    assert list(entries) == ["1-1-LT1.save", "sub", "linked", "\U0001F600-LT1.save"]
+    slot = entries["1-1-LT1.save"]
+    assert stat.S_ISREG(slot.st_mode) and slot.st_size == 4
+    assert slot.st_mtime_ns == 1_600_000_000_123_456_700
+    assert slot.st_mtime == pytest.approx(1_600_000_000.1234567)
+    assert stat.S_ISDIR(entries["sub"].st_mode)
+    assert stat.S_ISLNK(entries["linked"].st_mode)
+    assert stat.S_ISREG(entries["\U0001F600-LT1.save"].st_mode)
+    assert not entries["\U0001F600-LT1.save"].st_mode & 0o222
+
+
+def test_windows_names_count_utf16_units() -> None:
+    # NtCreateFile and the rename take lengths in UTF-16 units; counting code
+    # points cut a name with an emoji short (or overflowed the rename buffer).
+    assert files_module._utf16_units("1-1-LT1.save") == 12
+    assert files_module._utf16_units("\U0001F600-LT1.save") == 11
+
+
+def test_a_slot_name_with_an_emoji_round_trips(tmp_path: Path) -> None:
+    name = "\U0001F600-1-LT1.save"
+    source = tmp_path / "source.save"
+    source.write_bytes(b"SLOT")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    fd, st = _source_fd(source)
+    try:
+        replace_file_at_nofollow(dest, name, fd, mode=0o644, mtime_ns=st.st_mtime_ns, max_bytes=1024)
+    finally:
+        os.close(fd)
+    assert os.listdir(dest) == [name]
+    read_fd, _st = open_regular_at_nofollow(dest, name)
+    try:
+        assert os.read(read_fd, 16) == b"SLOT"
+    finally:
+        os.close(read_fd)
+    assert [entry for entry, _st in scan_directory_nofollow(dest)] == [name]
+
+
+@pytest.mark.parametrize(("writable", "listable"), [(False, False), (False, True), (True, False)])
+def test_windows_read_chains_need_only_traverse_on_the_way(
+    monkeypatch: pytest.MonkeyPatch, writable: bool, listable: bool
+) -> None:
+    # A read opened every component with list access, so a traverse-only
+    # ancestor (store-installed games) denied a read that worked by path.
+    opened: list[tuple[str, int]] = []
+
+    def nt_create(*, root, name, access, disposition, options, attributes=0, share=0):
+        opened.append((name, access))
+        return len(opened) + 100
+
+    class _Info:
+        dwFileAttributes = files_module._WIN_FILE_ATTRIBUTE_DIRECTORY
+
+    monkeypatch.setattr(files_module, "_open_directory_nofollow_windows", lambda *_a, **_k: 1)
+    monkeypatch.setattr(files_module, "_win_nt_create", nt_create)
+    monkeypatch.setattr(files_module, "_win_reject_reparse_handle", lambda *_a, **_k: _Info)
+    monkeypatch.setattr(files_module, "_win_close", lambda _handle: None)
+
+    files_module._open_directory_chain_nofollow_windows(
+        Path("/Program Files/Apps/game/saves"), writable=writable, listable=listable
+    )
+
+    lists = {name: bool(access & files_module._WIN_FILE_LIST_DIRECTORY) for name, access in opened}
+    adds = [name for name, access in opened if access & files_module._WIN_FILE_ADD_FILE]
+    if writable:
+        # Unchanged: list access everywhere, the last folder reopened writable.
+        assert all(lists.values())
+        assert adds == ["saves"]
+    else:
+        assert lists == {"Program Files": False, "Apps": False, "game": False, "saves": listable}
+        assert adds == []
+    for _name, access in opened:
+        assert access & files_module._WIN_FILE_TRAVERSE
+        assert access & files_module._WIN_FILE_READ_ATTRIBUTES
+
+
+def test_windows_nt_failures_keep_the_errors_callers_tell_apart() -> None:
+    missing = files_module._win_nt_status_error(-0x3FFFFFCC, "NtCreateFile failed", "a.save")
+    assert isinstance(missing, FileNotFoundError)
+    assert "0xC0000034" in str(missing)
+    assert isinstance(files_module._win_nt_status_error(0xC0000103 - (1 << 32), "x"), NotADirectoryError)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="NTSTATUS to Win32 mapping")
+def test_windows_nt_access_denied_is_a_permission_error() -> None:
+    error = files_module._win_nt_status_error(0xC0000022 - (1 << 32), "NtCreateFile failed", "a.save")
+    assert isinstance(error, PermissionError)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows directory junctions")
+def test_scan_directory_nofollow_lists_at_a_handle_on_windows(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.save").write_bytes(b"SECRET")
+    folder = tmp_path / "saves"
+    folder.mkdir()
+    (folder / "a.save").write_bytes(b"SLOT")
+    _junction(outside, folder / "linked")
+
+    entries = dict(scan_directory_nofollow(folder))
+    assert sorted(entries) == ["a.save", "linked"]
+    assert stat.S_ISREG(entries["a.save"].st_mode) and entries["a.save"].st_size == 4
+    assert entries["a.save"].st_mtime_ns == (folder / "a.save").stat().st_mtime_ns
+    assert not stat.S_ISREG(entries["linked"].st_mode)
+    with pytest.raises(ValueError):
+        scan_directory_nofollow(folder / "linked")
