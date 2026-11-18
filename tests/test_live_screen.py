@@ -4,6 +4,7 @@ import threading
 import time
 import types
 
+from renforge.save_isolation import LaunchIsolation
 from renforge.tools import live
 
 
@@ -270,6 +271,70 @@ def test_launch_game_does_not_warn_when_the_language_is_isolated(tmp_path, monke
     assert result["language_applied"] is True
     assert "warning" not in result
     live._SESSIONS.pop(live._key(tmp_path), None)
+
+
+def test_language_warning_follows_the_isolation_default(tmp_path, monkeypatch):
+    # RENFORGE_ISOLATION=temporary isolates a launch that omits savedir, so the
+    # language change stays in the session and no persistence warning applies.
+    monkeypatch.setenv("RENFORGE_ISOLATION", "temporary")
+    (tmp_path / "game").mkdir()
+    calls = {}
+    session = _fresh_session({"current_label": "start", "language": "japanese"})
+    monkeypatch.setattr(live, "get_or_install_sdk", lambda *_args, **_kwargs: object())
+
+    def fake_launch_with_bridge(_sdk, _project, **kwargs):
+        calls.update(kwargs)
+        # Record the modes the launcher was handed, as the real one does.
+        session.isolation = LaunchIsolation(
+            savedir_mode=kwargs["savedir"],
+            home_mode=kwargs["home"],
+            persistent_mode=kwargs["persistent"],
+            preferences_mode=kwargs["preferences"],
+            savedir=None,
+            home=None,
+            session_root=None,
+            cleanup=False,
+        )
+        return session
+
+    monkeypatch.setattr(live, "launch_with_bridge", fake_launch_with_bridge)
+
+    try:
+        result = live.launch_game(str(tmp_path), language="japanese")
+    finally:
+        live._SESSIONS.pop(live._key(tmp_path), None)
+
+    assert calls["savedir"] == "temporary"
+    assert calls["language"] == "japanese"
+    assert result["language_applied"] is True
+    assert "warning" not in result
+    assert result["isolation"]["exposes_user_saves"] is False
+
+
+def test_isolation_mismatch_reports_language_not_applied(tmp_path, monkeypatch):
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    (tmp_path / "game").mkdir()
+    session = _running_session("japanese")
+    session.isolation = LaunchIsolation(
+        savedir_mode="existing",
+        home_mode="existing",
+        persistent_mode="existing",
+        preferences_mode="existing",
+        savedir=None,
+        home=None,
+        session_root=None,
+        cleanup=False,
+    )
+    monkeypatch.setitem(live._SESSIONS, live._key(tmp_path), session)
+
+    result = live.launch_game(str(tmp_path), savedir="temporary", language="japanese")
+
+    assert result["code"] == "SESSION_ISOLATION_MISMATCH"
+    assert result["requested_language"] == "japanese"
+    # Even though the running game already shows that language, the refused
+    # launch applied nothing.
+    assert result["language_applied"] is False
+    assert session.closed is False
 
 
 def test_language_persistence_warning_treats_savedir_sentinels_as_the_default():

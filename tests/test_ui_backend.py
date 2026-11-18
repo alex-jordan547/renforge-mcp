@@ -382,6 +382,50 @@ def test_api_live_stop_dispatches_runtime_stop(tmp_path: Path, monkeypatch) -> N
 
 
 @pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_saves_import_runs_in_the_dashboard_process(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_saves(*args, **kwargs):
+        calls.update(args=args, kwargs=kwargs)
+        return {"ok": True, "imported": ["1-1"]}
+
+    monkeypatch.setattr(server.live, "saves", fake_saves)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    response = client.post("/api/live/saves/import?token=token", json={"slots": ["1-1"]})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "imported": ["1-1"]}
+    assert calls == {
+        "args": (str(project), "import"),
+        "kwargs": {"slot": None, "slots": ["1-1"], "pattern": None},
+    }
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_live_saves_import_rejects_a_malformed_selection(tmp_path: Path, monkeypatch) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    listed = []
+    monkeypatch.setattr(server.live, "select_host_slots", lambda *a, **k: listed.append(1), raising=False)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    response = client.post("/api/live/saves/import?token=token", json={"slots": "1-1"})
+
+    # The saves shape, with the code the MCP side relays (not a bare 400).
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "code": "SAVE_IMPORT_INVALID",
+        "error": "slots must be a list of slot names",
+        "files_touched": [],
+    }
+    assert listed == []
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
 def test_project_browser_opens_current_project_and_lists_project_parent(tmp_path: Path) -> None:
     project = _project_root(tmp_path)
     _project_at(tmp_path / "other-project")
@@ -717,3 +761,135 @@ def test_poll_bridge_connects_with_timeout_kwarg_and_broadcasts(tmp_path: Path, 
     assert "event" in broadcast_types
     # Screenshots are served over HTTP, never streamed on the socket.
     assert "screenshot" not in broadcast_types
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("home", {"path": "/elsewhere"}, "launch_home_invalid"),
+        ("preferences", 1, "launch_preferences_invalid"),
+        ("preferences", "fresh", "launch_preferences_invalid"),
+        ("persistent", "bogus", "launch_persistent_invalid"),
+        ("savedir", ["existing"], "launch_savedir_invalid"),
+    ],
+)
+def test_api_warp_validates_isolation_options_like_launch(
+    tmp_path: Path, monkeypatch, field: str, value, code: str
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/warp?token=token", json={"target": "start", field: value})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == code
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+def test_api_live_launch_rejects_an_unknown_state_mode(tmp_path: Path, monkeypatch, field: str) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/live/launch?token=token", json={field: "bogus"})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == f"launch_{field}_invalid"
+    assert {"auto", "existing", "empty"} <= server.STATE_MODE_TOKENS
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+@pytest.mark.parametrize("mode", ["auto", "existing", "empty"])
+def test_api_live_launch_forwards_supported_state_mode(
+    tmp_path: Path, monkeypatch, field: str, mode: str
+) -> None:
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_launch(project_path: str, **kwargs):
+        calls.update({k: kwargs.get(k) for k in ("persistent", "preferences")})
+        return {"ok": True, "ready": True, "already_running": False, "current_label": "start", "editor": True}
+
+    monkeypatch.setattr(server.live, "launch_game", fake_launch)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post(
+        "/api/live/launch?token=token",
+        json={"version": "stable", "savedir": "temporary", field: mode},
+    )
+
+    assert response.status_code == 200
+    assert calls[field] == mode
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+@pytest.mark.parametrize("endpoint", ["/api/live/launch", "/api/warp"])
+@pytest.mark.parametrize("savedir", ["existing", None])
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+def test_empty_state_without_a_temporary_savedir_is_a_400_before_launch(
+    tmp_path: Path, monkeypatch, endpoint: str, savedir: str | None, field: str
+) -> None:
+    import renforge.ui.server as server
+
+    # Omitted savedir resolves to the user's saves unless this says otherwise.
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    project = _project_root(tmp_path)
+    monkeypatch.setattr(
+        server.live,
+        "launch_game",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+    client = TestClient(create_ui_app(project, ui_token="token"))
+    payload: dict[str, object] = {"target": "start", field: "empty"}
+    if savedir is not None:
+        payload["savedir"] = savedir
+
+    response = client.post(f"{endpoint}?token=token", json=payload)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error_code"] == "launch_state_mode_conflict"
+    assert "savedir='temporary'" in body["error"]
+
+
+@pytest.mark.skipif(TestClient is None, reason="starlette not installed")
+def test_api_warp_leaves_unset_isolation_to_launch_game(tmp_path: Path, monkeypatch) -> None:
+    # launch_game keeps an isolated game's isolation on an all-auto relaunch,
+    # so the Warp route must pass omitted knobs through unresolved.
+    import renforge.ui.server as server
+
+    project = _project_root(tmp_path)
+    calls = {}
+
+    def fake_launch(project_path: str, **kwargs):
+        calls.update({k: kwargs.get(k) for k in ("savedir", "home", "persistent", "preferences", "warp")})
+        return {"ok": True, "ready": True, "already_running": False, "current_label": "start", "editor": True}
+
+    monkeypatch.setattr(server.live, "launch_game", fake_launch)
+    client = TestClient(create_ui_app(project, ui_token="token"))
+
+    response = client.post("/api/warp?token=token", json={"target": "start"})
+
+    assert response.status_code == 200
+    assert calls["warp"]
+    assert {k: calls[k] for k in ("savedir", "home", "persistent", "preferences")} == dict.fromkeys(
+        ("savedir", "home", "persistent", "preferences")
+    )

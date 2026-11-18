@@ -7,7 +7,107 @@ versioning.
 
 ### Added
 
+- Opt-in launch isolation for `renforge_launch`, `renforge_jump`,
+  `renforge_new_game`, and dashboard launches. Pass `savedir=temporary`, or
+  set `RENFORGE_ISOLATION=temporary` for every launch of a server; launches
+  that don't pass `savedir`, `home`, `persistent` or `preferences` use the
+  game's normal saves, as before. An isolated session gets a disposable save
+  directory (native `--savedir` plus `RENFORGE_SAVEDIR` /
+  `RENPY_PATH_TO_SAVES` / `RENPY_MULTIPERSISTENT`), a private HOME/XDG/temp
+  tree (new `home` knob), empty persistent data, and reset preferences (new
+  `preferences` knob). Ready payloads include `session_id` and an
+  `isolation` object so an agent can see the mode. A launch is refused with
+  `SESSION_ISOLATION_MISMATCH` rather than handed a running game that uses
+  the user's saves or HOME where the launch isolates them (each checked
+  separately), including one started elsewhere (another RenForge process or
+  the dashboard). An external game's HOME counts as isolated only when it
+  reports one inside a RenForge session root, and its saves only when every
+  active save location it reports is inside one; anything else, including a
+  bridge that cannot report them, counts as the user's. A reused external
+  game's ready and status payloads carry what it reported as `isolation`. A
+  launch whose state modes a fresh launch would reject (`empty` without
+  `savedir=temporary`) fails with `LAUNCH_STATE_MODE_CONFLICT` before reuse.
+  A `renforge_jump`, `renforge_new_game` or dashboard Warp relaunch whose
+  isolation knobs are all omitted or `auto` keeps the saves and HOME
+  isolation of the game it replaces (resolved by the process that owns the
+  game, unless this server's `RENFORGE_ISOLATION=temporary` already isolates
+  it); it gets a fresh session, so imported slots are not carried over.
+  Mode tokens (`auto`, `existing`, `default`, `temporary`, `empty`) are
+  matched case-insensitively, so `savedir=Temporary` isolates instead of
+  creating a folder of that name. This is application-layer isolation, not
+  an OS sandbox.
+- `renforge_saves` gains `list_user` (observational host listing) and
+  `import` (copy selected host slots into the savedir of a session launched
+  with `savedir=temporary`, never into a `savedir=<path>` folder; never
+  bind-mounts the user tree). `list_user` filters by `pattern`, a glob
+  matched against the whole slot name; `import` selects by name, by
+  `pattern`, or both; `list` keeps its `regexp`, which Ren'Py applies.
+  `pattern` and each slot name are capped at 256 characters and `slots` at
+  1000 names (`SAVE_IMPORT_INVALID`, checked before anything is listed).
+  Both read only the folder that the game's `config.save_directory` names
+  directly under the Ren'Py save root, plus a `game/saves` inside the
+  project; they open the game's scripts without following links or
+  blocking, skip one over 4 MiB, and list before an import holds the
+  session, so a stop never waits on a listing. A save folder swapped for a
+  link lists nothing, and `list_user` writes nothing, not even `.renforge`.
+  Import resolves none of the session's own folders, so a session root or
+  savedir swapped for a link is refused with `SAVE_IMPORT_FAILED` instead of
+  followed, and never recreates a stopped session's folders. On every
+  platform, folders are listed and slot files read and copied at handles
+  that do not follow links or junctions. A slot file import will not copy
+  (a link, a FIFO or other non-regular file, one over the size cap, or an
+  unreadable one), or a slot whose host folder was swapped for a link, is
+  listed in `refused` with a reason, never dropped; a slot counts as
+  imported only when its save file was copied, and an import that copied
+  nothing fails with `NO_MATCHING_SAVE_SLOTS`.
+  Import returns a `files_touched` write receipt (absolute paths of the
+  copied files, also on `SAVE_IMPORT_FAILED`). Its other codes are
+  `NO_ISOLATED_SESSION`, `SAVE_IMPORT_NOT_ISOLATED` and
+  `PROJECT_PATH_UNAVAILABLE`. A stop waits for an import in progress, and an
+  import never starts on a stopped session or one whose game has exited.
+  Copied slots are removed with a temporary savedir on stop, unless
+  `cleanup_on_stop=false` or the cleanup fails. A failed save rescan is
+  reported as `rescan_error` instead of leaving a stale slot list
+  unexplained.
+- `renforge_saves(action="import")` reaches an isolated session that the
+  dashboard launched: the request goes to the dashboard that owns the
+  session (new token-checked `POST /api/live/saves/import`), and that
+  dashboard's answer, code and shape included, is final; only an unreachable
+  dashboard gives `DASHBOARD_REQUEST_FAILED`. The MCP side waits up to 300 s
+  for a delegated import (launch and stop keep 45 s).
+- `language` composes with isolation. The "changed the stored preference"
+  warning follows the resolved save directory, so an isolated launch (or
+  `RENFORGE_ISOLATION=temporary`) does not raise it, and
+  `SESSION_ISOLATION_MISMATCH` reports `requested_language` and
+  `language_applied: false` like `SESSION_MODE_MISMATCH`. Dashboard launches
+  keep forwarding `language`, now together with the isolation options.
+
 ### Changed
+
+- `savedir=temporary` and `savedir=<path>` now pass native `--savedir` and
+  keep a single save location (no `game/saves` or `config.extra_savedirs`).
+  With `savedir=temporary`, persistent and preferences default to empty,
+  and `persistent=existing` means the selected save directory's own state,
+  not the player's. `savedir=<path>` also sets `RENPY_PATH_TO_SAVES` and
+  `RENPY_MULTIPERSISTENT=<path>/multipersistent`, which it creates. In 0.7.5
+  `savedir=temporary` only set `RENFORGE_SAVEDIR`, and `persistent` defaulted
+  to `existing`.
+- The `savedir` and `persistent` schema defaults are now `auto` (they were
+  `""` and `existing`); with isolation off they resolve exactly as before.
+- Dashboard launch and Warp validate the isolation options: `persistent`
+  and `preferences` must be `auto`, `existing` or `empty` (HTTP 400
+  `launch_persistent_invalid` / `launch_preferences_invalid`, which now also
+  rejects `copy` and `fixture`), `home` must be a string
+  (`launch_home_invalid`), and a combination a launch would refuse is a 400
+  `launch_state_mode_conflict`.
+- Breaking: `persistent` no longer accepts `copy` or `fixture` (they only set
+  an environment marker and copied or loaded nothing); the tool schema
+  rejects them, launches return `LAUNCH_STATE_MODE_CONFLICT`, and the
+  dashboard answers 400 `launch_persistent_invalid`. Use
+  `renforge_saves(action="import")` to bring in real slots. `persistent=empty`
+  (like `preferences=empty`) now requires `savedir=temporary`: it selects a
+  fresh temporary location and never deletes files, where before it unlinked
+  `persistent` in whatever save location the game used.
 
 ### Fixed
 

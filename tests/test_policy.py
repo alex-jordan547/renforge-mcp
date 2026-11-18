@@ -32,6 +32,14 @@ def test_classify_control_saves_eval_and_scenario_operations() -> None:
         "renforge_saves.list",
         RISK_OBSERVATIONAL,
     )
+    assert classify("renforge_saves", {"action": "list_user"}) == (
+        "renforge_saves.list_user",
+        RISK_OBSERVATIONAL,
+    )
+    assert classify("renforge_saves", {"action": "import"}) == (
+        "renforge_saves.import",
+        RISK_MUTATING,
+    )
     assert classify("renforge_saves", {"action": "load"}) == (
         "renforge_saves.load",
         RISK_DESTRUCTIVE,
@@ -96,6 +104,10 @@ def test_enforce_denies_open_world_and_destructive_without_authorize(monkeypatch
     denied_quit = evaluate("renforge_control", {"action": "quit"})
     allowed_advance = evaluate("renforge_control", {"action": "advance"})
     allowed_list = evaluate("renforge_saves", {"action": "list"})
+    allowed_list_user = evaluate("renforge_saves", {"action": "list_user"})
+    allowed_import = evaluate("renforge_saves", {"action": "import", "slot": "1-1"})
+    isolated_launch = evaluate("renforge_launch", {"savedir": "temporary"})
+    default_launch = evaluate("renforge_launch", {"savedir": "existing"})
 
     assert denied_eval.allowed is False
     assert denied_eval.to_result()["code"] == "POLICY_DENIED"
@@ -104,6 +116,12 @@ def test_enforce_denies_open_world_and_destructive_without_authorize(monkeypatch
     assert denied_quit.allowed is False
     assert allowed_advance.allowed is True
     assert allowed_list.allowed is True
+    assert allowed_list_user.allowed is True
+    assert allowed_import.allowed is True
+    # Isolation is opt-in, so launches keep their pre-isolation policy:
+    # neither an isolated launch nor the default one needs authorize.
+    assert isolated_launch.allowed is True
+    assert default_launch.allowed is True
 
 
 def test_enforce_allows_authorized_and_allowlisted_calls(monkeypatch) -> None:

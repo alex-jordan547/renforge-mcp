@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from renforge.bridge.client import BridgeError
 from renforge.tools import live
 
@@ -117,7 +120,19 @@ def test_wait_until_yields_when_interval_is_zero(monkeypatch, tmp_path):
             return {"current_label": "start"}
 
     monkeypatch.setattr(live, "_client", lambda _path: FakeClient())
-    monkeypatch.setattr(live.time, "sleep", lambda duration: sleeps.append(duration))
+    # live.time is the shared time module, so other threads call this too
+    # (e.g. the bridge reaper a launcher teardown test leaves running): record
+    # only this test's sleeps.
+    real_sleep = time.sleep
+    caller = threading.get_ident()
+
+    def fake_sleep(duration):
+        if threading.get_ident() == caller:
+            sleeps.append(duration)
+        else:
+            real_sleep(duration)
+
+    monkeypatch.setattr(live.time, "sleep", fake_sleep)
 
     result = live.wait_until(str(tmp_path), label="never", timeout=0.01, interval=0)
 

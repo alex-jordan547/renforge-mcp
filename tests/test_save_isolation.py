@@ -1,0 +1,1734 @@
+"""Application-layer isolation: MCP launches must not use user saves or HOME."""
+
+from __future__ import annotations
+
+import contextlib
+import errno
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from renforge.save_isolation import (
+    agent_session_id,
+    apply_launch_isolation_defaults,
+    classify_savedir,
+    configured_isolation_mode,
+    default_launch_value,
+    LaunchIsolation,
+    host_renpy_root,
+    host_save_directories,
+    import_host_slots,
+    isolation_report,
+    launch_exposed_components,
+    list_host_slots,
+    parse_save_directory,
+    path_exposes_user_saves,
+    resolve_launch_isolation,
+    reuse_keeps_isolation,
+)
+
+
+@pytest.fixture
+def host_save_root(tmp_path: Path, monkeypatch) -> Path:
+    """Keep native host-save discovery inside the test's synthetic home."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    appdata = home / "AppData" / "Roaming"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    if sys.platform == "win32":
+        return appdata / "RenPy"
+    if sys.platform == "darwin":
+        return home / "Library" / "RenPy"
+    return home / ".renpy"
+
+
+def test_host_renpy_root_uses_native_location(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    home = tmp_path / "home"
+    assert host_renpy_root(home=home) == host_save_root
+    assert host_renpy_root() == host_save_root
+
+
+def _cleanup(isolation) -> None:
+    root = isolation.session_root or isolation.savedir
+    if root is not None:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_classify_requires_explicit_existing_opt_out() -> None:
+    assert classify_savedir(None) == "temporary"
+    assert classify_savedir("existing") == "existing"
+    assert classify_savedir("default") == "existing"
+    assert classify_savedir(" existing ") == "existing"
+    assert classify_savedir("auto") == "temporary"
+
+
+def test_classify_isolates_temporary_and_blank_tokens() -> None:
+    assert classify_savedir("") == "temporary"
+    assert classify_savedir("temporary") == "temporary"
+    assert classify_savedir(" temporary ") == "temporary"
+
+
+def test_classify_treats_other_values_as_explicit_paths() -> None:
+    assert classify_savedir("/tmp/renforge-profile-saves") == "path"
+    assert classify_savedir("~/renforge-saves") == "path"
+
+
+def test_isolation_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    assert default_launch_value(None) == "existing"
+    assert default_launch_value("") == "existing"
+    assert default_launch_value("auto") == "existing"
+    assert default_launch_value("   ") == "existing"
+    assert default_launch_value("temporary") == "temporary"
+    assert default_launch_value("/opt/saves") == "/opt/saves"
+    opted_in = {"RENFORGE_ISOLATION": "temporary"}
+    assert default_launch_value(None, environ=opted_in) == "temporary"
+    assert default_launch_value("existing", environ=opted_in) == "existing"
+    assert configured_isolation_mode({}) == "existing"
+    assert configured_isolation_mode({"RENFORGE_ISOLATION": "bogus"}) == "existing"
+
+
+def test_apply_defaults_isolate_saves_home_and_preferences_when_opted_in() -> None:
+    assert apply_launch_isolation_defaults(environ={}) == {
+        "savedir": "existing",
+        "home": "existing",
+        "persistent": "existing",
+        "preferences": "existing",
+    }
+    for opted_in in (
+        apply_launch_isolation_defaults(environ={"RENFORGE_ISOLATION": "temporary"}),
+        apply_launch_isolation_defaults(savedir="temporary", environ={}),
+    ):
+        assert opted_in == {
+            "savedir": "temporary",
+            "home": "temporary",
+            "persistent": "empty",
+            "preferences": "empty",
+        }
+
+
+def test_apply_defaults_honor_server_wide_existing_config() -> None:
+    resolved = apply_launch_isolation_defaults(
+        environ={"RENFORGE_ISOLATION": "existing"}
+    )
+    assert resolved == {
+        "savedir": "existing",
+        "home": "existing",
+        "persistent": "existing",
+        "preferences": "existing",
+    }
+    assert configured_isolation_mode({"RENFORGE_ISOLATION": "existing"}) == "existing"
+    assert configured_isolation_mode({"RENFORGE_ISOLATION": "temporary"}) == "temporary"
+
+
+def test_savedir_existing_couples_home_unless_home_is_explicit() -> None:
+    coupled = apply_launch_isolation_defaults(savedir="existing")
+    assert coupled["savedir"] == "existing"
+    assert coupled["home"] == "existing"
+
+    isolated_home = apply_launch_isolation_defaults(
+        savedir="existing", home="temporary"
+    )
+    assert isolated_home["home"] == "temporary"
+
+    env_existing = apply_launch_isolation_defaults(
+        savedir="temporary",
+        environ={"RENFORGE_ISOLATION": "existing"},
+    )
+    assert env_existing["savedir"] == "temporary"
+    assert env_existing["home"] == "temporary"
+
+
+def test_temporary_isolation_is_outside_user_save_canaries(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    normal_saves = home / ".renpy" / "renforge-demo"
+    normal_saves.mkdir(parents=True)
+    canary = normal_saves / "normal_save_canary.save"
+    canary.write_text("NORMAL-SAVE-CANARY\n", encoding="utf-8")
+    prefs = home / ".renpy" / "persistent"
+    prefs.write_text("HOST-PERSISTENT\n", encoding="utf-8")
+    project_saves = tmp_path / "project" / "game" / "saves"
+    project_saves.mkdir(parents=True)
+    (project_saves / "slot1.save").write_text("PROJECT-SAVE\n", encoding="utf-8")
+
+    isolation = resolve_launch_isolation("temporary")
+    try:
+        assert isolation.savedir_mode == "temporary"
+        assert isolation.home_mode == "temporary"
+        assert isolation.cleanup is True
+        assert isolation.savedir is not None
+        assert isolation.home is not None
+        assert isolation.session_root is not None
+        savedir = isolation.savedir
+        assert savedir.is_dir()
+        assert (savedir / "multipersistent").is_dir()
+        assert savedir != normal_saves
+        assert not savedir.is_relative_to(home)
+        assert not savedir.is_relative_to(tmp_path / "project")
+        assert isolation.home.is_dir()
+        assert isolation.home.is_relative_to(isolation.session_root)
+        env = isolation.environ()
+        assert env["RENFORGE_SAVEDIR"] == str(savedir)
+        assert env["RENPY_PATH_TO_SAVES"] == str(savedir)
+        assert env["RENPY_MULTIPERSISTENT"] == str(savedir / "multipersistent")
+        assert env["HOME"] == str(isolation.home)
+        assert env["XDG_CONFIG_HOME"] == str(isolation.home / ".config")
+        assert env["RENFORGE_SAVEDIR"] != str(normal_saves)
+        assert isolation.command_args() == ["--savedir", str(savedir)]
+        assert canary.read_text(encoding="utf-8") == "NORMAL-SAVE-CANARY\n"
+        assert prefs.read_text(encoding="utf-8") == "HOST-PERSISTENT\n"
+        assert (project_saves / "slot1.save").read_text(encoding="utf-8") == "PROJECT-SAVE\n"
+    finally:
+        _cleanup(isolation)
+
+
+def test_existing_mode_does_not_redirect_saves_or_home() -> None:
+    isolation = resolve_launch_isolation("existing")
+    assert isolation.savedir_mode == "existing"
+    assert isolation.home_mode == "existing"
+    assert isolation.savedir is None
+    assert isolation.home is None
+    assert isolation.session_root is None
+    assert isolation.cleanup is False
+    assert isolation.command_args() == []
+    assert isolation.environ() == {}
+
+
+def test_explicit_path_is_created_and_not_removed_on_stop(tmp_path: Path) -> None:
+    target = tmp_path / "profile" / "primary-saves"
+    isolation = resolve_launch_isolation(str(target), cleanup_on_stop=True)
+    try:
+        assert isolation.savedir_mode == "path"
+        assert isolation.savedir == target.resolve()
+        # An explicit savedir does not isolate HOME on its own (opt-in).
+        assert isolation.home_mode == "existing"
+        assert isolation.home is None
+        assert isolation.cleanup is False
+        assert (target / "multipersistent").is_dir()
+        assert isolation.command_args() == ["--savedir", str(target.resolve())]
+        # Nothing temporary was created, so there is nothing for stop to remove.
+        assert isolation.session_root is None
+    finally:
+        assert target.is_dir()
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_isolated_env_rewrites_home_and_preserves_xauthority(
+    monkeypatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "real-home"
+    home.mkdir()
+    xauth = home / ".Xauthority"
+    xauth.write_bytes(b"host-xauth")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XAUTHORITY", raising=False)
+    isolation = resolve_launch_isolation(
+        "temporary", persistent="empty", preferences="empty", host_env=os.environ
+    )
+    try:
+        env = isolation.environ(host_env=os.environ)
+        assert env["HOME"] == str(isolation.home)
+        assert isolation.home is not None
+        assert Path(env["HOME"]) != home
+        assert env["XAUTHORITY"] == str(xauth.resolve())
+        assert os.environ["HOME"] == str(home)
+        assert isolation.savedir is not None
+        assert Path(env["RENFORGE_SAVEDIR"]) != home / ".renpy"
+        assert isolation.persistent_mode == "empty"
+        assert isolation.preferences_mode == "empty"
+    finally:
+        _cleanup(isolation)
+
+
+def test_explicit_home_existing_keeps_host_home_with_isolated_saves() -> None:
+    isolation = resolve_launch_isolation("temporary", home="existing")
+    try:
+        assert isolation.savedir_mode == "temporary"
+        assert isolation.home_mode == "existing"
+        assert isolation.savedir is not None
+        assert isolation.home is None
+        assert "HOME" not in isolation.environ()
+    finally:
+        _cleanup(isolation)
+
+
+def test_session_init_payload_installs_storage_before_persistent_load() -> None:
+    import textwrap
+
+    from renforge.bridge.artifacts import session_init_payload
+
+    text = session_init_payload().decode("utf-8")
+    assert text.startswith("python early:\n")
+    compile(textwrap.dedent(text.split("\n", 1)[1]), "session_init", "exec")
+    assert "_renforge_engine.savelocation.init = _renforge_init_save_location" in text
+    assert "unlink" not in text
+
+
+def test_low_level_defaults_match_mcp_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    default = resolve_launch_isolation()
+    assert default.savedir_mode == "existing"
+    assert default.home_mode == "existing"
+    monkeypatch.setenv("RENFORGE_ISOLATION", "temporary")
+    isolation = resolve_launch_isolation()
+    try:
+        assert isolation.savedir_mode == "temporary"
+        assert isolation.home_mode == "temporary"
+        assert isolation.persistent_mode == "empty"
+        assert isolation.preferences_mode == "empty"
+    finally:
+        _cleanup(isolation)
+
+
+def test_existing_opt_out_keeps_all_state() -> None:
+    assert apply_launch_isolation_defaults(savedir="existing") == {
+        "savedir": "existing", "home": "existing",
+        "persistent": "existing", "preferences": "existing",
+    }
+
+
+@pytest.mark.parametrize("field", ["persistent", "preferences"])
+def test_empty_state_never_deletes_reused_persistent(tmp_path: Path, field: str) -> None:
+    persistent = tmp_path / "persistent"
+    persistent.write_bytes(b"KEEP-STATE")
+    with pytest.raises(ValueError, match="requires savedir='temporary'"):
+        resolve_launch_isolation(str(tmp_path), **{field: "empty"})
+    assert persistent.read_bytes() == b"KEEP-STATE"
+
+
+def test_isolation_report_and_session_id(tmp_path: Path) -> None:
+    isolation = resolve_launch_isolation("temporary")
+    try:
+        report = isolation_report(isolation, session_id="sess_abc")
+        assert report["session_id"] == "sess_abc"
+        payload = report["isolation"]
+        assert payload["savedir_mode"] == "temporary"
+        assert payload["home_mode"] == "temporary"
+        assert payload["exposes_user_saves"] is False
+        assert payload["savedir"] == str(isolation.savedir)
+        assert payload["home"] == str(isolation.home)
+        assert agent_session_id("deadbeef") == "sess_deadbeef"
+        assert agent_session_id("sess_deadbeef") == "sess_deadbeef"
+    finally:
+        _cleanup(isolation)
+
+    existing = resolve_launch_isolation("existing")
+    assert existing.exposes_user_saves() is True
+    assert isolation_report(existing, session_id="sess_x")["isolation"]["exposes_user_saves"] is True
+
+
+def test_launch_exposed_components_classify_existing_and_host_paths(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    assert launch_exposed_components()
+    assert not launch_exposed_components(savedir="temporary")
+    assert launch_exposed_components(savedir="existing")
+    assert launch_exposed_components(savedir="auto", home="existing")
+    host = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(host))
+    user_saves = host_save_root / "renforge-demo"
+    user_saves.mkdir(parents=True)
+    assert path_exposes_user_saves(user_saves, home=host) is True
+    assert launch_exposed_components(savedir=str(user_saves), home="temporary")
+    other = tmp_path / "scratch-saves"
+    other.mkdir()
+    assert not launch_exposed_components(savedir=str(other), home="temporary")
+
+
+def test_launch_exposed_components_tell_saves_and_home_apart(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
+    assert launch_exposed_components() == {"savedir", "home"}
+    assert launch_exposed_components(savedir="temporary") == frozenset()
+    assert launch_exposed_components(savedir="temporary", home="existing") == {"home"}
+    assert launch_exposed_components(savedir="existing", home="temporary") == {"savedir"}
+    user_saves = host_save_root / "renforge-demo"
+    user_saves.mkdir(parents=True)
+    assert launch_exposed_components(savedir=str(user_saves), home="temporary") == {"savedir"}
+    assert launch_exposed_components(
+        savedir=str(tmp_path / "scratch"), home=str(tmp_path / "home")
+    ) == {"home"}
+
+
+def test_reuse_keeps_every_component_the_launch_isolates() -> None:
+    both, saves, home, none = (
+        frozenset({"savedir", "home"}), frozenset({"savedir"}), frozenset({"home"}), frozenset()
+    )
+    assert reuse_keeps_isolation(both, both) is True
+    assert reuse_keeps_isolation(both, none) is True
+    assert reuse_keeps_isolation(home, home) is True
+    assert reuse_keeps_isolation(home, none) is True
+    assert reuse_keeps_isolation(home, saves) is False
+    assert reuse_keeps_isolation(home, both) is False
+    assert reuse_keeps_isolation(saves, home) is False
+    assert reuse_keeps_isolation(none, home) is False
+
+
+def test_parse_save_directory_and_list_host_slots(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    project = tmp_path / "game-root"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "options.rpy").write_text(
+        'define config.save_directory = "renforge-demo"\n', encoding="utf-8"
+    )
+    host = tmp_path / "home"
+    host_saves = host_save_root / "renforge-demo"
+    host_saves.mkdir(parents=True)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT-1-1")
+    (host_saves / "1-1-LT1.save.json").write_text(
+        '{"_save_name": "after menu"}', encoding="utf-8"
+    )
+    (host_saves / "branch-a-LT1.save").write_bytes(b"SLOT-BRANCH")
+    project_saves = game / "saves"
+    project_saves.mkdir()
+    (project_saves / "local-LT1.save").write_bytes(b"LOCAL")
+    monkeypatch.setenv("HOME", str(host))
+
+    assert parse_save_directory(project) == "renforge-demo"
+    listed = list_host_slots(project, home=host)
+    assert listed["ok"] is True
+    names = [item["name"] for item in listed["slots"]]
+    assert names == ["1-1", "branch-a", "local"]
+    by_name = {item["name"]: item for item in listed["slots"]}
+    assert by_name["1-1"]["extra_info"] == "after menu"
+    assert str(host_saves) in listed["directories"]
+
+    filtered = list_host_slots(project, pattern="branch-*", home=host)
+    assert [item["name"] for item in filtered["slots"]] == ["branch-a"]
+    # A glob matches the whole name, not a substring.
+    assert list_host_slots(project, pattern="branch", home=host)["slots"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_host_slots_ignores_a_linked_sidecar(tmp_path: Path, host_save_root: Path) -> None:
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "private"}', encoding="utf-8")
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (saves / "1-1-LT1.save.json").symlink_to(secret)
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert [item["extra_info"] for item in listed["slots"]] == [""]
+
+
+def test_import_copies_selected_slots_and_refuses_user_tree(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    project = tmp_path / "game-root"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "options.rpy").write_text(
+        'define config.save_directory = "renforge-demo"\n', encoding="utf-8"
+    )
+    host = tmp_path / "home"
+    host_saves = host_save_root / "renforge-demo"
+    host_saves.mkdir(parents=True)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT-1-1")
+    (host_saves / "1-1-LT1.save.json").write_text(
+        '{"_save_name": "after menu"}', encoding="utf-8"
+    )
+    (host_saves / "branch-a-LT1.save").write_bytes(b"SLOT-BRANCH")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(host))
+
+    copied = import_host_slots(project, dest, slots=["1-1"], home=host)
+    assert copied["ok"] is True
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT-1-1"
+    assert (dest / "1-1-LT1.save.json").is_file()
+    assert not (dest / "branch-a-LT1.save").exists()
+    assert (host_saves / "1-1-LT1.save").read_bytes() == b"SLOT-1-1"
+
+    refused = import_host_slots(project, host_saves, slot="1-1", home=host)
+    assert refused["ok"] is False
+    assert refused["code"] == "SAVE_IMPORT_NOT_ISOLATED"
+
+    missing = import_host_slots(project, dest, slot="nope", home=host)
+    assert missing["ok"] is False
+    assert "no matching" in missing["error"]
+
+
+class _ImportSession:
+    """What live.saves needs from an owned session for an import."""
+
+    def __init__(self, *, temporary_savedir, isolation, closed=False):
+        self.temporary_savedir = temporary_savedir
+        self.isolation = isolation
+        self.closed = closed
+
+    @contextlib.contextmanager
+    def holding_open(self):
+        yield not self.closed
+
+
+def test_live_saves_list_user_and_import(
+    tmp_path: Path, monkeypatch, host_save_root: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from renforge.tools import live
+
+    project = tmp_path / "game-root"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "options.rpy").write_text(
+        'define config.save_directory = "renforge-demo"\n', encoding="utf-8"
+    )
+    host = tmp_path / "home"
+    host_saves = host_save_root / "renforge-demo"
+    host_saves.mkdir(parents=True)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT-1-1")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(host))
+
+    listed = live.saves(str(project), "list_user")
+    assert listed["ok"] is True
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+
+    refused = live.saves(str(project), "import", slot="1-1")
+    assert refused["ok"] is False
+    assert refused["code"] == "NO_ISOLATED_SESSION"
+
+    isolation = SimpleNamespace(
+        savedir_mode="temporary", home_mode="temporary", session_root=dest.parent
+    )
+    session = _ImportSession(temporary_savedir=dest, isolation=isolation)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        imported = live.saves(str(project), "import", slot="1-1")
+        assert imported["ok"] is True
+        assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT-1-1"
+        existing = _ImportSession(
+            temporary_savedir=host_saves,
+            isolation=SimpleNamespace(savedir_mode="existing"),
+        )
+        live._SESSIONS[live._key(project)] = existing  # type: ignore[assignment]
+        blocked = live.saves(str(project), "import", slot="1-1")
+        assert blocked["ok"] is False
+        assert blocked["code"] == "SAVE_IMPORT_NOT_ISOLATED"
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+
+@pytest.mark.parametrize("save_directory", ["../OtherGame", "nested/../../escape", "/abs/elsewhere", "..", "."])
+def test_host_saves_stay_in_the_renpy_root_whatever_the_game_declares(
+    tmp_path: Path, host_save_root: Path, save_directory: str
+) -> None:
+    """config.save_directory comes from the game; it must not steer reads elsewhere."""
+    project = tmp_path / "game-root"
+    (project / "game").mkdir(parents=True)
+    (project / "game" / "options.rpy").write_text(
+        f'define config.save_directory = "{save_directory}"\n', encoding="utf-8")
+    other = host_save_root.parent / "OtherGame"
+    other.mkdir(parents=True)
+    (other / "1-1-LT1.save").write_bytes(b"OTHER")
+    (host_save_root / "OtherGame").mkdir(parents=True)
+    (host_save_root / "OtherGame" / "1-1-LT1.save").write_bytes(b"OTHER")
+
+    assert host_save_directories(project) == []
+    assert list_host_slots(project)["slots"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_game_saves_symlink_out_of_the_project_is_not_a_host_save_folder(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project = tmp_path / "game-root"
+    (project / "game").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "1-1-LT1.save").write_bytes(b"OTHER")
+    (project / "game" / "saves").symlink_to(elsewhere, target_is_directory=True)
+
+    assert host_save_directories(project) == []
+
+
+def test_an_explicit_host_home_exposes_user_saves_beside_an_unrelated_savedir(tmp_path: Path) -> None:
+    isolation = LaunchIsolation(
+        savedir_mode="path",
+        home_mode="path",
+        persistent_mode="existing",
+        preferences_mode="existing",
+        savedir=tmp_path / "scratch",
+        home=Path.home(),
+        session_root=None,
+        cleanup=False,
+    )
+    assert isolation.exposes_user_saves() is True
+    assert isolation_report(isolation)["isolation"]["exposes_user_saves"] is True
+
+
+def test_failed_isolation_setup_removes_its_session_root(tmp_path: Path, monkeypatch) -> None:
+    import renforge.save_isolation as save_isolation
+
+    monkeypatch.setattr(save_isolation.tempfile, "tempdir", str(tmp_path))
+
+    def full_disk(_home: Path) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(save_isolation, "_prepare_isolated_home", full_disk)
+    with pytest.raises(OSError):
+        resolve_launch_isolation("temporary", home="temporary")
+    assert not list(tmp_path.glob(save_isolation.SESSION_PREFIX + "*"))
+
+
+def test_import_reports_a_slot_whose_files_vanished_as_missing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", lambda *_args: ([], []))
+
+    (tmp_path / "session").mkdir()
+    result = import_host_slots(project, tmp_path / "session" / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["missing"] == ["1-1"]
+
+
+def test_import_into_a_stopped_session_creates_nothing(tmp_path: Path, host_save_root: Path) -> None:
+    # A stop that removed the session root while the import was starting
+    # must not get it back, full of copies of the player's saves.
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert not session_root.exists()
+
+
+def test_import_reports_a_session_that_stops_mid_copy(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+    (session_root / "saves").mkdir(parents=True)
+
+    def stopped_mid_copy(_source, dest, _slot):
+        shutil.rmtree(session_root)
+        raise FileNotFoundError(dest)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", stopped_mid_copy)
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert not session_root.exists()
+
+    # A file lost mid-copy while the session is still there is a failed
+    # import, reported as such rather than as a stopped session.
+    (session_root / "saves").mkdir(parents=True)
+    monkeypatch.setattr(
+        save_isolation, "_copy_slot_files", lambda *_a: (_ for _ in ()).throw(FileNotFoundError("source"))
+    )
+    result = import_host_slots(project, session_root / "saves", slot="1-1")
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+
+
+def test_live_import_into_a_session_that_closed_copies_nothing(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from renforge.tools import live
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+    session = _ImportSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(
+            savedir_mode="temporary", home_mode="temporary", session_root=dest.parent
+        ),
+        closed=True,
+    )
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_ISOLATED_SESSION"
+    assert list(dest.iterdir()) == []
+
+
+def test_saves_takes_regexp_for_list_and_a_glob_pattern_for_host_actions(tmp_path: Path) -> None:
+    from renforge.tools import live
+
+    (tmp_path / "game").mkdir()
+    refused = live.saves(str(tmp_path), "list_user", regexp="1-.*")
+    assert refused["ok"] is False and "pattern" in refused["error"]
+    assert live.saves(str(tmp_path), "import", regexp="1-.*")["ok"] is False
+    assert "only valid for list_user or import" in live.saves(str(tmp_path), "list", pattern="1-*")["error"]
+    assert live.saves(str(tmp_path), "list_user", pattern="1-*")["ok"] is True
+
+
+def test_a_slot_pattern_cannot_stall_on_a_long_name(tmp_path: Path, host_save_root: Path) -> None:
+    # The regexp this replaced backtracked catastrophically on (a+)+$; a glob
+    # is matched without backtracking, so a hostile pattern stays fast.
+    import time
+
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    (saves / ("a" * 200 + "-LT1.save")).write_bytes(b"SLOT")
+    started = time.monotonic()
+    listed = list_host_slots(project, pattern="*a*a*a*a*a*a*a*a*a*a*b", home=tmp_path / "home")
+    assert listed["slots"] == []
+    assert time.monotonic() - started < 2.0
+
+
+def test_parse_save_directory_is_linear_on_blank_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_text("\n" * 200_000 + "   \n" * 50_000)
+    started = time.monotonic()
+    assert parse_save_directory(tmp_path) is None
+    assert time.monotonic() - started < 1.0
+
+
+def test_parse_save_directory_accepts_tabs_and_crlf(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_bytes(
+        b'init:\r\n\tdefine config.save_directory = "Game-123"\r\n'
+    )
+    assert parse_save_directory(tmp_path) == "Game-123"
+
+
+def test_parse_save_directory_does_not_join_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "options.rpy").write_text('define\nconfig.save_directory = "X"\n')
+    assert parse_save_directory(tmp_path) is None
+
+
+def _host_project(tmp_path: Path, host_save_root: Path) -> tuple[Path, Path]:
+    """A project whose ``config.save_directory`` names a folder under the host root."""
+    project = tmp_path / "game-root"
+    game = project / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "options.rpy").write_text(
+        'define config.save_directory = "renforge-demo"\n', encoding="utf-8"
+    )
+    host_saves = host_save_root / "renforge-demo"
+    host_saves.mkdir(parents=True)
+    return project, host_saves
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_skips_a_source_swapped_for_a_symlink_before_open(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    # With a sidecar the slot used to be reported imported holding only it.
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "x"}', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_open = save_isolation.open_regular_at_nofollow
+    swapped: list[str] = []
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "1-1-LT1.save" and not swapped:
+            swapped.append(name)
+            (Path(directory) / name).unlink()
+            (Path(directory) / name).symlink_to(outside / "secret.save")
+        return real_open(directory, name)
+
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped == ["1-1-LT1.save"]
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "link"}]
+    assert list(dest.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_replaces_a_destination_symlink_planted_before_publish(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"VICTIM")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_replace = save_isolation.replace_file_at_nofollow
+    planted: list[str] = []
+
+    def plant_then_replace(directory: Path, name: str, source_fd: int, **kwargs):
+        if name == "1-1-LT1.save":
+            planted.append(name)
+            (Path(directory) / name).symlink_to(victim)
+        return real_replace(directory, name, source_fd, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", plant_then_replace)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert planted == ["1-1-LT1.save"]
+    assert result["ok"] is True
+    assert victim.read_bytes() == b"VICTIM"
+    assert not (dest / "1-1-LT1.save").is_symlink()
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_user_ignores_a_sidecar_swapped_for_a_symlink(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "mine"}', encoding="utf-8")
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "SECRET"}', encoding="utf-8")
+
+    real_open = save_isolation.open_regular_at_nofollow
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "1-1-LT1.save.json":
+            target = Path(directory) / name
+            if not target.is_symlink():
+                target.unlink()
+                target.symlink_to(secret)
+        return real_open(directory, name)
+
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert listed["slots"][0]["extra_info"] == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_list_user_lists_nothing_from_a_host_folder_swapped_for_a_link(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # The folder was found and resolved, then swapped for a link before it
+    # was listed: neither the target's slot names nor its mtimes may leak.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"MINE")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "9-9-LT1.save").write_bytes(b"OTHER")
+    real_directories = save_isolation.host_save_directories
+
+    def discover_then_swap(*args, **kwargs):
+        found = real_directories(*args, **kwargs)
+        shutil.rmtree(host_saves)
+        host_saves.symlink_to(elsewhere, target_is_directory=True)
+        return found
+
+    monkeypatch.setattr(save_isolation, "host_save_directories", discover_then_swap)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert listed["ok"] is True
+    assert listed["slots"] == []
+
+
+def test_list_user_scans_entries_without_following_them(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"OLD")
+    (host_saves / "1-1-LT2.save").write_bytes(b"NEW")
+    os.utime(host_saves / "1-1-LT1.save", ns=(1_500_000_000_000_000_000,) * 2)
+    os.utime(host_saves / "1-1-LT2.save", ns=(1_600_000_000_000_000_000,) * 2)
+    (host_saves / "2-1-LT1.save").mkdir()  # a folder named like a slot is not one
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+    assert listed["slots"][0]["mtime"] == 1_600_000_000.0
+    assert listed["slots"][0]["directory"] == str(host_saves.resolve())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor scan")
+def test_list_user_skips_only_a_slot_file_it_cannot_stat(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    from renforge.util import files as files_module
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"ONE")
+    (host_saves / "2-1-LT1.save").write_bytes(b"TWO")
+    real_lstat_at = files_module._lstat_at_posix
+
+    def lstat_at(dir_fd: int, name: str):
+        if name == "2-1-LT1.save":
+            raise PermissionError(errno.EACCES, "denied", name)
+        return real_lstat_at(dir_fd, name)
+
+    monkeypatch.setattr(files_module, "_lstat_at_posix", lstat_at)
+    listed = list_host_slots(project, home=tmp_path / "home")
+
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+
+
+def test_live_list_user_does_not_create_the_project_cache(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+
+    listed = live.saves(str(project), "list_user")
+
+    assert listed["ok"] is True
+    assert [item["name"] for item in listed["slots"]] == ["1-1"]
+    assert not (project / ".renforge").exists()
+
+
+def test_import_preserves_slot_mtime(tmp_path: Path, host_save_root: Path) -> None:
+    # Ren'Py shows a slot's file mtime as its save time.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    source = host_saves / "1-1-LT1.save"
+    source.write_bytes(b"SLOT")
+    os.utime(source, ns=(1_600_000_000_123_456_789, 1_600_000_000_123_456_789))
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / "1-1-LT1.save").stat().st_mtime_ns == source.stat().st_mtime_ns
+
+
+def test_import_twice_replaces_the_earlier_copy(tmp_path: Path, host_save_root: Path) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    source = host_saves / "1-1-LT1.save"
+    source.write_bytes(b"FIRST")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    assert import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")["ok"] is True
+    source.write_bytes(b"SECOND")
+    again = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert again["ok"] is True
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SECOND"
+    assert sorted(p.name for p in dest.iterdir()) == ["1-1-LT1.save"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_follows_a_symlinked_save_root_resolved_up_front(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # A player who moved ~/.renpy to another disk keeps a link in its place.
+    real_root = tmp_path / "other-disk" / "renpy"
+    real_root.mkdir(parents=True)
+    host_save_root.parent.mkdir(parents=True, exist_ok=True)
+    host_save_root.symlink_to(real_root, target_is_directory=True)
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text('{"_save_name": "moved"}', encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    listed = list_host_slots(project, home=tmp_path / "home")
+    assert [item["extra_info"] for item in listed["slots"]] == ["moved"]
+
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / "1-1-LT1.save").read_bytes() == b"SLOT"
+    assert (dest / "1-1-LT1.save.json").is_file()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_session_savedir_swapped_for_a_link_after_the_check(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"VICTIM")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[Path] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        # Import has checked the savedir; it becomes a link before the copy.
+        if not swapped:
+            swapped.append(destination)
+            shutil.rmtree(dest)
+            dest.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert (outside / "1-1-LT1.save").read_bytes() == b"VICTIM"
+    assert sorted(p.name for p in outside.iterdir()) == ["1-1-LT1.save"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_host_save_dir_swapped_for_a_link_after_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[Path] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        # The slot was listed; the host folder becomes a link before the copy.
+        if not swapped:
+            swapped.append(source)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert swapped
+    assert list(dest.iterdir()) == []
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
+
+
+def test_import_reports_a_destination_file_vanishing_mid_copy_as_failed(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    def temp_unlinked_before_rename(*_args, **_kwargs):
+        raise FileNotFoundError("temp file removed before rename")
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", temp_unlinked_before_rename)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert dest.is_dir()
+
+
+def test_import_failures_carry_their_own_codes(tmp_path: Path, host_save_root: Path) -> None:
+    # A dashboard relays these; without a code they read as transport failures.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    home = tmp_path / "home"
+
+    no_match = import_host_slots(project, dest, slot="9-9", home=home)
+    assert no_match["ok"] is False
+    assert no_match["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert no_match["missing"] == ["9-9"]
+
+    for selection in ({}, {"slots": "1-1"}, {"slot": " "}, {"pattern": 5}):
+        invalid = import_host_slots(project, dest, home=home, **selection)
+        assert invalid["ok"] is False, selection
+        assert invalid["code"] == "SAVE_IMPORT_INVALID", selection
+    assert list(dest.iterdir()) == []
+
+
+def test_temp_name_never_looks_like_a_slot() -> None:
+    from renforge.save_isolation import SLOT_FILE_RE
+
+    assert SLOT_FILE_RE.match(".rf-0123456789abcdef.tmp") is None
+
+
+def test_a_slot_name_ending_in_a_newline_is_not_a_slot() -> None:
+    from renforge.save_isolation import SLOT_FILE_RE
+
+    assert SLOT_FILE_RE.match("evil-LT1.save\n") is None
+    assert SLOT_FILE_RE.match("1-1-LT1.save.json\n") is None
+    assert SLOT_FILE_RE.match("1-1-LT1.save") is not None
+
+
+def test_import_copies_a_long_but_valid_slot_name(tmp_path: Path, host_save_root: Path) -> None:
+    # The temp name used to add 22 bytes to the leaf, so a 240-byte save
+    # name failed with ENAMETOOLONG and aborted the import.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    name = "s" * 240 + "-LT1.save"
+    (host_saves / name).write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert (dest / name).read_bytes() == b"SLOT"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_session_root_swapped_for_a_link_before_the_call(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # Security probe p12: the root is replaced any time after launch, so the
+    # import must never resolve the session's own folders.
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"GAME1-SLOT")
+    other = tmp_path / "OtherGame" / "game" / "saves"
+    other.mkdir(parents=True)
+    (other / "1-1-LT1.save").write_bytes(b"OTHERGAME-REAL-PROGRESS")
+    isolation = resolve_launch_isolation("temporary")
+    assert isolation.session_root is not None and isolation.savedir is not None
+    session = _ImportSession(temporary_savedir=isolation.savedir, isolation=isolation)
+    shutil.rmtree(isolation.session_root)
+    os.symlink(other.parent, isolation.session_root)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+        os.unlink(isolation.session_root)
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert (other / "1-1-LT1.save").read_bytes() == b"OTHERGAME-REAL-PROGRESS"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_never_creates_the_savedir_through_a_linked_session_root(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # Security probe p11: a linked root with no saves folder must not get one.
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    session_root = tmp_path / "renforge-session-x"
+    session_root.symlink_to(outside, target_is_directory=True)
+
+    result = import_host_slots(project, session_root / "saves", slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+    assert list(outside.iterdir()) == []
+
+
+def test_import_maps_a_savedir_that_is_not_a_folder_to_failed(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    home = tmp_path / "home"
+
+    file_savedir = tmp_path / "session-a" / "saves"
+    file_savedir.parent.mkdir()
+    file_savedir.write_bytes(b"not a folder")
+    result = import_host_slots(project, file_savedir, slot="1-1", home=home)
+    assert result["ok"] is False and result["code"] == "SAVE_IMPORT_FAILED"
+    assert file_savedir.read_bytes() == b"not a folder"
+
+    file_root = tmp_path / "session-b"
+    file_root.write_bytes(b"not a folder")
+    result = import_host_slots(project, file_root / "saves", slot="1-1", home=home)
+    assert result["ok"] is False and result["code"] == "SAVE_IMPORT_FAILED"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX permissions; root ignores them",
+)
+def test_import_maps_an_unwritable_session_root_to_failed(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    session_root = tmp_path / "renforge-session-x"
+    session_root.mkdir()
+    session_root.chmod(0o500)
+    try:
+        result = import_host_slots(project, session_root / "saves", slot="1-1", home=tmp_path / "home")
+    finally:
+        session_root.chmod(0o700)
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_FAILED"
+
+
+def test_live_import_requires_a_temporary_session(
+    tmp_path: Path, host_save_root: Path
+) -> None:
+    # A savedir=<path> session's folder is the agent's choice, not a private
+    # one, so import refuses it like the player's own saves.
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    chosen = tmp_path / "chosen" / "saves"
+    chosen.mkdir(parents=True)
+    isolation = LaunchIsolation(
+        savedir_mode="path", home_mode="temporary", persistent_mode="existing",
+        preferences_mode="existing", savedir=chosen, home=None,
+        session_root=tmp_path / "chosen-root", cleanup=False,
+    )
+    live._SESSIONS[live._key(project)] = _ImportSession(  # type: ignore[assignment]
+        temporary_savedir=chosen, isolation=isolation
+    )
+    try:
+        result = live.saves(str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is False
+    assert result["code"] == "SAVE_IMPORT_NOT_ISOLATED"
+    assert list(chosen.iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_a_fifo_swapped_in_for_options_rpy_cannot_hang_the_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p6: options.rpy becomes a FIFO between the check and
+    # the read. The read must refuse it at once, not wait for a writer.
+    import threading
+
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    game = project / "game"
+    (game / "zz.rpy").write_text('define config.save_directory = "renforge-demo"\n', encoding="utf-8")
+    options = game / "options.rpy"
+    swapped: list[bool] = []
+
+    def swap() -> None:
+        if not swapped:
+            swapped.append(True)
+            options.unlink()
+            os.mkfifo(options)
+
+    real_is_file = Path.is_file
+    real_open = save_isolation.open_regular_at_nofollow
+
+    def is_file_then_swap(self: Path, *args, **kwargs):  # the old check-then-read seam
+        result = real_is_file(self, *args, **kwargs)
+        if self.name == "options.rpy":
+            swap()
+        return result
+
+    def swap_then_open(directory: Path, name: str):
+        if name == "options.rpy":
+            swap()
+        return real_open(directory, name)
+
+    monkeypatch.setattr(Path, "is_file", is_file_then_swap)
+    monkeypatch.setattr(save_isolation, "open_regular_at_nofollow", swap_then_open)
+    results: list[dict] = []
+    worker = threading.Thread(
+        target=lambda: results.append(list_host_slots(project, home=tmp_path / "home")),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():  # free the reader so the suite can go on
+        fd = os.open(options, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(timeout=5)
+        pytest.fail("list_host_slots blocked opening a FIFO")
+    assert swapped
+    assert [slot["name"] for slot in results[0]["slots"]] == ["1-1"]
+
+
+def test_parse_save_directory_skips_a_script_over_the_read_cap(tmp_path: Path) -> None:
+    import renforge.save_isolation as save_isolation
+
+    game = tmp_path / "game"
+    game.mkdir()
+    huge = game / "aaa.rpy"
+    with huge.open("wb") as handle:
+        handle.write(b'define config.save_directory = "Huge"\n')
+        handle.truncate(save_isolation.RPY_SCAN_MAX_BYTES + 1)  # sparse
+    (game / "zz.rpy").write_text('define config.save_directory = "Small"\n', encoding="utf-8")
+
+    assert parse_save_directory(tmp_path) == "Small"
+
+
+def test_live_import_lists_before_taking_the_close_lock(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p7: a slow or stuck listing must not block a stop, so
+    # only the copy runs while the session is held open.
+    import renforge.save_isolation as save_isolation
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+
+    class _LockSession(_ImportSession):
+        held = False
+
+        @contextlib.contextmanager
+        def holding_open(self):
+            self.held = True
+            try:
+                yield True
+            finally:
+                self.held = False
+
+    from types import SimpleNamespace
+
+    session = _LockSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(savedir_mode="temporary", session_root=dest.parent),
+    )
+    seen: dict[str, list[bool]] = {"parse": [], "copy": []}
+    real_parse = save_isolation.parse_save_directory
+    real_copy = save_isolation._copy_slot_files
+
+    def parse(*args, **kwargs):
+        seen["parse"].append(session.held)
+        return real_parse(*args, **kwargs)
+
+    def copy(*args, **kwargs):
+        seen["copy"].append(session.held)
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "parse_save_directory", parse)
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", copy)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = live.saves(str(project), "import", pattern="*")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is True
+    assert seen["parse"] and not any(seen["parse"])
+    assert seen["copy"] and all(seen["copy"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_names_the_refused_slots_of_a_host_folder_swapped_for_a_link(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p2: the host folder's slots used to read as "missing",
+    # as if they had never existed, beside an ok:true import.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"HOSTSLOT")
+    game_saves = project / "game" / "saves"
+    game_saves.mkdir()
+    (game_saves / "2-1-LT1.save").write_bytes(b"GAMESLOT")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "1-1-LT1.save").write_bytes(b"SECRET")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[bool] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        if not swapped:
+            swapped.append(True)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(outside, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
+    assert "missing" not in result
+    assert sorted(p.name for p in dest.iterdir()) == ["2-1-LT1.save"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_import_refuses_a_fifo_swapped_in_for_a_save(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+
+    def fifo_then_copy(source: Path, destination: Path, slot: str):
+        leaf = host_saves / "1-1-LT1.save"
+        leaf.unlink()
+        os.mkfifo(leaf)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", fifo_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is False
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "not_regular"}]
+
+
+def test_import_refuses_a_save_over_the_size_cap(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"0123456789")
+    (host_saves / "1-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    (host_saves / "2-1-LT1.save").write_bytes(b"0123")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setattr(save_isolation, "SLOT_FILE_MAX_BYTES", 5)
+
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "too_large"}]
+    assert sorted(p.name for p in dest.iterdir()) == ["2-1-LT1.save"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX permissions; root ignores them",
+)
+def test_import_refuses_an_unreadable_save(tmp_path: Path, host_save_root: Path) -> None:
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    leaf = host_saves / "1-1-LT1.save"
+    leaf.write_bytes(b"SLOT")
+    leaf.chmod(0)
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    try:
+        result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+    finally:
+        leaf.chmod(0o600)
+
+    assert result["ok"] is False
+    assert result["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save", "reason": "unreadable"}]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_keeps_a_slot_whose_sidecar_alone_was_refused(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    sidecar = host_saves / "1-1-LT1.save.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    secret = tmp_path / "secret.json"
+    secret.write_text('{"_save_name": "SECRET"}', encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+
+    def link_sidecar_then_copy(source: Path, destination: Path, slot: str):
+        sidecar.unlink()
+        sidecar.symlink_to(secret)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", link_sidecar_then_copy)
+    result = import_host_slots(project, dest, slot="1-1", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert result["imported"][0]["files"] == ["1-1-LT1.save"]
+    assert result["refused"] == [{"name": "1-1", "file": "1-1-LT1.save.json", "reason": "link"}]
+    assert sorted(p.name for p in dest.iterdir()) == ["1-1-LT1.save"]
+
+
+def test_saves_caps_selector_lengths_before_any_listing(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Security probe p9: fnmatch compiles a pattern in quadratic time, so a
+    # 20 KB pattern of "[" took about 9 s per call. Long selectors are refused
+    # in saves_argument_error, before any listing and before a dashboard.
+    import renforge.save_isolation as save_isolation
+    from renforge.tools import live
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    longest = "*" * save_isolation.SELECTOR_MAX_CHARS
+    assert live.saves(str(project), "list_user", pattern=longest)["ok"] is True
+
+    monkeypatch.setattr(
+        save_isolation, "host_save_directories", lambda *_a, **_k: pytest.fail("listed")
+    )
+    too_long = "[" * (save_isolation.SELECTOR_MAX_CHARS + 1)
+    cases = [
+        ("list_user", {"pattern": "[" * 20_000}),
+        ("import", {"pattern": too_long}),
+        ("import", {"slot": too_long}),
+        ("import", {"slots": [too_long]}),
+        ("import", {"slots": ["s%d" % i for i in range(save_isolation.SELECTOR_MAX_SLOTS + 1)]}),
+    ]
+    for action, selection in cases:
+        started = time.monotonic()
+        result = live.saves(str(project), action, **selection)
+        assert time.monotonic() - started < 1.0, (action, selection.keys())
+        assert result["ok"] is False, (action, selection.keys())
+        assert result["code"] == "SAVE_IMPORT_INVALID", (action, selection.keys())
+        arguments = {"slot": None, "extra_info": None, "regexp": None, "slots": None, "pattern": None}
+        arguments.update(selection)
+        assert live.saves_argument_error(action, **arguments) is not None
+
+
+def test_import_reports_a_write_receipt(tmp_path: Path, host_save_root: Path, monkeypatch) -> None:
+    import errno
+
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    (host_saves / "1-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    (host_saves / "2-1-LT1.save").write_bytes(b"SLOT2")
+    (host_saves / "2-1-LT1.save.json").write_text("{}", encoding="utf-8")
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    home = tmp_path / "home"
+
+    done = import_host_slots(project, dest, slot="1-1", home=home)
+    assert done["files_touched"] == [str(dest / "1-1-LT1.save"), str(dest / "1-1-LT1.save.json")]
+
+    none = import_host_slots(project, dest, slot="9-9", home=home)
+    assert none["code"] == "NO_MATCHING_SAVE_SLOTS"
+    assert none["files_touched"] == []
+
+    # A full disk on the second slot's sidecar: the receipt still names every
+    # file that was published, including the save of the slot that failed.
+    real_replace = save_isolation.replace_file_at_nofollow
+
+    def disk_full_on(directory, name, source_fd, **kwargs):
+        if name == "2-1-LT1.save.json":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(directory, name, source_fd, **kwargs)
+
+    monkeypatch.setattr(save_isolation, "replace_file_at_nofollow", disk_full_on)
+    failed = import_host_slots(project, dest, pattern="*", home=home)
+    assert failed["code"] == "SAVE_IMPORT_FAILED"
+    assert failed["files_touched"] == [
+        str(dest / "1-1-LT1.save"),
+        str(dest / "1-1-LT1.save.json"),
+        str(dest / "2-1-LT1.save"),
+    ]
+
+
+def test_import_receipt_reaches_the_activity_journal(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from renforge import dashboard_client
+    from renforge.server import _register_tools
+    from renforge.tools import live
+
+    class _ToolRegistry:
+        _renforge_testing_registry = True
+
+        def __init__(self) -> None:
+            self.tools: dict = {}
+
+        def tool(self):
+            def register(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+
+            return register
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"SLOT")
+    dest = tmp_path / "renforge-session-x" / "saves"
+    dest.mkdir(parents=True)
+    monkeypatch.setattr(dashboard_client, "dashboard_connection", lambda *_a, **_k: None)
+    session = _ImportSession(
+        temporary_savedir=dest,
+        isolation=SimpleNamespace(savedir_mode="temporary", session_root=dest.parent),
+    )
+    app = _ToolRegistry()
+    _register_tools(app)
+    live._SESSIONS[live._key(project)] = session  # type: ignore[assignment]
+    try:
+        result = app.tools["renforge_saves"](str(project), "import", slot="1-1")
+    finally:
+        live._SESSIONS.pop(live._key(project), None)
+
+    assert result["ok"] is True
+    assert result["files_touched"] == [str(dest / "1-1-LT1.save")]
+    lines = (project / ".renforge" / "activity.jsonl").read_text(encoding="utf-8").splitlines()
+    entry = json.loads(lines[-1])
+    assert entry["name"] == "renforge_saves"
+    assert entry["files_touched_recorded"] is True
+    assert entry["files_touched"] == [str(dest / "1-1-LT1.save")]
+
+
+def test_every_exposure_check_counts_the_projects_game_saves(tmp_path: Path) -> None:
+    # Simplify panel I1: the dataclass property ignored the project's
+    # game/saves while isolation_report and the launch check did not.
+    project = tmp_path / "game-root"
+    saves = project / "game" / "saves"
+    saves.mkdir(parents=True)
+    isolation = resolve_launch_isolation(str(saves), home="temporary")
+    try:
+        assert isolation.exposes_user_saves(project_path=project) is True
+        assert isolation_report(isolation, project_path=project)["isolation"]["exposes_user_saves"] is True
+        assert launch_exposed_components(
+            savedir=str(saves), home="temporary", project_path=project
+        ) == {"savedir"}
+    finally:
+        _cleanup(isolation)
+
+
+def test_isolation_tokens_ignore_case(tmp_path: Path, monkeypatch) -> None:
+    # An agent writing savedir="Temporary" used to get an unisolated launch
+    # and a folder named "Temporary" in the server's working directory.
+    from renforge.save_isolation import isolation_knobs_unset, launch_state_mode_error
+
+    monkeypatch.chdir(tmp_path)
+    assert apply_launch_isolation_defaults(savedir="Temporary") == {
+        "savedir": "temporary",
+        "home": "temporary",
+        "persistent": "empty",
+        "preferences": "empty",
+    }
+    assert apply_launch_isolation_defaults(savedir="EXISTING", home="Auto")["home"] == "existing"
+    assert launch_state_mode_error(savedir="TEMPORARY", persistent="Empty", preferences="AUTO") is None
+    assert isolation_knobs_unset("AUTO", None, " Auto ", "") is True
+    monkeypatch.setenv("RENFORGE_ISOLATION", "Temporary")
+    assert configured_isolation_mode() == "temporary"
+    monkeypatch.delenv("RENFORGE_ISOLATION")
+    isolation = resolve_launch_isolation("TEMPORARY")
+    try:
+        assert isolation.savedir_mode == "temporary"
+        assert isolation.session_root is not None
+    finally:
+        _cleanup(isolation)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_import_refuses_a_host_folder_linked_to_one_without_the_slot(
+    tmp_path: Path, host_save_root: Path, monkeypatch
+) -> None:
+    # Re-review N2: listing followed the link, found no files, and reported
+    # the slot "missing" instead of naming the linked folder.
+    import renforge.save_isolation as save_isolation
+
+    project, host_saves = _host_project(tmp_path, host_save_root)
+    (host_saves / "1-1-LT1.save").write_bytes(b"HOSTSLOT")
+    game_saves = project / "game" / "saves"
+    game_saves.mkdir()
+    (game_saves / "2-1-LT1.save").write_bytes(b"GAMESLOT")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    dest = tmp_path / "session" / "saves"
+    dest.mkdir(parents=True)
+    real_copy = save_isolation._copy_slot_files
+    swapped: list[bool] = []
+
+    def swap_then_copy(source: Path, destination: Path, slot: str):
+        if not swapped:
+            swapped.append(True)
+            shutil.rmtree(host_saves)
+            host_saves.symlink_to(empty, target_is_directory=True)
+        return real_copy(source, destination, slot)
+
+    monkeypatch.setattr(save_isolation, "_copy_slot_files", swap_then_copy)
+    result = import_host_slots(project, dest, pattern="*", home=tmp_path / "home")
+
+    assert result["ok"] is True
+    assert [item["name"] for item in result["imported"]] == ["2-1"]
+    assert result["refused"] == [{"name": "1-1", "file": None, "reason": "link"}]
+    assert "missing" not in result
+
+
+def test_every_import_failure_carries_an_empty_write_receipt(tmp_path: Path) -> None:
+    # Re-review N3: argument errors returned before the receipt default, so
+    # the journal recorded them as "cannot enumerate its writes".
+    from renforge.tools import live
+
+    (tmp_path / "game").mkdir()
+    for kwargs in (
+        {"slot": "1-1", "extra_info": "x"},
+        {"slot": " "},
+        {"pattern": "[" * 300},
+        {"slots": "1-1"},
+        {"slot": "1-1", "regexp": "x"},
+        {},
+    ):
+        result = live.saves(str(tmp_path), "import", **kwargs)
+        assert result["ok"] is False, kwargs
+        assert result["files_touched"] == [], kwargs
+    assert live.saves(str(tmp_path / "nowhere"), "import", slot="1-1")["files_touched"] == []
+    assert "files_touched" not in live.saves(str(tmp_path), "list_user", slot="1-1")
