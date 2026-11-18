@@ -128,6 +128,23 @@ def _basename(name: str) -> str:
     return name
 
 
+def _temp_candidate() -> str:
+    # Fixed length: a temp name built from the leaf overflowed the 255-unit
+    # file name limit for a long but valid leaf.
+    return ".rf-%s.tmp" % secrets.token_hex(8)
+
+
+def _require_directory(path: Path) -> None:
+    # Windows reports a path under a file as missing rather than ENOTDIR, so
+    # the fallbacks check the immediate parent here. A missing folder means
+    # the session stopped; a file in its place does not.
+    if path.is_dir():
+        return
+    if os.path.lexists(path):
+        raise NotADirectoryError(errno.ENOTDIR, "not a directory", str(path))
+    raise FileNotFoundError(errno.ENOENT, "directory does not exist", str(path))
+
+
 def open_regular_at_nofollow(directory: Path, name: str) -> tuple[int, os.stat_result]:
     """Open regular file *name* directly in *directory* without following links.
 
@@ -167,8 +184,9 @@ def make_directory_at_nofollow(path: Path, *, mode: int = _PRIVATE_DIR_MODE) -> 
     Only the leaf is created, at a descriptor for its parent, and the parent's
     components are all opened without following links; nothing is resolved,
     so pass a path that is already canonical. A missing parent raises
-    ``FileNotFoundError``, a linked component or leaf ``ValueError``, and a
-    leaf that is not a folder ``OSError``.
+    ``FileNotFoundError``, a parent that is a file ``NotADirectoryError``, a
+    linked component or leaf ``ValueError``, and a leaf that is not a folder
+    ``OSError``.
     """
     target = _absolute_path(path)
     leaf = _leaf_name(target)
@@ -231,8 +249,7 @@ def _make_directory_fallback(target: Path) -> None:
             continue
         if _component_is_link(component):
             raise _symlink_error(component, action="savedir")
-    if not target.parent.is_dir():
-        raise FileNotFoundError(errno.ENOENT, "directory does not exist", str(target.parent))
+    _require_directory(target.parent)
     try:
         target.mkdir()
     except FileExistsError:
@@ -289,8 +306,7 @@ def replace_file_at_nofollow(
             getattr(os, "O_BINARY", 0),
         )
         for _ in range(_TEMP_ATTEMPTS):
-            # Fixed length, so a long but valid leaf still fits NAME_MAX.
-            candidate = ".rf-%s.tmp" % secrets.token_hex(8)
+            candidate = _temp_candidate()
             try:
                 fd = os.open(candidate, flags, _PRIVATE_FILE_MODE, dir_fd=dir_fd)
             except FileExistsError:
@@ -343,8 +359,7 @@ def _replace_file_fallback(
     # Windows (and POSIX without dir_fd): write_atomic anchors the directory
     # and refuses a leaf link instead of replacing it. It would also create
     # a missing directory, which must stay gone after a session stops.
-    if not directory.is_dir():
-        raise FileNotFoundError(errno.ENOENT, "directory does not exist", str(directory))
+    _require_directory(directory)
     target = directory / name
     data = b"".join(_read_fd_bounded(source_fd, max_bytes=max_bytes, label=str(target)))
     write_atomic(target, data, mode=mode, follow_symlinks=False)
@@ -575,7 +590,7 @@ def _write_atomic_anchored_posix(
         )
         last_error: BaseException | None = None
         for _ in range(_TEMP_ATTEMPTS):
-            candidate = ".%s.%s.tmp" % (name, secrets.token_hex(8))
+            candidate = _temp_candidate()
             try:
                 fd = os.open(candidate, flags, mode, dir_fd=dir_fd)
                 temp_name = candidate
@@ -1995,7 +2010,7 @@ def _write_atomic_anchored_windows(
         payload = _encode_chunks(chunks, encoding=encoding, max_bytes=max_bytes)
         last_error: BaseException | None = None
         for _ in range(_TEMP_ATTEMPTS):
-            candidate = ".%s.%s.tmp" % (name, secrets.token_hex(8))
+            candidate = _temp_candidate()
             try:
                 temp_handle = _win_nt_create(
                     root=dir_handle,

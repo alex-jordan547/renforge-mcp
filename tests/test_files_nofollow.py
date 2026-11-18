@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from renforge.captures import write_project_capture
+from renforge.util import files as files_module
 from renforge.util.files import (
+    make_directory_at_nofollow,
     open_regular_at_nofollow,
     replace_file_at_nofollow,
     write_atomic,
@@ -238,3 +240,46 @@ def test_replace_file_at_nofollow_needs_the_directory(tmp_path: Path) -> None:
     finally:
         os.close(fd)
     assert not (tmp_path / "gone").exists()
+
+
+def test_write_atomic_nofollow_handles_a_leaf_at_the_name_limit(tmp_path: Path) -> None:
+    # The temp name used to be the leaf plus 22 units, so a long save name
+    # overflowed the 255-unit file name limit on every platform.
+    name = "s" * 240 + "-LT1.save"
+    write_atomic(tmp_path / name, b"SLOT", follow_symlinks=False)
+
+    assert os.listdir(tmp_path) == [name]
+    assert (tmp_path / name).read_bytes() == b"SLOT"
+
+
+@pytest.mark.parametrize("dir_fd", [True, False], ids=["dir_fd", "fallback"])
+def test_make_directory_tells_a_file_parent_from_a_missing_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dir_fd: bool
+) -> None:
+    # The Windows fallback reported a file in the session root's place as a
+    # stopped session; both paths must say "not a folder" instead.
+    if dir_fd and (os.name == "nt" or not files_module._posix_dir_fd_supported()):
+        pytest.skip("needs POSIX dir_fd support")
+    monkeypatch.setattr(files_module, "_posix_dir_fd_supported", lambda: dir_fd)
+    file_root = tmp_path / "session"
+    file_root.write_bytes(b"not a folder")
+
+    with pytest.raises(OSError) as raised:
+        make_directory_at_nofollow(file_root / "saves")
+    assert not isinstance(raised.value, FileNotFoundError)
+    with pytest.raises(FileNotFoundError):
+        make_directory_at_nofollow(tmp_path / "gone" / "saves")
+    assert file_root.read_bytes() == b"not a folder"
+
+
+def test_require_directory_tells_a_file_from_a_missing_folder(tmp_path: Path) -> None:
+    # Windows reports a path under a file as missing, so the fallbacks decide
+    # here rather than from the error a walk of the path happened to raise.
+    file_root = tmp_path / "session"
+    file_root.write_bytes(b"not a folder")
+
+    with pytest.raises(NotADirectoryError):
+        files_module._require_directory(file_root)
+    with pytest.raises(FileNotFoundError):
+        files_module._require_directory(tmp_path / "gone")
+    files_module._require_directory(tmp_path)
