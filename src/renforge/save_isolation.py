@@ -367,26 +367,6 @@ def isolation_report(
     }
 
 
-def launch_exposes_user_saves(
-    *,
-    savedir: str | None = None,
-    home: str | None = None,
-    persistent: str | None = None,
-    preferences: str | None = None,
-    project_path: str | Path | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> bool:
-    """True when the resolved launch can read or write the host save tree."""
-    return bool(launch_exposed_components(
-        savedir=savedir,
-        home=home,
-        persistent=persistent,
-        preferences=preferences,
-        project_path=project_path,
-        environ=environ,
-    ))
-
-
 def launch_exposed_components(
     *,
     savedir: str | None = None,

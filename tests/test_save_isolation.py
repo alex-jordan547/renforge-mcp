@@ -23,7 +23,6 @@ from renforge.save_isolation import (
     import_host_slots,
     isolation_report,
     launch_exposed_components,
-    launch_exposes_user_saves,
     list_host_slots,
     parse_save_directory,
     path_exposes_user_saves,
@@ -324,23 +323,23 @@ def test_isolation_report_and_session_id(tmp_path: Path) -> None:
     assert isolation_report(existing, session_id="sess_x")["isolation"]["exposes_user_saves"] is True
 
 
-def test_launch_exposes_user_saves_classifies_existing_and_host_paths(
+def test_launch_exposed_components_classify_existing_and_host_paths(
     tmp_path: Path, monkeypatch, host_save_root: Path
 ) -> None:
     monkeypatch.delenv("RENFORGE_ISOLATION", raising=False)
-    assert launch_exposes_user_saves() is True
-    assert launch_exposes_user_saves(savedir="temporary") is False
-    assert launch_exposes_user_saves(savedir="existing") is True
-    assert launch_exposes_user_saves(savedir="auto", home="existing") is True
+    assert launch_exposed_components()
+    assert not launch_exposed_components(savedir="temporary")
+    assert launch_exposed_components(savedir="existing")
+    assert launch_exposed_components(savedir="auto", home="existing")
     host = tmp_path / "home"
     monkeypatch.setenv("HOME", str(host))
     user_saves = host_save_root / "renforge-demo"
     user_saves.mkdir(parents=True)
     assert path_exposes_user_saves(user_saves, home=host) is True
-    assert launch_exposes_user_saves(savedir=str(user_saves), home="temporary") is True
+    assert launch_exposed_components(savedir=str(user_saves), home="temporary")
     other = tmp_path / "scratch-saves"
     other.mkdir()
-    assert launch_exposes_user_saves(savedir=str(other), home="temporary") is False
+    assert not launch_exposed_components(savedir=str(other), home="temporary")
 
 
 def test_launch_exposed_components_tell_saves_and_home_apart(
@@ -1613,7 +1612,7 @@ def test_import_receipt_reaches_the_activity_journal(
 
 def test_every_exposure_check_counts_the_projects_game_saves(tmp_path: Path) -> None:
     # Simplify panel I1: the dataclass property ignored the project's
-    # game/saves while isolation_report and launch_exposes_user_saves did not.
+    # game/saves while isolation_report and the launch check did not.
     project = tmp_path / "game-root"
     saves = project / "game" / "saves"
     saves.mkdir(parents=True)
@@ -1621,7 +1620,9 @@ def test_every_exposure_check_counts_the_projects_game_saves(tmp_path: Path) -> 
     try:
         assert isolation.exposes_user_saves(project_path=project) is True
         assert isolation_report(isolation, project_path=project)["isolation"]["exposes_user_saves"] is True
-        assert launch_exposes_user_saves(savedir=str(saves), home="temporary", project_path=project) is True
+        assert launch_exposed_components(
+            savedir=str(saves), home="temporary", project_path=project
+        ) == {"savedir"}
     finally:
         _cleanup(isolation)
 

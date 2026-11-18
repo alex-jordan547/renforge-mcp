@@ -1121,6 +1121,27 @@ def test_a_warp_relaunch_of_a_non_isolated_session_stays_on_the_players_saves(
     }
 
 
+@pytest.mark.parametrize(
+    ("running", "expected"),
+    [
+        # Isolated saves with the host HOME: the saves must stay isolated.
+        (("temporary", "existing"),
+         {"savedir": "temporary", "home": "existing", "persistent": "empty", "preferences": "empty"}),
+        # The player's saves with a private HOME: HOME must stay private.
+        (("existing", "temporary"),
+         {"savedir": "existing", "home": "temporary", "persistent": "existing", "preferences": "existing"}),
+    ],
+)
+def test_a_warp_relaunch_of_a_partly_isolated_session_keeps_each_component(
+    tmp_path: Path, monkeypatch, running, expected
+) -> None:
+    savedir_mode, home_mode = running
+    knobs = _relaunch_knobs(
+        tmp_path, monkeypatch, _isolation(savedir_mode=savedir_mode, home_mode=home_mode)
+    )
+    assert knobs == expected
+
+
 def test_an_explicit_savedir_on_a_warp_relaunch_is_honoured(tmp_path: Path, monkeypatch) -> None:
     knobs = _relaunch_knobs(
         tmp_path, monkeypatch, _isolation(savedir_mode="temporary"), savedir="existing"

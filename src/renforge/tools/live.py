@@ -654,7 +654,7 @@ def _external_exposed_components(report: dict[str, Any]) -> frozenset[str]:
 
 
 def _isolation_mismatch(
-    *, requested_exposes: bool = False, requested_language: str | None = None
+    *, requested_exposes: bool, requested_language: str | None = None
 ) -> dict[str, Any]:
     """A launch asked to reuse a game that exposes storage the launch isolates."""
     message = (
@@ -673,11 +673,6 @@ def _isolation_mismatch(
         "requested_language": requested_language,
         **_failed_language_verdict(requested_language),
     }
-
-
-def _session_exposes_user_saves(session: Any) -> bool:
-    """Whether an owned session reads or writes the player's saves or HOME."""
-    return bool(_session_exposed_components(session))
 
 
 def _session_exposed_components(session: Any) -> frozenset[str]:
@@ -743,16 +738,15 @@ def launch_game(
         "preferences": session_cfg.get("preferences", preferences),
     }
     replaced = _SESSIONS.get(_key(project.root)) if warp is not None else None
-    if (
-        replaced is not None
-        and isolation_knobs_unset(*knobs.values())
-        and not _session_exposes_user_saves(replaced)
-    ):
+    if replaced is not None and isolation_knobs_unset(*knobs.values()):
         # A jump/new_game/Warp relaunch with every knob auto keeps the
-        # isolation of the game it replaces instead of falling back to the
-        # player's saves. It still gets a fresh session: imported slots go
-        # with the old one.
-        knobs["savedir"] = knobs["home"] = "temporary"
+        # isolation of the game it replaces, component by component, instead
+        # of falling back to the player's saves. It still gets a fresh
+        # session: imported slots go with the old one.
+        exposed = _session_exposed_components(replaced)
+        if exposed != {SAVEDIR_COMPONENT, HOME_COMPONENT}:
+            knobs["savedir"] = "existing" if SAVEDIR_COMPONENT in exposed else "temporary"
+            knobs["home"] = "existing" if HOME_COMPONENT in exposed else "temporary"
     isolation_defaults = apply_launch_isolation_defaults(**knobs)
     savedir = isolation_defaults["savedir"]
     home = isolation_defaults["home"]
